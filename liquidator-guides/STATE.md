@@ -119,7 +119,7 @@ commit on the WP's owned paths is expired by the next coordinator (§4.2).
 | 06B | MEV-Share client (stream, matcher, signing, history) | 06A-1, 00C | — | T2 | `todo` | | |
 | 06C | CEX feeds, aggregator sim, fusion, ETA | 06A-1, 05B | — | T2 | `todo` | | |
 | 06D | Public mempool transmit decoder | 03B, 06A-1 | — | T3 | `todo` | | |
-| 07A | Five flash sources | 01, 00C, 03A | — | T2 | `todo` | | |
+| 07A | Five flash sources | 01, 00C, 03A | — | T2 | `in_progress` | coord-02 2026-09-20T00:50Z (builder 0c8af9cc, Grok 4.6) | FlashSource trait + 5 impls (Aave V3/V4, UniV3, UniV4 PoolManager, Morpho, Sky DSS DAI-only) in crates/liq-flash/src/sources/; log-driven no RPC; fee_bps runtime (FLASHLOAN_PREMIUM_TOTAL via FlashloanPremiumTotalUpdated 0x71aba182…); gas_overhead stub→10C; live-sampling 1k blocks→post-A2. NOT building 07B (FlashIndex/eligibility/cascade) |
 | 07B | FlashIndex, eligibility, selection, cascade | 07A | — | T1 | `todo` | | |
 | 08A | Health engine | 02A, 01, 00C, 07B, 05D | — | T1 | `todo` | | |
 | 08B | Trigger sources (governance, derived, stale) | 08A, 06A-2 | — | T2 | `todo` | | |
