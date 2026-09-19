@@ -11,7 +11,8 @@ venv/
 # Rust build artifacts (when crates/ appears)
 target/
 **/*.rs.bk
-**/proptest-regressions/   # proptest failing-seed cache; never commit (replayed before fresh cases)
+**/proptest-regressions/   # proptest failing-seed cache (directory form); never commit (replayed before fresh cases)
+**/*.proptest-regressions # proptest failing-seed cache (file form: tests/<name>.proptest-regressions); never commit
 Cargo.lock.bak
 
 # Editor / OS
