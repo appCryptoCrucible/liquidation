@@ -10,18 +10,19 @@
 //! evidence). The `const` asserts below are what stop the row silently growing
 //! to a third line (TESTING §4 mutation #16).
 
+use bytemuck::{Pod, Zeroable};
 use liq_types::{AssetId, MarketId, RayU128};
 
 /// Price feed identity (GUIDE 06). Interned `u16`; the side table is
 /// `liq-oracle`'s (WP 06A-1).
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Pod, Zeroable)]
 #[repr(transparent)]
 pub struct FeedId(pub u16);
 
 /// Reserve flags (GUIDE 02 §3): `frozen | paused | siloed | isolated`.
 /// Hand-rolled: `bitflags` is not a workspace dependency and four bits do not
 /// justify one.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Pod, Zeroable)]
 #[repr(transparent)]
 pub struct MarketFlags(pub u8);
 
@@ -57,17 +58,17 @@ pub struct MarketSlot {
 /// One reserve of one market with its hub accounting denormalised in.
 ///
 /// Layout is `#[repr(C, align(64))]`, 128 bytes, no implicit padding: the
-/// trailing `_pad` is explicit so every byte is a field and the row can become
-/// `bytemuck::Pod` for the memory-mapped snapshot (GUIDE 02 §7) by adding the
-/// derive alone. That derive is not here yet because it needs `Pod` on
-/// `liq_types::{RayU128, AssetId}` — a `liq-types` change outside this WP
-/// (flagged in the 01 return note).
+/// trailing `_pad` is explicit so every byte is a field. `Pod`/`Zeroable`
+/// (WP 02B) so the snapshot zero-copies the column via `bytemuck::from_bytes`
+/// after `fs::read` (D59; mmap evaluated and declined — FUTURE-OPTIMIZATIONS.md
+/// F6). Precondition held:
+/// explicit pad, 128 B, `align(64)` — confirmed by the const asserts below.
 ///
 /// | line | bytes | fields |
 /// |---|---|---|
 /// | 0 | 0..64 | `supply_index`, `debt_index`, `supply_rate`, `debt_rate` |
 /// | 1 | 64..128 | `dust_floor`, `last_update`, `target_hf`, ids, thresholds, liquidation config, flags |
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C, align(64))]
 pub struct MarketRow {
     // ---- line 0: read by every health()/time_to_cross() projection ---------
@@ -125,8 +126,8 @@ const _: () = {
     assert!(core::mem::size_of::<MarketRow>() == 128);
     assert!(core::mem::align_of::<MarketRow>() == 64);
     assert!(MarketRow::PAYLOAD_BYTES < 128);
-    // The explicit pad accounts for every byte not covered by a field, so a
-    // future derive(Pod) is sound (no implicit padding).
+    // The explicit pad accounts for every byte not covered by a field, which
+    // is what makes the derived `Pod` sound (no implicit padding).
     assert!(
         MarketRow::PAYLOAD_BYTES + 22 == core::mem::size_of::<MarketRow>(),
         "field bytes + explicit pad must equal the row size"
@@ -137,6 +138,7 @@ const _: () = {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{FeedId, MarketFlags, MarketRow};
+    use bytemuck::Zeroable;
     use core::mem::{offset_of, size_of};
 
     /// Oracle: GUIDE 02 §3 — indices and rates on cache line 0, everything
@@ -160,6 +162,19 @@ mod tests {
         assert_eq!(declared, MarketRow::PAYLOAD_BYTES);
         assert_eq!(size_of::<FeedId>(), 2);
         assert_eq!(size_of::<MarketFlags>(), 1);
+    }
+
+    /// Oracle: `repr(C, align(64))` + explicit `_pad` + field widths (the
+    /// const asserts). A `Pod` round-trip is identity on those bytes.
+    #[test]
+    fn market_row_pod_identity() {
+        let mut r = MarketRow::zeroed();
+        r.supply_index = liq_types::RayU128::from_raw(u128::MAX);
+        r.asset = liq_types::AssetId(7);
+        let bytes = bytemuck::bytes_of(&r);
+        assert_eq!(bytes.len(), 128);
+        let back: &MarketRow = bytemuck::from_bytes(bytes);
+        assert_eq!(*back, r);
     }
 
     /// Oracle: bit definitions. Negative: `PAUSED` is not implied by `FROZEN`.

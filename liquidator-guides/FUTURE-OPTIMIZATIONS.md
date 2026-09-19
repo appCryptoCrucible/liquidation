@@ -49,6 +49,13 @@ Priority is by **win-per-rework-cost**: zero-rework wins first, then layout chan
 - **Decision:** **declined** (user, 2026-09-19; D58). Keep `unsafe_code = "forbid"`.
 - **Revisit:** only if a target-hardware measurement shows the sweep L3-bound. Ordered options before this: (a) F1 (08A visit-order sort, zero `unsafe`, larger win); (b) F3 (interleaved balances, zero `unsafe`, 20% line cut); (c) only then a one-function helper crate with `unsafe_code = "deny"` and a single audited `#[allow]` + `// SAFETY:` + miri test + `UNSAFE.md` entry (RUST-CONVENTIONS §7).
 
+### F6. `memmap2` zero-copy snapshot load
+- **Win:** removes one of two copies (file → `Vec<u8>`) on cold start; ~7–10 ms (~1% of the 1 s budget).
+- **Blocker:** `Mmap::map` is `unsafe` (external truncation → UB on read). `unsafe_code = "forbid"` is workspace-wide (D58).
+- **Evidence against (now):** the 02B Opus review measured cold start at **120.4 ms** (8.3× under budget). `StateStore` owns `Vec<u128>` columns and mutates them in place, so mmap removes only one of two copies — the second (into owned `Vec`s) is unavoidable. Every byte is touched for the CRC regardless (17A lease integrity), so "zero-copy" never means "don't page it in". mmap soundness is **platform-asymmetric**: sound on Unix (temp-file + `rename` leaves the mapped inode intact → truncation UB unreachable) but breaks on Windows (`MoveFileEx` over a live mapping → sharing violation). Deploy reality: Linux prod / Windows dev → the exception would need a Windows fallback to `fs::read` anyway.
+- **Decision:** **declined** (Fable, 2026-09-20; D59 = Option B). Keep `fs::read`; spend the effort on `crc32fast` instead (cuts the 28.7 ms CRC ~10×, zero `unsafe`, also speeds the WAL writer).
+- **Revisit:** only if cold start is measured > 1 s on the target box AND a Unix-only `cfg(unix)` scoped `UNSAFE.md` exception is cheaper than the `crc32fast` win already banked.
+
 ---
 
 ## How to use this file

@@ -5,6 +5,7 @@
 //! side table (owned by later WPs) mapping to the protocol's own identifier.
 
 use alloy_primitives::Address;
+use bytemuck::{Pod, Zeroable};
 
 /// EIP-155 chain id. This project is Ethereum mainnet only (D01), i.e. `1`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -20,7 +21,10 @@ pub struct ProtocolId(pub u16);
 pub struct MarketId(pub u32);
 
 /// Global asset id. WETH is one [`AssetId`] across every adapter (GUIDE 00 §3).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// `repr(transparent)` + `Pod`: `MarketRow` zero-copies this field via
+/// `bytemuck::from_bytes` after `fs::read` (WP 02B, D59).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Pod, Zeroable)]
+#[repr(transparent)]
 pub struct AssetId(pub u16);
 
 /// Dense interned position index. The hot path uses this, never [`PositionKey`].
@@ -103,7 +107,8 @@ mod tests {
     }
 
     /// Oracle: GUIDE 00 §3 published widths. A protocol-scoped asset id that
-    /// carried a [`ProtocolId`] would not fit in two bytes.
+    /// carried a [`ProtocolId`] would not fit in two bytes. `Pod` bytes are
+    /// the native `u16` (WP 02B `MarketRow` zero-copy via `bytemuck`).
     #[test]
     fn identity_widths_match_guide_00() {
         use std::mem::size_of;
@@ -114,6 +119,8 @@ mod tests {
         // Negative: the smallest (protocol, asset) pair is wider than AssetId, so
         // AssetId cannot carry a ProtocolId by construction.
         assert!(size_of::<AssetId>() < size_of::<(ProtocolId, AssetId)>());
+        let id = AssetId(0xABCD);
+        assert_eq!(bytemuck::bytes_of(&id), 0xABCDu16.to_ne_bytes().as_slice());
     }
 
     /// Oracle: an independent implementation — `Executor.sol` constants

@@ -16,14 +16,20 @@
 #![deny(clippy::todo, clippy::unimplemented)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod drift;
 pub mod error;
 pub mod interner;
+pub mod snapshot;
 pub mod store;
 pub mod undo;
 pub mod view;
+pub mod wal;
 
+pub use drift::{DriftDetector, DriftError, DriftTick, TickReport};
 pub use error::StateError;
 pub use interner::AssetInterner;
+pub use snapshot::{Shared, SnapshotError, StoreSnapshot};
 pub use store::{StateStore, StoreConfig};
 pub use undo::{UndoCapacity, UndoOp, UNDO_DEPTH};
 pub use view::{Overlay, OverlayWriter, StateView};
+pub use wal::{recover, RecoverError, Wal, WalError, WalRecord};

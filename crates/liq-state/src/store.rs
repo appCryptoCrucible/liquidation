@@ -38,11 +38,11 @@ use crate::undo::{BlockUndo, UndoCapacity, UndoOp, UndoRing};
 use crate::view::{Overlay, StateView};
 
 /// Sentinel in `market_index`: no market at that id.
-const NO_MARKET: u16 = u16::MAX;
+pub(crate) const NO_MARKET: u16 = u16::MAX;
 /// Addressable market ids and market count: the index table is `u16`.
 const MAX_MARKETS: usize = NO_MARKET as usize;
 /// `u128` cells per cache line; strides are rounded up to this.
-const LINE_CELLS: usize = 4;
+pub(crate) const LINE_CELLS: usize = 4;
 
 /// Startup sizing. Everything here is reserved once in [`StateStore::new`];
 /// the hot path allocates nothing while it stays within these numbers.
@@ -60,15 +60,15 @@ pub struct StoreConfig {
 }
 
 /// One market: its reserve rows and both balance columns.
-struct Market {
-    rows: Vec<MarketRow>,
+pub(crate) struct Market {
+    pub(crate) rows: Vec<MarketRow>,
     /// Cells per position in `supply`/`debt`; `>= rows.len()`, multiple of
     /// [`LINE_CELLS`]. Cells at or past `rows.len()` are always zero.
-    stride: usize,
+    pub(crate) stride: usize,
     /// Positions in this market (`PosEntry::local` space).
-    n_pos: u32,
-    supply: Vec<u128>,
-    debt: Vec<u128>,
+    pub(crate) n_pos: u32,
+    pub(crate) supply: Vec<u128>,
+    pub(crate) debt: Vec<u128>,
 }
 
 impl Market {
@@ -147,20 +147,20 @@ enum Col {
 /// The store. See the module docs for the layout.
 pub struct StateStore {
     /// Slots with a nonzero supply or debt, by `PositionId`. First: hottest.
-    config: Vec<AssetMask>,
-    positions: PositionTable,
-    extra: Vec<PositionExtraRepr>,
-    markets: Vec<Market>,
+    pub(crate) config: Vec<AssetMask>,
+    pub(crate) positions: PositionTable,
+    pub(crate) extra: Vec<PositionExtraRepr>,
+    pub(crate) markets: Vec<Market>,
     /// `MarketId.0 → index into markets`, [`NO_MARKET`] when absent. A direct
     /// table, not a hash: `MarketId` is dense by contract (GUIDE 00 §3).
-    market_index: Vec<u16>,
+    pub(crate) market_index: Vec<u16>,
     undo: UndoRing,
     /// Mutations applied, ever. Bumped by every setter next to its journal
     /// push, so `(tip, len, writes)` identifies the state an [`Overlay`]'s
     /// copies were taken from — `tip` alone does not, because a block's
     /// setters all run at one tip. Wrapping, not saturating: a counter that
     /// stopped counting would start admitting stale overlays.
-    writes: u64,
+    pub(crate) writes: u64,
 }
 
 impl core::fmt::Debug for StateStore {
@@ -187,7 +187,7 @@ fn row_mut<'m>(
 }
 
 #[inline]
-fn market_idx(index: &[u16], id: MarketId) -> Option<usize> {
+pub(crate) fn market_idx(index: &[u16], id: MarketId) -> Option<usize> {
     let i = *index.get(id.0 as usize)?;
     (i != NO_MARKET).then_some(usize::from(i))
 }
@@ -456,6 +456,37 @@ impl StateStore {
         *config = new_config;
         self.writes = self.writes.wrapping_add(1);
         Ok(())
+    }
+
+    /// Rebuild from a snapshot (WP 02B). `base` is the snapshot tip: the
+    /// ring starts at `depth == 0` so mutations until the next `begin_block`
+    /// are unjournaled (carry-forward 02B). Capacities from `cfg` are
+    /// reserved on top of the captured lengths.
+    pub(crate) fn from_captured(
+        cfg: StoreConfig,
+        writes: u64,
+        mut config: Vec<AssetMask>,
+        positions: PositionTable,
+        mut extra: Vec<PositionExtraRepr>,
+        mut markets: Vec<Market>,
+        mut market_index: Vec<u16>,
+    ) -> Result<Self, StateError> {
+        if config.len() != extra.len() || config.len() != positions.len() {
+            return Err(StateError::Inconsistent);
+        }
+        config.reserve(cfg.positions.saturating_sub(config.len()));
+        extra.reserve(cfg.positions.saturating_sub(extra.len()));
+        markets.reserve(cfg.markets.saturating_sub(markets.len()));
+        market_index.reserve(cfg.markets.saturating_sub(market_index.len()));
+        Ok(Self {
+            config,
+            positions,
+            extra,
+            markets,
+            market_index,
+            undo: UndoRing::new(cfg.base, cfg.undo),
+            writes,
+        })
     }
 
     /// Inverse of [`Self::set_column`].

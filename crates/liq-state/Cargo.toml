@@ -9,6 +9,10 @@ liq-types = { path = "../liq-types" }
 liq-protocol = { path = "../liq-protocol" }
 alloy-primitives = { workspace = true }
 thiserror = { workspace = true }
+bytemuck = { workspace = true }
+crc32fast = { workspace = true }
+arc-swap = { workspace = true }
+crossbeam-channel = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

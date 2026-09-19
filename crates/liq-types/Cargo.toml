@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 alloy-primitives = { workspace = true }
+bytemuck = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

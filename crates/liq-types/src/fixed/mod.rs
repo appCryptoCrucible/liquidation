@@ -14,6 +14,7 @@
 //! the protocol source, not chosen conservatively (GUIDE 00 §2).
 
 use alloy_primitives::{uint, U256, U512};
+use bytemuck::{Pod, Zeroable};
 
 #[cfg(test)]
 #[allow(
@@ -190,7 +191,9 @@ impl Wad {
 /// Storage width for values the chain itself holds as `uint128` RAY (Aave
 /// `liquidityIndex`, `variableBorrowIndex`, rates). Widened to [`Ray`] at the
 /// arithmetic boundary; never stored wider than the chain stores it.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+///
+/// `Pod`/`Zeroable`: `#[repr(transparent)]` over `u128` (WP 02B snapshot).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Pod, Zeroable)]
 #[repr(transparent)]
 pub struct RayU128(u128);
 

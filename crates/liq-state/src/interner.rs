@@ -42,6 +42,21 @@ impl PositionTable {
         }
     }
 
+    /// Rebuild from a snapshot's reverse table. Duplicate keys are
+    /// [`StateError::Inconsistent`]: two ids for one key is not a store.
+    pub(crate) fn from_entries(entries: Vec<PosEntry>) -> Result<Self, StateError> {
+        let mut map = HashMap::with_capacity(entries.len());
+        for (i, e) in entries.iter().enumerate() {
+            let id = u32::try_from(i)
+                .map(PositionId)
+                .map_err(|_| StateError::Inconsistent)?;
+            if map.insert(e.key, id).is_some() {
+                return Err(StateError::Inconsistent);
+            }
+        }
+        Ok(Self { map, entries })
+    }
+
     #[inline]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()

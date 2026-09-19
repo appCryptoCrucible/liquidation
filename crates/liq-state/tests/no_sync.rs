@@ -8,6 +8,22 @@
 use std::fs;
 use std::path::Path;
 
+/// The single-writer core (GUIDE 02 §7b). WAL/snapshot/drift are the
+/// off-thread paths and are allowed `Arc`/`std::sync` (ArcSwap, channels).
+const CORE: [&str; 6] = [
+    "store.rs",
+    "undo.rs",
+    "view.rs",
+    "interner.rs",
+    "error.rs",
+    "lib.rs",
+];
+
+/// The off-thread files (WP 02B), named so a *new* file cannot join them by
+/// default: anything in `src/` that is in neither list fails the test, and
+/// whoever adds it has to say which side of the thread boundary it is on.
+const OFF_THREAD: [&str; 3] = ["wal.rs", "snapshot.rs", "drift.rs"];
+
 const FORBIDDEN: [&str; 7] = [
     "Arc<",
     "Arc::",
@@ -24,7 +40,16 @@ fn src_has_no_arc_mutex_rwlock_or_atomic() {
     let mut checked = 0;
     for entry in fs::read_dir(&src).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().is_some_and(|e| e == "rs") {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap();
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        assert!(
+            CORE.contains(&name) || OFF_THREAD.contains(&name),
+            "{} is in neither CORE nor OFF_THREAD: classify it before adding it",
+            path.display()
+        );
+        if CORE.contains(&name) {
             let text = fs::read_to_string(&path).unwrap();
             for token in FORBIDDEN {
                 assert!(
