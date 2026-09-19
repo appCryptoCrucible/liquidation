@@ -6,7 +6,9 @@ license.workspace = true
 
 [dependencies]
 alloy-primitives = { workspace = true }
+smallvec = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
