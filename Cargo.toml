@@ -1,0 +1,75 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/liq-types",
+    "crates/liq-config",
+    "crates/liq-obs",
+    "crates/liq-protocol",
+    "crates/liq-state",
+    "crates/liq-node",
+    "crates/liq-adapters",
+    "crates/liq-oracle",
+    "crates/liq-engine",
+    "crates/liq-flash",
+    "crates/liq-router",
+    "crates/liq-sim",
+    "crates/liq-plan",
+    "crates/liq-exec",
+    "crates/liq-risk",
+    "crates/liq-watch",
+    "crates/liq-replay",
+    "crates/liq-books",
+    "crates/liq-bot",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+alloy-primitives = { version = "=1.6.0", default-features = false }
+alloy-sol-types = { version = "=1.6.0", default-features = false }
+serde = { version = "=1.0.229", features = ["derive"] }
+toml = "=1.1.6"
+figment = { version = "=0.10.19", features = ["toml", "env"] }
+tracing = "=0.1.44"
+metrics = "=0.24.6"
+thiserror = "=2.0.20"
+eyre = "=0.6.14"
+crossbeam-channel = "=0.5.17"
+rtrb = "=0.4.0"
+triple_buffer = "=9.0.0"
+arc-swap = "=1.9.2"
+parking_lot = "=0.12.5"
+smallvec = "=1.13.2"
+arrayvec = "=0.7.8"
+bumpalo = "=3.20.3"
+bytemuck = { version = "=1.25.2", features = ["derive"] }
+fixedbitset = "=0.5.7"
+mimalloc = { version = "=0.1.52", default-features = false }
+proptest = "=1.11.0"
+loom = "=0.7.2"
+criterion = { version = "=0.8.2", features = ["html_reports"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+float_arithmetic = "deny"
+await_holding_lock = "deny"
+mutex_atomic = "warn"
+rc_buffer = "warn"
+
+[profile.release]
+overflow-checks = true
+panic = "unwind"
+lto = "fat"
+codegen-units = 1
+debug = 1

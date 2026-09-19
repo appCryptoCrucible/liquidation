@@ -15,7 +15,7 @@ Path A/B/C code, Grok review otherwise · `T3` Composer 2.5 → `REVIEW_T3`
 
 ## 0. The crate map (D46, D51)
 
-Eighteen crates. Arrows point at dependencies; every arrow points downward.
+Nineteen crates (D56: the original "18" count omitted `liq-obs`, which WP 09A owns and the dep-lint references). Arrows point at dependencies; every arrow points downward.
 
 ```
 liq-types        ── ids · Ray/Wad · PriceVector · Band · Halt{Scope,Reason,Sink}
@@ -36,6 +36,7 @@ liq-router       ── RouteSolver · warm/exact tiers · band · profit · sel
 liq-exec         ── Submitter impls · templates · NonceAllocator · inclusion watcher
 liq-risk         ── RiskGate: HaltSink · halt matrix · proxy watcher · caps · treasury · PnL ledger (SQLite)
 liq-watch        ── liquidation-event decoder + streaming/batch consumers            (NEW — GUIDE 05 §2 ≡ GUIDE 09 §4a)
+liq-obs          ── tracing sinks · digest · dashboards · perf counters                (depends on liq-types + liq-watch only — D46; omitted from the count, D56)
 liq-replay       ── archive · recall/classifier · fixtures · differential fuzz · parity · bench
 liq-books        ── accounting scanner, separate binary, finality, CSV hash chain    (NEW — D42 independence)
 liq-bot          ── startup wiring · threads/pinning · lease · hot-reload · ExEx registration
@@ -84,7 +85,7 @@ cost of that independence being enforced by the compiler.
 
 | ID | Name | Spec | Owns | Depends on | Tier → Review | Deliverable / acceptance owned |
 |---|---|---|---|---|---|---|
-| **00A** | Workspace skeleton, lints, profile, CI, dependency lint | GUIDE 00 §1, §5 (lint), §5b, §6; RUST-CONV §2.1, §11 | `Cargo.toml`, `rust-toolchain.toml`, `deny.toml`, `.github/workflows/ci.yml`, every `crates/*/Cargo.toml`, stub `lib.rs` | — | T3 → REVIEW_T3 | 18 crates stub-build; `[lints] workspace = true`; `arithmetic_side_effects` (not the renamed-away `integer_arithmetic`, D53); `panic = "unwind"`, `overflow-checks = true`; CI: fmt, clippy `-D warnings`, test, deny; the **full forbidden-edge lint from GUIDE 00 §5** (`forbid.txt`: engine→adapters/oracle/obs/router/exec, protocol→state, types→anything, obs→engine/state/router, flash→router, plan→exec, watch→state/engine, books→exec/risk/state) plus the no-tokio assert on hot-path crates, with a scratch-branch job proving the lint **goes red**; CI builds in the D04 OS container |
+| **00A** | Workspace skeleton, lints, profile, CI, dependency lint | GUIDE 00 §1, §5 (lint), §5b, §6; RUST-CONV §2.1, §11 | `Cargo.toml`, `rust-toolchain.toml`, `deny.toml`, `.github/workflows/ci.yml`, every `crates/*/Cargo.toml`, stub `lib.rs` | — | T3 → REVIEW_T3 | 19 crates stub-build (D56: §0's "18" omitted liq-obs); `[lints] workspace = true`; `arithmetic_side_effects` (not the renamed-away `integer_arithmetic`, D53); `panic = "unwind"`, `overflow-checks = true`; CI: fmt, clippy `-D warnings`, test, deny; the **full forbidden-edge lint from GUIDE 00 §5** (`forbid.txt`: engine→adapters/oracle/obs/router/exec, protocol→state, types→anything, obs→engine/state/router, flash→router, plan→exec, watch→state/engine, books→exec/risk/state) plus the no-tokio assert on hot-path crates, with a scratch-branch job proving the lint **goes red**; CI builds in the D04 OS container |
 | **00B** | Fixed-point `Ray`/`Wad`/`mul_div` | GUIDE 00 §2; TESTING §3 fixed-point | `crates/liq-types/src/fixed/` | 00A | **T1 → Opus** | No un-rounded op in the public API; 512-bit `mul_div(a,b,denom,Rounding)`; all `checked_*`; proptests 10k **biased to HF ∈ [0.995, 1.005]**, the four properties in §2; mutation #1 goes red |
 | **00C** | Identities + shared contract types | GUIDE 00 §3, §5 (`TraceId`); D46 table above; GUIDE 06 §1 (`SourceKind`), GUIDE 08 §1 (`Band`), GUIDE 14 §2 (`HaltScope`), GUIDE 13 §1 (`Submitter`) | `crates/liq-types/src/{ids,price,band,halt,subscribe,submit,trace}.rs` | 00A | T2 → T1 | `AssetId` global (test: WETH resolves to one id from two protocol configs); `PriceVector` flat `Vec<Price>` by `AssetId`, cheap `Clone`; `PriceTick { asset, price, source: SourceKind, block, ts }` and `ScheduledParamChange` (the two event types `liq-oracle` emits into the hot path, so `liq-engine` never depends on `liq-oracle`); `Band` incl. `Unfundable`; `HaltSink` trait; `LogSubscriber` trait; `Submitter` trait taking `&IntendedSubmission` (plan bytes, bid, venue, deadline, `TraceId`) — no signing type; `TraceId` + `stage()`. No logic beyond constructors |
 | **00D** | `liq-config` + registry boot assertion | GUIDE 00 §4; REGISTRY §2, §4c, §5 | `crates/liq-config/`, `config/` layout, `registry/schema.json` | 00C, C2 | T2 → T2 | `Validate` trait; `ConfigVersion` hash logged; figment env overrides; **boot assertion re-reads `decimals/symbol/token0/token1/fee` for every entry and refuses to start on any mismatch**; test corrupting one token's decimals fails startup; token quirks loaded |

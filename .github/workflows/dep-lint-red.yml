@@ -1,0 +1,47 @@
+name: dep-lint red proof
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/dep-lint-red.yml"
+      - "tools/dep-lint.sh"
+      - "forbid.txt"
+
+jobs:
+  prove-forbidden-edge-caught:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config libssl-dev
+
+      - name: Install Rust 1.95.0
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Assert dep-lint is green before injection
+        run: bash tools/dep-lint.sh
+
+      - name: Inject forbidden liq-engine → liq-adapters edge
+        run: |
+          printf '\n[dependencies]\nliq-adapters = { path = "../liq-adapters" }\n' >> crates/liq-engine/Cargo.toml
+
+      - name: Assert dep-lint exits non-zero
+        run: |
+          set +e
+          bash tools/dep-lint.sh
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo "dep-lint passed with forbidden edge present — lint is broken"
+            exit 1
+          fi
+          echo "dep-lint correctly failed with exit $code"

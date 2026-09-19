@@ -7,7 +7,7 @@ survives a cold start.
 Status values: `todo` · `in_progress` · `blocked` · `done`
 A `done` with an empty evidence field is treated as `todo`.
 
-Last updated: 2026-09-19T13:45Z (coordinator session 02 — build started; C1+00A claimed)
+Last updated: 2026-09-19T14:06Z (00A done + committed; C1 in progress)
 
 ---
 
@@ -92,7 +92,7 @@ commit on the WP's owned paths is expired by the next coordinator (§4.2).
 | A1 | OS install, strip, TuneD | — | — | human+T2 | `todo` | | |
 | A2 | `reth download` → `reth.toml` → node | H1, A1 | — | human+T2 | `todo` | | |
 | A3 | Retention verification | A2 | — | T3 | `todo` | | |
-| 00A | Workspace, lints, CI, dependency lint | — | — | T3 | `in_progress` | coord-02 2026-09-19T13:45Z | |
+| 00A | Workspace, lints, CI, dependency lint | — | — | T3 | `done` | coord-02 2026-09-19T13:45Z | 19 crates (D56) stub-build green; build/fmt/clippy/test clean; dep-lint ok + red-proven green→red; forbid.txt 19 edges; D53 arithmetic_side_effects; panic=unwind, overflow-checks=true; CI ubuntu:26.04; builder composer-2.5, reviewer Opus PASS w/ 2 polish fixes (types→anything assert; green→red proof) |
 | 00B | Fixed-point Ray/Wad/mul_div | 00A | — | T1 | `todo` | | |
 | 00C | Identities + shared types (D46) | 00A | — | T2 | `todo` | | |
 | 00D | liq-config + registry boot assertion | 00C, C2 | — | T2 | `todo` | | |
@@ -233,6 +233,8 @@ these as given; changing one is a new entry, not an edit.
 | D54 | `Venue` enum | `PublicMempool` variant **does not exist** in `liq-exec`. Two variants: `MevShare`, `BuilderBundle`. Matches D19 (no fallback path, not even flag-gated) | **set 2026-09-19** | GUIDE 13 §1 previously listed a third variant with a caveat; the enum and D19 now agree |
 | D55 | Executor upgradeability | **Proposed, needs human.** Options with numbers: **(A) immutable + `10R-n` redeploy** (status quo, D48). **(B) UUPS behind ERC-1967, upgrade authority = `PROFIT_SINK` (the cold key that already receives every wei; no new key, no timelock).** **(C) generic liquidation legs** (`target, calldata`) against a `PROFIT_SINK`-settable market allowlist, so a new protocol is a Rust-only change. Facts that decide it: (1) **an upgrade does not save deploy gas** — the new implementation is deployed either way (~3–4 M gas ≈ 0.015–0.02 ETH at 5 gwei); `upgradeTo` adds ~30 k on top of that. The saving is address churn only (config, registry, sim baseline — nothing external holds our address or approvals). (2) **a proxy costs ~5 k gas on every tx forever** (cold impl SLOAD 2 100 + cold DELEGATECALL 2 600 + copies) — 0.6–1.4 % of a 350–900 k gas liquidation, ≈ 0.2 % of searcher margin at a 98 % bid. Small, permanent, on the bid. (3) **the Executor has zero storage**, so the classic proxy failure (layout collision on upgrade) does not exist here; `immutable`s, transient storage and the CREATE2 callback checks all work under `delegatecall`. (4) **a new protocol still needs 10A–10C + H3 under B** — upgradeability changes who pays for the deploy, not the review. Only C removes the on-chain review for new protocols, and C costs a contract redesign before 10A plus a mutable allowlist (needed anyway for Euler/Silo's hundreds of vaults; blast radius of a rogue allowlist entry = standing WETH balance, because flash repayment and `minProfit` still bound the tx) and gives up the protocol-specific `_isLiquidatable` precheck (try/catch on the real call costs about the same). Recommendation: **A**, because redeploys are off every critical path (a new adapter waits a drift week regardless), cost ≈ one liquidation's gas, and immutability is what makes the hot `OPERATOR` key's blast radius "wasted gas". **B is acceptable** if a stable address is wanted — its trust assumption is one the system already carries — and is the variant to pick if the user wants upgradeability. C only if the roster grows past what `10R-n` batching handles | **set 2026-09-19: A** (user decision). `Executor.sol` stays immutable, no proxy, no allowlist setter; D48's `10R-n` redeploy path is the upgrade mechanism | Executor.sol header; GUIDE 10 §6; D48. The WP 10A brief states "immutable, no proxy (D55)" so a builder does not add one |
 
+| D56 | Crate count | **19 crates**, not 18. The §0 map and D51's "18" omitted `liq-obs` (owned by WP 09A; referenced by the dep-lint's `liq-obs → {engine,state,router}` edges). WP 00A stubs all 19: the 18 in §0's map plus `liq-obs`. `liq-bot` is the top-level binary (17A/16A); `liq-obs` is the observability sink crate (09A). Both exist from day 0 | **set 2026-09-19** | WORK-PACKAGES.md §0; GUIDE-00 §1. Caught in 00A coordinator verification — builder made 18 stubs {obs, no bot}; coordinator added the missing `liq-bot` stub |
+
 **Unset: D11 (bid floor), D12 (sweep `k`), D15's address list (Essential draft 2,653 → completion pass 8,434 addresses, `d15_receipts_log_filter.complete.toml`; H1 review before sync), D23 (registry,
 generate day 0), D27 (admission threshold), D30 (bid bps), D34 (`p`), D35 (bid
 cap/jitter).** D27, D30 and D35 are all keyed to D11, so setting D11 unblocks three.
@@ -260,6 +262,14 @@ Entries here stop the build. Format:
 
 ---
 
+## Carry-forward notes
+
+Notes for future WP briefs, surfaced during review.
+
+- **04A / 15A-1 / 15C-* (adapter split):** when `liq-adapters` is split into per-family crates (`liq-adapters-aave-v4` etc.), the `liq-engine → liq-adapters` edge in `forbid.txt` uses `grep -qx` (exact match) and will silently stop covering the new crates — a fail-open regression. **Adding an adapter crate requires adding its `liq-engine <new-crate>` line to `forbid.txt`** in the same WP. (Surfaced by the 00A Opus review.)
+
+---
+
 ## Session log
 
 Append one line per session. Newest last.
@@ -273,4 +283,5 @@ Append one line per session. Newest last.
 | 2026-09-19 | Orchestration repair: WPs, DAG, model tiers, PonyTail-HFT, gates as consumption points | done | ORCHESTRATOR.md rewrite; WORK-PACKAGES.md new; D46–D54; CHANGES Round 25; guide edits listed there |
 | 2026-09-19 | Repo init + push to origin (appCryptoCrucible/liquidation) | done | commit 01a0870; 41 files; .gitignore excludes zip/target/secrets |
 | 2026-09-19 | Build start: dispatch C1 (T3 composer-2.5) + 00A (T3 composer-2.5) in parallel | in_progress | claimed C1+00A at 13:45Z; toolchain verified (rust 1.95, forge 1.4, py 3.13/web3 7.16, Multicall3 live @ 26011349) |
+| 2026-09-19 | WP 00A done | done | 19-crate skeleton + lints + CI + dep-lint (red-proven green→red); builder composer-2.5, reviewer Opus PASS; D56 (19 crates); carry-forward: 04A/15A must add liq-engine→<new-adapter> to forbid.txt |
 ```
