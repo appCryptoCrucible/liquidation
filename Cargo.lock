@@ -2680,6 +2680,13 @@ version = "0.1.0"
 [[package]]
 name = "liq-flash"
 version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "liq-protocol",
+ "liq-types",
+ "proptest",
+]
 
 [[package]]
 name = "liq-node"
