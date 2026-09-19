@@ -7,7 +7,7 @@ survives a cold start.
 Status values: `todo` · `in_progress` · `blocked` · `done`
 A `done` with an empty evidence field is treated as `todo`.
 
-Last updated: 2026-09-19 (Europe/Berlin)
+Last updated: 2026-09-19T13:45Z (coordinator session 02 — build started; C1+00A claimed)
 
 ---
 
@@ -85,14 +85,14 @@ commit on the WP's owned paths is expired by the next coordinator (§4.2).
 
 | WP | Name | Depends on | Gate / Track | Tier | Status | claimed_by | Evidence |
 |---|---|---|---|---|---|---|---|
-| C1 | Registry discovery | — | — | T3 | `todo` | | |
+| C1 | Registry discovery | — | — | T3 | `in_progress` | coord-02 2026-09-19T13:45Z | |
 | C2 | Registry re-derivation + identity check | C1 | — | T2 | `todo` | | |
 | C3 | Prune filter from committed registry | C2 | — | T3 | `todo` | | draft exists: `d15_receipts_log_filter.toml` (1533 addrs) — regenerate from C2's registry, add flash sources + aggregators |
 | H1 | **Human:** prune profile sign-off | C3 | — | human | `todo` | | |
 | A1 | OS install, strip, TuneD | — | — | human+T2 | `todo` | | |
 | A2 | `reth download` → `reth.toml` → node | H1, A1 | — | human+T2 | `todo` | | |
 | A3 | Retention verification | A2 | — | T3 | `todo` | | |
-| 00A | Workspace, lints, CI, dependency lint | — | — | T3 | `todo` | | |
+| 00A | Workspace, lints, CI, dependency lint | — | — | T3 | `in_progress` | coord-02 2026-09-19T13:45Z | |
 | 00B | Fixed-point Ray/Wad/mul_div | 00A | — | T1 | `todo` | | |
 | 00C | Identities + shared types (D46) | 00A | — | T2 | `todo` | | |
 | 00D | liq-config + registry boot assertion | 00C, C2 | — | T2 | `todo` | | |
@@ -271,4 +271,6 @@ Append one line per session. Newest last.
 | 2026-09-18 | Docs: Sky DSS Flash as 5th arena (provider id 4) | done | CHANGES Round 24; D09 |
 | 2026-09-18 | D15 discovery script + first Essential dump | draft | tools/discover_d15_addresses.py; D15-ADDRESSES.md; d15_addresses.json (1533); d15_receipts_log_filter.toml — human review before sync |
 | 2026-09-19 | Orchestration repair: WPs, DAG, model tiers, PonyTail-HFT, gates as consumption points | done | ORCHESTRATOR.md rewrite; WORK-PACKAGES.md new; D46–D54; CHANGES Round 25; guide edits listed there |
+| 2026-09-19 | Repo init + push to origin (appCryptoCrucible/liquidation) | done | commit 01a0870; 41 files; .gitignore excludes zip/target/secrets |
+| 2026-09-19 | Build start: dispatch C1 (T3 composer-2.5) + 00A (T3 composer-2.5) in parallel | in_progress | claimed C1+00A at 13:45Z; toolchain verified (rust 1.95, forge 1.4, py 3.13/web3 7.16, Multicall3 live @ 26011349) |
 ```
