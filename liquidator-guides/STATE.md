@@ -7,7 +7,7 @@ survives a cold start.
 Status values: `todo` · `in_progress` · `blocked` · `done`
 A `done` with an empty evidence field is treated as `todo`.
 
-Last updated: 2026-09-19T15:08Z (00C done + committed; code track blocked on C1→C2→00D)
+Last updated: 2026-09-19T15:49Z (03C done + committed; lanes: 01 building, C1 building)
 
 ---
 
@@ -102,7 +102,7 @@ commit on the WP's owned paths is expired by the next coordinator (§4.2).
 | 02B | WAL, snapshot, drift scaffold | 02A | — | T2 | `todo` | | |
 | 03A | Ingest core (sources, router, decode, dirty, backfill) | 02A, 00C | — | T2 | `todo` | | |
 | 03B | ExEx forwarder, hot thread, reorg, containment, mempool | 03A, 02B, 16A | A2 started | T1 | `todo` | | |
-| 03C | Event coverage audits (V4, V3) | 00A | — | T2 | `in_progress` | coord-02 2026-09-19T15:08Z | |
+| 03C | Event coverage audits (V4, V3) | 00A | — | T2 | `done` | coord-02 2026-09-19T15:08Z | aave-v4.md (59 rows, aave/aave-v4 @ 40232a0a) + aave-v3.md (61 rows, aave-dao/aave-v3-origin @ 8305565ae = v3.7.0+1); every state-changing path from real source; each row names DirtySet; CI header parseable. Reviewer Fable PASS: all 4 source pins verified via GitHub API; ALL 120 topic0 recomputed byte-for-byte (mutation caught); all absents confirmed; 4 polish (v3 header date, source sentence, deposit alias, oracle/sentinel ProtocolWide→halt). Carry-forward: 06A-1 AssetSourceUpdated/UpdateReserveSource fail-closed, 04B PriceOracleSentinel L2, 03A/04B router no-error known-addr/unknown-topic, 07A FlashloanPremiumTotalUpdated, 14A alert-class |
 | W | Liquidation watcher + ground-truth decoder | 00C, 00D | A2 started | T2 | `todo` | | |
 | A4 | Watcher live (start clock: Recall) | W | — | T3 flip | `todo` | | |
 | 06A-1 | Feed registry + canonical PriceVector | 00C, 00D, 03A | — | T2 | `todo` | | |
@@ -277,6 +277,11 @@ Notes for future WP briefs, surfaced during review.
 - **06A-1 / 06B (hints out of PriceVector):** `Price` embeds `SourceKind::SvrAnnounced{hint: Option<Vec<Log>>}`; a `PriceVector::clone()` deep-copies hint logs. 06A-1/06B should keep full hints out of the published vector (clone happens on the oracle/fusion thread, not the hot reader). (Surfaced by the 00C Fable review.)
 - **08A (TriggerCause::kind):** `TriggerKind` (liq-types) mirrors `TriggerCause` (liq-engine); 08A defines `TriggerCause::kind() -> TriggerKind` rather than re-enumerating. (Surfaced by the 00C Fable review.)
 - **09A (ConfigVersion on stage spans):** `stage()` doesn't carry `ConfigVersion` yet; 09A wants it on every span — better as a thread-level span field than a per-event argument. (Surfaced by the 00C Fable review.)
+- **06A-1 (oracle source swap fail-closed):** subscribe to V3 `AssetSourceUpdated` (`0x22c5b7b2…`) and V4 `UpdateReserveSource` (`0xb828dda2…`); fail closed when the new source ≠ registry (GUIDE-06 §2 currently only covers startup). (Surfaced by the 03C Fable review.)
+- **04B (PriceOracleSentinel on L2):** model `PriceOracleSentinel.isLiquidationAllowed` on L2 instances; read the sentinel address from `PoolAddressesProvider`. (Surfaced by the 03C Fable review.)
+- **03A / 04B (router no-error on known-addr/unknown-topic):** tracked V3 addresses also emit `BorrowAllowanceDelegated` (`0xda919360…`, vToken) and `DelegateChanged` (`0xe8d51c8e…`, aAAVE) — None class, intentionally not rows; the router must not error on a known-address/unknown-topic log. (Surfaced by the 03C Fable review.)
+- **07A (flash cost subscription):** `FlashloanPremiumTotalUpdated` (`0x71aba182…`) is None for DirtySet but changes Aave V3 flash cost; the `FlashSource` should subscribe. (Surfaced by the 03C Fable review.)
+- **14A (alert-class halt signals):** `ProxyAdmin.OwnershipTransferred` (V4) and ACL `RoleGranted` (V3) are early-warning signals for the halt matrix, not DirtySets — optional alert-class rows. (Surfaced by the 03C Fable review.)
 
 ---
 
@@ -296,4 +301,5 @@ Append one line per session. Newest last.
 | 2026-09-19 | WP 00A done | done | 19-crate skeleton + lints + CI + dep-lint (red-proven green→red); builder composer-2.5, reviewer Opus PASS; D56 (19 crates); carry-forward: 04A/15A must add liq-engine→<new-adapter> to forbid.txt |
 | 2026-09-19 | WP 00B done | done | fixed-point Ray/Wad/mul_div (512-bit); 7 proptests × 10k HF-biased; mutations #1,#15 red (#15→(1,1)); builder Fable 5.1, reviewer Opus PASS (polish: division-free oracle); carry-forward: 04A HalfUp, 01/02A bytemuck Pod, 00A/01 div_rem guard |
 | 2026-09-19 | WP 00C done | done | D46 identities + shared types in liq-types (no logic beyond constructors); AssetId global (WETH test); Venue MevShare\|BuilderBundle only; 17 tests; builder Grok 4.6, reviewer Fable PASS (2 polish: Venue &'static str + Copy, FlashProvider discriminants test); carry-forward: 02A/00D, 13A/09A/00D, 06C, 14A, 06A-1/06B, 08A, 09A |
+| 2026-09-19 | WP 03C done | done | event coverage audits: aave-v4.md (59 rows) + aave-v3.md (61 rows) from real source; each row names DirtySet; CI header. Reviewer Fable PASS: all 4 source pins via GitHub API; ALL 120 topic0 recomputed byte-for-byte; 4 polish (v3 date, source sentence, deposit alias, oracle/sentinel→halt); carry-forward: 06A-1, 04B, 03A/04B, 07A, 14A |
 ```
