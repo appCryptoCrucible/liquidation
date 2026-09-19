@@ -7,7 +7,7 @@ survives a cold start.
 Status values: `todo` · `in_progress` · `blocked` · `done`
 A `done` with an empty evidence field is treated as `todo`.
 
-Last updated: 2026-09-19T14:06Z (00A done + committed; C1 in progress)
+Last updated: 2026-09-19T14:50Z (00B done + committed; 00C claimed; C1 in progress)
 
 ---
 
@@ -93,8 +93,8 @@ commit on the WP's owned paths is expired by the next coordinator (§4.2).
 | A2 | `reth download` → `reth.toml` → node | H1, A1 | — | human+T2 | `todo` | | |
 | A3 | Retention verification | A2 | — | T3 | `todo` | | |
 | 00A | Workspace, lints, CI, dependency lint | — | — | T3 | `done` | coord-02 2026-09-19T13:45Z | 19 crates (D56) stub-build green; build/fmt/clippy/test clean; dep-lint ok + red-proven green→red; forbid.txt 19 edges; D53 arithmetic_side_effects; panic=unwind, overflow-checks=true; CI ubuntu:26.04; builder composer-2.5, reviewer Opus PASS w/ 2 polish fixes (types→anything assert; green→red proof) |
-| 00B | Fixed-point Ray/Wad/mul_div | 00A | — | T1 | `in_progress` | coord-02 2026-09-19T14:10Z | |
-| 00C | Identities + shared types (D46) | 00A | — | T2 | `todo` | | |
+| 00B | Fixed-point Ray/Wad/mul_div | 00A | — | T1 | `done` | coord-02 2026-09-19T14:10Z | Ray/Wad/RayU128 over U256; 512-bit mul_div; all checked; 7 proptests × 10k HF-biased; mutations #1,#15 red (#15→(1,1)); builder Fable 5.1, reviewer Opus PASS (1 polish fix: division-free oracle). Carry-forward: 04A HalfUp, 01/02A bytemuck Pod, 00A/01 div_rem guard |
+| 00C | Identities + shared types (D46) | 00A | — | T2 | `in_progress` | coord-02 2026-09-19T14:50Z | |
 | 00D | liq-config + registry boot assertion | 00C, C2 | — | T2 | `todo` | | |
 | 16A | Thread map, pinning, allocators | 00A, A1 | — | T2 | `todo` | | |
 | 01 | Protocol trait + storage contract + conformance | 00B, 00C | — | T1 | `todo` | | |
@@ -267,6 +267,9 @@ Entries here stop the build. Format:
 Notes for future WP briefs, surfaced during review.
 
 - **04A / 15A-1 / 15C-* (adapter split):** when `liq-adapters` is split into per-family crates (`liq-adapters-aave-v4` etc.), the `liq-engine → liq-adapters` edge in `forbid.txt` uses `grep -qx` (exact match) and will silently stop covering the new crates — a fail-open regression. **Adding an adapter crate requires adding its `liq-engine <new-crate>` line to `forbid.txt`** in the same WP. (Surfaced by the 00A Opus review.)
+- **04A (HalfUp rounding):** Aave V3 uses half-up rounding (`(a·b + HALF)/ONE` for `rayMul`/`wadMul`, half-up for `rayToWad` and `percentMul`/`percentDiv`). When 04A needs it: **extend the `Rounding` enum in `crates/liq-types/src/fixed/mod.rs` — do not write a second `mul_div`.** Add a `(1,1)`-style negative test pinning the half-up tie-break, and a mutation proving `HalfUp` vs `Up` are distinguishable at the tie. (Endorsed by the 00B Opus review.)
+- **01 / 02A (bytemuck on RayU128):** `RayU128` is already `#[repr(transparent)]` over `u128`. When `MarketRow` derives `Pod`/`Zeroable`, the owning WP adds the `bytemuck` dep to `liq-types` and derives `Pod`/`Zeroable` on `RayU128` (sound, no layout change). (Endorsed by the 00B Opus review.)
+- **00A / 01 (rounding-API guard):** `arithmetic_side_effects` denies `*`/`/` on an extracted `U256` but not `div_rem`/`wrapping_mul`/`overflowing_mul`. Extend the dep-lint/CI grep to fail on `div_rem|wrapping_mul|overflowing_mul` appearing **outside** `crates/liq-types/src/fixed/` — makes "no unrounded op reachable" airtight rather than lint-dependent. (Surfaced by the 00B Opus review.)
 
 ---
 
@@ -284,4 +287,5 @@ Append one line per session. Newest last.
 | 2026-09-19 | Repo init + push to origin (appCryptoCrucible/liquidation) | done | commit 01a0870; 41 files; .gitignore excludes zip/target/secrets |
 | 2026-09-19 | Build start: dispatch C1 (T3 composer-2.5) + 00A (T3 composer-2.5) in parallel | in_progress | claimed C1+00A at 13:45Z; toolchain verified (rust 1.95, forge 1.4, py 3.13/web3 7.16, Multicall3 live @ 26011349) |
 | 2026-09-19 | WP 00A done | done | 19-crate skeleton + lints + CI + dep-lint (red-proven green→red); builder composer-2.5, reviewer Opus PASS; D56 (19 crates); carry-forward: 04A/15A must add liq-engine→<new-adapter> to forbid.txt |
+| 2026-09-19 | WP 00B done | done | fixed-point Ray/Wad/mul_div (512-bit); 7 proptests × 10k HF-biased; mutations #1,#15 red (#15→(1,1)); builder Fable 5.1, reviewer Opus PASS (polish: division-free oracle); carry-forward: 04A HalfUp, 01/02A bytemuck Pod, 00A/01 div_rem guard |
 ```
