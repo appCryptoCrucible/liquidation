@@ -93,7 +93,7 @@ commit on the WP's owned paths is expired by the next coordinator (§4.2).
 | A2 | `reth download` → `reth.toml` → node | H1, A1 | — | human+T2 | `todo` | | |
 | A3 | Retention verification | A2 | — | T3 | `todo` | | |
 | 00A | Workspace, lints, CI, dependency lint | — | — | T3 | `done` | coord-02 2026-09-19T13:45Z | 19 crates (D56) stub-build green; build/fmt/clippy/test clean; dep-lint ok + red-proven green→red; forbid.txt 19 edges; D53 arithmetic_side_effects; panic=unwind, overflow-checks=true; CI ubuntu:26.04; builder composer-2.5, reviewer Opus PASS w/ 2 polish fixes (types→anything assert; green→red proof) |
-| 00B | Fixed-point Ray/Wad/mul_div | 00A | — | T1 | `todo` | | |
+| 00B | Fixed-point Ray/Wad/mul_div | 00A | — | T1 | `in_progress` | coord-02 2026-09-19T14:10Z | |
 | 00C | Identities + shared types (D46) | 00A | — | T2 | `todo` | | |
 | 00D | liq-config + registry boot assertion | 00C, C2 | — | T2 | `todo` | | |
 | 16A | Thread map, pinning, allocators | 00A, A1 | — | T2 | `todo` | | |
