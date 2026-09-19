@@ -1,0 +1,29 @@
+# Archives — the guides live as files, not zips
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Rust build artifacts (when crates/ appears)
+target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local env / secrets (never commit keys)
+.env
+.env.local
+*.key
+*.pem
+secrets/
