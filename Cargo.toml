@@ -30,6 +30,9 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 alloy-primitives = { version = "=1.6.0", default-features = false }
 alloy-sol-types = { version = "=1.6.0", default-features = false }
+alloy-provider = { version = "=2.4.2", default-features = false, features = ["reqwest", "reqwest-default-tls"] }
+alloy-rpc-types-eth = { version = "=2.4.2", default-features = false }
+tokio = { version = "=1.47.1", default-features = false, features = ["rt", "macros", "time"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 toml = "=1.1.6"
 figment = { version = "=0.10.19", features = ["toml", "env"] }
@@ -46,6 +49,7 @@ smallvec = "=1.13.2"
 arrayvec = "=0.7.8"
 bumpalo = "=3.20.3"
 bytemuck = { version = "=1.25.2", features = ["derive"] }
+crc32fast = { version = "=1.5.2", default-features = false, features = ["std"] }
 fixedbitset = "=0.5.7"
 mimalloc = { version = "=0.1.52", default-features = false }
 proptest = "=1.11.0"
