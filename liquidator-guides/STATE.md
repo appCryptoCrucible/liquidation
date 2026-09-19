@@ -7,7 +7,7 @@ survives a cold start.
 Status values: `todo` · `in_progress` · `blocked` · `done`
 A `done` with an empty evidence field is treated as `todo`.
 
-Last updated: 2026-09-19T14:50Z (00B done + committed; 00C claimed; C1 in progress)
+Last updated: 2026-09-19T15:08Z (00C done + committed; code track blocked on C1→C2→00D)
 
 ---
 
@@ -94,15 +94,15 @@ commit on the WP's owned paths is expired by the next coordinator (§4.2).
 | A3 | Retention verification | A2 | — | T3 | `todo` | | |
 | 00A | Workspace, lints, CI, dependency lint | — | — | T3 | `done` | coord-02 2026-09-19T13:45Z | 19 crates (D56) stub-build green; build/fmt/clippy/test clean; dep-lint ok + red-proven green→red; forbid.txt 19 edges; D53 arithmetic_side_effects; panic=unwind, overflow-checks=true; CI ubuntu:26.04; builder composer-2.5, reviewer Opus PASS w/ 2 polish fixes (types→anything assert; green→red proof) |
 | 00B | Fixed-point Ray/Wad/mul_div | 00A | — | T1 | `done` | coord-02 2026-09-19T14:10Z | Ray/Wad/RayU128 over U256; 512-bit mul_div; all checked; 7 proptests × 10k HF-biased; mutations #1,#15 red (#15→(1,1)); builder Fable 5.1, reviewer Opus PASS (1 polish fix: division-free oracle). Carry-forward: 04A HalfUp, 01/02A bytemuck Pod, 00A/01 div_rem guard |
-| 00C | Identities + shared types (D46) | 00A | — | T2 | `in_progress` | coord-02 2026-09-19T14:50Z | |
+| 00C | Identities + shared types (D46) | 00A | — | T2 | `done` | coord-02 2026-09-19T14:50Z | D46 cycle-breaker types in liq-types (ids/price/band/halt/subscribe/submit/trace); no logic beyond constructors; AssetId global (WETH test passes); Venue MevShare\|BuilderBundle only (D54); 17 tests; builder Grok 4.6, reviewer Fable PASS (2 polish: Venue &'static str + Copy, FlashProvider discriminants test). Carry-forward: 02A/00D WETH re-assert, 13A/09A/00D leak strings, 06C Confidence scale, 14A HaltScope::Market, 06A-1/06B hints, 08A TriggerCause::kind, 09A ConfigVersion |
 | 00D | liq-config + registry boot assertion | 00C, C2 | — | T2 | `todo` | | |
 | 16A | Thread map, pinning, allocators | 00A, A1 | — | T2 | `todo` | | |
-| 01 | Protocol trait + storage contract + conformance | 00B, 00C | — | T1 | `todo` | | |
+| 01 | Protocol trait + storage contract + conformance | 00B, 00C | — | T1 | `in_progress` | coord-02 2026-09-19T15:08Z | |
 | 02A | State store core + undo ring | 01 | — | T1 | `todo` | | |
 | 02B | WAL, snapshot, drift scaffold | 02A | — | T2 | `todo` | | |
 | 03A | Ingest core (sources, router, decode, dirty, backfill) | 02A, 00C | — | T2 | `todo` | | |
 | 03B | ExEx forwarder, hot thread, reorg, containment, mempool | 03A, 02B, 16A | A2 started | T1 | `todo` | | |
-| 03C | Event coverage audits (V4, V3) | 00A | — | T2 | `todo` | | |
+| 03C | Event coverage audits (V4, V3) | 00A | — | T2 | `in_progress` | coord-02 2026-09-19T15:08Z | |
 | W | Liquidation watcher + ground-truth decoder | 00C, 00D | A2 started | T2 | `todo` | | |
 | A4 | Watcher live (start clock: Recall) | W | — | T3 flip | `todo` | | |
 | 06A-1 | Feed registry + canonical PriceVector | 00C, 00D, 03A | — | T2 | `todo` | | |
@@ -270,6 +270,13 @@ Notes for future WP briefs, surfaced during review.
 - **04A (HalfUp rounding):** Aave V3 uses half-up rounding (`(a·b + HALF)/ONE` for `rayMul`/`wadMul`, half-up for `rayToWad` and `percentMul`/`percentDiv`). When 04A needs it: **extend the `Rounding` enum in `crates/liq-types/src/fixed/mod.rs` — do not write a second `mul_div`.** Add a `(1,1)`-style negative test pinning the half-up tie-break, and a mutation proving `HalfUp` vs `Up` are distinguishable at the tie. (Endorsed by the 00B Opus review.)
 - **01 / 02A (bytemuck on RayU128):** `RayU128` is already `#[repr(transparent)]` over `u128`. When `MarketRow` derives `Pod`/`Zeroable`, the owning WP adds the `bytemuck` dep to `liq-types` and derives `Pod`/`Zeroable` on `RayU128` (sound, no layout change). (Endorsed by the 00B Opus review.)
 - **00A / 01 (rounding-API guard):** `arithmetic_side_effects` denies `*`/`/` on an extracted `U256` but not `div_rem`/`wrapping_mul`/`overflowing_mul`. Extend the dep-lint/CI grep to fail on `div_rem|wrapping_mul|overflowing_mul` appearing **outside** `crates/liq-types/src/fixed/` — makes "no unrounded op reachable" airtight rather than lint-dependent. (Surfaced by the 00B Opus review.)
+- **02A / 00D (WETH AssetId re-assert):** the 00C WETH-two-configs test uses a test-local intern; the production intern ships in 02A/00D, which must re-assert the same global-AssetId property against its own code. (Surfaced by the 00C Fable review.)
+- **13A / 09A / 00D (leak relay/endpoint strings):** `Venue` relay/endpoint are `&'static str` (00C polish); config loader leaks them once (mirrors `&'static Shared`); 13A converts to `Url`/`&str` at the POST boundary. (Surfaced by the 00C Fable review.)
+- **06C (Confidence scale):** `Confidence(u16)` is named by GUIDE-06 §1 but its scale is undefined; 06C must define and document it. (Surfaced by the 00C Fable review.)
+- **14A (HaltScope::Market ambiguity):** `HaltScope::Market(MarketId)` is ambiguous because `MarketId` is protocol-scoped; 14A likely resolves to `Market(ProtocolId, MarketId)` with a decision-log entry. (Surfaced by the 00C Fable review.)
+- **06A-1 / 06B (hints out of PriceVector):** `Price` embeds `SourceKind::SvrAnnounced{hint: Option<Vec<Log>>}`; a `PriceVector::clone()` deep-copies hint logs. 06A-1/06B should keep full hints out of the published vector (clone happens on the oracle/fusion thread, not the hot reader). (Surfaced by the 00C Fable review.)
+- **08A (TriggerCause::kind):** `TriggerKind` (liq-types) mirrors `TriggerCause` (liq-engine); 08A defines `TriggerCause::kind() -> TriggerKind` rather than re-enumerating. (Surfaced by the 00C Fable review.)
+- **09A (ConfigVersion on stage spans):** `stage()` doesn't carry `ConfigVersion` yet; 09A wants it on every span — better as a thread-level span field than a per-event argument. (Surfaced by the 00C Fable review.)
 
 ---
 
@@ -288,4 +295,5 @@ Append one line per session. Newest last.
 | 2026-09-19 | Build start: dispatch C1 (T3 composer-2.5) + 00A (T3 composer-2.5) in parallel | in_progress | claimed C1+00A at 13:45Z; toolchain verified (rust 1.95, forge 1.4, py 3.13/web3 7.16, Multicall3 live @ 26011349) |
 | 2026-09-19 | WP 00A done | done | 19-crate skeleton + lints + CI + dep-lint (red-proven green→red); builder composer-2.5, reviewer Opus PASS; D56 (19 crates); carry-forward: 04A/15A must add liq-engine→<new-adapter> to forbid.txt |
 | 2026-09-19 | WP 00B done | done | fixed-point Ray/Wad/mul_div (512-bit); 7 proptests × 10k HF-biased; mutations #1,#15 red (#15→(1,1)); builder Fable 5.1, reviewer Opus PASS (polish: division-free oracle); carry-forward: 04A HalfUp, 01/02A bytemuck Pod, 00A/01 div_rem guard |
+| 2026-09-19 | WP 00C done | done | D46 identities + shared types in liq-types (no logic beyond constructors); AssetId global (WETH test); Venue MevShare\|BuilderBundle only; 17 tests; builder Grok 4.6, reviewer Fable PASS (2 polish: Venue &'static str + Copy, FlashProvider discriminants test); carry-forward: 02A/00D, 13A/09A/00D, 06C, 14A, 06A-1/06B, 08A, 09A |
 ```
