@@ -4,5 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[dependencies]
+liq-types = { path = "../liq-types" }
+alloy-primitives = { workspace = true }
+bytemuck = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+
 [lints]
 workspace = true
