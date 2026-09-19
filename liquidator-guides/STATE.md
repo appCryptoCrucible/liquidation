@@ -140,7 +140,7 @@ commit on the WP's owned paths is expired by the next coordinator (§4.2).
 | 13B | Staged rollout (Track A7) | H4 | — | human+T2 | `todo` | | |
 | 15A-1 | Morpho Blue adapter + drift | 04A, 01, 03A, 05A | — | T2 | `todo` | | |
 | 15A-2 | Spark (config-only) | 04B | — | T3 | `todo` | | |
-| 15B | Mechanism reviews, flashloanability, DECLINED.md | 07A | — | T2 | `todo` | | |
+| 15B | Mechanism reviews, flashloanability, DECLINED.md | 07A | — | T2 | `in_progress` | coord-02 2026-09-20T01:49Z (builder f0e3e629, Grok 4.6) | docs/mechanism/<proto>.md per Tier 2/3 protocol (Compound V3 deferred D25, Euler, Silo, Ajna, Curve declined, LLAMMA declined) + DECLINED.md. Hard/soft liq, debt assets, flash depth, enumeration recipe, ABI→10R-n. Source-pinned via GitHub API like 03C |
 | 15C-* | Tier 2/3 adapters (one row each, add per 15B) | 15B, 15A-1 | — | T2 | `todo` | | |
 | 15D | Enable in production (per adapter/source/trigger) | 13B, 14A | G-C for it, recall row, shadow for it | H5 | `todo` | | |
 | 16B | Box tuning | A1, 16A | — | T2 | `todo` | | |
