@@ -229,6 +229,49 @@ fn write_artifact(body: &str) {
     fs::write(&path, body).unwrap_or_else(|e| panic!("RecallReport artifact {path}: {e}"));
 }
 
+/// Empty unless a non-hidden `*.parquet` exists (05B partitions may nest).
+/// `.gitkeep` and other dotfiles are not archive content. Unreadable dirs
+/// fail closed as empty so `LIQ_FULL_REPLAY=1` cannot pass on a listing miss.
+fn archive_is_empty(dir: &Path) -> bool {
+    !has_parquet(dir)
+}
+
+fn has_parquet(root: &Path) -> bool {
+    if !root.is_dir() {
+        return false;
+    }
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for ent in rd {
+            let Ok(ent) = ent else {
+                continue;
+            };
+            let name = ent.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if name.starts_with('.') {
+                continue;
+            }
+            let path = ent.path();
+            let Ok(ft) = ent.file_type() else {
+                continue;
+            };
+            if ft.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) == Some("parquet") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[test]
 fn fourteen_named_fixtures_pinned() {
     let pins = all_pins();
@@ -308,10 +351,7 @@ fn fold_without_fork_facts_is_a3_fail_closed() {
 fn full_replay_archive_a3_deferred_and_publish_report() {
     let a3 = second_source_verify();
     let archive = workspace_root().join("data/archive");
-    let empty = !archive.is_dir()
-        || fs::read_dir(&archive)
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(true);
+    let empty = archive_is_empty(&archive);
     let body = format!(
         "RecallReport\n\
          a3_second_source={a3:?}\n\
@@ -325,6 +365,49 @@ fn full_replay_archive_a3_deferred_and_publish_report() {
     if std::env::var("LIQ_FULL_REPLAY").ok().as_deref() == Some("1") && empty {
         panic!("LIQ_FULL_REPLAY=1 but data/archive empty (A3Deferred)");
     }
+}
+
+/// Regression for D1: `.gitkeep` made `read_dir().next().is_none() == false`.
+#[test]
+fn gitkeep_only_archive_is_empty_old_next_is_none_is_not() {
+    let dir = std::env::temp_dir().join(format!(
+        "liq-05d-d1-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(".gitkeep"), []).unwrap();
+
+    let old_empty = fs::read_dir(&dir)
+        .map(|mut d| d.next().is_none())
+        .unwrap_or(true);
+    assert!(
+        !old_empty,
+        "precondition: .gitkeep-only dir is non-empty under next().is_none()"
+    );
+    assert!(
+        archive_is_empty(&dir),
+        ".gitkeep must not populate the archive"
+    );
+
+    fs::write(dir.join(".hidden.parquet"), []).unwrap();
+    assert!(
+        archive_is_empty(&dir),
+        "hidden *.parquet must not populate the archive"
+    );
+
+    fs::create_dir_all(dir.join("headers")).unwrap();
+    fs::write(dir.join("headers").join("headers_0_1.parquet"), []).unwrap();
+    assert!(
+        !archive_is_empty(&dir),
+        "nested 05B partition parquet populates the archive"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
