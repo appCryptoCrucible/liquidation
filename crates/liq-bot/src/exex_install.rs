@@ -1,9 +1,9 @@
 //! ExEx registration + `liq-node-hot` spawn seam (WP 03B, GUIDE 03 §1).
 //!
-//! A2 (Reth in-process) is deferred (D60). 16A pinning is deferred: this
-//! process names the thread [`HOT_THREAD_NAME`] and leaves `pin_to_core` to
-//! [`crate::threads`] once `cores.toml` matches live `shared_cpu_list`.
-//! 17A binds the forwarder to `ExExContext`.
+//! A2 (Reth in-process) is deferred (D60). Pinning: [`HotSpawn::allow_unpinned`]
+//! is `true` until A1 `cores.toml` matches live `shared_cpu_list`; then 16A
+//! [`crate::threads::pin_to_core`] is wired with `allow_unpinned: false`
+//! (fail-closed). 17A binds the forwarder to `ExExContext`.
 
 use std::thread::{Builder, JoinHandle};
 
@@ -41,8 +41,8 @@ pub fn prepare() -> ExExInstall {
     }
 }
 
-/// Named `liq-node-hot`. Pin is [`pin_deferred`] until 16A wires
-/// [`crate::threads::pin_to_core`].
+/// Named `liq-node-hot`. Pin is [`pin_deferred`] plus `allow_unpinned: true`
+/// until 16A wires [`crate::threads::pin_to_core`] with fail-closed pinning.
 pub fn install_hot(
     store: liq_state::StateStore,
     router: liq_node::LogRouter,
@@ -61,6 +61,7 @@ pub fn install_hot(
         protocols,
         height,
         pin: pin_deferred,
+        allow_unpinned: true,
     })
 }
 

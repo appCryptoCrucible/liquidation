@@ -6,6 +6,7 @@
 //! as a dependency.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread::{Builder, JoinHandle};
 
@@ -16,7 +17,7 @@ use crate::apply::ApplyCtx;
 use crate::decode::DecodeArena;
 use crate::dirty::DirtyAccumulator;
 use crate::exex::{ConsistentHeight, HotIngress};
-use crate::reorg::handle_notification;
+use crate::reorg::{halt_reorg_too_deep, handle_notification};
 use crate::router::LogRouter;
 use crate::{IngestError, Result};
 
@@ -34,16 +35,27 @@ pub fn drain(
     let mut n = 0u32;
     while let Some(notif) = ingress.pop() {
         n = n.saturating_add(1);
-        if let Some(done) = handle_notification(ctx, &notif, sink, protocols)? {
-            height.publish(done);
-            ingress.confirm(done)?;
-        }
+        let outcome = handle_notification(ctx, &notif, sink, protocols);
         for block in match notif {
             crate::exex::Notification::Committed { new }
             | crate::exex::Notification::Reorged { new, .. } => new.blocks,
             crate::exex::Notification::Reverted { .. } => Vec::new(),
         } {
             ingress.recycle_block(block);
+        }
+        match outcome {
+            Ok(Some(done)) => {
+                height.publish(done);
+                if let Err(e) = ingress.confirm(done) {
+                    halt_reorg_too_deep(sink);
+                    return Err(e);
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                halt_reorg_too_deep(sink);
+                return Err(e);
+            }
         }
     }
     Ok(n)
@@ -64,6 +76,12 @@ impl HotHandle {
         self.request_stop();
         self.handle.join()
     }
+
+    /// Wait for the thread to exit without setting the stop flag (Err-exit tests).
+    #[cfg(test)]
+    pub fn join_no_stop(self) -> std::thread::Result<Result<()>> {
+        self.handle.join()
+    }
 }
 
 /// Inputs to [`spawn`]. Grouped so the call stays under clippy's arity cap.
@@ -76,11 +94,14 @@ pub struct HotSpawn {
     pub protocols: Box<[ProtocolId]>,
     pub height: Arc<ConsistentHeight>,
     pub pin: fn() -> core::result::Result<(), IngestError>,
+    /// When false, pin failure is fail-closed (thread does not drain). When
+    /// true, pin failure is logged and the thread still runs (A1 topology not
+    /// live). Explicit — not a permanently-Ok stub.
+    pub allow_unpinned: bool,
 }
 
-/// Spawn the named hot thread. `pin` is the 16A seam (`Ok` = already pinned
-/// or pin skipped). Failure of `pin` is logged and the thread still runs —
-/// A1 topology is not live on this builder's box (D60).
+/// Spawn the named hot thread. `pin` is the 16A seam. Failure of `pin` with
+/// `allow_unpinned == false` is fail-closed (mirrors `liq-bot` `spawn_pinned`).
 pub fn spawn(cfg: HotSpawn) -> Result<HotHandle> {
     let HotSpawn {
         mut store,
@@ -91,14 +112,26 @@ pub fn spawn(cfg: HotSpawn) -> Result<HotHandle> {
         protocols,
         height,
         pin,
+        allow_unpinned,
     } = cfg;
     let stop = Arc::new(AtomicBool::new(false));
     let stop_t = Arc::clone(&stop);
+    let (pin_tx, pin_rx) = mpsc::sync_channel(1);
     let handle = Builder::new()
         .name(HOT_THREAD_NAME.into())
         .spawn(move || {
-            if let Err(e) = pin() {
-                tracing::error!(?e, "liq-node-hot pin seam failed; running unpinned (16A)");
+            match pin() {
+                Ok(()) => {
+                    let _ = pin_tx.send(Ok(()));
+                }
+                Err(e) => {
+                    tracing::error!(?e, "liq-node-hot pin failed");
+                    if !allow_unpinned {
+                        let _ = pin_tx.send(Err(e));
+                        return Err(e);
+                    }
+                    let _ = pin_tx.send(Ok(()));
+                }
             }
             let mut arena = DecodeArena::with_capacity(1 << 20);
             let mut dirty = DirtyAccumulator::new();
@@ -126,10 +159,19 @@ pub fn spawn(cfg: HotSpawn) -> Result<HotHandle> {
             tracing::error!("failed to spawn {HOT_THREAD_NAME}");
             IngestError::HotStalled
         })?;
-    Ok(HotHandle { handle, stop })
+    match pin_rx.recv() {
+        Ok(Ok(())) => Ok(HotHandle { handle, stop }),
+        Ok(Err(e)) => Err(e),
+        Err(_) => {
+            tracing::error!("{HOT_THREAD_NAME} pin handshake dropped");
+            Err(IngestError::HotStalled)
+        }
+    }
 }
 
-/// 16A pin placeholder: always Ok. `liq-bot::exex_install` replaces this.
+/// 16A pin seam when the caller has not wired `pin_to_core`. Combined with
+/// [`HotSpawn::allow_unpinned`]: this is not a permanently-Ok skip of a
+/// required pin.
 pub fn pin_deferred() -> core::result::Result<(), IngestError> {
     Ok(())
 }
@@ -142,18 +184,20 @@ pub fn pin_deferred() -> core::result::Result<(), IngestError> {
     clippy::indexing_slicing
 )]
 mod tests {
-    use super::{drain, HOT_THREAD_NAME};
+    use super::{drain, spawn, HotSpawn, HOT_THREAD_NAME};
     use crate::apply::{ApplyCtx, LogHandler};
     use crate::decode::DecodeArena;
     use crate::dirty::DirtyAccumulator;
     use crate::exex::{split_exex, ConsistentHeight, Notification, NumHash, OwnedChain};
     use crate::router::LogRouter;
     use crate::source::OwnedBlock;
+    use crate::IngestError;
     use alloy_primitives::B256;
     use liq_protocol::DirtySet;
     use liq_state::{StateStore, StoreConfig, UndoCapacity};
     use liq_types::{HaltReason, HaltScope, HaltSink, LogFilter, LogSubscriber, ProtocolId};
-    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
 
     struct Nop;
     impl LogSubscriber for Nop {
@@ -252,5 +296,239 @@ mod tests {
         assert_eq!(height.load().num_hash.number, 2);
         assert_eq!(fwd.take_finished().unwrap().num_hash.number, 2);
         let _ = Arc::new(height);
+    }
+
+    struct Rec {
+        hits: AtomicU32,
+        last: Mutex<Option<(HaltScope, HaltReason)>>,
+    }
+    impl HaltSink for Rec {
+        fn halt(&self, s: HaltScope, r: HaltReason) {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+            *self.last.lock().unwrap() = Some((s, r));
+        }
+    }
+
+    fn pin_fail() -> core::result::Result<(), IngestError> {
+        Err(IngestError::PinFailed)
+    }
+
+    #[test]
+    fn drain_halts_before_err_and_stops_after_halt() {
+        let rec = Nop;
+        let handlers: [&dyn LogHandler; 1] = [&rec];
+        let subs: [&dyn LogSubscriber; 1] = [&rec];
+        let router = LogRouter::from_subscribers(&subs).unwrap();
+        let mut store = StateStore::new(cfg());
+        let mut arena = DecodeArena::with_capacity(64);
+        let mut dirty = DirtyAccumulator::new();
+        let (mut fwd, mut hot) = split_exex();
+        let height = ConsistentHeight::new(NumHash {
+            number: 0,
+            hash: B256::ZERO,
+        });
+        let sink = Rec {
+            hits: AtomicU32::new(0),
+            last: Mutex::new(None),
+        };
+        let ids = [ProtocolId(1)];
+        fwd.push(Notification::Reverted {
+            first: 0,
+            last: NumHash {
+                number: 0,
+                hash: B256::ZERO,
+            },
+        })
+        .unwrap();
+        fwd.push(Notification::Committed {
+            new: OwnedChain {
+                blocks: vec![OwnedBlock {
+                    number: 1,
+                    timestamp: 1,
+                    logs: Vec::new(),
+                }],
+                tip: NumHash {
+                    number: 1,
+                    hash: B256::repeat_byte(1),
+                },
+            },
+        })
+        .unwrap();
+        {
+            let mut ctx = ApplyCtx {
+                store: &mut store,
+                router: &router,
+                handlers: &handlers,
+                arena: &mut arena,
+                dirty: &mut dirty,
+            };
+            let err = drain(&mut hot, &mut ctx, &sink, &ids, &height).unwrap_err();
+            assert!(matches!(err, IngestError::CannotUnwindGenesis { .. }));
+        }
+        assert_eq!(sink.hits.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            *sink.last.lock().unwrap(),
+            Some((HaltScope::Global, HaltReason::ReorgTooDeep))
+        );
+        assert!(
+            hot.pop().is_some(),
+            "must not consume the ring after the first Err"
+        );
+    }
+
+    #[test]
+    fn drain_breaks_on_first_halted_apply() {
+        let rec = Nop;
+        let handlers: [&dyn LogHandler; 1] = [&rec];
+        let subs: [&dyn LogSubscriber; 1] = [&rec];
+        let router = LogRouter::from_subscribers(&subs).unwrap();
+        let mut store = StateStore::new(cfg());
+        let mut arena = DecodeArena::with_capacity(64);
+        let mut dirty = DirtyAccumulator::new();
+        let (mut fwd, mut hot) = split_exex();
+        let height = ConsistentHeight::new(NumHash {
+            number: 0,
+            hash: B256::ZERO,
+        });
+        let sink = Rec {
+            hits: AtomicU32::new(0),
+            last: Mutex::new(None),
+        };
+        let ids = [ProtocolId(1)];
+        fwd.push(Notification::Committed {
+            new: OwnedChain {
+                blocks: vec![OwnedBlock {
+                    number: 99,
+                    timestamp: 99,
+                    logs: Vec::new(),
+                }],
+                tip: NumHash {
+                    number: 99,
+                    hash: B256::repeat_byte(99),
+                },
+            },
+        })
+        .unwrap();
+        fwd.push(Notification::Committed {
+            new: OwnedChain {
+                blocks: vec![OwnedBlock {
+                    number: 1,
+                    timestamp: 1,
+                    logs: Vec::new(),
+                }],
+                tip: NumHash {
+                    number: 1,
+                    hash: B256::repeat_byte(1),
+                },
+            },
+        })
+        .unwrap();
+        {
+            let mut ctx = ApplyCtx {
+                store: &mut store,
+                router: &router,
+                handlers: &handlers,
+                arena: &mut arena,
+                dirty: &mut dirty,
+            };
+            drain(&mut hot, &mut ctx, &sink, &ids, &height).unwrap();
+        }
+        assert!(sink.hits.load(Ordering::Relaxed) >= 1);
+        assert!(hot.pop().is_some(), "must break on first Ok(false)");
+    }
+
+    #[test]
+    fn spawn_stop_join() {
+        let rec = Nop;
+        let subs: [&dyn LogSubscriber; 1] = [&rec];
+        let router = LogRouter::from_subscribers(&subs).unwrap();
+        let (_fwd, ingress) = split_exex();
+        let sink: &'static dyn HaltSink = Box::leak(Box::new(Sink));
+        let h = spawn(HotSpawn {
+            store: StateStore::new(cfg()),
+            router,
+            handlers: vec![Box::new(Nop)],
+            ingress,
+            sink,
+            protocols: Box::from([ProtocolId(1)]),
+            height: Arc::new(ConsistentHeight::new(NumHash {
+                number: 0,
+                hash: B256::ZERO,
+            })),
+            pin: super::pin_deferred,
+            allow_unpinned: true,
+        })
+        .unwrap();
+        h.request_stop();
+        let joined = h.join().unwrap();
+        assert!(joined.is_ok());
+    }
+
+    #[test]
+    fn spawn_pin_required_fail_closed() {
+        let rec = Nop;
+        let subs: [&dyn LogSubscriber; 1] = [&rec];
+        let router = LogRouter::from_subscribers(&subs).unwrap();
+        let (_fwd, ingress) = split_exex();
+        let sink: &'static dyn HaltSink = Box::leak(Box::new(Sink));
+        let err = match spawn(HotSpawn {
+            store: StateStore::new(cfg()),
+            router,
+            handlers: vec![Box::new(Nop)],
+            ingress,
+            sink,
+            protocols: Box::from([ProtocolId(1)]),
+            height: Arc::new(ConsistentHeight::new(NumHash {
+                number: 0,
+                hash: B256::ZERO,
+            })),
+            pin: pin_fail,
+            allow_unpinned: false,
+        }) {
+            Ok(_) => panic!("pin required must fail-closed"),
+            Err(e) => e,
+        };
+        assert_eq!(err, IngestError::PinFailed);
+    }
+
+    #[test]
+    fn spawn_err_exit_halts() {
+        let rec = Nop;
+        let subs: [&dyn LogSubscriber; 1] = [&rec];
+        let router = LogRouter::from_subscribers(&subs).unwrap();
+        let (mut fwd, ingress) = split_exex();
+        fwd.push(Notification::Reverted {
+            first: 0,
+            last: NumHash {
+                number: 0,
+                hash: B256::ZERO,
+            },
+        })
+        .unwrap();
+        let sink: &'static Rec = Box::leak(Box::new(Rec {
+            hits: AtomicU32::new(0),
+            last: Mutex::new(None),
+        }));
+        let h = spawn(HotSpawn {
+            store: StateStore::new(cfg()),
+            router,
+            handlers: vec![Box::new(Nop)],
+            ingress,
+            sink,
+            protocols: Box::from([ProtocolId(1)]),
+            height: Arc::new(ConsistentHeight::new(NumHash {
+                number: 0,
+                hash: B256::ZERO,
+            })),
+            pin: super::pin_deferred,
+            allow_unpinned: true,
+        })
+        .unwrap();
+        let joined = h.join_no_stop().unwrap();
+        assert!(matches!(
+            joined,
+            Err(IngestError::CannotUnwindGenesis { .. })
+        ));
+        assert_eq!(sink.hits.load(Ordering::Relaxed), 2);
     }
 }

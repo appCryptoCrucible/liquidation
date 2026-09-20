@@ -69,6 +69,10 @@ pub enum IngestError {
     UnknownPosition(PositionId),
     #[error("ExEx ↔ hot ring full; canonical notifications must not drop")]
     HotStalled,
+    #[error("liq-node-hot pin failed")]
+    PinFailed,
+    #[error("cannot revert genesis (block 0); store tip {tip} floor {floor}")]
+    CannotUnwindGenesis { tip: BlockNum, floor: BlockNum },
 }
 
 /// `Result` with [`IngestError`].

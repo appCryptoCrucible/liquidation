@@ -4,10 +4,10 @@
 //! (4096). This is the producer 06D (`liq-oracle`) drains. Types live in
 //! `liq-types` (D1) — this module must not redefine them.
 //!
-//! Full ring: never block canonical ingest. Drop-oldest: overwrite by popping
-//! the resident consumer is impossible (06D owns it). The producer therefore
-//! **rejects the incoming tx after counting** when `push` fails — that is the
-//! GUIDE §4b snippet — and logs. A second local overwrite buffer would
+//! Full ring: never block canonical ingest. The resident consumer is owned by
+//! 06D, so the producer cannot overwrite (rtrb has no overwrite API). The
+//! producer therefore **rejects the incoming tx after counting** when `push`
+//! fails — GUIDE §4b / §6 drop-incoming. A second local overwrite buffer would
 //! silently desync 06D's consumer from what this process observed.
 
 use liq_types::{PendingTx, RING_CAP};

@@ -25,6 +25,14 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           rustup component add rustfmt clippy
 
+      - name: reject panic=abort in release profiles
+        run: |
+          set -euo pipefail
+          if grep -RIn --include='Cargo.toml' 'panic\s*=\s*"abort"' .; then
+            echo "panic = \"abort\" is forbidden (GUIDE 03 §4b containment)"
+            exit 1
+          fi
+
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 

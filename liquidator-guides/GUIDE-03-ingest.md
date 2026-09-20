@@ -245,8 +245,13 @@ pub struct Overlay {
 Cleared every block. Backpressure policy differs by stream and this matters:
 
 - **Canonical stream**: unbounded, never drop. Dropping is corruption.
-- **Mempool stream**: bounded, **drop-oldest**. A stale pending tx is worthless,
-  and blocking ingest on a full queue loses you a block.
+- **Mempool stream**: bounded, **drop-incoming**. `rtrb` cannot overwrite a
+  slot still held by the consumer (06D owns that half). A stale pending tx is
+  worthless, and blocking ingest on a full queue loses you a block; freshness
+  also favors keeping what is already in the ring over a later enqueue that
+  would have to evict it. The §4b snippet (`if prod.push(tx).is_err() { count }`)
+  is the policy. (An earlier draft of this section said drop-oldest; that is
+  not implementable on this ring without stealing the consumer.)
 
 **Mainnet note.** For Aave's SVR-protected feeds the oracle update does *not*
 appear in the public mempool in a useful way — it is routed through Flashbots

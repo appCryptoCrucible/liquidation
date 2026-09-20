@@ -5,6 +5,8 @@
 //! nothing**. A panic or `Err` mid-block unwinds the partial block, then
 //! [`HaltSink::halt`] — never folds the next block onto corrupt state.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use liq_state::{StateError, StateStore};
@@ -15,23 +17,57 @@ use crate::exex::{FinishedUpTo, Notification, NumHash};
 use crate::source::OwnedBlock;
 use crate::{BlockNum, IngestError, Result};
 
-/// Unwind the store to `target` (inclusive). Deep reorg → error, no partial.
-pub fn unwind_to(store: &mut StateStore, target: BlockNum) -> Result<()> {
-    match store.unwind_to(target) {
-        Ok(()) => Ok(()),
-        Err(e @ StateError::ReorgTooDeep { .. }) => {
+#[cfg(test)]
+thread_local! {
+    static INJECT_INCONSISTENT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Next [`unwind_to`] performs a real one-block unwind (when `tip > target`)
+/// then returns [`StateError::Inconsistent`] without reaching `target`.
+#[cfg(test)]
+pub(crate) fn inject_inconsistent_on_next_unwind() {
+    INJECT_INCONSISTENT.set(true);
+}
+
+fn map_unwind_err(store: &StateStore, target: BlockNum, e: StateError) -> Result<()> {
+    match e {
+        StateError::ReorgTooDeep { .. } => {
             tracing::error!(
                 target,
                 tip = store.tip(),
                 floor = store.floor(),
                 "reorg deeper than undo ring; store not unwound"
             );
-            Err(IngestError::State(e))
         }
-        Err(e) => {
+        _ => {
             tracing::error!(?e, target, tip = store.tip(), "unwind failed");
-            Err(IngestError::State(e))
         }
+    }
+    Err(IngestError::State(e))
+}
+
+/// Unwind the store to `target` (inclusive). Deep reorg → error, no partial.
+pub fn unwind_to(store: &mut StateStore, target: BlockNum) -> Result<()> {
+    #[cfg(test)]
+    if INJECT_INCONSISTENT.get() {
+        INJECT_INCONSISTENT.set(false);
+        let tip = store.tip();
+        if tip > target {
+            let mid = tip.saturating_sub(1);
+            if let Err(e) = store.unwind_to(mid) {
+                return map_unwind_err(store, target, e);
+            }
+        }
+        tracing::error!(
+            target,
+            tip = store.tip(),
+            "Inconsistent after partial unwind (test seam)"
+        );
+        return Err(IngestError::State(StateError::Inconsistent));
+    }
+    match store.unwind_to(target) {
+        Ok(()) => Ok(()),
+        Err(e) => map_unwind_err(store, target, e),
     }
 }
 
@@ -41,12 +77,25 @@ pub fn unwind_parent(first: BlockNum) -> Option<BlockNum> {
     first.checked_sub(1)
 }
 
-/// Halt every protocol this ingest session tracks. The store is one writer
-/// for all of them; a deep reorg or unwind hole is not protocol-local.
+/// Halt every protocol this ingest session tracks.
+///
+/// **ACCEPTED deviation** from protocol-local halt (GUIDE 14 / RUST-CONV §2.5):
+/// the undo ring is **block-granular**. Unwinding a partial block restores every
+/// protocol's writes in that block. Halting only the panicking adapter would
+/// leave sibling protocols running against a tip that has already been rewound
+/// for them (or, if unwind were skipped, against corrupt cells). Reserved for
+/// [`HaltReason::AdapterPanic`]. Deep reorg / unwind holes use
+/// [`halt_reorg_too_deep`] once at [`HaltScope::Global`] (`RiskGate` already
+/// normalizes `ReorgTooDeep` to Global).
 pub fn halt_protocols(sink: &dyn HaltSink, ids: &[ProtocolId], reason: HaltReason) {
     for id in ids {
         sink.halt(HaltScope::Protocol(*id), reason);
     }
+}
+
+/// Store-wide unwind failure. One Global hit — not a per-protocol loop.
+pub fn halt_reorg_too_deep(sink: &dyn HaltSink) {
+    sink.halt(HaltScope::Global, HaltReason::ReorgTooDeep);
 }
 
 /// Fold one block under `catch_unwind`. On panic or `Err`, unwind to `prev`
@@ -69,7 +118,15 @@ pub fn apply_contained(
         }
         Err(_) => {
             tracing::error!(block = block.number, "adapter panicked mid-block");
-            metrics::counter!("adapter_panic").increment(1);
+            match protocols.first() {
+                Some(id) => {
+                    metrics::counter!("adapter_panic", "protocol" => format!("{}", id.0))
+                        .increment(1);
+                }
+                None => {
+                    metrics::counter!("adapter_panic", "protocol" => "unknown").increment(1);
+                }
+            }
             recover_partial(ctx.store, prev, sink, protocols, HaltReason::AdapterPanic)?;
             Ok(false)
         }
@@ -89,7 +146,7 @@ fn recover_partial(
             Ok(())
         }
         Err(e) => {
-            halt_protocols(sink, protocols, HaltReason::ReorgTooDeep);
+            halt_reorg_too_deep(sink);
             Err(e)
         }
     }
@@ -125,22 +182,25 @@ fn revert(
     first: BlockNum,
     last: NumHash,
     sink: &dyn HaltSink,
-    protocols: &[ProtocolId],
+    _protocols: &[ProtocolId],
 ) -> Result<()> {
     let Some(parent) = unwind_parent(first) else {
-        tracing::error!(first, "revert of block 0 has no parent");
-        halt_protocols(sink, protocols, HaltReason::ReorgTooDeep);
-        return Err(IngestError::State(StateError::ReorgTooDeep {
-            depth: last.number.saturating_add(1),
-            cap: 0,
-        }));
+        let tip = store.tip();
+        let floor = store.floor();
+        tracing::error!(
+            first,
+            last = last.number,
+            tip,
+            floor,
+            "revert of block 0 has no parent"
+        );
+        halt_reorg_too_deep(sink);
+        return Err(IngestError::CannotUnwindGenesis { tip, floor });
     };
     match unwind_to(store, parent) {
         Ok(()) => Ok(()),
         Err(e) => {
-            if matches!(e, IngestError::State(StateError::ReorgTooDeep { .. })) {
-                halt_protocols(sink, protocols, HaltReason::ReorgTooDeep);
-            }
+            halt_reorg_too_deep(sink);
             Err(e)
         }
     }
@@ -152,10 +212,25 @@ fn apply_chain(
     sink: &dyn HaltSink,
     protocols: &[ProtocolId],
 ) -> Result<Option<FinishedUpTo>> {
+    if chain.blocks.is_empty() {
+        return Ok(None);
+    }
     for block in &chain.blocks {
         if !apply_contained(ctx, block, sink, protocols)? {
             return Ok(None);
         }
+    }
+    if chain.tip.number != ctx.store.tip() {
+        tracing::error!(
+            claimed = chain.tip.number,
+            store_tip = ctx.store.tip(),
+            "FinishedUpTo chain.tip does not match store.tip"
+        );
+        halt_reorg_too_deep(sink);
+        return Err(IngestError::BlockGap {
+            tip: ctx.store.tip(),
+            got: chain.tip.number,
+        });
     }
     Ok(Some(FinishedUpTo {
         num_hash: chain.tip,
@@ -213,7 +288,9 @@ mod tests {
 
     struct Mut {
         filters: Vec<LogFilter>,
-        boom: bool,
+        /// 1-based log index in this handler that panics. `None` = never.
+        panic_at: Option<u32>,
+        seen: AtomicU32,
     }
     impl LogSubscriber for Mut {
         fn subscriptions(&self) -> Vec<LogFilter> {
@@ -226,7 +303,8 @@ mod tests {
             st: &mut dyn StateWriter,
             log: &DecodedLog<'_>,
         ) -> core::result::Result<DirtySet, ProtocolError> {
-            if self.boom {
+            let n = self.seen.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+            if self.panic_at == Some(n) {
                 panic!("adapter");
             }
             let key = PositionKey {
@@ -307,7 +385,8 @@ mod tests {
                 address: addr,
                 topic0: ISpoke::Supply::SIGNATURE_HASH,
             }],
-            boom: false,
+            panic_at: None,
+            seen: AtomicU32::new(0),
         };
         let handlers: [&dyn LogHandler; 1] = [&rec];
         let subs: [&dyn LogSubscriber; 1] = [&rec];
@@ -345,7 +424,8 @@ mod tests {
     fn deep_reorg_is_reorg_too_deep_and_not_partial() {
         let rec = Mut {
             filters: vec![],
-            boom: false,
+            panic_at: None,
+            seen: AtomicU32::new(0),
         };
         let handlers: [&dyn LogHandler; 1] = [&rec];
         let subs: [&dyn LogSubscriber; 1] = [&rec];
@@ -395,10 +475,7 @@ mod tests {
         assert_eq!(ctx.store.tip(), tip_before);
         assert_eq!(sink.hits.load(Ordering::Relaxed), 1);
         let last_h = *sink.last.lock().unwrap();
-        assert_eq!(
-            last_h,
-            Some((HaltScope::Protocol(PROTO), HaltReason::ReorgTooDeep))
-        );
+        assert_eq!(last_h, Some((HaltScope::Global, HaltReason::ReorgTooDeep)));
     }
 
     /// Oracle: panic mid-fold → unwind partial block → HaltScope::Protocol.
@@ -411,7 +488,8 @@ mod tests {
                 address: addr,
                 topic0: ISpoke::Supply::SIGNATURE_HASH,
             }],
-            boom: true,
+            panic_at: Some(1),
+            seen: AtomicU32::new(0),
         };
         let handlers: [&dyn LogHandler; 1] = [&rec];
         let subs: [&dyn LogSubscriber; 1] = [&rec];
@@ -430,7 +508,8 @@ mod tests {
         let ids = [PROTO];
         let ok = Mut {
             filters: rec.filters.clone(),
-            boom: false,
+            panic_at: None,
+            seen: AtomicU32::new(0),
         };
         let handlers_ok: [&dyn LogHandler; 1] = [&ok];
         let subs_ok: [&dyn LogSubscriber; 1] = [&ok];
@@ -462,7 +541,8 @@ mod tests {
                 address: addr,
                 topic0: ISpoke::Supply::SIGNATURE_HASH,
             }],
-            boom: false,
+            panic_at: None,
+            seen: AtomicU32::new(0),
         };
         let handlers: [&dyn LogHandler; 1] = [&rec];
         let subs: [&dyn LogSubscriber; 1] = [&rec];
@@ -492,7 +572,8 @@ mod tests {
         assert_eq!(ctx.store.tip(), 1);
         let boom = Mut {
             filters: rec.filters.clone(),
-            boom: true,
+            panic_at: Some(1),
+            seen: AtomicU32::new(0),
         };
         let handlers_b: [&dyn LogHandler; 1] = [&boom];
         let subs_b: [&dyn LogSubscriber; 1] = [&boom];
@@ -520,7 +601,8 @@ mod tests {
                 address: addr,
                 topic0: ISpoke::Supply::SIGNATURE_HASH,
             }],
-            boom: false,
+            panic_at: None,
+            seen: AtomicU32::new(0),
         };
         let handlers: [&dyn LogHandler; 1] = [&rec];
         let subs: [&dyn LogSubscriber; 1] = [&rec];
@@ -570,5 +652,168 @@ mod tests {
         assert!(apply_contained(&mut ctx2, &canon, &sink, &ids).unwrap());
         assert_eq!(live_tip, ctx2.store.tip());
         assert_eq!(live_s, supply_of(ctx2.store));
+    }
+
+    /// D1: Inconsistent mid-unwind still Global-halts once (not per protocol).
+    #[test]
+    fn inconsistent_mid_unwind_halts_global_once() {
+        let rec = Mut {
+            filters: vec![],
+            panic_at: None,
+            seen: AtomicU32::new(0),
+        };
+        let handlers: [&dyn LogHandler; 1] = [&rec];
+        let subs: [&dyn LogSubscriber; 1] = [&rec];
+        let router = LogRouter::from_subscribers(&subs).unwrap();
+        let mut store = seeded();
+        let mut arena = DecodeArena::with_capacity(64);
+        let mut dirty = DirtyAccumulator::new();
+        let mut ctx = ApplyCtx {
+            store: &mut store,
+            router: &router,
+            handlers: &handlers,
+            arena: &mut arena,
+            dirty: &mut dirty,
+        };
+        let sink = RecHalt::new();
+        let ids = [PROTO, ProtocolId(2)];
+        for n in 1..=2 {
+            assert!(apply_contained(&mut ctx, &block(n, vec![]), &sink, &ids).unwrap());
+        }
+        let target_parent = 0;
+        super::inject_inconsistent_on_next_unwind();
+        let n = Notification::Reverted {
+            first: 1,
+            last: tip(2),
+        };
+        let err = handle_notification(&mut ctx, &n, &sink, &ids).unwrap_err();
+        assert_eq!(err, crate::IngestError::State(StateError::Inconsistent));
+        assert_ne!(ctx.store.tip(), target_parent);
+        assert_eq!(sink.hits.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            *sink.last.lock().unwrap(),
+            Some((HaltScope::Global, HaltReason::ReorgTooDeep))
+        );
+    }
+
+    /// D4: panic after two real writes; unwind restores pre-block cells + tip.
+    #[test]
+    fn panic_after_two_writes_unwinds_cells_and_tip() {
+        let addr = Address::repeat_byte(7);
+        let rec = Mut {
+            filters: vec![LogFilter {
+                address: addr,
+                topic0: ISpoke::Supply::SIGNATURE_HASH,
+            }],
+            panic_at: Some(3),
+            seen: AtomicU32::new(0),
+        };
+        let handlers: [&dyn LogHandler; 1] = [&rec];
+        let subs: [&dyn LogSubscriber; 1] = [&rec];
+        let router = LogRouter::from_subscribers(&subs).unwrap();
+        let mut store = seeded();
+        let mut arena = DecodeArena::with_capacity(1 << 16);
+        let mut dirty = DirtyAccumulator::new();
+        let mut ctx = ApplyCtx {
+            store: &mut store,
+            router: &router,
+            handlers: &handlers,
+            arena: &mut arena,
+            dirty: &mut dirty,
+        };
+        let sink = RecHalt::new();
+        let ids = [PROTO];
+        let b1 = block(1, vec![supply_log(addr, 1)]);
+        assert!(apply_contained(&mut ctx, &b1, &sink, &ids).unwrap());
+        assert_eq!(supply_of(ctx.store), 1);
+        rec.seen.store(0, Ordering::Relaxed);
+        let b2 = block(
+            2,
+            vec![
+                supply_log(addr, 2),
+                supply_log(addr, 3),
+                supply_log(addr, 4),
+            ],
+        );
+        assert!(!apply_contained(&mut ctx, &b2, &sink, &ids).unwrap());
+        assert_eq!(rec.seen.load(Ordering::Relaxed), 3);
+        assert_eq!(ctx.store.tip(), 1, "tip must revert to pre-block");
+        assert_eq!(
+            supply_of(ctx.store),
+            1,
+            "logs 1 and 2 writes must be unwound"
+        );
+        assert_eq!(sink.hits.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn empty_committed_chain_is_none() {
+        let rec = Mut {
+            filters: vec![],
+            panic_at: None,
+            seen: AtomicU32::new(0),
+        };
+        let handlers: [&dyn LogHandler; 1] = [&rec];
+        let subs: [&dyn LogSubscriber; 1] = [&rec];
+        let router = LogRouter::from_subscribers(&subs).unwrap();
+        let mut store = seeded();
+        let mut arena = DecodeArena::with_capacity(64);
+        let mut dirty = DirtyAccumulator::new();
+        let mut ctx = ApplyCtx {
+            store: &mut store,
+            router: &router,
+            handlers: &handlers,
+            arena: &mut arena,
+            dirty: &mut dirty,
+        };
+        let sink = RecHalt::new();
+        let ids = [PROTO];
+        let n = Notification::Committed {
+            new: OwnedChain {
+                blocks: vec![],
+                tip: tip(1),
+            },
+        };
+        assert!(handle_notification(&mut ctx, &n, &sink, &ids)
+            .unwrap()
+            .is_none());
+        assert_eq!(ctx.store.tip(), 0);
+        assert_eq!(sink.hits.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn genesis_revert_is_not_cap_zero() {
+        let rec = Mut {
+            filters: vec![],
+            panic_at: None,
+            seen: AtomicU32::new(0),
+        };
+        let handlers: [&dyn LogHandler; 1] = [&rec];
+        let subs: [&dyn LogSubscriber; 1] = [&rec];
+        let router = LogRouter::from_subscribers(&subs).unwrap();
+        let mut store = seeded();
+        let mut arena = DecodeArena::with_capacity(64);
+        let mut dirty = DirtyAccumulator::new();
+        let mut ctx = ApplyCtx {
+            store: &mut store,
+            router: &router,
+            handlers: &handlers,
+            arena: &mut arena,
+            dirty: &mut dirty,
+        };
+        let sink = RecHalt::new();
+        let ids = [PROTO];
+        let floor = ctx.store.floor();
+        let tip_n = ctx.store.tip();
+        let n = Notification::Reverted {
+            first: 0,
+            last: tip(0),
+        };
+        let err = handle_notification(&mut ctx, &n, &sink, &ids).unwrap_err();
+        assert_eq!(
+            err,
+            crate::IngestError::CannotUnwindGenesis { tip: tip_n, floor }
+        );
+        assert_eq!(sink.hits.load(Ordering::Relaxed), 1);
     }
 }
