@@ -176,7 +176,10 @@ impl DerivedBook {
             if log.address != a.spec.protocol_source && log.address != a.spec.rate_contract {
                 continue;
             }
-            if ev.source != a.spec.protocol_source && ev.source != a.spec.rate_contract {
+            // Fail-closed on ANY source change, matching canonical.rs posture.
+            // The rate_contract is a rate provider, not a valid replacement for the
+            // protocol_source — a migration to a new source halts for re-validation.
+            if ev.source != a.spec.protocol_source {
                 sink.halt(HaltScope::Asset(a.spec.asset), HaltReason::ProxyUpgrade);
                 return Err(OracleError::SourceMigrated {
                     asset: ev.asset,
