@@ -3,7 +3,7 @@
 WP C3 — regenerate D15 prune filter from committed registry/registry.json.
 
 Merges Essential extraction (registry) + completion pass (on-chain oracle/DEX/flash tiers).
-Outputs: tools/d15/*, ops/reth/reth.toml
+Outputs: tools/d15/d15_addresses.complete.json, ops/reth/reth.toml, completeness_report.md
 
 Usage:
   python tools/d15/regenerate.py --registry registry/registry.json
@@ -25,9 +25,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
 from d15.checklist import evaluate  # noqa: E402
-from d15.complete import Completer  # noqa: E402
+from d15.complete import Completer, run_completion  # noqa: E402
 from d15.essential import essential_from_registry, load_registry  # noqa: E402
-from d15.roots import KNOWN_BEFORE, ROOTS  # noqa: E402
+from d15.roots import KNOWN_BEFORE  # noqa: E402
 
 
 def _before_for_entry(e: dict) -> int:
@@ -35,58 +35,6 @@ def _before_for_entry(e: dict) -> int:
     if bb is not None and int(bb) > 0:
         return int(bb)
     return KNOWN_BEFORE.get(e["address"].lower(), 0)
-
-
-def run_completion(c: Completer, base_entries: list[dict], skip_dex: bool) -> None:
-    by = defaultdict(list)
-    for e in base_entries:
-        by[(e["protocol"], e["kind"])].append(e["address"])
-
-    def step(name, fn, *a):
-        t = time.time()
-        try:
-            fn(*a)
-        except Exception as ex:  # noqa: BLE001
-            c.failures[f"step:{name}"] = str(ex)[:300]
-            print(f"[{name}] FAILED {ex}")
-        print(f"[{name}] +{len(c.entries)} new, {time.time() - t:.0f}s", flush=True)
-
-    step("constants", c.constants)
-    step("aave-v3/spark oracles", c.aave_v3_like, base_entries)
-    step("aave-v4 oracles", c.aave_v4, base_entries, 24_500_000)
-    if by[("compound-v3", "configurator")]:
-        step("compound-v3", c.compound_v3, by[("compound-v3", "configurator")][0], 15_331_586)
-    else:
-        step("compound-v3", c.compound_v3, ROOTS["compound_v3_configurator"], 15_331_586)
-    step("morpho", c.morpho, ROOTS["morpho_blue"], 18_883_124)
-    step("euler", c.euler, by[("euler-v2", "vault")])
-    step("liquity", c.liquity, [a for a in by[("liquity-v2", "priceFeed")] if a])
-    step(
-        "sky",
-        c.sky,
-        by[("sky-maker", "ilk_registry")][0] if by[("sky-maker", "ilk_registry")] else ROOTS["ilk_registry"],
-        "0x135954d155898D42C90D2a57824C690e0c7BEf1B",
-        "0x65C79fcB50Ca1594B025960e539eD7A9a6D434A3",
-    )
-    step("gearbox", c.gearbox, by[("gearbox-v3", "credit_manager")])
-    silos_by_cfg: dict[str, list[str]] = defaultdict(list)
-    for e in base_entries:
-        if e["protocol"] == "silo-v2" and e["kind"] == "silo":
-            m = re.search(r"(0x[0-9a-fA-F]{40})", e.get("source", ""))
-            if m:
-                silos_by_cfg[m.group(1).lower()].append(e["address"])
-    step("silo", c.silo, by[("silo-v2", "silo_config")], silos_by_cfg)
-    step("fluid", c.fluid, by[("fluid", "vault")])
-    step("feed-registry", c.feed_registry, "0x47Fb2585D2C56Fe188D0E6ec628a38b74fCeeeDf")
-    if not skip_dex:
-        step(
-            "dex-pools",
-            c.dex_pools,
-            "0x1F98431c8aD98523631AE4a59f267346ea31F984",
-            "0xF98B45FA17DE75FB1aD0e7aFD971b0ca00e379fC",
-            "0x5F1dddbf348aC2fbe22a163e30F99F9ECE3DD50a",
-        )
-    c.assets_as_entries()
 
 
 def write_reth_toml(path: Path, merged: list[dict]) -> None:
@@ -113,38 +61,81 @@ def write_reth_toml(path: Path, merged: list[dict]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _classify_legacy_only(addr: str, old_entries: list[dict]) -> str:
+    by_addr = {e["address"].lower(): e for e in old_entries}
+    e = by_addr.get(addr)
+    if not e:
+        return "other"
+    p, k = e.get("protocol"), e.get("kind")
+    if p == "silo-v2" and k in ("share_collateral", "share_debt", "share_protected"):
+        return "silo_share_tokens"
+    if p == "fluid" and k == "vault":
+        return "fluid_vaults"
+    if p == "gearbox-v3":
+        return "gearbox"
+    if p == "liquity-v2" and k in ("troveManager", "stabilityPool", "activePool", "borrowerOperations", "sortedTroves", "troveNFT"):
+        return "liquity_branch"
+    if p in ("uniswap-v3", "curve", "kyber-elastic") and k == "pool":
+        return "dex_pools_completion"
+    if p == "asset" and k == "erc20":
+        return "completion_assets"
+    if k in ("factory", "meta_registry", "contracts_register", "erc20_pool_factory", "erc721_pool_factory", "vault_factory"):
+        return "factories_registries"
+    if p == "chainlink" and "phase" in k:
+        return "chainlink_phase_aggregators"
+    return "other"
+
+
 def diff_legacy(out_dir: Path, merged: list[dict]) -> str:
     guides = ROOT / "liquidator-guides"
     legacy_json = guides / "d15_addresses.complete.json"
-    legacy_toml = guides / "d15_receipts_log_filter.complete.toml"
-    lines = ["## Diff vs liquidator-guides/*.complete.* (2026-09-19 pass)", ""]
+    lines = ["## Diff vs liquidator-guides/d15_addresses.complete.json (2026-09-19 pass)", ""]
     new_set = {e["address"].lower() for e in merged}
-    if legacy_json.is_file():
-        old = json.loads(legacy_json.read_text(encoding="utf-8"))
-        old_set = {e["address"].lower() for e in old.get("addresses", [])}
-        only_new = sorted(new_set - old_set)
-        only_old = sorted(old_set - new_set)
-        lines.append(f"- Legacy JSON addresses: **{len(old_set)}**; this run: **{len(new_set)}**")
-        lines.append(f"- Only in this run (registry C2): **{len(only_new)}**")
-        lines.append(f"- Only in legacy complete (dropped): **{len(only_old)}**")
-        if only_new[:5]:
-            lines.append(f"- Sample new-only: {', '.join(only_new[:5])}")
-        if only_old[:5]:
-            lines.append(f"- Sample legacy-only: {', '.join(only_old[:5])}")
-        lines.append(
-            "- Expected deltas: C2 registry adds compound-v2 forks, 57 Aave V4 spokes, "
-            "996 registry univ3 pools, admitted-market tokens; legacy Essential omitted "
-            "fluid/gearbox/compound-v3 if re-discovered only via completion roots."
-        )
-    else:
-        lines.append("- Legacy `d15_addresses.complete.json` not found — skip diff.")
-    if legacy_toml.is_file():
-        old_addrs = set()
-        for line in legacy_toml.read_text(encoding="utf-8").splitlines():
-            m = re.match(r'"((0x)[0-9a-f]+)"\s*=', line.strip())
-            if m:
-                old_addrs.add(m.group(1).lower())
-        lines.append(f"- Legacy TOML filter lines: **{len(old_addrs)}** vs **{len(new_set)}** now.")
+    if not legacy_json.is_file():
+        lines.append("- Legacy JSON not found — skip diff.")
+        return "\n".join(lines) + "\n"
+
+    old = json.loads(legacy_json.read_text(encoding="utf-8"))
+    old_entries = old.get("addresses", [])
+    old_set = {e["address"].lower() for e in old_entries}
+    only_new = sorted(new_set - old_set)
+    only_old = sorted(old_set - new_set)
+    lines.append(f"- Legacy JSON addresses: **{len(old_set)}**; this run: **{len(new_set)}**")
+    lines.append(f"- Only in this run (registry C2): **{len(only_new)}**")
+    lines.append(f"- Only in legacy complete (dropped): **{len(only_old)}**")
+    if only_new[:5]:
+        lines.append(f"- Sample new-only: {', '.join(only_new[:5])}")
+    if only_old[:5]:
+        lines.append(f"- Sample legacy-only: {', '.join(only_old[:5])}")
+
+    buckets: Counter[str] = Counter()
+    for a in only_old:
+        buckets[_classify_legacy_only(a, old_entries)] += 1
+    lines.append("")
+    lines.append("### Dropped address breakdown (legacy-only)")
+    lines.append("")
+    lines.append("| Category | Count |")
+    lines.append("|---|---:|")
+    for label, title in (
+        ("silo_share_tokens", "Silo V2 share tokens"),
+        ("fluid_vaults", "Fluid vault contracts"),
+        ("gearbox", "Gearbox credit managers / pools / oracles"),
+        ("liquity_branch", "Liquity V2 branch contracts (ex price feeds)"),
+        ("dex_pools_completion", "DEX pools from completion dex-pools pass"),
+        ("completion_assets", "ERC-20 assets from completion asset pass"),
+        ("factories_registries", "Factories / registries"),
+        ("chainlink_phase_aggregators", "Chainlink phase aggregators"),
+        ("other", "Other / unclassified"),
+    ):
+        if buckets[label]:
+            lines.append(f"| {title} | {buckets[label]} |")
+    lines.append(f"| **Total dropped** | **{len(only_old)}** |")
+    lines.append("")
+    lines.append(
+        "Expected net deltas: C2 registry adds compound-v2 forks, 57 Aave V4 spokes, "
+        "996 registry univ3 pools, admitted-market tokens; completion re-adds fluid/gearbox/liquity "
+        "branch coverage via on-chain roots."
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -198,30 +189,29 @@ def main() -> int:
     }
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "d15_addresses.json").write_text(
-        json.dumps({**payload, "addresses": base_entries, "added_count": 0}, indent=1) + "\n",
-        encoding="utf-8",
-    )
     (out_dir / "d15_addresses.complete.json").write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
-
-    filter_lines = [
-        "# receipts_log_filter — tools/d15/regenerate.py",
-        "",
-        "[prune.segments.receipts_log_filter]",
-    ]
-    for e in sorted(merged, key=lambda x: (x["protocol"], x["kind"], x["address"].lower())):
-        bb = _before_for_entry(e)
-        filter_lines.append(
-            f'"{e["address"].lower()}" = {{ before = {bb} }}  # {e["protocol"]} {e["kind"]} — {e["source"][:70]}'
-        )
-    (out_dir / "d15_receipts_log_filter.complete.toml").write_text("\n".join(filter_lines) + "\n", encoding="utf-8")
 
     write_reth_toml(ROOT / "ops" / "reth" / "reth.toml", merged)
 
     checklist_rows = evaluate(merged, failures)
-    cl_md = ["# D15 completeness report (15-class checklist)", "", f"Total addresses: **{len(merged)}**", "", "| Class | Check | Pass | Detail |", "|---:|---|:---:|---|"]
+    cl_md = [
+        "# D15 completeness report (15-class checklist)",
+        "",
+        f"Total addresses: **{len(merged)}**",
+        "",
+        "| Class | Check | Pass | Detail |",
+        "|---:|---|:---:|---|",
+    ]
     for r in checklist_rows:
         cl_md.append(f"| {r['class']} | {r['name']} | {'PASS' if r['pass'] else 'FAIL'} | {r['detail']} |")
+    cl_md.append("")
+    cl_md.append("## Per-class counts (merged)")
+    cl_md.append("")
+    cl_md.append("| protocol | kind | n |")
+    cl_md.append("|---|---|---:|")
+    for (p, k), v in sorted(counts.items()):
+        cl_md.append(f"| {p} | {k} | {v} |")
+    cl_md.append(f"| **total** | | **{len(merged)}** |")
     cl_md.append("")
     cl_md.append("## Failures")
     cl_md.extend([f"- `{k}`: {v}" for k, v in failures.items()] or ["- (none)"])
@@ -231,7 +221,7 @@ def main() -> int:
     (out_dir / "completeness_report.md").write_text("\n".join(cl_md) + "\n", encoding="utf-8")
 
     print(f"done: essential {len(base_entries)} + {len(new)} = {len(merged)} in {time.time() - t0:.0f}s")
-    print(f"wrote {out_dir} and ops/reth/reth.toml; failures={len(failures)}")
+    print(f"wrote {out_dir}/d15_addresses.complete.json and ops/reth/reth.toml; failures={len(failures)}")
     return 0
 
 

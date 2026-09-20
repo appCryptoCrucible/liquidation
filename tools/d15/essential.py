@@ -3,19 +3,12 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
 from web3 import Web3
 
-from .roots import (
-    AAVE_V4_SPOKE_ORACLES,
-    KNOWN_BEFORE,
-    LIQUITY_V2_PRICE_FEEDS,
-    ROOTS,
-    ZERO,
-)
+from .roots import KNOWN_BEFORE, ROOTS, ZERO
 
 
 def _cs(addr: str) -> str:
@@ -95,6 +88,11 @@ def essential_from_registry(reg: dict[str, Any]) -> list[dict[str, Any]]:
             kind = p.get("kind", "spoke")
             if market:
                 add("aave-v4", kind, market, f"registry.aave-v4.{kind}", dep)
+            for ha in p.get("hub_assets") or []:
+                add("asset", "erc20", ha, "registry.aave-v4.hub_assets", 0)
+            asset = p.get("asset")
+            if asset:
+                add("asset", "erc20", asset, "registry.aave-v4.asset", 0)
 
         elif fam == "compound-v2":
             if market:
@@ -103,10 +101,9 @@ def essential_from_registry(reg: dict[str, Any]) -> list[dict[str, Any]]:
                 add("compound-v2", "cToken", rt, f"registry.receipt_tokens", dep)
 
         elif fam == "morpho-blue":
-            # bytes32 market id is not a log emitter; singleton + CreateMarket pass cover oracles
             for ad in p.get("oracle_adapters") or []:
                 if ad.lower() != ZERO:
-                    add("morpho-blue", "market_oracle", ad, "registry.oracle_adapters", dep)
+                    add("morpho-blue", "market_oracle", ad, "registry.oracle_adapters", 0)
 
         elif fam == "euler-v2":
             if market:
@@ -123,6 +120,16 @@ def essential_from_registry(reg: dict[str, Any]) -> list[dict[str, Any]]:
         elif fam == "ajna":
             if market:
                 add("ajna", "pool", market, "registry.ajna.pool", dep)
+            if p.get("pool_kind") == "erc721":
+                ct = p.get("collateral_token")
+                if ct:
+                    add(
+                        "ajna",
+                        "erc721_collateral",
+                        ct,
+                        f"registry.ajna.pool({market[:10] if market else '?'})",
+                        0,
+                    )
 
         elif fam == "sky-maker":
             if "ilk-registry" in _key or p.get("ilk_count"):
@@ -132,17 +139,11 @@ def essential_from_registry(reg: dict[str, Any]) -> list[dict[str, Any]]:
             for pip in p.get("oracle_adapters") or []:
                 add("sky-maker", "pip", pip, "registry.oracle_adapters (pip)", dep)
 
-    for cfg in silo_configs:
+    for cfg in sorted(silo_configs):
         add("silo-v2", "silo_config", cfg, "registry.silo_config", 0)
 
     add("morpho-blue", "singleton", ROOTS["morpho_blue"], "root:Morpho Blue", KNOWN_BEFORE.get(ROOTS["morpho_blue"].lower(), 0))
     add("compound-v3", "configurator", ROOTS["compound_v3_configurator"], "root:Compound V3 Configurator", KNOWN_BEFORE.get(ROOTS["compound_v3_configurator"].lower(), 0))
-
-    for name, addr in AAVE_V4_SPOKE_ORACLES:
-        add("aave-v4", "spoke_oracle", addr, f"address-book:{name}", 0)
-
-    for pf in LIQUITY_V2_PRICE_FEEDS:
-        add("liquity-v2", "priceFeed", pf, "liquity/bold address-book", 0)
 
     add("liquity-v2", "collateral_registry", ROOTS["liquity_v2_collateral_registry"], "root:liquity/bold", KNOWN_BEFORE.get(ROOTS["liquity_v2_collateral_registry"].lower(), 0))
 

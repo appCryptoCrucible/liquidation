@@ -35,17 +35,15 @@ Usage:
 """
 from __future__ import annotations
 
-import argparse
-import json
 import re
-import sys
 import time
-from collections import Counter, defaultdict
-from pathlib import Path
+from collections import defaultdict
 from typing import Any, Iterable, Optional
 
 from eth_abi import decode, encode
 from web3 import Web3
+
+from .roots import ROOTS
 
 ZERO = "0x0000000000000000000000000000000000000000"
 MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11"
@@ -179,6 +177,17 @@ class Completer:
         if address and address.lower() != ZERO:
             self.assets.setdefault(address.lower(), label)
 
+    def try_erc20_asset(self, address: str, label: str):
+        if not address or address.lower() == ZERO or address.lower() == ETH_DENOM.lower():
+            return
+        if address.lower() in self.assets:
+            return
+        ret = self.call1(address, "decimals()")
+        if ret and len(ret) >= 32:
+            self.add_asset(address, label)
+        else:
+            self.failures[f"asset:{address[:10]}"] = f"decimals() failed — not ERC-20 ({label})"
+
     def multicall(self, calls: list[tuple[str, bytes]]) -> list[tuple[bool, bytes]]:
         """tryAggregate(false, calls) in batches. Returns (success, returndata) per call."""
         out: list[tuple[bool, bytes]] = []
@@ -272,7 +281,14 @@ class Completer:
     def resolve_feeds(self, protocol: str, roots: Iterable[tuple[str, str]], max_depth: int = 5):
         """roots: (address, source-label). Walk every FEED_GETTER, add children, recurse.
         Chainlink proxies additionally yield every historical phase aggregator."""
-        frontier = [(Web3.to_checksum_address(a), s, 0) for a, s in roots if a and a.lower() != ZERO]
+        root_list = [(Web3.to_checksum_address(a), s) for a, s in roots if a and a.lower() != ZERO]
+        root_addrs = {a.lower() for a, _ in root_list}
+        agg_before = sum(
+            1
+            for e in self.entries
+            if e.get("protocol") == protocol and str(e.get("kind", "")).startswith("oracle_aggregator")
+        )
+        frontier = [(a, s, 0) for a, s in root_list]
         while frontier:
             layer = [(a, s, d) for a, s, d in frontier if a.lower() not in self.resolved and d <= max_depth]
             frontier = []
@@ -328,6 +344,17 @@ class Completer:
                     agg = is_addr_word(ret[:32])
                     if agg and self.has_code(agg):
                         self.add(protocol, "oracle_aggregator_phase", agg, f"{s}→phaseAggregators({p})", phase=p)
+        agg_after = sum(
+            1
+            for e in self.entries
+            if e.get("protocol") == protocol and str(e.get("kind", "")).startswith("oracle_aggregator")
+        )
+        if root_addrs and agg_after <= agg_before:
+            for a, s in root_list:
+                if a.lower() in root_addrs:
+                    self.failures[f"oracle-unresolved:{a[:10]}"] = (
+                        f"{s}: no oracle_aggregator reached within depth {max_depth}"
+                    )
 
     # ------------------------------------------------------------------ classes
     def constants(self):
@@ -336,6 +363,26 @@ class Completer:
                 self.add(proto, kind, addr, f"constant — confirm: {why}", confirm=True)
             else:
                 self.failures[f"constant:{kind}"] = f"{addr} has no code — wrong address or wrong chain"
+        if self.has_code(ROOTS["fluid_vault_factory"]):
+            self.add(
+                "fluid",
+                "vault_factory",
+                ROOTS["fluid_vault_factory"],
+                "constant — confirm: Fluid VaultFactory",
+                confirm=True,
+            )
+
+    def aave_v4_spoke_oracles(self, base_entries: list[dict]):
+        spokes = [e["address"] for e in base_entries if e["protocol"] == "aave-v4" and e.get("kind") == "spoke"]
+        if not spokes:
+            return
+        res = self.multicall([(s, sel("ORACLE()")) for s in spokes])
+        for s, (ok, ret) in zip(spokes, res):
+            o = is_addr_word(ret[:32]) if ok else None
+            if o and self.has_code(o):
+                self.add("aave-v4", "spoke_oracle", o, f"{Web3.to_checksum_address(s)[:10]}.ORACLE()")
+            else:
+                self.failures[f"aave-v4:{s[:10]}"] = "spoke.ORACLE() failed"
 
     def aave_v3_like(self, base_entries: list[dict]):
         """Resolve every oracle_proxy / price_oracle source from the draft; collect assets."""
@@ -353,7 +400,11 @@ class Completer:
 
     def aave_v4(self, base_entries: list[dict], from_block: int):
         tp = topic("AssetSourceUpdated(address,address)")
-        oracles = [Web3.to_checksum_address(e["address"]) for e in base_entries if e["protocol"] == "aave-v4" and e["kind"] == "spoke_oracle"]
+        oracle_seen: dict[str, str] = {}
+        for e in base_entries + self.entries:
+            if e["protocol"] == "aave-v4" and e["kind"] == "spoke_oracle":
+                oracle_seen[e["address"].lower()] = e["address"]
+        oracles = [Web3.to_checksum_address(a) for a in oracle_seen.values()]
         head = self.w3.eth.block_number
         roots = []
         seen_oracles = set()
@@ -381,6 +432,10 @@ class Completer:
                 if src:
                     found += 1
                     roots.append((src, f"aave-v4:{o[:10]}.getReserveSource({i})"))
+                    asset_ret = self.call1(o, "getReserveAsset(uint256)", (i,), ("uint256",))
+                    asset = is_addr_word(asset_ret[:32]) if asset_ret else None
+                    if asset:
+                        self.try_erc20_asset(asset, "aave-v4 reserve")
             if found == 0:
                 self.failures[f"aave-v4:{o}"] = "getReserveSource(uint256) returned no sources — confirm this oracle's ABI at C3"
         if not roots:
@@ -428,6 +483,23 @@ class Completer:
         for f, s in roots:
             self.add("compound-v3", "oracle_source", f, s)
         self.resolve_feeds("compound-v3", roots)
+
+    def compound_v2(self, comptrollers: list[str], c_tokens: list[str]):
+        roots: list[tuple[str, str]] = []
+        ores = self.multicall([(c, sel("oracle()")) for c in comptrollers])
+        for c, (ok, ret) in zip(comptrollers, ores):
+            o = is_addr_word(ret[:32]) if ok else None
+            if o and self.has_code(o):
+                self.add("compound-v2", "price_oracle", o, f"comptroller({c[:10]}).oracle()")
+                roots.append((o, f"compound-v2:{c[:10]}"))
+            else:
+                self.failures[f"compound-v2:{c[:10]}"] = "comptroller.oracle() failed"
+        self.resolve_feeds("compound-v2", roots)
+        ures = self.multicall([(t, sel("underlying()")) for t in c_tokens])
+        for t, (ok, ret) in zip(c_tokens, ures):
+            u = is_addr_word(ret[:32]) if ok else None
+            if u:
+                self.try_erc20_asset(u, f"compound-v2 cToken({t[:10]}).underlying()")
 
     def morpho(self, singleton: str, from_block: int):
         tp = topic("CreateMarket(bytes32,(address,address,address,address,uint256))")
@@ -480,7 +552,7 @@ class Completer:
                 for cv in colls:
                     coll_asset_calls.append((cv, sel("asset()")))
                     coll_meta.append((router, uoa, cv))
-        for r in routers:
+        for r in sorted(routers):
             self.add("euler-v2", "oracle_router", r, "vault.oracle()")
         cres = self.multicall(coll_asset_calls)
         for (router, uoa, cv), (ok, ret) in zip(coll_meta, cres):
@@ -498,10 +570,48 @@ class Completer:
                 self.add("euler-v2", "oracle_adapter", ad, s)
                 roots.append((ad, s))
         # routers' fallback oracles too
-        self.resolve_feeds("euler-v2", roots + [(r, f"euler:router:{r[:10]}") for r in routers])
+        self.resolve_feeds("euler-v2", roots + [(r, f"euler:router:{r[:10]}") for r in sorted(routers)])
 
-    def liquity(self, feeds: list[str]):
-        self.resolve_feeds("liquity-v2", [(f, f"liquity-v2:priceFeed:{f[:10]}") for f in feeds])
+    def liquity_v2(self, collateral_registry: str):
+        cr = Web3.to_checksum_address(collateral_registry)
+        ret = self.call1(cr, "totalCollaterals()")
+        n = int.from_bytes(ret[:32], "big") if ret else 0
+        if n == 0:
+            self.failures["liquity-v2:totalCollaterals"] = "totalCollaterals() failed or zero"
+            return
+        idx_calls: list[tuple[str, bytes]] = []
+        for i in range(n):
+            idx_calls.append((cr, sel("getTroveManager(uint256)") + encode(["uint256"], [i])))
+            idx_calls.append((cr, sel("getToken(uint256)") + encode(["uint256"], [i])))
+        res = self.multicall(idx_calls)
+        tm_getters = [
+            ("stabilityPool", "stabilityPool()"),
+            ("activePool", "activePool()"),
+            ("borrowerOperations", "borrowerOperations()"),
+            ("sortedTroves", "sortedTroves()"),
+            ("troveNFT", "troveNFT()"),
+            ("priceFeed", "priceFeed()"),
+        ]
+        feed_roots: list[tuple[str, str]] = []
+        for i in range(n):
+            ok_tm, tm_ret = res[2 * i]
+            ok_tok, tok_ret = res[2 * i + 1]
+            tm = is_addr_word(tm_ret[:32]) if ok_tm else None
+            tok = is_addr_word(tok_ret[:32]) if ok_tok else None
+            if tok:
+                self.try_erc20_asset(tok, f"liquity-v2 collateral {i}")
+            if not tm:
+                self.failures[f"liquity-v2:tm:{i}"] = "getTroveManager failed"
+                continue
+            self.add("liquity-v2", "troveManager", tm, f"CollateralRegistry.getTroveManager({i})")
+            gres = self.multicall([(tm, sel(sig)) for _, sig in tm_getters])
+            for (kind, sig), (ok, gret) in zip(tm_getters, gres):
+                ad = is_addr_word(gret[:32]) if ok else None
+                if ad and self.has_code(ad):
+                    self.add("liquity-v2", kind, ad, f"TroveManager({tm[:10]}).{sig}")
+                    if kind == "priceFeed":
+                        feed_roots.append((ad, f"liquity-v2:{ad[:10]}"))
+        self.resolve_feeds("liquity-v2", feed_roots)
 
     def sky(self, ilk_registry: str, dog: str, spotter: str):
         ret = self.call1(ilk_registry, "list()")
@@ -564,10 +674,61 @@ class Completer:
                 roots.append((f, f"gearbox:{f[:10]}"))
         self.resolve_feeds("gearbox-v3", roots)
 
+    def gearbox_discover(self, register: str) -> list[str]:
+        reg = Web3.to_checksum_address(register)
+        self.add("gearbox-v3", "contracts_register", reg, "root:ContractsRegister (registry C1 gap fallback)")
+        cms: list[str] = []
+        pools: list[str] = []
+        for fn in ("getCreditManagers()", "getCreditManagersList()"):
+            ret = self.call1(reg, fn)
+            if ret:
+                try:
+                    cms = list(decode(["address[]"], ret)[0])
+                    if cms:
+                        break
+                except Exception:  # noqa: BLE001
+                    pass
+        for fn in ("getPools()", "getPoolsList()"):
+            ret = self.call1(reg, fn)
+            if ret:
+                try:
+                    pools = list(decode(["address[]"], ret)[0])
+                    if pools:
+                        break
+                except Exception:  # noqa: BLE001
+                    pass
+        for cm in cms:
+            self.add("gearbox-v3", "credit_manager", cm, "ContractsRegister.getCreditManagers()")
+        for p in pools:
+            self.add("gearbox-v3", "pool", p, "ContractsRegister.getPools()")
+        if not cms:
+            self.failures["gearbox-v3:register"] = "ContractsRegister returned no credit managers"
+        return cms
+
+    def ajna(self):
+        for kind, factory in (
+            ("erc20_pool", ROOTS["ajna_erc20_factory"]),
+            ("erc721_pool", ROOTS["ajna_erc721_factory"]),
+        ):
+            fac = Web3.to_checksum_address(factory)
+            self.add("ajna", f"{kind}_factory", fac, f"root:ajna {kind}_factory")
+            ret = self.call1(fac, "getDeployedPoolsList()")
+            if not ret:
+                self.failures[f"ajna:{kind}"] = "getDeployedPoolsList() failed"
+                continue
+            try:
+                pools = decode(["address[]"], ret)[0]
+            except Exception as ex:  # noqa: BLE001
+                self.failures[f"ajna:{kind}"] = str(ex)[:200]
+                continue
+            for p in pools:
+                if p and int(p, 16) != 0:
+                    self.add("ajna", kind, p, f"factory.getDeployedPoolsList({fac[:10]})")
+
     def silo(self, silo_configs: list[str], silos_by_config: dict[str, list[str]]):
         calls = []
         meta = []
-        for cfg in silo_configs:
+        for cfg in sorted(silo_configs):
             for s in silos_by_config.get(cfg.lower(), []):
                 calls.append((cfg, sel("getConfig(address)") + encode(["address"], [s])))
                 meta.append((cfg, s))
@@ -579,18 +740,26 @@ class Completer:
             # struct order: daoFee, deployerFee, silo, token, protectedShareToken, collateralShareToken,
             #               debtShareToken, solvencyOracle, maxLtvOracle, ...
             token = is_addr_word(ret[3 * 32 : 4 * 32])
+            for off, label, kind in (
+                (4, "protectedShareToken", "share_protected"),
+                (5, "collateralShareToken", "share_collateral"),
+                (6, "debtShareToken", "share_debt"),
+            ):
+                st = is_addr_word(ret[off * 32 : (off + 1) * 32])
+                if st:
+                    self.add("silo-v2", kind, st, f"siloConfig({cfg[:10]}).getConfig({s[:10]}).{label}")
             for off, label in ((7, "solvencyOracle"), (8, "maxLtvOracle")):
                 o = is_addr_word(ret[off * 32 : (off + 1) * 32])
                 if o and self.has_code(o):
                     self.add("silo-v2", "oracle_source", o, f"siloConfig({cfg[:10]}).getConfig({s[:10]}).{label}")
                     roots.append((o, f"silo:{o[:10]}"))
             if token:
-                self.add_asset(token, "silo asset")
+                self.try_erc20_asset(token, "silo asset")
         self.resolve_feeds("silo-v2", roots)
 
-    def fluid(self, vaults: list[str], resolver: str = "0xA5C3E16523eeeDDcC34706b0E6bE88b4c6EA95cC"):
+    def fluid(self, vaults: list[str], resolver: str | None = None):
         """VaultResolver.getVaultEntireData(vault).configs.oracle + token assets."""
-        resolver = Web3.to_checksum_address(resolver)
+        resolver = Web3.to_checksum_address(resolver or ROOTS["fluid_vault_resolver"])
         if not vaults:
             ret = self.call1(resolver, "getAllVaultsAddresses()")
             if ret:
@@ -602,13 +771,8 @@ class Completer:
             else:
                 self.failures["fluid:getAllVaultsAddresses"] = "empty return"
                 vaults = []
-        res = self.multicall([(v, sel("constantsView()")) for v in vaults])
-        for v, (ok, ret) in zip(vaults, res):
-            if ok and len(ret) >= 6 * 32:
-                for off in (4, 5):
-                    t = is_addr_word(ret[off * 32 : (off + 1) * 32])
-                    if t and t.lower() != ETH_DENOM.lower():
-                        self.add_asset(t, "fluid vault token")
+        for v in vaults:
+            self.add("fluid", "vault", v, "VaultResolver.getAllVaultsAddresses()")
         roots: list[tuple[str, str]] = []
         # VaultResolver.getVaultEntireData(vault): configs.oracle is word index 29 (on-chain layout verified).
         calls = [
@@ -620,6 +784,11 @@ class Completer:
             if not ok or len(ret) < 30 * 32:
                 self.failures[f"fluid:{v[:10]}"] = "getVaultEntireData failed"
                 continue
+            for off in (11, 13):
+                if len(ret) >= (off + 1) * 32:
+                    t = is_addr_word(ret[off * 32 : (off + 1) * 32])
+                    if t:
+                        self.try_erc20_asset(t, "fluid vault supply/borrow token")
             o = is_addr_word(ret[29 * 32 : 30 * 32])
             if o and self.has_code(o):
                 self.add("fluid", "oracle_source", o, f"VaultResolver.getVaultEntireData({v[:10]}).configs.oracle")
@@ -712,60 +881,76 @@ class Completer:
             self.add("asset", "erc20", a, label)
 
 
-# --------------------------------------------------------------------------- main
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--rpc", default="https://ethereum.publicnode.com", help="eth_call / eth_getCode")
-    ap.add_argument("--logs-rpc", default="https://gateway.tenderly.co/public/mainnet", help="eth_getLogs (serves multi-million-block windows; mevblocker is a 10k-window fallback)")
-    ap.add_argument("--guides", default=str(Path(__file__).resolve().parent.parent / "liquidator-guides"))
-    ap.add_argument("--skip-dex", action="store_true")
-    ap.add_argument("--base", default="d15_addresses.json", help="input list; pass d15_addresses.complete.json to extend a previous completion run")
-    ap.add_argument("--steps", default="", help="comma list of steps to run (default all)")
-    args = ap.parse_args()
+def _sky_dog() -> str:
+    for proto, kind, addr, _ in CONSTANTS:
+        if proto == "sky-maker" and kind == "dog":
+            return addr
+    return ""
 
-    guides = Path(args.guides)
-    base = json.loads((guides / args.base).read_text(encoding="utf-8"))
-    base_entries = base["addresses"]
-    prior_failures = base.get("failures", {}) if args.base != "d15_addresses.json" else {}
-    prior_notes = base.get("notes", []) if args.base != "d15_addresses.json" else []
 
-    w3 = Web3(Web3.HTTPProvider(args.rpc, request_kwargs={"timeout": 60}))
-    w3_logs = Web3(Web3.HTTPProvider(args.logs_rpc, request_kwargs={"timeout": 60}))
-    head = w3.eth.block_number
-    print(f"head {head}")
-    c = Completer(w3, w3_logs)
+def _sky_spotter() -> str:
+    for proto, kind, addr, _ in CONSTANTS:
+        if proto == "sky-maker" and kind == "spotter":
+            return addr
+    return ""
+
+
+def _chainlink_feed_registry() -> str:
+    for proto, kind, addr, _ in CONSTANTS:
+        if kind == "chainlink_feed_registry":
+            return addr
+    return ""
+
+
+def _dex_factories() -> tuple[str, str, str]:
+    u3 = curve = kyber = ""
+    for proto, kind, addr, _ in CONSTANTS:
+        if proto == "uniswap-v3" and kind == "factory":
+            u3 = addr
+        elif proto == "curve" and kind == "meta_registry":
+            curve = addr
+        elif proto == "kyber-elastic" and kind == "factory":
+            kyber = addr
+    return u3, curve, kyber
+
+
+def run_completion(c: Completer, base_entries: list[dict], skip_dex: bool) -> None:
+    by = defaultdict(list)
     for e in base_entries:
-        c.seen.add(e["address"].lower())
-        if e.get("kind") == "erc20":
-            c.add_asset(e["address"], e.get("source", "asset"))
-    only = {s.strip() for s in args.steps.split(",") if s.strip()}
-
-    t0 = time.time()
+        by[(e["protocol"], e["kind"])].append(e["address"])
 
     def step(name, fn, *a):
-        if only and name not in only:
-            return
         t = time.time()
         try:
             fn(*a)
         except Exception as ex:  # noqa: BLE001
             c.failures[f"step:{name}"] = str(ex)[:300]
             print(f"[{name}] FAILED {ex}")
-        print(f"[{name}] +{len(c.entries)} total new, {time.time() - t:.0f}s", flush=True)
-
-    by = defaultdict(list)
-    for e in base_entries:
-        by[(e["protocol"], e["kind"])].append(e["address"])
+        print(f"[{name}] +{len(c.entries)} new, {time.time() - t:.0f}s", flush=True)
 
     step("constants", c.constants)
     step("aave-v3/spark oracles", c.aave_v3_like, base_entries)
+    step("aave-v4 spoke oracles", c.aave_v4_spoke_oracles, base_entries)
     step("aave-v4 oracles", c.aave_v4, base_entries, 24_500_000)
-    step("compound-v3", c.compound_v3, by[("compound-v3", "configurator")][0], 15_331_586)
-    step("morpho", c.morpho, by[("morpho-blue", "singleton")][0], 18_883_124)
+    if by[("compound-v3", "configurator")]:
+        step("compound-v3", c.compound_v3, by[("compound-v3", "configurator")][0], 15_331_586)
+    else:
+        step("compound-v3", c.compound_v3, ROOTS["compound_v3_configurator"], 15_331_586)
+    step(
+        "compound-v2",
+        c.compound_v2,
+        by[("compound-v2", "comptroller")],
+        by[("compound-v2", "cToken")],
+    )
+    step("morpho", c.morpho, ROOTS["morpho_blue"], 18_883_124)
     step("euler", c.euler, by[("euler-v2", "vault")])
-    step("liquity", c.liquity, by[("liquity-v2", "priceFeed")])
-    step("sky", c.sky, by[("sky-maker", "ilk_registry")][0], "0x135954d155898D42C90D2a57824C690e0c7BEf1B", "0x65C79fcB50Ca1594B025960e539eD7A9a6D434A3")
-    step("gearbox", c.gearbox, by[("gearbox-v3", "credit_manager")])
+    step("liquity-v2", c.liquity_v2, ROOTS["liquity_v2_collateral_registry"])
+    ilk_reg = by[("sky-maker", "ilk_registry")][0] if by[("sky-maker", "ilk_registry")] else ROOTS["ilk_registry"]
+    step("sky", c.sky, ilk_reg, _sky_dog(), _sky_spotter())
+    cms = by[("gearbox-v3", "credit_manager")]
+    if not cms:
+        cms = c.gearbox_discover(ROOTS["gearbox_contracts_register"])
+    step("gearbox", c.gearbox, cms)
     silos_by_cfg: dict[str, list[str]] = defaultdict(list)
     for e in base_entries:
         if e["protocol"] == "silo-v2" and e["kind"] == "silo":
@@ -774,64 +959,9 @@ def main():
                 silos_by_cfg[m.group(1).lower()].append(e["address"])
     step("silo", c.silo, by[("silo-v2", "silo_config")], silos_by_cfg)
     step("fluid", c.fluid, by[("fluid", "vault")])
-    step("feed-registry", c.feed_registry, "0x47Fb2585D2C56Fe188D0E6ec628a38b74fCeeeDf")
-    if not args.skip_dex:
-        step("dex-pools", c.dex_pools, "0x1F98431c8aD98523631AE4a59f267346ea31F984", "0xF98B45FA17DE75FB1aD0e7aFD971b0ca00e379fC", "0x5F1dddbf348aC2fbe22a163e30F99F9ECE3DD50a")
+    step("ajna", c.ajna)
+    step("feed-registry", c.feed_registry, _chainlink_feed_registry())
+    if not skip_dex:
+        u3, curve, kyber = _dex_factories()
+        step("dex-pools", c.dex_pools, u3, curve, kyber)
     c.assets_as_entries()
-
-    new = c.entries
-    merged = base_entries + new
-    failures = {**prior_failures, **c.failures}
-    for k in list(failures):
-        if k.startswith("step:") and k[5:] in only:
-            failures.pop(k)  # re-ran this step
-    failures.update(c.failures)
-    payload = {
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "chain_id": 1,
-        "rpc": args.rpc,
-        "logs_rpc": args.logs_rpc,
-        "head_block": head,
-        "tier": "Essential + flash sources + oracle aggregators (all phases) + exit venues + rate providers",
-        "base_count": len(base_entries),
-        "added_count": len(new),
-        "counts_by_class": {f"{p}/{k}": v for (p, k), v in sorted(Counter((e["protocol"], e["kind"]) for e in merged).items())},
-        "failures": failures,
-        "notes": prior_notes + c.notes,
-        "addresses": merged,
-    }
-    counts = Counter((e["protocol"], e["kind"]) for e in merged)
-    (guides / "d15_addresses.complete.json").write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
-
-    lines = [
-        "# Generated by tools/d15_complete.py on top of d15_addresses.json",
-        "# receipts_log_filter — every address whose logs the replay, the watcher, the flash",
-        "# index or the derived-pricing layer reads. `before = 0` keeps everything (D52).",
-        "# Human sign-off at H1 before `reth download`.",
-        "",
-        "[prune.segments.receipts_log_filter]",
-    ]
-    for e in sorted(merged, key=lambda e: (e["protocol"], e["kind"], e["address"].lower())):
-        bb = e.get("before_block", 0) or 0
-        lines.append(f'"{e["address"].lower()}" = {{ before = {bb} }}  # {e["protocol"]} {e["kind"]} — {e["source"][:70]}')
-    (guides / "d15_receipts_log_filter.complete.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    md = ["# D15 completion pass — what the Essential draft was missing", "",
-          f"Generated {payload['generated_at']} at head {head} via `{args.rpc}` (calls) and `{args.logs_rpc}` (logs).", "",
-          f"Input: **{len(base_entries)}** addresses (`{args.base}`). Added this run: **{len(new)}**. Total: **{len(merged)}**.", "",
-          "Definition of complete: `D15-ADDRESSES.md` → Completeness (15 classes). "
-          "Classes 1–15 map onto the kinds below; a class with zero rows is a bug, not a result.", "",
-          "## All addresses, by class (merged)", "", "| protocol | kind | n |", "|---|---|---:|"]
-    for (p, k), v in sorted(counts.items()):
-        md.append(f"| {p} | {k} | {v} |")
-    md += [f"| **total** | | **{len(merged)}** |"]
-    md += ["", "## Failures / needs a human at C3", ""]
-    md += [f"- `{k}`: {v}" for k, v in failures.items()] or ["- (none)"]
-    md += ["", "## Notes", ""] + [f"- {n}" for n in payload["notes"]]
-    md += ["", f"Wall time {time.time() - t0:.0f}s."]
-    (guides / "D15-COMPLETION.md").write_text("\n".join(md) + "\n", encoding="utf-8")
-    print(f"done: +{len(new)} → {len(merged)} in {time.time() - t0:.0f}s; failures={len(c.failures)}")
-
-
-if __name__ == "__main__":
-    sys.exit(main())

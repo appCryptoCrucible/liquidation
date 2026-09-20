@@ -15,28 +15,6 @@ ROOTS = {
     "liquity_v2_collateral_registry": "0xf949982b91c8c61e952b3ba942cbbfaef5386684",
 }
 
-AAVE_V4_SPOKE_ORACLES = [
-    ("bluechip_spoke_oracle", "0xdA1266a7b8620819dAE3F8bd6B546Da36e505bB8"),
-    ("ethena_correlated_spoke_oracle", "0x9b91a0943CADf554742E8Fb358B1cC4ae4F85F01"),
-    ("ethena_ecosystem_spoke_oracle", "0xc390dbe9fc00D6db73C52d375642b47008C33c90"),
-    ("forex_spoke_oracle", "0xB3CE6E7b6d389a66eA4a3777bA07219d00FB3a9D"),
-    ("gold_spoke_oracle", "0x0083421fd178749af2201ddA5A7C3feB5790B80c"),
-    ("lombard_btc_spoke_oracle", "0x198Cac7f54FFc7d709Ac0FEc4B6454CE73e21D3D"),
-    ("main_spoke_oracle", "0x99B2B6CEa9C3D2fd8F4d90f86741C44B212a6127"),
-    ("paxg_gold_spoke_oracle", "0x8CEcC12b23ED45EC2A9b9EB57EA6974c0cae850B"),
-    ("usdg_pendle_spoke_oracle", "0x692cD2F7653680aFf316Ac309ce825FCF573B7Ee"),
-    ("etherfi_espoke_oracle", "0xd8B153FaAA8f2b1bC774916FEd333A4F3dE48792"),
-    ("kelp_espoke_oracle", "0x37C316996C714Bf906743071e04E62220b3271ac"),
-    ("lido_espoke_oracle", "0x664D73b6C3591333Fd79510f7ce9ef81228824F5"),
-    ("usdg_maple_espoke_oracle", "0x47a7cC7Fd47aCed15087a8b6e0ACFddCD63C811A"),
-]
-
-LIQUITY_V2_PRICE_FEEDS = [
-    "0xcc5f8102eb670c89a4a3c567c13851260303c24f",
-    "0xe7aa2ba9e086a379d3beb224098bc634a46e314e",
-    "0x34f1e9c7dcc279ec70d3c4488eb2d80fba8b7b2b",
-]
-
 # D52: before = 0 is safe unless deploy block is known.
 KNOWN_BEFORE = {
     "0xbbbbbbbbbb9cc5e90e3b3af64bdaf62c37eeffcb": 18883124,
