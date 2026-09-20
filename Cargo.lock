@@ -3600,8 +3600,13 @@ version = "0.1.0"
 name = "liq-bot"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "core_affinity",
+ "liq-node",
+ "liq-state",
+ "liq-types",
  "mimalloc",
+ "rtrb",
  "serde",
  "thiserror",
  "toml 1.1.6+spec-1.1.0",
@@ -3680,6 +3685,7 @@ dependencies = [
  "alloy-provider",
  "alloy-rpc-types-eth 2.4.2",
  "alloy-sol-types",
+ "arc-swap",
  "arrayvec",
  "bumpalo",
  "liq-protocol",
@@ -3690,11 +3696,28 @@ dependencies = [
  "smallvec",
  "thiserror",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
 name = "liq-obs"
 version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "liq-types",
+ "liq-watch",
+ "metrics",
+ "parking_lot",
+ "perf-event",
+ "reqwest 0.12.23",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "toml 1.1.6+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "liq-oracle"
@@ -3764,6 +3787,16 @@ dependencies = [
 [[package]]
 name = "liq-risk"
 version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "liq-flash",
+ "liq-state",
+ "liq-types",
+ "parking_lot",
+ "rusqlite",
+ "thiserror",
+ "tracing",
+]
 
 [[package]]
 name = "liq-router"
@@ -4351,6 +4384,25 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
+name = "perf-event"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4d6393d9238342159080d79b78cb59c67399a8e7ecfa5d410bd614169e4e823"
+dependencies = [
+ "libc",
+ "perf-event-open-sys",
+]
+
+[[package]]
+name = "perf-event-open-sys"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c44fb1c7651a45a3652c4afc6e754e40b3d6e6556f1487e2b230bfc4f33c2a8"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "pest"
@@ -6271,9 +6323,9 @@ dependencies = [
 
 [[package]]
 name = "tracing-subscriber"
-version = "0.3.23"
+version = "0.3.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
+checksum = "2054a14f5307d601f88daf0553e1cbf472acc4f2c51afab632431cdcd72124d5"
 dependencies = [
  "nu-ansi-term",
  "sharded-slab",

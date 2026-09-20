@@ -66,7 +66,16 @@ fn impl_blocks(lines: &[(usize, String)], trait_name: &str) -> Vec<(usize, Strin
 /// the detector is not vacuous.
 #[test]
 fn sync_ingest_modules_have_no_await() {
-    for name in ["apply.rs", "router.rs", "decode.rs", "dirty.rs"] {
+    for name in [
+        "apply.rs",
+        "router.rs",
+        "decode.rs",
+        "dirty.rs",
+        "exex.rs",
+        "hot.rs",
+        "reorg.rs",
+        "mempool.rs",
+    ] {
         let lines = code_lines(&read(name));
         let hits = awaits(&lines);
         assert!(

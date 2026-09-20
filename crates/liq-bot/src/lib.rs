@@ -13,4 +13,5 @@
 #![cfg_attr(not(feature = "alloc-assert"), forbid(unsafe_code))]
 
 pub mod alloc;
+pub mod exex_install;
 pub mod threads;

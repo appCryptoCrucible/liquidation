@@ -1,8 +1,6 @@
 //! Ingest: log sources, router, arena decode, dirty accumulation, backfill
-//! (GUIDE 03 §2, §4, §4b, §5; WP 03A).
-//!
-//! The hot path (`apply_block`) is synchronous. RpcPoll is I/O for backfill /
-//! 05F / 05B. The ExEx forwarder that fills [`ExExSource`] is WP 03B.
+//! (GUIDE 03 §2, §4, §4b, §5; WP 03A) plus ExEx forwarder, hot thread, reorg
+//! containment, and the mempool producer (WP 03B).
 
 #![deny(clippy::todo, clippy::unimplemented)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
@@ -15,6 +13,10 @@ pub mod apply;
 pub mod backfill;
 pub mod decode;
 pub mod dirty;
+pub mod exex;
+pub mod hot;
+pub mod mempool;
+pub mod reorg;
 pub mod router;
 pub mod source;
 
@@ -22,7 +24,14 @@ pub use apply::{apply_block, ApplyCtx, LogHandler};
 pub use backfill::{backfill, poller, SnapshotSink};
 pub use decode::{DecodeArena, EventKind};
 pub use dirty::{as_dirty_sets, CollapsedDirty, DirtyAccumulator};
+pub use exex::{
+    split_exex, ConsistentHeight, ExExForwarder, FinishedUpTo, HotIngress, Notification, NumHash,
+    OwnedChain, NOTIF_CAP,
+};
+pub use hot::{pin_deferred, spawn as spawn_hot, HotHandle, HotSpawn, HOT_THREAD_NAME};
 pub use liq_protocol::conformance::AllocMeter;
+pub use mempool::{split_mempool, MempoolProducer};
+pub use reorg::{apply_contained, handle_notification, unwind_to};
 pub use router::{LogRouter, Route};
 pub use source::{ExExSource, LogSource, OwnedBlock, OwnedLog, Poll, RpcPoll, DEFAULT_PAGE_BLOCKS};
 
@@ -58,6 +67,8 @@ pub enum IngestError {
     HotPathAlloc,
     #[error("unknown position {0:?} during dirty collapse")]
     UnknownPosition(PositionId),
+    #[error("ExEx ↔ hot ring full; canonical notifications must not drop")]
+    HotStalled,
 }
 
 /// `Result` with [`IngestError`].
