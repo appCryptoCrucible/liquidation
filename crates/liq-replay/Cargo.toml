@@ -20,6 +20,8 @@ parquet = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
+revm = { workspace = true }
+uniswap_v3_math = { version = "=0.6.2", default-features = false }
 
 [[bin]]
 name = "liq-diff-health"

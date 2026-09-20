@@ -14,4 +14,5 @@
 
 pub mod archive;
 pub mod diff;
+pub mod parity;
 pub mod recall;

@@ -3796,9 +3796,11 @@ dependencies = [
  "liq-types",
  "liq-watch",
  "parquet",
+ "revm",
  "thiserror",
  "tokio",
  "tracing",
+ "uniswap_v3_math",
 ]
 
 [[package]]

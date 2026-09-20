@@ -1,0 +1,15 @@
+UniOracle.bin-runtime / KyberOracle.bin-runtime
+================================================
+Compiled 2026-09-20 with solc 0.8.22+commit.4fc1097e, --optimize --optimize-runs 800, --evm-version shanghai.
+
+UniOracle inlines UniswapV2Library.getAmountOut (v2-periphery), links
+Uniswap v3-core @ branch `0.8` SwapMath.computeSwapStep / SqrtPriceMath /
+FullMath, and Curve StableSwap get_D/get_y/get_dy (plain 2-coin, same
+Newton stop |Δ|≤1, fee/1e10, −1 in dy).
+
+KyberOracle links KyberNetwork/ks-elastic-sc master
+contracts/libraries/SwapMath.sol (computeSwapStep).
+
+These are compiler outputs of the official math libraries, not guessed
+pool states. Synthetic fixture *balances* are labelled synthetic; they
+are not mainnet storage. Recorded mainnet snapshots require A3 (D60).

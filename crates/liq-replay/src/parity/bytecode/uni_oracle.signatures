@@ -1,0 +1,4 @@
+Function signatures:
+a7096cf5: curveGetDy(uint256[2],uint256[2],uint256,uint256,uint256,uint256,uint256,uint256)
+e4867890: v2GetAmountOut(uint256,uint256,uint256)
+a2742ee8: v3ComputeSwapStep(uint160,uint160,uint128,int256,uint24)
