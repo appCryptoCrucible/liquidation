@@ -14,3 +14,4 @@
 
 pub mod archive;
 pub mod diff;
+pub mod recall;
