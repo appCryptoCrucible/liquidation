@@ -1,0 +1,64 @@
+{
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "title": "LLC miss first-touch vs steady",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "liq_llc_miss_first_touch",
+          "legendFormat": "first-touch",
+          "refId": "A"
+        },
+        {
+          "expr": "liq_llc_miss_steady",
+          "legendFormat": "steady",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "dTLB miss first-touch vs steady",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "liq_dtlb_miss_first_touch",
+          "legendFormat": "first-touch",
+          "refId": "A"
+        },
+        {
+          "expr": "liq_dtlb_miss_steady",
+          "legendFormat": "steady",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Node lag / oracle staleness / MEV-Share / channel drop / gas / halts",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "liq_node_lag_blocks", "refId": "A" },
+        { "expr": "liq_oracle_staleness_ms", "refId": "B" },
+        { "expr": "liq_mevshare_up", "refId": "C" },
+        { "expr": "liq_channel_drop_total", "refId": "D" },
+        { "expr": "liq_gas_spend_wei", "refId": "E" },
+        { "expr": "liq_halt_fired", "refId": "F" }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["liq", "health"],
+  "title": "09A Health",
+  "uid": "liq-09a-health",
+  "version": 1
+}

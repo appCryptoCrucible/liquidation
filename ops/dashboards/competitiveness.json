@@ -1,0 +1,38 @@
+{
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "title": "tick to would-have-been-included vs winner inclusion",
+      "type": "histogram",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "liq_tick_to_inclusion_ms",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Outbid bid gap",
+      "type": "histogram",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 10 },
+      "targets": [
+        {
+          "expr": "liq_outbid_gap_wei",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["liq", "competitiveness"],
+  "title": "09A Competitiveness",
+  "uid": "liq-09a-competitiveness",
+  "version": 1
+}

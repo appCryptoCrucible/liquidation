@@ -1,0 +1,4 @@
+[alerts]
+# Operator fills these. Empty means alarms fail closed (logged error, no send).
+ntfy_url = ""
+telegram_url = ""
