@@ -61,6 +61,7 @@ bytemuck = { version = "=1.25.2", features = ["derive"] }
 crc32fast = { version = "=1.5.2", default-features = false, features = ["std"] }
 fixedbitset = "=0.5.7"
 mimalloc = { version = "=0.1.52", default-features = false }
+core_affinity = "=0.8.3"
 proptest = "=1.11.0"
 loom = "=0.7.2"
 criterion = { version = "=0.8.2", features = ["html_reports"] }

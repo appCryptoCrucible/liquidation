@@ -1,0 +1,89 @@
+# Placeholder CPU topology + thread pin map (WP 16A / GUIDE 16 §3b).
+#
+# THIS FILE IS NOT A LIVE HARDWARE READ. A1 regenerates it on the box from
+# `/sys/devices/system/cpu/cpu*/cache/index3/shared_cpu_list` (and `lscpu -e` /
+# `lstopo` for NUMA). Do not guess production CCX grouping: core numbering is
+# not contiguous per CCX on every part (GUIDE 16 §2).
+#
+# Layout below is an AMD EPYC-style template: 8-core L3 slices, NUMA 0 + 1,
+# CCX 0 exclusive for the hot path. Replace `[[l3]]` lists with the real
+# `shared_cpu_list` strings before going live.
+
+schema = 1
+
+[[l3]]
+# CCX 0 — exclusive hot path (ExEx/hot, fusion, engine). Nothing else.
+shared_cpu_list = "0-7"
+numa = 0
+isolated = true
+exclusive_hot = true
+
+[[l3]]
+# Isolated sim workers (revm warm cache). Same NUMA, not CCX 0.
+shared_cpu_list = "8-15"
+numa = 0
+isolated = true
+exclusive_hot = false
+
+[[l3]]
+# Node B / non-isolated: route cache, submit runtime.
+shared_cpu_list = "16-23"
+numa = 1
+isolated = false
+exclusive_hot = false
+
+[[l3]]
+# Node B / non-isolated: telemetry, drift.
+shared_cpu_list = "24-31"
+numa = 1
+isolated = false
+exclusive_hot = false
+
+# One OS thread → one logical CPU. Names: liq-<crate>-<role>.
+[[thread]]
+name = "liq-node-hot"
+core = 0
+
+[[thread]]
+name = "liq-oracle-fusion"
+core = 1
+
+[[thread]]
+name = "liq-engine-recompute"
+core = 2
+
+[[thread]]
+name = "liq-sim-worker-0"
+core = 8
+
+[[thread]]
+name = "liq-sim-worker-1"
+core = 9
+
+[[thread]]
+name = "liq-sim-worker-2"
+core = 10
+
+[[thread]]
+name = "liq-sim-worker-3"
+core = 11
+
+[[thread]]
+name = "liq-router-cache"
+core = 16
+
+[[thread]]
+name = "liq-exec-submit"
+core = 17
+
+[[thread]]
+name = "liq-oracle-cex"
+core = 18
+
+[[thread]]
+name = "liq-obs-telemetry"
+core = 24
+
+[[thread]]
+name = "liq-obs-drift"
+core = 25

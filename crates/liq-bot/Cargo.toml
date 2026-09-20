@@ -4,5 +4,33 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[lints]
-workspace = true
+[features]
+# Test/CI only: swap mimalloc for PanicOnAlloc (RUST-CONV §6). Production
+# builds leave this off. Default cargo features stay empty so `cargo test -p
+# liq-bot` still installs mimalloc.
+alloc-assert = []
+
+[dependencies]
+core_affinity = { workspace = true }
+mimalloc = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+
+# Cannot inherit workspace lints: workspace `unsafe_code = "forbid"` is not
+# overridable, and Cargo rejects mixing `lints.workspace = true` with overrides.
+[lints.rust]
+unsafe_code = "deny"
+unreachable_pub = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+float_arithmetic = "deny"
+await_holding_lock = "deny"
+mutex_atomic = "warn"
+rc_buffer = "warn"
