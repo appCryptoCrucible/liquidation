@@ -10,6 +10,9 @@ workspace = true
 [dependencies]
 liq-types = { path = "../liq-types" }
 liq-protocol = { path = "../liq-protocol" }
+liq-flash = { path = "../liq-flash" }
+liq-plan = { path = "../liq-plan" }
+liq-exec = { path = "../liq-exec" }
 alloy-primitives = { workspace = true, features = ["std"] }
 alloy-sol-types = { workspace = true, features = ["std"] }
 arc-swap = { workspace = true }
@@ -24,8 +27,6 @@ tracing = { workspace = true }
 uniswap_v3_math = { version = "=0.6.2", default-features = false }
 
 [dev-dependencies]
-# 07B eligibility filter, driven with the real RouteCache in cache tests.
-liq-flash = { path = "../liq-flash" }
 proptest = { workspace = true }
 criterion = { workspace = true }
 
