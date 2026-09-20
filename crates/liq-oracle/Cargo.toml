@@ -10,19 +10,26 @@ liq-protocol = { path = "../liq-protocol" }
 liq-config = { path = "../liq-config" }
 alloy-primitives = { workspace = true, features = ["std", "serde"] }
 alloy-sol-types = { workspace = true, features = ["std"] }
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 figment = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 triple_buffer = { workspace = true }
 smallvec = { workspace = true }
+reqwest = { workspace = true }
+eventsource-stream = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "time", "net", "io-util"] }
 
 [dev-dependencies]
 liq-node = { path = "../liq-node" }
 alloy-primitives = { workspace = true, features = ["std", "serde"] }
 arrayvec = { workspace = true }
 figment = { workspace = true, features = ["toml", "env", "test"] }
-tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tokio = { workspace = true, features = ["rt", "macros", "time", "net", "io-util"] }
 serde_json = { workspace = true }
 
 [lints]

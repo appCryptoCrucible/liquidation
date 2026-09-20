@@ -21,6 +21,7 @@ use thiserror::Error;
 
 pub mod canonical;
 pub mod feeds;
+pub mod mevshare;
 pub mod publish;
 
 pub use canonical::{answer_to_ray, stale_after, CanonicalBook, ANSWER_UPDATED_TOPIC0};
