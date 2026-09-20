@@ -33,6 +33,122 @@ CREATE TABLE IF NOT EXISTS daily_reconcile (
 /// 1% = 100 bps. Daily chain vs ledger.
 pub const RECONCILE_MAX_BPS: u32 = 100;
 
+const SECS_PER_UTC_DAY: i64 = 86_400;
+
+fn accumulate_net_wei(
+    strings: impl Iterator<Item = Result<String, rusqlite::Error>>,
+) -> Result<U256, LedgerError> {
+    let mut acc = U256::ZERO;
+    for s in strings {
+        let s = s?;
+        let v = U256::from_str_radix(&s, 10).map_err(|_| LedgerError::Parse("net_wei"))?;
+        acc = acc
+            .checked_add(v)
+            .ok_or(LedgerError::Parse("net_wei overflow"))?;
+    }
+    Ok(acc)
+}
+
+/// Inclusive start / exclusive end Unix seconds for UTC calendar `YYYY-MM-DD`.
+/// Invalid date strings fail closed (no guessed month lengths or silent wrap).
+fn unix_range_utc_day(day: &str) -> Result<(i64, i64), LedgerError> {
+    let b = day.as_bytes();
+    if b.len() != 10 || b.get(4).copied() != Some(b'-') || b.get(7).copied() != Some(b'-') {
+        error!(day, "reconcile day must be YYYY-MM-DD");
+        return Err(LedgerError::Parse("day"));
+    }
+    let y = parse_ascii_i32(b.get(0..4).ok_or(LedgerError::Parse("day"))?)?;
+    let m = parse_ascii_u8(b.get(5..7).ok_or(LedgerError::Parse("day"))?)?;
+    let d = parse_ascii_u8(b.get(8..10).ok_or(LedgerError::Parse("day"))?)?;
+    if !(1..=12).contains(&m) || d < 1 || d > days_in_month(y, m) {
+        error!(day, "reconcile day is not a valid Gregorian UTC date");
+        return Err(LedgerError::Parse("day"));
+    }
+    let days = days_from_civil(y, m, d)?;
+    let start = days
+        .checked_mul(SECS_PER_UTC_DAY)
+        .ok_or(LedgerError::Parse("day"))?;
+    let end = start
+        .checked_add(SECS_PER_UTC_DAY)
+        .ok_or(LedgerError::Parse("day"))?;
+    Ok((start, end))
+}
+
+fn parse_ascii_i32(b: &[u8]) -> Result<i32, LedgerError> {
+    let mut n: i32 = 0;
+    for &c in b {
+        if !c.is_ascii_digit() {
+            return Err(LedgerError::Parse("day"));
+        }
+        let digit = i32::from(c.checked_sub(b'0').ok_or(LedgerError::Parse("day"))?);
+        n = n
+            .checked_mul(10)
+            .and_then(|n| n.checked_add(digit))
+            .ok_or(LedgerError::Parse("day"))?;
+    }
+    Ok(n)
+}
+
+fn parse_ascii_u8(b: &[u8]) -> Result<u8, LedgerError> {
+    let n = parse_ascii_i32(b)?;
+    u8::try_from(n).map_err(|_| LedgerError::Parse("day"))
+}
+
+fn is_leap_year(y: i32) -> bool {
+    y.rem_euclid(4) == 0 && (y.rem_euclid(100) != 0 || y.rem_euclid(400) == 0)
+}
+
+fn days_in_month(y: i32, m: u8) -> u8 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if is_leap_year(y) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Days since Unix epoch date 1970-01-01 (Howard Hinnant civil_from_days inverse).
+fn days_from_civil(y: i32, m: u8, d: u8) -> Result<i64, LedgerError> {
+    let y0 = i64::from(y);
+    let m = i64::from(m);
+    let d = i64::from(d);
+    let y = if m <= 2 {
+        y0.checked_sub(1).ok_or(LedgerError::Parse("day"))?
+    } else {
+        y0
+    };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let month_shift = if m > 2 {
+        m.checked_sub(3).ok_or(LedgerError::Parse("day"))?
+    } else {
+        m.checked_add(9).ok_or(LedgerError::Parse("day"))?
+    };
+    let doy = 153i64
+        .checked_mul(month_shift)
+        .and_then(|v| v.checked_add(2))
+        .and_then(|v| v.checked_div(5))
+        .and_then(|v| v.checked_add(d))
+        .and_then(|v| v.checked_sub(1))
+        .ok_or(LedgerError::Parse("day"))?;
+    let doe = yoe
+        .checked_mul(365)
+        .and_then(|v| v.checked_add(yoe.div_euclid(4)))
+        .and_then(|v| v.checked_sub(yoe.div_euclid(100)))
+        .and_then(|v| v.checked_add(doy))
+        .ok_or(LedgerError::Parse("day"))?;
+    era.checked_mul(146097)
+        .and_then(|v| v.checked_add(doe))
+        .and_then(|v| v.checked_sub(719468))
+        .ok_or(LedgerError::Parse("day"))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum LedgerError {
     #[error("sqlite: {0}")]
@@ -114,20 +230,23 @@ impl PnlLedger {
     pub fn sum_net(&self) -> Result<U256, LedgerError> {
         let mut stmt = self.conn.prepare("SELECT net_wei FROM liquidations")?;
         let strings = stmt.query_map([], |r| r.get::<_, String>(0))?;
-        let mut acc = U256::ZERO;
-        for s in strings {
-            let s = s?;
-            let v = U256::from_str_radix(&s, 10).map_err(|_| LedgerError::Parse("net_wei"))?;
-            acc = acc
-                .checked_add(v)
-                .ok_or(LedgerError::Parse("net_wei overflow"))?;
-        }
-        Ok(acc)
+        accumulate_net_wei(strings)
+    }
+
+    /// Sum `net_wei` for rows whose `ts_unix` falls in UTC calendar `day` (`YYYY-MM-DD`).
+    pub fn sum_net_for_day(&self, day: &str) -> Result<U256, LedgerError> {
+        let (start, end) = unix_range_utc_day(day)?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT net_wei FROM liquidations WHERE ts_unix >= ?1 AND ts_unix < ?2")?;
+        let strings = stmt.query_map(params![start, end], |r| r.get::<_, String>(0))?;
+        accumulate_net_wei(strings)
     }
 
     /// `chain_net_wei` is the Executor on-chain delta for `day` (caller reads chain).
+    /// Ledger side is `sum_net_for_day(day)` — not lifetime cumulative `sum_net()`.
     pub fn reconcile_day(&self, day: &str, chain_net_wei: U256) -> Result<u32, LedgerError> {
-        let ledger = self.sum_net()?;
+        let ledger = self.sum_net_for_day(day)?;
         let diff = if ledger > chain_net_wei {
             ledger.saturating_sub(chain_net_wei)
         } else {
@@ -179,9 +298,13 @@ mod tests {
     use liq_types::FlashProvider;
 
     fn row(net: u64, flash: FlashProvider) -> LiquidationRow {
+        row_at(net, flash, 1_789_862_400)
+    }
+
+    fn row_at(net: u64, flash: FlashProvider, ts_unix: i64) -> LiquidationRow {
         LiquidationRow {
             trace: TraceId::from_raw(1),
-            ts_unix: 1,
+            ts_unix,
             protocol: ProtocolId(0),
             flash,
             flash_fee_wei: U256::from(3u64),
@@ -225,5 +348,48 @@ mod tests {
         let mut r = row(1, FlashProvider::SkyDss);
         r.outcome.clear();
         assert!(matches!(l.insert(&r), Err(LedgerError::OutcomeEmpty)));
+    }
+
+    /// Day-2 reconcile must ignore day-1 rows. Cumulative `sum_net` would dilute a
+    /// day-1 11.11% miss into 100 bps on day 2 (`<= RECONCILE_MAX_BPS`) and hide it.
+    #[test]
+    fn reconcile_day_uses_only_that_days_rows() {
+        assert_eq!(
+            unix_range_utc_day("2026-09-20").unwrap(),
+            (1_789_862_400, 1_789_948_800)
+        );
+        assert_eq!(
+            unix_range_utc_day("2026-09-21").unwrap(),
+            (1_789_948_800, 1_790_035_200)
+        );
+        let l = PnlLedger::open_memory().unwrap();
+        let day1_ts = 1_789_862_400;
+        let day2_ts = 1_789_948_800;
+        l.insert(&row_at(10_000, FlashProvider::Aave, day1_ts))
+            .unwrap();
+        l.insert(&row_at(1_000_000, FlashProvider::UniV3, day2_ts))
+            .unwrap();
+        assert_eq!(l.sum_net().unwrap(), U256::from(1_010_000u64));
+        assert_eq!(
+            l.sum_net_for_day("2026-09-20").unwrap(),
+            U256::from(10_000u64)
+        );
+        assert_eq!(
+            l.sum_net_for_day("2026-09-21").unwrap(),
+            U256::from(1_000_000u64)
+        );
+        let day1_err = l
+            .reconcile_day("2026-09-20", U256::from(9_000u64))
+            .unwrap_err();
+        assert!(matches!(day1_err, LedgerError::Reconcile { bps } if bps > RECONCILE_MAX_BPS));
+        assert_eq!(
+            l.reconcile_day("2026-09-21", U256::from(1_000_000u64))
+                .unwrap(),
+            0
+        );
+        let cumulative_bps = (U256::from(1_010_000u64) - U256::from(1_000_000u64))
+            * U256::from(10_000u64)
+            / U256::from(1_000_000u64);
+        assert_eq!(cumulative_bps, U256::from(u64::from(RECONCILE_MAX_BPS)));
     }
 }
