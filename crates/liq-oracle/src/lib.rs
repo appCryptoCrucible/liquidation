@@ -1,8 +1,9 @@
-﻿//! Price feeds, canonical PriceVector publish, MEV-Share, and fusion.
+//! Price feeds, canonical PriceVector publish, MEV-Share, and fusion.
 //!
 //! WP 06A-1: feed registry (`feeds`), canonical book (`canonical`),
-//! triple-buffer publish (`publish`). 06A-2 derived; 06B MEV-Share; 06D
-//! public-mempool `transmit()`; 08B governance timelock poller.
+//! triple-buffer publish (`publish`). 06A-2 derived; 06B MEV-Share; 06C
+//! CEX + AggregatorSim + fusion; 06D public-mempool `transmit()`; 08B
+//! governance timelock poller.
 
 #![deny(clippy::todo, clippy::unimplemented)]
 #![cfg_attr(
@@ -20,15 +21,26 @@
 use alloy_primitives::Address;
 use thiserror::Error;
 
+pub mod aggsim;
 pub mod canonical;
+pub mod cex;
 pub mod derived;
 pub mod feeds;
+pub mod fusion;
 pub mod governance;
 pub mod mempool_oracle;
 pub mod mevshare;
 pub mod publish;
 
+pub use aggsim::{
+    deviation_bps, estimate_eta, predicted_confidence, AggregatorSim, PendingUpdate, ETA_SEAM_SECS,
+    HEARTBEAT_CONFIDENCE_BPS,
+};
 pub use canonical::{answer_to_ray, stale_after, CanonicalBook, ANSWER_UPDATED_TOPIC0};
+pub use cex::{
+    decimal_to_ray, mid_ray, parse_cex_text, push_cex, run_venue, CexTick, CexVenue, ForbiddenHttp,
+    CHANNEL_CAP,
+};
 pub use derived::{
     CrossOrder, DerivedBook, DerivedSpec, Formula, RateScale, DERIVED_CONFIDENCE_CERTAIN,
 };
@@ -36,6 +48,7 @@ pub use feeds::{
     assert_protocol_sources, resolve_registry, FeedFailure, FeedSet, FeedSpec, FeedsBoot,
     FeedsConfig, Mechanism, RegistryOracle,
 };
+pub use fusion::{split_fusion, venues_to_spawn, Fusion, FUSION_CHANNEL_CAP};
 pub use governance::{
     execution_due, GovernanceConfig, GovernancePoller, PayloadView, Timelock, TimelockKind,
     PIN_BLOCK,
@@ -114,6 +127,18 @@ pub enum OracleError {
     Fixed(#[from] liq_types::fixed::FixedError),
     #[error("OCR transmit() calldata could not be decoded")]
     BadTransmit,
+    #[error("unknown CEX venue in source '{0}' (tracked: binance, coinbase, kraken, okx)")]
+    UnknownCexVenue(String),
+    #[error("CEX source '{0}' is not 'venue:symbol'")]
+    BadCexSource(String),
+    #[error("CEX decimal price is not a positive finite decimal")]
+    BadCexPrice,
+    #[error("CEX book is crossed (bid > ask)")]
+    CrossedBook,
+    #[error("CEX websocket: {0}")]
+    CexWs(String),
+    #[error("feed has more than 8 CEX sources")]
+    TooManyCexSources,
     #[error("governance read failed: {0}")]
     Governance(String),
     #[error("payload {id} ABI too short ({len} bytes)")]

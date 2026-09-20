@@ -21,6 +21,8 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 triple_buffer = { workspace = true }
 smallvec = { workspace = true }
+crossbeam-channel = { workspace = true }
+tokio-tungstenite = { workspace = true }
 reqwest = { workspace = true }
 eventsource-stream = { workspace = true }
 futures-util = { workspace = true }
