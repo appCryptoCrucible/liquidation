@@ -1,0 +1,86 @@
+//! Encode / validate failures. Every variant is fail-closed: the plan is
+//! not emitted.
+
+use alloy_primitives::{Address, B256};
+use liq_types::FlashProvider;
+use thiserror::Error;
+
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+pub enum EncodeError {
+    #[error("plan has zero flash groups")]
+    NoGroups,
+    #[error("group has zero liquidation legs")]
+    NoLegs,
+    #[error("group count exceeds u8")]
+    TooManyGroups,
+    #[error("leg count exceeds u8")]
+    TooManyLegs,
+    #[error("swap data length {0} exceeds u16")]
+    DataTooLong(usize),
+    #[error("collateral {collateral} closed by {closers} TAKE_BALANCE legs (need 1)")]
+    BadCollateralClosure { collateral: Address, closers: usize },
+    #[error("EXACT_OUT leg after TAKE_BALANCE in the same blob")]
+    ExactOutAfterTakeBalance,
+    #[error("repay swap tokenOut is not the group's debt asset {group}")]
+    RepayTargetMismatch { group: Address },
+    #[error("profit swap tokenOut is not WETH {weth}")]
+    ProfitTargetNotWeth { weth: Address },
+    #[error("too many cascade sources for debt {debt}: {n} (cap 3)")]
+    TooManySourcesForDebt { debt: Address, n: usize },
+    #[error("duplicate provider/source for debt {debt} provider {provider:?}")]
+    DuplicateSourceForDebt {
+        debt: Address,
+        provider: FlashProvider,
+    },
+    #[error("V4 reserve id {id} on spoke {spoke} is not pinned")]
+    V4ReserveUnpinned { spoke: Address, id: u16 },
+    #[error("V4 reserve id {id} on spoke {spoke} pins {pinned}, leg has {got}")]
+    V4ReserveMismatch {
+        spoke: Address,
+        id: u16,
+        pinned: Address,
+        got: Address,
+    },
+    #[error("V4 leg tail is not two u16 reserve ids")]
+    V4TailShape,
+    #[error("Morpho market id {id} is not in the registry")]
+    MorphoIdUnknown { id: B256 },
+    #[error("Morpho id {id} is loan={loan} coll={coll}, leg has debt={debt} coll={got_coll}")]
+    MorphoTokenMismatch {
+        id: B256,
+        loan: Address,
+        coll: Address,
+        debt: Address,
+        got_coll: Address,
+    },
+    #[error("Morpho id {id} keccak(MarketParams) mismatch")]
+    MorphoIdHashMismatch { id: B256 },
+    #[error("Morpho leg tail is not a 32-byte Id")]
+    MorphoTailShape,
+    #[error("V3 leg must have empty tail")]
+    V3TailShape,
+    #[error("unknown swap venue {0}")]
+    UnknownVenue(u8),
+    #[error("UniV3 pool-direct data must be 20 bytes, got {0}")]
+    BadPoolDataLen(usize),
+    #[error("router data must start with a 20-byte target, got {0}")]
+    BadRouterDataLen(usize),
+    #[error("zero address in plan field {0}")]
+    ZeroAddress(&'static str),
+    #[error("protocol_pull {pull} is zero")]
+    ZeroPull { pull: u128 },
+    #[error("EXACT_OUT repay {exact_out} exceeds protocol pull {pull} (under-seizure)")]
+    UnderSeizure { exact_out: u128, pull: u128 },
+    #[error("EXACT_OUT repay {exact_out} != protocol pull {pull}")]
+    RepayNotSizedToPull { exact_out: u128, pull: u128 },
+    #[error("surplus debt {debt} (flash {flash} > pull {pull}) has no TAKE_BALANCE profit leg")]
+    SurplusDebtUnrouted {
+        debt: Address,
+        flash: u128,
+        pull: u128,
+    },
+    #[error("liq-exec wire: {0}")]
+    Wire(#[from] liq_exec::wire::WireError),
+}
+
+pub type Result<T> = core::result::Result<T, EncodeError>;

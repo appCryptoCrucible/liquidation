@@ -3172,6 +3172,15 @@ dependencies = [
 [[package]]
 name = "liq-plan"
 version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "liq-exec",
+ "liq-protocol",
+ "liq-types",
+ "proptest",
+ "thiserror",
+]
 
 [[package]]
 name = "liq-protocol"

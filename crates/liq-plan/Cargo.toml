@@ -4,5 +4,18 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[dependencies]
+liq-types = { path = "../liq-types" }
+liq-protocol = { path = "../liq-protocol" }
+liq-exec = { path = "../liq-exec" }
+alloy-primitives = { workspace = true, features = ["std"] }
+alloy-sol-types = { workspace = true, features = ["std"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+alloy-primitives = { workspace = true, features = ["std"] }
+liq-types = { path = "../liq-types" }
+proptest = { workspace = true }
+
 [lints]
 workspace = true

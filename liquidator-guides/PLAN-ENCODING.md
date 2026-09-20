@@ -16,8 +16,8 @@ last, once, globally.
 ```
 [ header 35 ]
 [ groupCount 1 ]
-  ├─ group 0: [ head 59 ][ liq legs 77×N ][ repay swap legs ]
-  ├─ group 1: [ head 59 ][ liq legs 77×N ][ repay swap legs ]
+  ├─ group 0: [ head 59 ][ liq legs 77+tail × N ][ repay swap legs ]
+  ├─ group 1: [ head 59 ][ liq legs 77+tail × N ][ repay swap legs ]
   └─ …
 [ profitSwapCount 1 ][ profit swap legs ]
 ```
@@ -54,7 +54,7 @@ per group, head = 59 bytes:
   16 bytes  flashAmount      u128 — may exceed the sum of repays, deliberately
   1 byte    liqCount
   1 byte    repaySwapCount
-then: liqCount × 77 bytes of liquidation legs
+then: liqCount liquidation legs (77 fixed bytes + adapter tail)
 then: repaySwapCount swap legs (all EXACT_OUT into debtAsset)
 ```
 
@@ -123,18 +123,44 @@ Provider id `4` is **Sky DSS Flash** (reclaimed from the Balancer reservation �
 docs-only stage; nothing on-chain depended on revert-on-4). Balancer remains out
 of scope and has no provider id.
 
-#### Liquidation legs (77 bytes each)
+#### Liquidation legs (77 fixed bytes + adapter tail)
 
 ```
-  1 byte    adapter          0 AaveV3 · 1 AaveV4 · … (GUIDE 15 assigns)
-  20 bytes  market           Aave Pool · V4 Spoke · Morpho market
+  1 byte    adapter          0 AaveV3 · 1 AaveV4 · 2 MorphoBlue  (ExecutorAdapter / A_*)
+  20 bytes  market           Aave V3 Pool · V4 Spoke · Morpho singleton
   20 bytes  borrower
   20 bytes  collateralAsset
   16 bytes  repayAmount      u128 — what we ask the protocol to take
+then: adapter tail (`PlanDecoder.tailLen` / `ExecutorAdapter::tail_len`)
+  Aave V3     0 bytes     reserves are addressed by underlying
+  Aave V4     4 bytes     u16 collateralReserveId ‖ u16 debtReserveId
+                          (Spoke.liquidationCall; the 20-byte market is the Spoke)
+  Morpho Blue 32 bytes    bytes32 market Id (keccak256(abi.encode(MarketParams));
+                          Morpho.liquidate takes MarketParams recovered via
+                          idToMarketParams)
 ```
+
+The 20-byte `market` field cannot carry V4 reserve ids or a Morpho `Id`. Off-chain
+`liq-plan::validate` pins V4 ids to the leg's token addresses from adapter config
+(the contract has no address→id view) and checks that the Morpho Id's
+`(loanToken, collateralToken)` equals `(group.debtAsset, leg.collateralAsset)` —
+on-chain a mismatch is `LegMismatch` and reverts the whole plan.
 
 `adapter` is per-leg, so one group may span protocols — Alice on Aave V3 and Bob
 on Aave V4, both owing USDC, is one group.
+
+**Exact-out repay sizing.** `L_EXACT_OUT` repay legs are sized to the protocol's
+**actual pull**, not the requested `repayAmount`: V3 close factor, V4 target-HF
+clamp, Morpho `toAssetsUp(toSharesDown(a)) ≤ a`. Over-pull vs that amount is
+under-seizure (`TransferFailed` in the swap callback — plan revert). Dust from
+an over-ask that the protocol did not take is surplus debt token: route it with
+an `L_TAKE_BALANCE` profit leg on the group's `debtAsset` (unless the debt
+already is WETH), or it is reachable only by `sweep` and the profit guard
+reverts `Unprofitable`.
+
+**Surplus-borrow / clamp.** `flashAmount` may exceed the sum of actual pulls
+(over-borrow, or V3/V4 clamp). The encoder must emit `L_TAKE_BALANCE` on that
+debt asset into WETH; otherwise the surplus has no route to the profit asset.
 
 ### 1c. Swap legs
 
