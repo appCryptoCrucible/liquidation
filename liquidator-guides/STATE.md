@@ -86,7 +86,7 @@ commit on the WP's owned paths is expired by the next coordinator (§4.2).
 | WP | Name | Depends on | Gate / Track | Tier | Status | claimed_by | Evidence |
 |---|---|---|---|---|---|---|---|
 | C1 | Registry discovery | — | — | T3 | `in_progress` (review) | coord-02 2026-09-19T13:45Z; review f84b7616 2026-09-19T18:29Z | build done: `tools/registry/discover.py` + `registry/registry.json` (2.84MB) + `registry/registry.meta.json` @ block 26012212; 128 admitted (D27 $50k); univ3 counts bug + checkpointing bug fixed (ed0c5776); 224 failures classified `no_such_function` (no fabrication); reviewer independently spot-checks failures on-chain |
-| C2 | Registry re-derivation + identity check | C1 | — | T2 | `todo` | | |
+| C2 | Registry re-derivation + identity check | C1 | — | T2 | `in_progress` | coord-02 02:45Z (builder b8624508, Grok 4.6) |
 | C3 | Prune filter from committed registry | C2 | — | T3 | `todo` | | draft exists: `d15_receipts_log_filter.toml` (1533 addrs) — regenerate from C2's registry, add flash sources + aggregators |
 | H1 | **Human:** prune profile sign-off | C3 | — | human | `todo` | | |
 | A1 | OS install, strip, TuneD | — | — | human+T2 | `todo` | | |
