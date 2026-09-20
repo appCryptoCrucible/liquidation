@@ -1,0 +1,82 @@
+# Liquity V2 (BOLD) mainnet — `liquity/bold` @ `c8a5a4ee2e9dc024905856b6698a77d849c68c7e`
+#
+# Addresses from `contracts/addresses/1.json` at that pin.
+# MCR / CCR / penalties are the `AddressesRegistry` immutables read at boot
+# (pin deploy-script values). The adapter asserts Constants.sol *bounds*,
+# not this table, as runtime truth. Re-read the registry at boot and fail
+# closed if the live immutables disagree with this file.
+#
+# Intern: BOLD 418, wstETH 525, rETH 734, WETH 813 (registry.tokens sort).
+# Family `liquity-v2` is not interned (9 families → ids 0..=8); protocol = 9.
+# Markets 3481..=3483 are the first unused intern slots after 3480 (Spark).
+# Feeds 27..=29 are config-local Liquity PriceFeeds (15 interned oracles,
+# Spark used 15..=26). BOLD has no USD source (feed 30); PriceVector required.
+
+protocol = 9
+pinned_through = 22516117
+
+[bold]
+underlying = "0x6440f144b7e50d6a8439336510312d2f54beb01d"
+asset = 418
+feed = 30
+decimals = 18
+
+[weth]
+underlying = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+asset = 813
+feed = 27
+decimals = 18
+
+[[branches]]
+coll_symbol = "WETH"
+market = 3481
+trove_manager = "0x7bcb64b2c9206a5b699ed43363f6f98d4776cf5a"
+borrower_operations = "0x372abd1810eaf23cb9d941bbe7596dfb2c46bc65"
+stability_pool = "0x5721cbbd64fc7ae3ef44a0a3f9a790a9264cf9bf"
+sorted_troves = "0xa25269e41bd072513849f2e64ad221e84f3063f4"
+addresses_registry = "0x20f7c9ad66983f6523a0881d0f82406541417526"
+price_feed = "0xcc5f8102eb670c89a4a3c567c13851260303c24f"
+coll_token = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+coll_asset = 813
+coll_decimals = 18
+coll_feed = 27
+mcr = 1100000000000000000
+ccr = 1500000000000000000
+penalty_sp = 50000000000000000
+penalty_redist = 100000000000000000
+
+[[branches]]
+coll_symbol = "wstETH"
+market = 3482
+trove_manager = "0xa2895d6a3bf110561dfe4b71ca539d84e1928b22"
+borrower_operations = "0xa741a32f9dcfe6adba088fd0f97e90742d7d5da3"
+stability_pool = "0x9502b7c397e9aa22fe9db7ef7daf21cd2aebe56b"
+sorted_troves = "0x84eb85a8c25049255614f0536bea8f31682e86f1"
+addresses_registry = "0x8d733f7ea7c23cbea7c613b6ebd845d46d3aac54"
+price_feed = "0xe7aa2ba9e086a379d3beb224098bc634a46e314e"
+coll_token = "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
+coll_asset = 525
+coll_decimals = 18
+coll_feed = 28
+mcr = 1200000000000000000
+ccr = 1600000000000000000
+penalty_sp = 50000000000000000
+penalty_redist = 200000000000000000
+
+[[branches]]
+coll_symbol = "rETH"
+market = 3483
+trove_manager = "0xb2b2abeb5c357a234363ff5d180912d319e3e19e"
+borrower_operations = "0xe8119fc02953b27a1b48d2573855738485a17329"
+stability_pool = "0xd442e41019b7f5c4dd78f50dc03726c446148695"
+sorted_troves = "0x14d8d8011df2b396ed2bbc4959bb73250324f386"
+addresses_registry = "0x6106046f031a22713697e04c08b330ddaf3e8789"
+price_feed = "0x34f1e9c7dcc279ec70d3c4488eb2d80fba8b7b2b"
+coll_token = "0xae78736cd615f374d3085123a210448e74fc6393"
+coll_asset = 734
+coll_decimals = 18
+coll_feed = 29
+mcr = 1200000000000000000
+ccr = 1600000000000000000
+penalty_sp = 50000000000000000
+penalty_redist = 200000000000000000
