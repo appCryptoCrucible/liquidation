@@ -4,5 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[dependencies]
+liq-types = { path = "../liq-types" }
+liq-flash = { path = "../liq-flash" }
+liq-state = { path = "../liq-state" }
+alloy-primitives = { workspace = true }
+parking_lot = { workspace = true }
+rusqlite = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
 [lints]
 workspace = true
