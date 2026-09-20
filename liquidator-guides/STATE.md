@@ -105,7 +105,7 @@ commit on the WP's owned paths is expired by the next coordinator (§4.2).
 | 03C | Event coverage audits (V4, V3) | 00A | — | T2 | `done` | coord-02 2026-09-19T15:08Z | aave-v4.md (59 rows, aave/aave-v4 @ 40232a0a) + aave-v3.md (61 rows, aave-dao/aave-v3-origin @ 8305565ae = v3.7.0+1); every state-changing path from real source; each row names DirtySet; CI header parseable. Reviewer Fable PASS: all 4 source pins verified via GitHub API; ALL 120 topic0 recomputed byte-for-byte (mutation caught); all absents confirmed; 4 polish (v3 header date, source sentence, deposit alias, oracle/sentinel ProtocolWide→halt). Carry-forward: 06A-1 AssetSourceUpdated/UpdateReserveSource fail-closed, 04B PriceOracleSentinel L2, 03A/04B router no-error known-addr/unknown-topic, 07A FlashloanPremiumTotalUpdated, 14A alert-class |
 | W | Liquidation watcher + ground-truth decoder | 00C, 00D | A2 started | T2 | `todo` | | |
 | A4 | Watcher live (start clock: Recall) | W | — | T3 flip | `todo` | | |
-| 06A-1 | Feed registry + canonical PriceVector | 00C, 00D, 03A | — | T2 | `todo` | | |
+| 06A-1 | Feed registry + canonical PriceVector | 00C, 00D, 03A | — | T2 → T1 | `in_progress` | coord-02 08:41Z; builder 25aad1c6 Grok 4.6 running | |
 | 06A-2 | Derived pricing adapters | 06A-1 | — | T1 | `todo` | | |
 | 04A | Aave V4 adapter | 01, 02A, 03A, 03C, 06A-1 | — | T1 | `todo` | | |
 | 04B | Aave V3 adapter | 04A, 03C | — | T2 | `todo` | | |
