@@ -149,7 +149,6 @@ impl Config {
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn underlying_of(&self, asset: AssetId) -> Option<Address> {
         self.assets
             .iter()

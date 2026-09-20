@@ -20,6 +20,8 @@ pub(crate) fn quote(
 ) -> Result<Option<Quote>> {
     let t0 = terms(pos)?;
     let (t, health) = finish(&t0, px)?;
+    // BadDebt is zero collateral only (`NoCollateralToLiquidate`). LTV ≥ 1e18
+    // with coll remaining is Liquidatable and quotes `maxLiquidation`.
     if health.state != HealthState::Liquidatable {
         return Ok(None);
     }

@@ -28,10 +28,25 @@
 //! Dust: hook `require(repay <= maxCover)` → `FullLiquidationRequired`.
 //! Solvent borrower → `UserIsSolvent` (`debtConfig.silo == 0` / `isSolvent`).
 //!
+//! # Health state (pin `PartialLiquidation` / `PartialLiquidationLib`)
+//!
+//! | condition | state |
+//! |---|---|
+//! | no debt, or `ltv <= collateralConfig.lt` (`isSolvent`) | Healthy |
+//! | debt and **zero** coll+protected assets (`NoCollateralToLiquidate`) | BadDebt |
+//! | paused silo | Blocked |
+//! | else, including `ltv >= 1e18` with coll remaining | Liquidatable |
+//!
+//! `_BAD_DEBT = 1e18` only widens `liquidationPreview` cover (any amount).
+//! `maxLiquidation` still returns amounts when `ltv > lt`.
+//!
 //! # 10R wire ABI (not encoded here)
 //!
-//! `encode` returns [`ProtocolError::ExecutorUnwired`] — no
-//! `ExecutorAdapter` discriminant yet (D48). Calldata for the later WP:
+//! `encode` validates then returns [`ProtocolError::ExecutorUnwired`] — no
+//! `ExecutorAdapter` discriminant yet (D48). Order: ProtocolMismatch,
+//! LegOutOfRange, CallbackProviderMismatch, ZeroRecipient,
+//! FundingAssetMismatch, FundingShort, AmountTooLarge, Unwired.
+//! Calldata for the later WP:
 //!
 //! ```text
 //! hook.liquidationCall(address _collateralAsset, address _debtAsset,
@@ -96,6 +111,48 @@ fn halt_topics(out: &mut Vec<LogFilter>, address: Address) {
     push_topic(out, address, halt::Upgraded::SIGNATURE_HASH);
     push_topic(out, address, halt::AdminChanged::SIGNATURE_HASH);
     push_topic(out, address, halt::Initialized::SIGNATURE_HASH);
+}
+
+fn encode_validate(
+    cfg: &Config,
+    q: &Quote,
+    protocol: ProtocolId,
+    legs: LegChoice,
+    funding: &FlashRoute,
+    recipient: Address,
+) -> Result<()> {
+    if q.key.protocol != protocol {
+        return Err(ProtocolError::ProtocolMismatch);
+    }
+    let repay = q
+        .repay_options
+        .get(usize::from(legs.repay))
+        .ok_or(ProtocolError::LegOutOfRange)?;
+    let seize = q
+        .seize_options
+        .get(usize::from(legs.seize))
+        .ok_or(ProtocolError::LegOutOfRange)?;
+    if funding.callback.provider() != funding.provider {
+        return Err(ProtocolError::CallbackProviderMismatch);
+    }
+    if recipient == Address::ZERO {
+        return Err(ProtocolError::ZeroRecipient);
+    }
+    if funding.asset != repay.asset {
+        return Err(ProtocolError::FundingAssetMismatch);
+    }
+    if funding.amount < repay.max_repay {
+        return Err(ProtocolError::FundingShort);
+    }
+    let _ = cfg
+        .underlying_of(repay.asset)
+        .ok_or(ProtocolError::OracleSourceMismatch)?;
+    let _ = cfg
+        .underlying_of(seize.asset)
+        .ok_or(ProtocolError::OracleSourceMismatch)?;
+    let _ = u128::try_from(repay.max_repay).map_err(|_| ProtocolError::AmountTooLarge)?;
+    let _ = u128::try_from(funding.amount).map_err(|_| ProtocolError::AmountTooLarge)?;
+    Ok(())
 }
 
 impl LogSubscriber for SiloV2 {
@@ -196,14 +253,11 @@ impl Protocol for SiloV2 {
     fn encode(
         &self,
         q: &Quote,
-        _legs: LegChoice,
-        _funding: &FlashRoute,
-        _recipient: Address,
+        legs: LegChoice,
+        funding: &FlashRoute,
+        recipient: Address,
     ) -> Result<LiquidationPlan> {
-        if q.key.protocol != self.cfg.protocol {
-            return Err(ProtocolError::ProtocolMismatch);
-        }
-        // Hook `liquidationCall` is not an ExecutorAdapter discriminant. 10R.
+        encode_validate(&self.cfg, q, self.cfg.protocol, legs, funding, recipient)?;
         Err(ProtocolError::ExecutorUnwired)
     }
 

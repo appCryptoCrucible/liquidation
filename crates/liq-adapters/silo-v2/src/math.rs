@@ -11,6 +11,9 @@ pub const PRECISION: U256 = WAD;
 pub const DECIMALS_OFFSET_POW: U256 = uint!(1_000_U256);
 pub const UNDERESTIMATION: U256 = uint!(2_U256);
 pub const FULL_LIQUIDATION_THRESHOLD: U256 = uint!(900_000_000_000_000_000_U256);
+/// Pin `PartialLiquidationLib._BAD_DEBT`. Gates *cover size* in
+/// `liquidationPreview` (any cover when LTV ≥ 1e18). Not a health-state cut:
+/// remaining collateral is still liquidatable via `maxLiquidation`.
 pub const BAD_DEBT_WAD: U256 = WAD;
 pub const HF_THRESHOLD_WAD: U256 = WAD;
 

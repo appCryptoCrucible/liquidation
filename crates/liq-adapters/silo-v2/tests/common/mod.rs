@@ -36,6 +36,10 @@ pub const BOB_COLL: U256 = uint!(10_000_000_000_000_000_000_000_U256);
 pub const ALICE_COLL: U256 = uint!(1_000_000_000_000_000_000_000_U256);
 pub const ALICE_DEBT_OK: U256 = uint!(100_000_000_U256);
 pub const ALICE_DEBT_LIQ: U256 = uint!(900_000_000_U256);
+/// Pin class: coll 100, debt 150 (same numeraire at RAY_ONE) → LTV ≥ 1e18
+/// with collateral remaining. Hook still liquidates (`maxLiquidation`).
+pub const ALICE_COLL_UNDER: U256 = uint!(100_000_000_000_000_000_000_U256);
+pub const ALICE_DEBT_UNDER: U256 = uint!(150_000_000_U256);
 pub const ALICE_ID: PositionId = PositionId(1);
 pub const BOB_ID: PositionId = PositionId(0);
 
@@ -174,31 +178,37 @@ pub fn listing_logs(d: &Deploy) -> Vec<OwnedLog> {
 }
 
 pub fn activity_logs(d: &Deploy, alice_debt: U256) -> Vec<OwnedLog> {
+    activity_logs_pos(d, ALICE_COLL, alice_debt)
+}
+
+pub fn activity_logs_pos(d: &Deploy, alice_coll: U256, alice_debt: U256) -> Vec<OwnedLog> {
     let (b, t) = (DEPLOY_BLOCK + 1, T0);
-    vec![
-        log(
-            d.silo0,
-            &silo::Deposit {
-                sender: d.bob,
-                owner: d.bob,
-                assets: BOB_COLL,
-                shares: BOB_COLL,
-            },
-            b,
-            t,
-        ),
-        log(
+    let mut out = vec![log(
+        d.silo0,
+        &silo::Deposit {
+            sender: d.bob,
+            owner: d.bob,
+            assets: BOB_COLL,
+            shares: BOB_COLL,
+        },
+        b,
+        t,
+    )];
+    if !alice_coll.is_zero() {
+        out.push(log(
             d.silo0,
             &silo::Deposit {
                 sender: d.alice,
                 owner: d.alice,
-                assets: ALICE_COLL,
-                shares: ALICE_COLL,
+                assets: alice_coll,
+                shares: alice_coll,
             },
             b,
             t,
-        ),
-        log(
+        ));
+    }
+    if !alice_debt.is_zero() {
+        out.push(log(
             d.silo1,
             &silo::Borrow {
                 sender: d.alice,
@@ -209,8 +219,9 @@ pub fn activity_logs(d: &Deploy, alice_debt: U256) -> Vec<OwnedLog> {
             },
             b,
             t,
-        ),
-    ]
+        ));
+    }
+    out
 }
 
 pub fn store_after(p: &SiloV2, logs: &[OwnedLog]) -> JournalStore {

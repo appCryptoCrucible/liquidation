@@ -9,9 +9,41 @@ topic0 = keccak256(canonical ABI signature).
 
 **Hook receiver vs Silo.** `liquidationCall` / `maxLiquidation` / pin `LiquidationCall` are on the hook receiver (`IPartialLiquidation`). The Silo ERC-4626 is the collateral share token (`collateralShareToken == silo`) and exposes `isSolvent` / `repay` / deposit-borrow. Do not call `liquidationCall` on the Silo.
 
-Pin `LiquidationCall(address,address,address,uint256,uint256,bool)` topic0 `0x3a84f644…` ≠ `liq-watch` `silo::LiquidationCall(address,address,uint256,uint256)` topic0 `0xaefcad93…`. Adapter decodes the pin ABI. 10R must too.
+Pin `LiquidationCall(address,address,address,uint256,uint256,bool)` topic0 `0x3a84f644…` ≠ `liq-watch` `silo::LiquidationCall(address,address,uint256,uint256)` topic0 `0xaefcad93…`. Adapter decodes the pin ABI. **Do not change W** (carry-forward). 10R must use the pin ABI on `hook_receiver`.
 
-`encode` → `ProtocolError::ExecutorUnwired` until 10R wires the hook ABI. No `ExecutorAdapter` discriminant.
+`encode` validates then `ProtocolError::ExecutorUnwired` until 10R wires the hook ABI. No `ExecutorAdapter` discriminant. Happy-path Unwired is 10R. Check 9 cannot Ok — inapplicable, not starved with healthy-only fixtures.
+
+## Health state
+
+Pin: `SiloSolvencyLib.isSolvent` (`ltv <= lt`) and `PartialLiquidation`. `_BAD_DEBT = 1e18` changes *cover size* in `liquidationPreview` (any cover). `maxLiquidation` still returns amounts when `ltv > lt`. Example: coll 100, debt 150, fee 4% — cover 50 seizes 52.
+
+| condition | HealthState | quote |
+|---|---|---|
+| no debt, or `ltv <= collateralConfig.lt` | Healthy | None |
+| debt and **zero** coll+protected assets (hook `NoCollateralToLiquidate`) | BadDebt | None |
+| paused silo | Blocked | None |
+| else, including `ltv >= 1e18` with coll remaining | Liquidatable | `maxLiquidation` |
+
+## encode validate order
+
+Then `Err(ExecutorUnwired)`:
+
+1. ProtocolMismatch
+2. LegOutOfRange
+3. CallbackProviderMismatch
+4. ZeroRecipient
+5. FundingAssetMismatch
+6. FundingShort
+7. AmountTooLarge
+
+(`OracleSourceMismatch` if repay/seize asset is not interned, same as Euler, between FundingShort and AmountTooLarge.)
+
+## Carry-forwards (do not invent)
+
+- `FeedId(0)` is the first interned Aave oracle, not unset. Solvency oracles are absent from `registry.oracles`. Do not invent `FeedId::NONE`. `row.price_feed` must not be joined to ticks; health prices via AssetId / PriceVector. `feed=0` is a documented collision.
+- In-memory accrue vs storage totals: fail-closed (no invented IRM). Adapter uses storage totals (`AccrueInterestInMemory.No`). Wei gap vs `Views.isSolvent` (which accrues) is left as a probe/drift gap, not patched with a guessed rate.
+- W 4-arg topic0 `0xaefcad93…` vs pin `0x3a84f644…` on `hook_receiver`: do not change W. Adapter stays on pin ABI.
+- `health_probe` stays `ProbeUnavailable` (`isSolvent` bool / `maxLiquidation` amounts are not RAY hf).
 
 Admitted borrowed_usd at pin **block 26014442** (mechanism table; do not invent or round):
 

@@ -6,8 +6,11 @@
 # Pin: silo-finance/silo-contracts-v2 @ 570a668a98a88a6a2b92697e7b9a3b1c6299dce7
 # getConfig / getSilos via Tenderly public mainnet at block 26014442.
 # Intern: ProtocolId 6; AssetId USDC=677 RLP=303 xUSD=970 savUSD=776;
-# MarketId 3427 / 3254 / 3468 (debt silos). Silo solvency oracles are not in
-# registry.oracles — feed=0, price via AssetId.
+# MarketId 3427 / 3254 / 3468 (debt silos).
+# FeedId(0) is the first interned Aave oracle, not unset. Silo solvency oracles
+# are absent from registry.oracles — do not invent FeedId::NONE. row.price_feed
+# must not be joined to ticks; health prices via AssetId / PriceVector. feed=0
+# is a documented collision.
 #
 # borrowed_usd at pin block 26014442 (docs/mechanism/silo-v2.md; do not invent):
 #   0xce6ab1c7…018a  375_815.26

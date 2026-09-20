@@ -32,11 +32,30 @@ fn full_store(
     liq_adapters_silo_v2::SiloV2,
     liq_protocol::conformance::JournalStore,
 ) {
+    full_store_pos(d, ALICE_COLL, debt)
+}
+
+fn full_store_pos(
+    d: &Deploy,
+    coll: U256,
+    debt: U256,
+) -> (
+    liq_adapters_silo_v2::SiloV2,
+    liq_protocol::conformance::JournalStore,
+) {
     let p = d.adapter();
     let mut logs = listing_logs(d);
-    logs.extend(activity_logs(d, debt));
+    logs.extend(activity_logs_pos(d, coll, debt));
     let st = store_after(&p, &logs);
     (p, st)
+}
+
+fn flash_sources() -> Vec<(CallbackShape, Address)> {
+    CallbackShape::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (*s, Address::repeat_byte(0x50 + i as u8)))
+        .collect()
 }
 
 fn extra_logs(d: &Deploy) -> Vec<OwnedLog> {
@@ -210,15 +229,11 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
             max_dirty_rank: rank_of(&ranks, l.topics[0]),
         })
         .collect();
-    let flash_sources: Vec<(CallbackShape, Address)> = CallbackShape::ALL
-        .iter()
-        .enumerate()
-        .map(|(i, s)| (*s, Address::repeat_byte(0x50 + i as u8)))
-        .collect();
+    let sources = flash_sources();
     let fx = Fixtures {
         positions: &positions,
         logs: &logs,
-        flash_sources: &flash_sources,
+        flash_sources: &sources,
         recipient: Address::repeat_byte(0x99),
     };
     let mut log_store = store_after(&p, &listing_logs(&d));
@@ -235,7 +250,7 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
                 assert_eq!(
                     *n,
                     0,
-                    "check {} must stay skipped (no liquidatable encode)",
+                    "healthy-only report: check {} has no quote (4/8 need post or liq; 9 inapplicable)",
                     i + 1
                 );
             }
@@ -243,6 +258,45 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
         }
     }
     assert_eq!(rep.alloc_metered, alloc_meter().is_some());
+
+    // Liquidatable (LTV ≥ 1e18, coll remaining) through `run` so checks 5/10
+    // fire. Check 9 cannot Ok: encode is ExecutorUnwired until 10R. Do not
+    // starve 5/10 with healthy-only fixtures.
+    let (p_u, st_u) = full_store_pos(&d, ALICE_COLL_UNDER, ALICE_DEBT_UNDER);
+    let px_u = prices(RAY_ONE, RAY_ONE);
+    let h_u = p_u.health(st_u.view(ALICE_ID, T0).unwrap(), &px_u).unwrap();
+    assert_eq!(h_u.state, HealthState::Liquidatable, "check 10 class");
+    let q_u = p_u
+        .quote(
+            st_u.view(ALICE_ID, T0).unwrap(),
+            &px_u,
+            &Constraints::UNBOUNDED,
+        )
+        .unwrap()
+        .expect("check 10: Liquidatable quotes");
+    let from_curve = q_u.seize_options[0].curve.bonus_at_hf(h_u.hf).unwrap();
+    assert_eq!(from_curve, Some(q_u.seize_options[0].bonus), "check 5");
+    let positions_u = [PositionFixture {
+        pos: st_u.view(ALICE_ID, T0).unwrap(),
+        px: &px_u,
+        post: None,
+    }];
+    let fx_u = Fixtures {
+        positions: &positions_u,
+        logs: &[],
+        flash_sources: &sources,
+        recipient: Address::repeat_byte(0x99),
+    };
+    let mut log_store_u = store_after(&p_u, &listing_logs(&d));
+    let err = run(
+        &p_u,
+        &mut log_store_u,
+        &fx_u,
+        alloc_meter().map(|m| m as &dyn Fn() -> u64),
+    )
+    .expect_err("check 9 cannot Ok: encode is ExecutorUnwired until 10R");
+    assert_eq!(err.check, 9);
+    assert_eq!(err.detail, "ExecutorUnwired");
 }
 
 #[test]
@@ -281,6 +335,7 @@ fn quote_static_bonus_and_encode_unwired() {
         q.seize_options[0].bonus,
         math::bonus_ray(U256::from(FEE)).unwrap()
     );
+    let rec = Address::repeat_byte(0x99);
     let route = FlashRoute {
         provider: CallbackShape::ALL[0].provider(),
         source: Address::repeat_byte(0x50),
@@ -289,21 +344,116 @@ fn quote_static_bonus_and_encode_unwired() {
         fee_bps: 0,
         callback: CallbackShape::ALL[0],
     };
+    // Happy-path Unwired is 10R. Negatives follow encode_validate order.
     assert_eq!(
-        p.encode(&q, LegChoice::PREFERRED, &route, Address::repeat_byte(0x99)),
+        p.encode(&q, LegChoice::PREFERRED, &route, rec),
         Err(ProtocolError::ExecutorUnwired)
     );
     let mut q2 = q.clone();
     q2.key.protocol = liq_types::ProtocolId(99);
     assert_eq!(
-        p.encode(
-            &q2,
-            LegChoice::PREFERRED,
-            &route,
-            Address::repeat_byte(0x99)
-        ),
+        p.encode(&q2, LegChoice::PREFERRED, &route, rec),
         Err(ProtocolError::ProtocolMismatch)
     );
+    assert_eq!(
+        p.encode(&q, LegChoice { repay: 9, seize: 0 }, &route, rec),
+        Err(ProtocolError::LegOutOfRange)
+    );
+    assert_eq!(
+        p.encode(&q, LegChoice { repay: 0, seize: 9 }, &route, rec),
+        Err(ProtocolError::LegOutOfRange)
+    );
+    let mut cb = route;
+    cb.callback = CallbackShape::MorphoFlashCallback;
+    assert_eq!(
+        p.encode(&q, LegChoice::PREFERRED, &cb, rec),
+        Err(ProtocolError::CallbackProviderMismatch)
+    );
+    assert_eq!(
+        p.encode(&q, LegChoice::PREFERRED, &route, Address::ZERO),
+        Err(ProtocolError::ZeroRecipient)
+    );
+    let mut mismatch = route;
+    mismatch.asset = COLL;
+    assert_eq!(
+        p.encode(&q, LegChoice::PREFERRED, &mismatch, rec),
+        Err(ProtocolError::FundingAssetMismatch)
+    );
+    let mut short = route;
+    short.amount = U256::ZERO;
+    assert_eq!(
+        p.encode(&q, LegChoice::PREFERRED, &short, rec),
+        Err(ProtocolError::FundingShort)
+    );
+    let mut huge = route;
+    huge.amount = U256::MAX;
+    assert_eq!(
+        p.encode(&q, LegChoice::PREFERRED, &huge, rec),
+        Err(ProtocolError::AmountTooLarge)
+    );
+}
+
+#[test]
+fn ltv_ge_one_with_remaining_collateral_is_liquidatable() {
+    let d = Deploy::new();
+    let (p, st) = full_store_pos(&d, ALICE_COLL_UNDER, ALICE_DEBT_UNDER);
+    let px = prices(RAY_ONE, RAY_ONE);
+    let pos = st.view(ALICE_ID, T0).unwrap();
+    let h = p.health(pos, &px).unwrap();
+    assert_eq!(h.state, HealthState::Liquidatable);
+    assert!(h.hf < Ray::ONE);
+    let tot_coll = BOB_COLL.checked_add(ALICE_COLL_UNDER).unwrap();
+    let coll_assets =
+        math::convert_to_assets(ALICE_COLL_UNDER, tot_coll, tot_coll, false, false).unwrap();
+    let debt_assets = math::convert_to_assets(
+        ALICE_DEBT_UNDER,
+        ALICE_DEBT_UNDER,
+        ALICE_DEBT_UNDER,
+        true,
+        true,
+    )
+    .unwrap();
+    assert!(coll_assets > U256::ZERO);
+    let coll_value = math::value_from_price(coll_assets, RAY_ONE, 18).unwrap();
+    let debt_value = math::value_from_price(debt_assets, RAY_ONE, 6).unwrap();
+    let ltv = math::ltv_math(debt_value, coll_value).unwrap();
+    assert!(ltv >= math::BAD_DEBT_WAD);
+    // Pin example: cover 50, coll 100, fee 4% → seize 52 (any-cover preview).
+    assert_eq!(
+        math::calculate_collateral_to_liquidate(uint!(50_U256), uint!(100_U256), U256::from(FEE))
+            .unwrap(),
+        uint!(52_U256)
+    );
+    let q = p
+        .quote(pos, &px, &Constraints::UNBOUNDED)
+        .unwrap()
+        .expect("maxLiquidation quotes when LTV >= 1e18 with coll remaining");
+    let (seize, repay) = math::max_liquidation(
+        coll_assets,
+        coll_value,
+        debt_assets,
+        debt_value,
+        U256::from(TARGET_LTV),
+        U256::from(FEE),
+    )
+    .unwrap();
+    assert_eq!(q.repay_options[0].max_repay, repay);
+    assert_eq!(q.seize_options[0].max_seize, seize);
+    assert!(repay > U256::ZERO);
+    assert!(seize > U256::ZERO);
+}
+
+#[test]
+fn zero_collateral_with_debt_is_bad_debt() {
+    let d = Deploy::new();
+    let (p, st) = full_store_pos(&d, U256::ZERO, ALICE_DEBT_OK);
+    let px = prices(RAY_ONE, RAY_ONE);
+    let h = p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap();
+    assert!(matches!(h.state, HealthState::BadDebt { .. }));
+    assert!(p
+        .quote(st.view(ALICE_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
+        .unwrap()
+        .is_none());
 }
 
 #[test]

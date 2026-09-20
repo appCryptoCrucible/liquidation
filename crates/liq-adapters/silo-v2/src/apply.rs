@@ -201,6 +201,10 @@ fn new_silo(cfg: &Config, st: &mut dyn StateWriter, log: &DecodedLog<'_>) -> Res
             .asset_by_underlying(side.token)
             .ok_or(ProtocolError::OracleSourceMismatch)?;
         let mut row = MarketRow::blank(tok.asset, tok.decimals);
+        // FeedId(0) is the first interned Aave oracle, not unset. Silo solvency
+        // oracles are not in registry.oracles — do not invent FeedId::NONE.
+        // Do not join `row.price_feed` to ticks; health prices via AssetId /
+        // PriceVector. Documented collision (coverage silo-v2.md).
         row.price_feed = tok.feed;
         row.last_update = ts;
         {

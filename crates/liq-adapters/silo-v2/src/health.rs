@@ -9,9 +9,7 @@ use liq_protocol::{
 use liq_types::{AssetId, PriceVector, Wad};
 
 use crate::layout::{SiloRow, UserExtra, SLOT0, SLOT1};
-use crate::math::{
-    convert_to_assets, hf_ray, is_solvent, ltv_math, value_from_price, value_wad, BAD_DEBT_WAD,
-};
+use crate::math::{convert_to_assets, hf_ray, is_solvent, value_from_price, value_wad};
 
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct Terms<'a> {
@@ -200,7 +198,6 @@ pub(crate) fn finish<'a>(t: &Terms<'a>, px: &PriceVector) -> Result<(Terms<'a>, 
     t.coll_value = coll_value;
 
     let hf = hf_ray(debt_value, coll_value, t.lt)?;
-    let ltv = ltv_math(debt_value, coll_value)?;
     let solvent = is_solvent(debt_value, coll_value, t.lt)?;
     let mut sensitivity = AssetMask::EMPTY;
     if t.sum_coll_assets > U256::ZERO || t.debt_shares > U256::ZERO {
@@ -211,9 +208,12 @@ pub(crate) fn finish<'a>(t: &Terms<'a>, px: &PriceVector) -> Result<(Terms<'a>, 
     }
     let debt_wad = Wad::from_raw(value_wad(t.debt_assets, p_debt, t.debt_row.decimals)?);
     let coll_wad = Wad::from_raw(value_wad(t.sum_coll_assets, p_coll, t.coll_row.decimals)?);
+    // Pin `_BAD_DEBT = 1e18` only changes cover size in `liquidationPreview`
+    // (any cover). Hook `NoCollateralToLiquidate` is zero collateral with
+    // debt. Remaining coll at LTV ≥ 1e18 is still `maxLiquidation`.
     let state = if t.debt_shares.is_zero() || solvent {
         HealthState::Healthy
-    } else if t.sum_coll_assets.is_zero() || ltv >= BAD_DEBT_WAD {
+    } else if t.sum_coll_assets.is_zero() {
         HealthState::BadDebt { deficit: debt_wad }
     } else if t.coll_row.flags.contains(MarketFlags::PAUSED)
         || t.debt_row.flags.contains(MarketFlags::PAUSED)
