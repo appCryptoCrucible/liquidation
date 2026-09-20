@@ -167,6 +167,9 @@ pub(crate) mod fixtures {
     /// UniV3 5-bp USDC/WETH pool balances at 26_000_000.
     pub(crate) const V3_500_USDC_26M: u128 = 74_293_828_839_265;
     pub(crate) const V3_500_WETH_26M: &str = "12163941530336152750397";
+    /// UniV3 1-bp USDC/WETH pool balances at 26_000_000.
+    pub(crate) const V3_100_USDC_26M: u128 = 1_568_352_757_425;
+    pub(crate) const V3_100_WETH_26M: &str = "707031936388640008781";
     /// PoolManager ERC-20 balances at 26_000_000.
     pub(crate) const PM_USDC_26M: u128 = 66_230_362_793_739;
     pub(crate) const PM_WETH_26M: &str = "2131150728309835187612";

@@ -9,10 +9,18 @@ liq-types = { path = "../liq-types" }
 liq-protocol = { path = "../liq-protocol" }
 alloy-primitives = { workspace = true }
 alloy-sol-types = { workspace = true, features = ["std"] }
+arc-swap = { workspace = true }
+fixedbitset = { workspace = true }
+smallvec = { workspace = true }
 
 [dev-dependencies]
 alloy-primitives = { workspace = true, features = ["std"] }
+criterion = { workspace = true }
 proptest = { workspace = true }
+
+[[bench]]
+name = "index"
+harness = false
 
 [lints]
 workspace = true

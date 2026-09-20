@@ -29,10 +29,22 @@ fn src_has_no_rpc_surface() {
                 path.display()
             );
         }
+        // Code only: 07A's module doc names `Mutex` to explain why it is absent.
+        let code: String = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect();
+        for needle in ["Mutex", "RwLock", "LazyLock", "OnceLock"] {
+            assert!(
+                !code.contains(needle),
+                "{} contains `{needle}` (oracle: GUIDE-07 §4b / GUIDE-08 — single writer, ArcSwap, no locks)",
+                path.display()
+            );
+        }
     });
     assert!(
-        files >= 7,
-        "expected lib + sources/{{mod,aave,univ3,univ4,morpho,sky_dss}}"
+        files >= 11,
+        "expected lib + index + eligibility + select + cascade + sources/{{mod,aave,univ3,univ4,morpho,sky_dss}}"
     );
 }
 

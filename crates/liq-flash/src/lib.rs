@@ -1,7 +1,11 @@
-//! Flash-loan sources (WP 07A / GUIDE 07 §1–§3a).
+//! Flash-loan sources, index, eligibility, selection, cascade (GUIDE 07).
 //!
-//! Five arenas behind [`FlashSource`]. Index, eligibility, selection and
-//! cascade are WP 07B — not this crate's job yet.
+//! 07A: five arenas behind [`FlashSource`] (`sources/`). 07B: the
+//! per-asset [`FlashIndex`] rebuilt from those sources after each block's
+//! logs (`index`), the two-sided eligibility filter with its `Unfundable`
+//! bitset and the interim [`DepthOnlyRouteCache`] (`eligibility`),
+//! effective-cost ranking with a fallback chain (`select`), and the ≤ 3
+//! sibling-group cascade planner (`cascade`).
 //!
 //! **Deviation from GUIDE-07 §1.** `apply_log` takes `&mut self`, not `&self`.
 //! The ExEx ingest thread is the sole writer (02A/03A, RUST-CONVENTIONS §1).
@@ -23,8 +27,16 @@ use alloy_primitives::{Address, U256};
 use liq_protocol::{CallbackShape, DecodedLog};
 use liq_types::{AssetId, FlashProvider, LogSubscriber};
 
+pub mod cascade;
+pub mod eligibility;
+pub mod index;
+pub mod select;
 pub mod sources;
 
+pub use cascade::{plan as plan_cascade, planable, Cascade, MAX_GROUPS};
+pub use eligibility::{is_eligible, DepthOnlyRouteCache, Eligibility};
+pub use index::{FlashIndex, Haircut, SourceEntry};
+pub use select::{effective_cost, fallback_chain, fee_amount, CostModel};
 pub use sources::{
     AavePool, AaveReserve, HeldAsset, MorphoBlue, SkyDssFlash, UniV3Pool, UniV4PoolManager,
 };
