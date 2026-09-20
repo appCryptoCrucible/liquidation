@@ -18,6 +18,9 @@ toml = { workspace = true }
 [dev-dependencies]
 criterion = { workspace = true }
 liq-config = { path = "../../liq-config" }
+alloy-provider = { workspace = true }
+alloy-rpc-types-eth = { workspace = true }
+tokio = { workspace = true }
 
 [[bench]]
 name = "health"

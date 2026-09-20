@@ -25,7 +25,7 @@ use liq_protocol::{
 };
 use liq_types::{AssetId, LogFilter, LogSubscriber, Price, PriceVector, ProtocolId};
 
-pub use config::{AssetConfig, BranchConfig, Config, ConfigError, Emitter};
+pub use config::{AssetConfig, BranchConfig, Config, ConfigError, Emitter, RegistryRpc};
 
 use crate::events::{self as ev, halt};
 
@@ -161,7 +161,7 @@ impl Protocol for LiquityV2 {
     }
 
     fn health(&self, pos: PositionRef<'_>, px: &PriceVector) -> Result<Health> {
-        health::health(pos, px, self.cfg.weth.asset)
+        health::health(pos, px)
     }
 
     fn liquidation_price(
@@ -170,11 +170,11 @@ impl Protocol for LiquityV2 {
         px: &PriceVector,
         asset: AssetId,
     ) -> Result<Option<Price>> {
-        solve::liquidation_price(pos, px, asset, self.cfg.weth.asset)
+        solve::liquidation_price(pos, px, asset)
     }
 
     fn time_to_cross(&self, pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Timestamp>> {
-        solve::time_to_cross(pos, px, self.cfg.weth.asset)
+        solve::time_to_cross(pos, px)
     }
 
     fn quote(

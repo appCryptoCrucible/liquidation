@@ -15,8 +15,8 @@ use crate::layout::{
     BranchRow, TroveCollExtra, TroveDebtExtra, TroveExtra, BOLD_SLOT, COLL_SLOT, UNMAPPED_ASSET,
 };
 use crate::math::{
-    calc_interest, compute_cr, hf_from_icr, interest_period, price_wad_from_ray, redist_gain,
-    value_wad,
+    batch_trove_debt, calc_interest, compute_cr, hf_from_icr, interest_period, price_wad_from_ray,
+    redist_gain, value_wad,
 };
 
 #[derive(Copy, Clone, Debug)]
@@ -75,25 +75,7 @@ fn extra_coll(pos: PositionRef<'_>) -> Result<TroveCollExtra> {
         .copied()
 }
 
-/// Batch-pro-rata recorded debt, or the trove's own recorded debt.
-#[inline]
-fn recorded_debt(stored: U256, d: &TroveDebtExtra) -> Result<U256> {
-    if d.batch_total_shares == 0 {
-        return Ok(stored);
-    }
-    mul_ratio(
-        U256::from(d.batch_recorded_debt),
-        U256::from(d.batch_debt_shares),
-        U256::from(d.batch_total_shares),
-    )
-}
-
-#[inline]
-fn mul_ratio(a: U256, b: U256, d: U256) -> Result<U256> {
-    crate::math::mul_div_down(a, b, d)
-}
-
-fn accrued_parts(
+fn accrued_unbatched(
     recorded: U256,
     extra: &TroveExtra,
     coll_x: &TroveCollExtra,
@@ -109,6 +91,24 @@ fn accrued_parts(
         calc_interest(w_rate, period)?,
         calc_interest(w_fee, period)?,
     ))
+}
+
+fn accrued_batched(
+    d: &TroveDebtExtra,
+    extra: &TroveExtra,
+    coll_x: &TroveCollExtra,
+    ts: u64,
+    shutdown: u64,
+) -> Result<(U256, U256, U256)> {
+    let period = interest_period(u64::from(extra.last_debt_update), shutdown, ts)?;
+    batch_trove_debt(
+        U256::from(d.batch_recorded_debt),
+        U256::from(d.batch_debt_shares),
+        U256::from(d.batch_total_shares),
+        U256::from(extra.annual_interest_rate),
+        U256::from(coll_x.batch_management_fee),
+        period,
+    )
 }
 
 pub(crate) fn terms(pos: PositionRef<'_>) -> Result<Terms<'_>> {
@@ -137,8 +137,6 @@ pub(crate) fn terms(pos: PositionRef<'_>) -> Result<Terms<'_>> {
     let extra = extra_trove(pos)?;
     let debt_x = extra_debt(pos)?;
     let coll_x = extra_coll(pos)?;
-    let stored_debt = U256::from(cell(pos.debt, BOLD_SLOT));
-    let recorded = recorded_debt(stored_debt, &debt_x)?;
     let stake = U256::from(extra.stake);
     let redist_d = redist_gain(
         stake,
@@ -151,7 +149,14 @@ pub(crate) fn terms(pos: PositionRef<'_>) -> Result<Terms<'_>> {
         U256::from(coll_x.snapshot_coll),
     )?;
     let shutdown = u64::from(branch.shutdown_time);
-    let (interest, batch_fee) = accrued_parts(recorded, &extra, &coll_x, pos.timestamp, shutdown)?;
+    let (recorded, interest, batch_fee) = if debt_x.batch_total_shares == 0 {
+        let recorded = U256::from(cell(pos.debt, BOLD_SLOT));
+        let (interest, batch_fee) =
+            accrued_unbatched(recorded, &extra, &coll_x, pos.timestamp, shutdown)?;
+        (recorded, interest, batch_fee)
+    } else {
+        accrued_batched(&debt_x, &extra, &coll_x, pos.timestamp, shutdown)?
+    };
     let entire_debt = recorded
         .checked_add(redist_d)
         .and_then(|v| v.checked_add(interest))
@@ -174,14 +179,9 @@ pub(crate) fn terms(pos: PositionRef<'_>) -> Result<Terms<'_>> {
     })
 }
 
-pub(crate) fn finish<'a>(
-    t: &Terms<'a>,
-    px: &PriceVector,
-    weth: AssetId,
-) -> Result<(Terms<'a>, Health)> {
+pub(crate) fn finish<'a>(t: &Terms<'a>, px: &PriceVector) -> Result<(Terms<'a>, Health)> {
     let p_coll = price_ray(px, t.coll_row.asset)?;
     let p_bold = price_ray(px, t.loan_row.asset)?;
-    let p_weth = price_ray(px, weth)?;
     let price_wad = price_wad_from_ray(p_coll)?;
     let icr = compute_cr(t.entire_coll, t.entire_debt, price_wad)?;
     let mcr = U256::from(t.branch.mcr);
@@ -210,7 +210,6 @@ pub(crate) fn finish<'a>(
     let mut t = *t;
     t.p_coll = p_coll;
     t.p_bold = p_bold;
-    t.p_weth = p_weth;
     Ok((
         t,
         Health {
@@ -228,7 +227,7 @@ fn extra_is_open(e: &TroveExtra) -> bool {
     e.is_active_or_zombie()
 }
 
-pub(crate) fn health(pos: PositionRef<'_>, px: &PriceVector, weth: AssetId) -> Result<Health> {
+pub(crate) fn health(pos: PositionRef<'_>, px: &PriceVector) -> Result<Health> {
     let t = terms(pos)?;
-    Ok(finish(&t, px, weth)?.1)
+    Ok(finish(&t, px)?.1)
 }

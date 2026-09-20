@@ -1,16 +1,26 @@
 # Liquity V2 (BOLD) mainnet — `liquity/bold` @ `c8a5a4ee2e9dc024905856b6698a77d849c68c7e`
 #
 # Addresses from `contracts/addresses/1.json` at that pin.
-# MCR / CCR / penalties are the `AddressesRegistry` immutables read at boot
-# (pin deploy-script values). The adapter asserts Constants.sol *bounds*,
-# not this table, as runtime truth. Re-read the registry at boot and fail
-# closed if the live immutables disagree with this file.
+# MCR / CCR / penalties are the pin deploy-script numbers baked into each
+# branch `AddressesRegistry` as immutables. `Config::validate` checks
+# Constants.sol bounds only. `Config::assert_live_registry(provider, block)`
+# eth_calls MCR/CCR/LIQUIDATION_PENALTY_SP/LIQUIDATION_PENALTY_REDISTRIBUTION
+# and fails closed on a live disagree. `liq-bot` must call that at boot
+# (this crate does not own liq-bot). In-tree caller: ignored test
+# `live_addresses_registry_matches_toml` behind LIQ_RPC_URL.
 #
 # Intern: BOLD 418, wstETH 525, rETH 734, WETH 813 (registry.tokens sort).
 # Family `liquity-v2` is not interned (9 families → ids 0..=8); protocol = 9.
-# Markets 3481..=3483 are the first unused intern slots after 3480 (Spark).
+# Euler owns catalog=3481 and vaults first_market=3482 ..= 3507 (26 admitted).
+# Liquity branches take the next free adapter-private slots: 3508 WETH,
+# 3509 wstETH, 3510 rETH.
 # Feeds 27..=29 are config-local Liquity PriceFeeds (15 interned oracles,
 # Spark used 15..=26). BOLD has no USD source (feed 30); PriceVector required.
+#
+# pinned_through = 22516117 is the BOLD mainnet launch / WETH-branch
+# TroveManager deploy era, not the ~26.0M registry intern used by
+# Spark/Euler/Silo. Halt-class logs after this block fail closed. Re-pinning
+# to ~26M would treat later proxy upgrades as in-audit; stay conservative.
 
 protocol = 9
 pinned_through = 22516117
@@ -29,7 +39,7 @@ decimals = 18
 
 [[branches]]
 coll_symbol = "WETH"
-market = 3481
+market = 3508
 trove_manager = "0x7bcb64b2c9206a5b699ed43363f6f98d4776cf5a"
 borrower_operations = "0x372abd1810eaf23cb9d941bbe7596dfb2c46bc65"
 stability_pool = "0x5721cbbd64fc7ae3ef44a0a3f9a790a9264cf9bf"
@@ -47,7 +57,7 @@ penalty_redist = 100000000000000000
 
 [[branches]]
 coll_symbol = "wstETH"
-market = 3482
+market = 3509
 trove_manager = "0xa2895d6a3bf110561dfe4b71ca539d84e1928b22"
 borrower_operations = "0xa741a32f9dcfe6adba088fd0f97e90742d7d5da3"
 stability_pool = "0x9502b7c397e9aa22fe9db7ef7daf21cd2aebe56b"
@@ -65,7 +75,7 @@ penalty_redist = 200000000000000000
 
 [[branches]]
 coll_symbol = "rETH"
-market = 3483
+market = 3510
 trove_manager = "0xb2b2abeb5c357a234363ff5d180912d319e3e19e"
 borrower_operations = "0xe8119fc02953b27a1b48d2573855738485a17329"
 stability_pool = "0xd442e41019b7f5c4dd78f50dc03726c446148695"

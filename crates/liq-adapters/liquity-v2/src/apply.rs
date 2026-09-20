@@ -248,12 +248,15 @@ fn write_trove(
     extra.last_debt_update = last_update(ts)?;
     if let Some(s) = status {
         extra.status = s;
-    } else if !debt.is_zero() && debt < crate::math::MIN_DEBT {
-        extra.status = TroveExtra::STATUS_ZOMBIE;
-    } else if extra.status == TroveExtra::STATUS_NONEXISTENT
-        || extra.status == TroveExtra::STATUS_CLOSED_BY_OWNER
+    } else if extra.status == TroveExtra::STATUS_CLOSED_BY_OWNER
         || extra.status == TroveExtra::STATUS_CLOSED_BY_LIQUIDATION
     {
+        // Pin `_liquidate` (TroveManager.sol L299–318): TroveUpdated(debt 0)
+        // then TroveOperation(liquidate). Duplicate/out-of-order Updated
+        // must not force ACTIVE.
+    } else if !debt.is_zero() && debt < crate::math::MIN_DEBT {
+        extra.status = TroveExtra::STATUS_ZOMBIE;
+    } else if extra.status == TroveExtra::STATUS_NONEXISTENT && !debt.is_zero() {
         extra.status = TroveExtra::STATUS_ACTIVE;
     }
     let mut repr = *st.extra(pos)?;

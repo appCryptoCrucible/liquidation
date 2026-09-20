@@ -20,10 +20,11 @@ pub(crate) fn quote(
     weth_decimals: u8,
 ) -> Result<Option<Quote>> {
     let t0 = terms(pos)?;
-    let (t, health) = finish(&t0, px, weth)?;
+    let (mut t, health) = finish(&t0, px)?;
     if health.state != HealthState::Liquidatable {
         return Ok(None);
     }
+    t.p_weth = crate::health::price_ray(px, weth)?;
     let coll_gas = coll_gas_from_offset(
         t.entire_coll,
         t.entire_debt,

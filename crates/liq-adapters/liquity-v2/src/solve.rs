@@ -11,20 +11,16 @@ use crate::math::{mul_div_up, wad_to_ray_price};
 
 pub const HORIZON: u64 = 10 * 365 * 24 * 3600;
 
-fn hf_at_ts(pos: PositionRef<'_>, px: &PriceVector, weth: AssetId, ts: Timestamp) -> Result<Ray> {
+fn hf_at_ts(pos: PositionRef<'_>, px: &PriceVector, ts: Timestamp) -> Result<Ray> {
     let mut at = pos;
     at.timestamp = ts;
     let t = terms(at)?;
-    Ok(finish(&t, px, weth)?.1.hf)
+    Ok(finish(&t, px)?.1.hf)
 }
 
-pub(crate) fn time_to_cross(
-    pos: PositionRef<'_>,
-    px: &PriceVector,
-    weth: AssetId,
-) -> Result<Option<Timestamp>> {
+pub(crate) fn time_to_cross(pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Timestamp>> {
     let now = pos.timestamp;
-    let start = hf_at_ts(pos, px, weth, now)?;
+    let start = hf_at_ts(pos, px, now)?;
     if start.raw() == U256::MAX {
         return Ok(None);
     }
@@ -32,14 +28,14 @@ pub(crate) fn time_to_cross(
         return Ok(Some(now));
     }
     let hi = now.checked_add(HORIZON).ok_or(FixedError::Overflow)?;
-    if hf_at_ts(pos, px, weth, hi)? >= Ray::ONE {
+    if hf_at_ts(pos, px, hi)? >= Ray::ONE {
         return Ok(None);
     }
     let mut lo = now;
     let mut hi = hi;
     while hi.wrapping_sub(lo) > 1 {
         let mid = lo.wrapping_add(hi.wrapping_sub(lo) / 2);
-        if hf_at_ts(pos, px, weth, mid)? >= Ray::ONE {
+        if hf_at_ts(pos, px, mid)? >= Ray::ONE {
             lo = mid;
         } else {
             hi = mid;
@@ -52,10 +48,9 @@ pub(crate) fn liquidation_price(
     pos: PositionRef<'_>,
     px: &PriceVector,
     asset: AssetId,
-    weth: AssetId,
 ) -> Result<Option<Price>> {
     let t0 = terms(pos)?;
-    let (t, _) = finish(&t0, px, weth)?;
+    let (t, _) = finish(&t0, px)?;
     if t.coll_row.asset != asset {
         return Ok(None);
     }

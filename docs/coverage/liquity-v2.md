@@ -9,6 +9,8 @@ topic0 = keccak256(canonical ABI signature). `ITroveManager.Status` / `ITroveEve
 
 `batchLiquidateTroves(uint256[] _troveArray)` is the liquidation ABI (not an event). Selector `0xef49a6b4`. Empty → `EmptyData`. None liquidatable → `NothingToLiquidate`. Per id: skip unless `Status.active` or `Status.zombie` (this pin has no `unredeemable`); liquidate iff `getCurrentICR(id, price) < MCR`. Counterparty is the Stability Pool. Liquidator profit is gas compensation only (`ETH_GAS_COMPENSATION` + coll gas from `collSPPortion`). `encode` returns `ProtocolError::ExecutorUnwired` until 10R.
 
+Boot: `Config::from_toml` then `Config::assert_live_registry(provider, block)` eth_calls each branch `AddressesRegistry` MCR/CCR/penalties (immutables) and refuses a toml disagree. `liq-bot` must call it; this crate does not own that process. Markets 3508 WETH / 3509 wstETH / 3510 rETH (Euler occupies 3481–3507).
+
 | DirtySet | when |
 |---|---|
 | Positions | TroveUpdated / TroveOperation / BatchedTroveUpdated / BatchUpdated (batch members) |

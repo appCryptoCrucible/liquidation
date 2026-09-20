@@ -1,13 +1,47 @@
-//! Deployment pin: one config row per collateral branch. MCR/CCR/penalties
-//! are the values read from that branch's `AddressesRegistry` at boot — not
-//! the WETH/SETH table in `Constants.sol` (those are deploy-script inputs at
-//! `c8a5a4ee`). `validate` asserts them against the Constants.sol *bounds*.
+//! Deployment pin: one config row per collateral branch.
+//!
+//! MCR/CCR/penalties in toml are the pin deploy-script numbers written into
+//! each branch `AddressesRegistry` as immutables (`liquity/bold` @ `c8a5a4ee`).
+//! [`Config::validate`] checks Constants.sol *bounds* only.
+//! [`Config::assert_live_registry`] `eth_call`s the live immutables and
+//! refuses a disagree. `liq-bot` must invoke that at boot (this crate does
+//! not own the process); the ignored live test is the in-tree caller.
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, Bytes, U256};
+use alloy_sol_types::{sol, SolCall};
 use liq_protocol::{BlockNum, FeedId};
 use liq_types::{AssetId, MarketId, ProtocolId};
 
 use crate::math::{MAX_LIQUIDATION_PENALTY_REDISTRIBUTION, MIN_LIQUIDATION_PENALTY_SP};
+
+sol! {
+    interface IAddressesRegistry {
+        function MCR() external view returns (uint256);
+        function CCR() external view returns (uint256);
+        function LIQUIDATION_PENALTY_SP() external view returns (uint256);
+        function LIQUIDATION_PENALTY_REDISTRIBUTION() external view returns (uint256);
+    }
+}
+
+pub use IAddressesRegistry::{
+    CCRCall, LIQUIDATION_PENALTY_REDISTRIBUTIONCall, LIQUIDATION_PENALTY_SPCall, MCRCall,
+};
+
+/// Synchronous `eth_call` at a block. Boot-only; not on the hot path.
+///
+/// `liq-bot` (and any other process that constructs [`crate::LiquityV2`] from
+/// this toml) must implement this against a real node and pass it to
+/// [`Config::assert_live_registry`] after [`Config::from_toml`]. This crate
+/// does not own `liq-bot`. Tests: a pin-view double for decoder/mismatch,
+/// plus `#[ignore]` `live_addresses_registry_matches_toml` behind `LIQ_RPC_URL`.
+pub trait RegistryRpc {
+    fn eth_call(
+        &self,
+        to: Address,
+        data: &[u8],
+        block: BlockNum,
+    ) -> core::result::Result<Bytes, ConfigError>;
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AssetConfig {
@@ -32,13 +66,14 @@ pub struct BranchConfig {
     pub coll_asset: AssetId,
     pub coll_decimals: u8,
     pub coll_feed: FeedId,
-    /// `AddressesRegistry.MCR()` at boot (WAD).
+    /// Pin `AddressesRegistry.MCR()` (WAD). Live value is asserted by
+    /// [`Config::assert_live_registry`].
     pub mcr: u128,
-    /// `AddressesRegistry.CCR()` at boot (WAD).
+    /// Pin `AddressesRegistry.CCR()` (WAD).
     pub ccr: u128,
-    /// `AddressesRegistry.LIQUIDATION_PENALTY_SP()` at boot (WAD).
+    /// Pin `AddressesRegistry.LIQUIDATION_PENALTY_SP()` (WAD).
     pub penalty_sp: u128,
-    /// `AddressesRegistry.LIQUIDATION_PENALTY_REDISTRIBUTION()` at boot (WAD).
+    /// Pin `AddressesRegistry.LIQUIDATION_PENALTY_REDISTRIBUTION()` (WAD).
     pub penalty_redist: u128,
 }
 
@@ -75,6 +110,17 @@ pub enum ConfigError {
     DuplicateAsset(AssetId),
     #[error("AddressesRegistry penalty/MCR/CCR out of Constants.sol bounds")]
     RegistryBounds,
+    #[error(
+        "live AddressesRegistry.{field} at {registry} != toml (expected {expected}, found {found})"
+    )]
+    RegistryMismatch {
+        registry: Address,
+        field: &'static str,
+        expected: U256,
+        found: U256,
+    },
+    #[error("AddressesRegistry eth_call failed at {0}")]
+    RegistryCall(Address),
     #[error("protocol toml is malformed")]
     MalformedToml,
 }
@@ -137,6 +183,57 @@ impl Config {
         Ok(())
     }
 
+    /// `eth_call` each branch `AddressesRegistry` immutable at `block`.
+    /// Mismatch or RPC/decode failure → `Err`. Bounds are still [`validate`].
+    ///
+    /// Boot path: `Config::from_toml` → `assert_live_registry(rpc, block)` →
+    /// `LiquityV2::new`. `liq-bot` must wire the middle call; this crate does
+    /// not. In-tree: `live_addresses_registry_matches_toml` (`#[ignore]`,
+    /// `LIQ_RPC_URL`).
+    pub fn assert_live_registry<R: RegistryRpc>(
+        &self,
+        provider: &R,
+        block: BlockNum,
+    ) -> core::result::Result<(), ConfigError> {
+        self.validate()?;
+        for b in &self.branches {
+            let reg = b.addresses_registry;
+            check_view(
+                provider,
+                reg,
+                block,
+                &IAddressesRegistry::MCRCall {}.abi_encode(),
+                "MCR",
+                U256::from(b.mcr),
+            )?;
+            check_view(
+                provider,
+                reg,
+                block,
+                &IAddressesRegistry::CCRCall {}.abi_encode(),
+                "CCR",
+                U256::from(b.ccr),
+            )?;
+            check_view(
+                provider,
+                reg,
+                block,
+                &IAddressesRegistry::LIQUIDATION_PENALTY_SPCall {}.abi_encode(),
+                "LIQUIDATION_PENALTY_SP",
+                U256::from(b.penalty_sp),
+            )?;
+            check_view(
+                provider,
+                reg,
+                block,
+                &IAddressesRegistry::LIQUIDATION_PENALTY_REDISTRIBUTIONCall {}.abi_encode(),
+                "LIQUIDATION_PENALTY_REDISTRIBUTION",
+                U256::from(b.penalty_redist),
+            )?;
+        }
+        Ok(())
+    }
+
     #[inline]
     pub(crate) fn branch_by_market(&self, market: MarketId) -> Option<&BranchConfig> {
         self.branches.iter().find(|b| b.market == market)
@@ -175,9 +272,10 @@ impl Config {
             .map(|b| b.coll_token)
     }
 
-    /// Parse `config/protocols/liquity-v2.toml`. MCR/CCR/penalties in the file
-    /// are the boot-time `AddressesRegistry` reads, not runtime Constants.sol
-    /// table lookups.
+    /// Parse `config/protocols/liquity-v2.toml`. MCR/CCR/penalties are the
+    /// pin deploy-script numbers baked into `AddressesRegistry` immutables.
+    /// [`validate`] checks Constants.sol bounds. Live disagree is caught
+    /// only if the process calls [`Config::assert_live_registry`].
     pub fn from_toml(raw: &str) -> core::result::Result<Self, ConfigError> {
         let f: TomlFile = toml::from_str(raw).map_err(|_| ConfigError::MalformedToml)?;
         let mut branches = Vec::with_capacity(f.branches.len());
@@ -224,6 +322,30 @@ fn parse_asset(a: TomlAsset) -> core::result::Result<AssetConfig, ConfigError> {
         feed: FeedId(a.feed),
         decimals: a.decimals,
     })
+}
+
+fn check_view<R: RegistryRpc>(
+    rpc: &R,
+    registry: Address,
+    block: BlockNum,
+    data: &[u8],
+    field: &'static str,
+    expected: U256,
+) -> core::result::Result<(), ConfigError> {
+    let raw = rpc.eth_call(registry, data, block)?;
+    if raw.len() < 32 {
+        return Err(ConfigError::RegistryCall(registry));
+    }
+    let found = U256::from_be_slice(raw.get(..32).ok_or(ConfigError::RegistryCall(registry))?);
+    if found != expected {
+        return Err(ConfigError::RegistryMismatch {
+            registry,
+            field,
+            expected,
+            found,
+        });
+    }
+    Ok(())
 }
 
 #[derive(serde::Deserialize)]
