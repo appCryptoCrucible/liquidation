@@ -6,6 +6,7 @@
 
 use crate::{OracleError, Result};
 use alloy_primitives::Address;
+use alloy_sol_types::SolEvent;
 use figment::providers::{Format, Toml};
 use figment::Figment;
 use liq_config::rpc::ChainRpc;
@@ -68,7 +69,9 @@ impl FeedSpec {
         Ok(out)
     }
 
-    fn configured_aggregator(&self) -> Result<Address> {
+    /// Protocol-facing aggregator (GUIDE 06 Step 5). SVR never uses the
+    /// standard aggregator as canonical.
+    pub fn configured_aggregator(&self) -> Result<Address> {
         match self.mechanism {
             Mechanism::ChainlinkPush => self
                 .standard_aggregator
@@ -153,17 +156,10 @@ impl FeedsConfig {
     }
 
     /// Config aggregator/decimals/mechanism must equal the registry. Every
-    /// resolved registry oracle must have a TOML row. Fail closed.
-    pub fn assert_against_registry(&self, reg: &Registry) -> Result<()> {
+    /// resolved registry oracle must have a TOML row. Unresolved registry
+    /// oracles are returned (not swallowed) so boot can refuse to start.
+    pub fn assert_against_registry(&self, reg: &Registry) -> Result<Vec<FeedFailure>> {
         let (resolved, failures) = resolve_registry(reg);
-        for f in &failures {
-            tracing::error!(
-                proxy = %f.proxy,
-                pair = %f.pair,
-                reason = %f.reason,
-                "registry oracle did not resolve to a feed"
-            );
-        }
         let mut want: HashSet<(String, OnChainId, Address, Address)> = HashSet::new();
         for r in &resolved {
             for m in &r.markets {
@@ -203,7 +199,21 @@ impl FeedsConfig {
                     spec.proxy
                 )));
             }
-            let _ = spec.watch()?;
+            for a in spec.watch()? {
+                if a == entry.aggregator {
+                    continue;
+                }
+                let same_proxy_known = reg.oracles.iter().any(|(p, e)| {
+                    (*p == spec.proxy || e.pair == entry.pair) && e.aggregator == a
+                });
+                if !same_proxy_known {
+                    return Err(OracleError::AggregatorMismatch {
+                        proxy: spec.proxy,
+                        expected: entry.aggregator,
+                        found: a,
+                    });
+                }
+            }
             if !want.remove(&(spec.protocol.clone(), spec.market, spec.asset, spec.proxy)) {
                 return Err(OracleError::Load(format!(
                     "TOML feed ({}, {:?}, {:#x}) is not a resolved registry oracle",
@@ -212,28 +222,63 @@ impl FeedsConfig {
             }
         }
         if let Some((fam, _m, _a, proxy)) = want.iter().next() {
-            let pair = reg
-                .oracles
-                .get(proxy)
-                .map(|e| e.pair.clone())
-                .unwrap_or_default();
+            let pair = match reg.oracles.get(proxy) {
+                Some(e) => e.pair.clone(),
+                None => {
+                    return Err(OracleError::ProxyNotInRegistry { proxy: *proxy });
+                }
+            };
             return Err(OracleError::MissingToml {
                 proxy: *proxy,
                 pair: format!("{fam}/{pair}"),
             });
         }
+        Ok(failures)
+    }
+}
+
+/// Boot-time owner of feeds TOML + committed registry. This is the `Validate`
+/// surface; [`FeedsConfig`] alone cannot check registry or protocol sources.
+pub struct FeedsBoot<'a> {
+    pub cfg: &'a FeedsConfig,
+    pub reg: &'a Registry,
+}
+
+impl Validate for FeedsBoot<'_> {
+    async fn validate<R: ChainRpc + Sync>(&self, rpc: &R) -> liq_config::Result<()> {
+        if self.cfg.feeds.is_empty() {
+            return Err(liq_config::ConfigError::Load(
+                "feeds config is empty".into(),
+            ));
+        }
+        let failures = self
+            .cfg
+            .assert_against_registry(self.reg)
+            .map_err(|e| liq_config::ConfigError::Load(e.to_string()))?;
+        if !failures.is_empty() {
+            let first = failures
+                .first()
+                .ok_or_else(|| liq_config::ConfigError::Load("unresolved oracles".into()))?;
+            return Err(liq_config::ConfigError::Load(format!(
+                "{} unresolved registry oracles (first {:#x} {} {})",
+                failures.len(),
+                first.proxy,
+                first.pair,
+                first.reason
+            )));
+        }
+        assert_protocol_sources(self.cfg, self.reg, rpc)
+            .await
+            .map_err(|e| liq_config::ConfigError::Load(e.to_string()))?;
         Ok(())
     }
 }
 
 impl Validate for FeedsConfig {
     async fn validate<R: ChainRpc + Sync>(&self, _rpc: &R) -> liq_config::Result<()> {
-        if self.feeds.is_empty() {
-            return Err(liq_config::ConfigError::Load(
-                "feeds config is empty".into(),
-            ));
-        }
-        Ok(())
+        Err(liq_config::ConfigError::Load(
+            "FeedsConfig::validate is poisoned; boot must use FeedsBoot".into(),
+        ))
     }
 }
 
@@ -259,7 +304,7 @@ pub fn resolve_registry(reg: &Registry) -> (Vec<RegistryOracle>, Vec<FeedFailure
     (ok, fail)
 }
 
-fn resolve_one(
+pub(crate) fn resolve_one(
     reg: &Registry,
     proxy: Address,
     entry: &OracleEntry,
@@ -323,6 +368,9 @@ pub struct FeedSet {
     pub specs: Vec<ResolvedFeed>,
     aggregators: Vec<Address>,
     source_oracles: Vec<Address>,
+    providers: Vec<Address>,
+    /// `PriceOracleUpdated` not subscribed because the market has no provider.
+    pub deferred_subs: Vec<String>,
 }
 
 /// One interned feed row.
@@ -343,12 +391,14 @@ impl FeedSet {
         let mut specs = Vec::with_capacity(cfg.feeds.len());
         let mut aggs = BTreeSet::new();
         let mut families = BTreeSet::new();
+        let mut markets = HashSet::new();
         for spec in &cfg.feeds {
             let watch = spec.watch()?;
             for a in &watch {
                 aggs.insert(*a);
             }
             families.insert(spec.protocol.as_str());
+            markets.insert((spec.protocol.as_str(), spec.market));
             let asset = intern
                 .asset(spec.asset)
                 .ok_or(OracleError::InternAsset { asset: spec.asset })?;
@@ -375,64 +425,136 @@ impl FeedSet {
                 watch,
             });
         }
-        let source_oracles = price_oracles(reg, &families);
+        let (source_oracles, providers, deferred_subs) =
+            source_and_provider_subs(reg, &markets)?;
         Ok(Self {
             specs,
             aggregators: aggs.into_iter().collect(),
             source_oracles,
+            providers,
+            deferred_subs,
         })
     }
 }
 
-fn price_oracles(reg: &Registry, families: &BTreeSet<&str>) -> Vec<Address> {
-    let mut out = BTreeSet::new();
+fn extra_address(
+    proto: &liq_config::ProtocolEntry,
+    key: &str,
+) -> Result<Address> {
+    let v = proto.extra.get(key).ok_or_else(|| {
+        OracleError::Load(format!(
+            "protocol {} {:?} missing {key}",
+            proto.family, proto.market
+        ))
+    })?;
+    let s = v.as_str().ok_or_else(|| {
+        OracleError::Load(format!(
+            "protocol {} {:?} {key} is not a string",
+            proto.family, proto.market
+        ))
+    })?;
+    let a = s.parse::<Address>().map_err(|_| {
+        OracleError::Load(format!(
+            "protocol {} {:?} {key} is not an address",
+            proto.family, proto.market
+        ))
+    })?;
+    if a.is_zero() {
+        return Err(OracleError::Load(format!(
+            "protocol {} {:?} {key} is zero",
+            proto.family, proto.market
+        )));
+    }
+    Ok(a)
+}
+
+fn source_and_provider_subs(
+    reg: &Registry,
+    markets: &HashSet<(&str, OnChainId)>,
+) -> Result<(Vec<Address>, Vec<Address>, Vec<String>)> {
+    let mut oracles = BTreeSet::new();
+    let mut providers = BTreeSet::new();
+    let mut deferred = Vec::new();
     for proto in reg.protocols.values() {
-        if !families.contains(proto.family.as_str()) {
+        if !markets.contains(&(proto.family.as_str(), proto.market)) {
             continue;
         }
-        if let Some(v) = proto.extra.get("price_oracle") {
-            if let Some(s) = v.as_str() {
-                if let Ok(a) = s.parse::<Address>() {
-                    if !a.is_zero() {
-                        out.insert(a);
-                    }
-                }
+        oracles.insert(extra_address(proto, "price_oracle")?);
+        match extra_address(proto, "addresses_provider") {
+            Ok(p) => {
+                providers.insert(p);
             }
+            Err(e) => deferred.push(format!(
+                "PriceOracleUpdated deferred for {} {:?}: {e}",
+                proto.family, proto.market
+            )),
         }
     }
-    out.into_iter().collect()
+    Ok((
+        oracles.into_iter().collect(),
+        providers.into_iter().collect(),
+        deferred,
+    ))
 }
 
 alloy_sol_types::sol! {
     interface IAggregator {
         event AnswerUpdated(int256 indexed current, uint256 indexed roundId, uint256 updatedAt);
+        function latestRoundData()
+            external
+            view
+            returns (
+                uint80 roundId,
+                int256 answer,
+                uint256 startedAt,
+                uint256 updatedAt,
+                uint80 answeredInRound
+            );
+        function decimals() external view returns (uint8);
     }
     interface IAaveOracle {
         event AssetSourceUpdated(address indexed asset, address indexed source);
         function getSourceOfAsset(address asset) external view returns (address);
     }
+    interface IPoolAddressesProvider {
+        event PriceOracleUpdated(address indexed newAddress);
+    }
 }
 
 /// `AnswerUpdated(int256,uint256,uint256)` topic0.
-pub fn answer_updated_topic0() -> alloy_primitives::B256 {
-    use alloy_sol_types::SolEvent;
-    IAggregator::AnswerUpdated::SIGNATURE_HASH
-}
+pub const ANSWER_UPDATED_TOPIC0: alloy_primitives::B256 =
+    IAggregator::AnswerUpdated::SIGNATURE_HASH;
 
 /// V3 `AssetSourceUpdated` topic0 (03C carry-forward: fail closed on swap).
+pub const ASSET_SOURCE_UPDATED_TOPIC0: alloy_primitives::B256 =
+    IAaveOracle::AssetSourceUpdated::SIGNATURE_HASH;
+
+/// `PriceOracleUpdated(address)` topic0 (coverage `provider.priceOracleUpdated`).
+pub const PRICE_ORACLE_UPDATED_TOPIC0: alloy_primitives::B256 =
+    IPoolAddressesProvider::PriceOracleUpdated::SIGNATURE_HASH;
+
+pub fn answer_updated_topic0() -> alloy_primitives::B256 {
+    ANSWER_UPDATED_TOPIC0
+}
+
 pub fn asset_source_updated_topic0() -> alloy_primitives::B256 {
-    use alloy_sol_types::SolEvent;
-    IAaveOracle::AssetSourceUpdated::SIGNATURE_HASH
+    ASSET_SOURCE_UPDATED_TOPIC0
+}
+
+pub fn price_oracle_updated_topic0() -> alloy_primitives::B256 {
+    PRICE_ORACLE_UPDATED_TOPIC0
 }
 
 impl LogSubscriber for FeedSet {
     fn subscriptions(&self) -> Vec<LogFilter> {
         let t_ans = answer_updated_topic0();
         let t_src = asset_source_updated_topic0();
+        let t_pov = price_oracle_updated_topic0();
         let n = self
             .aggregators
             .len()
-            .saturating_add(self.source_oracles.len());
+            .saturating_add(self.source_oracles.len())
+            .saturating_add(self.providers.len());
         let mut out = Vec::with_capacity(n);
         for a in &self.aggregators {
             out.push(LogFilter {
@@ -444,6 +566,12 @@ impl LogSubscriber for FeedSet {
             out.push(LogFilter {
                 address: *o,
                 topic0: t_src,
+            });
+        }
+        for p in &self.providers {
+            out.push(LogFilter {
+                address: *p,
+                topic0: t_pov,
             });
         }
         out
@@ -459,22 +587,27 @@ pub async fn assert_protocol_sources<R: ChainRpc + Sync>(
     use alloy_sol_types::SolCall;
     let mut oracle_by_market: HashMap<(String, OnChainId), Address> = HashMap::new();
     for proto in reg.protocols.values() {
-        if let Some(v) = proto.extra.get("price_oracle") {
-            if let Some(s) = v.as_str() {
-                if let Ok(a) = s.parse::<Address>() {
-                    oracle_by_market.insert((proto.family.clone(), proto.market), a);
-                }
-            }
+        if proto.extra.contains_key("price_oracle") {
+            oracle_by_market.insert(
+                (proto.family.clone(), proto.market),
+                extra_address(proto, "price_oracle")?,
+            );
         }
     }
     for spec in &cfg.feeds {
-        let Some(oracle) = oracle_by_market.get(&(spec.protocol.clone(), spec.market)) else {
-            continue;
-        };
+        let oracle = oracle_by_market
+            .get(&(spec.protocol.clone(), spec.market))
+            .copied()
+            .ok_or_else(|| {
+                OracleError::Load(format!(
+                    "feed ({}, {:?}, {:#x}) has no resolvable price_oracle",
+                    spec.protocol, spec.market, spec.asset
+                ))
+            })?;
         let data = alloy_primitives::Bytes::from(
             IAaveOracle::getSourceOfAssetCall { asset: spec.asset }.abi_encode(),
         );
-        let raw = rpc.call(*oracle, data).await?;
+        let raw = rpc.call(oracle, data).await?;
         let found = IAaveOracle::getSourceOfAssetCall::abi_decode_returns_validate(&raw)
             .map_err(|_| OracleError::Load(format!("getSourceOfAsset decode at {oracle:#x}")))?;
         if found != spec.proxy {
@@ -520,7 +653,8 @@ mod tests {
     #[test]
     fn committed_feeds_match_registry() {
         let (reg, feeds) = committed();
-        feeds.assert_against_registry(&reg).unwrap();
+        let failures = feeds.assert_against_registry(&reg).unwrap();
+        assert_eq!(failures.len(), 6, "unresolved oracles returned to boot");
         let intern = Intern::from_registry(&reg).unwrap();
         let set = super::FeedSet::bind(&feeds, &intern, &reg).unwrap();
         assert_eq!(set.specs.len(), 10, "oracle: 9 assets, WETH × 2 markets");
@@ -685,5 +819,70 @@ spoke = "invented"
             }
             Ok(())
         });
+    }
+
+    #[test]
+    fn unused_watch_aggregator_not_in_registry_is_rejected() {
+        let (reg, mut feeds) = committed();
+        let row = feeds
+            .feeds
+            .iter_mut()
+            .find(|f| f.proxy == WETH_PROXY)
+            .unwrap();
+        let bogus = address!("0x1111111111111111111111111111111111111111");
+        row.svr_aggregator = Some(bogus);
+        let err = feeds.assert_against_registry(&reg).unwrap_err();
+        match err {
+            OracleError::AggregatorMismatch { found, .. } => assert_eq!(found, bogus),
+            other => panic!("expected AggregatorMismatch, got {other}"),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn feeds_config_validate_is_poisoned() {
+        use liq_config::validate::Validate;
+        use liq_config::HttpRpc;
+        let (_, feeds) = committed();
+        let rpc = HttpRpc::connect("https://ethereum.publicnode.com").unwrap();
+        let err = feeds.validate(&rpc).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("poisoned") && msg.contains("FeedsBoot"),
+            "{msg}"
+        );
+    }
+
+    /// Oracle: heartbeat_secs and deviation_bps match vendored Chainlink
+    /// feeds-mainnet.json (threshold percent × 100 = bps).
+    #[test]
+    #[allow(clippy::float_arithmetic)]
+    fn heartbeat_and_deviation_match_vendored_directory() {
+        let pin = std::fs::read_to_string(workspace_root().join("registry/feeds-mainnet.PIN"))
+            .unwrap();
+        assert!(pin.contains("feeds-mainnet.json"));
+        assert!(pin.contains("b6c836ef449ceebf68f7143e0dc6acf6"));
+        let raw = std::fs::read(workspace_root().join("registry/feeds-mainnet.json")).unwrap();
+        let dir: Vec<serde_json::Value> = serde_json::from_slice(&raw).unwrap();
+        let (_, feeds) = committed();
+        for spec in &feeds.feeds {
+            let agg = spec.configured_aggregator().unwrap();
+            let row = dir.iter().find(|r| {
+                r.get("contractAddress")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| s.parse::<Address>().ok() == Some(agg))
+            });
+            let row = row.unwrap_or_else(|| panic!("directory missing aggregator {agg:#x}"));
+            let hb = row
+                .get("heartbeat")
+                .and_then(|v| v.as_u64())
+                .unwrap_or_else(|| panic!("heartbeat missing for {agg:#x}"));
+            assert_eq!(hb, u64::from(spec.heartbeat_secs), "{agg:#x}");
+            let thr = row
+                .get("threshold")
+                .and_then(|v| v.as_f64())
+                .unwrap_or_else(|| panic!("threshold missing for {agg:#x}"));
+            let bps = thr * 100.0;
+            assert_eq!(bps, f64::from(spec.deviation_bps), "{agg:#x}");
+        }
     }
 }

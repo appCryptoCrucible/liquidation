@@ -11,7 +11,8 @@
         clippy::expect_used,
         clippy::panic,
         clippy::indexing_slicing,
-        clippy::arithmetic_side_effects
+        clippy::arithmetic_side_effects,
+        clippy::float_arithmetic
     )
 )]
 
@@ -24,8 +25,8 @@ pub mod publish;
 
 pub use canonical::{answer_to_ray, stale_after, CanonicalBook, ANSWER_UPDATED_TOPIC0};
 pub use feeds::{
-    assert_protocol_sources, resolve_registry, FeedFailure, FeedSet, FeedSpec, FeedsConfig,
-    Mechanism, RegistryOracle,
+    assert_protocol_sources, resolve_registry, FeedFailure, FeedSet, FeedSpec, FeedsBoot,
+    FeedsConfig, Mechanism, RegistryOracle,
 };
 pub use publish::{split, PricePublish, PriceRead};
 

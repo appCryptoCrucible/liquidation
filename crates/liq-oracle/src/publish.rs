@@ -9,7 +9,8 @@ pub struct PricePublish {
     input: Input<PriceVector>,
 }
 
-/// Reader half. Any number of hot-path consumers; each owns its `Output`.
+/// Reader half. One hot-path consumer owns this `Output` (`triple_buffer`
+/// is single-consumer; fan-out is extra `Output`s from additional splits).
 pub struct PriceRead {
     output: Output<PriceVector>,
 }
@@ -23,10 +24,16 @@ pub fn split(init: &PriceVector) -> (PricePublish, PriceRead) {
 }
 
 impl PricePublish {
-    /// Publish a complete vector. Wait-free for the reader.
+    /// Publish a complete vector in place. Wait-free for the reader.
+    /// Length must match the buffer sized at [`split`].
     #[inline]
-    pub fn write(&mut self, vector: PriceVector) {
-        self.input.write(vector);
+    pub fn write(&mut self, vector: &PriceVector) {
+        let buf = self.input.input_buffer_mut();
+        if buf.0.len() != vector.0.len() {
+            return;
+        }
+        buf.0.clone_from_slice(&vector.0);
+        self.input.publish();
     }
 }
 
@@ -61,8 +68,8 @@ mod tests {
         let init = PriceVector(vec![px(0, 1, 1, 1)]);
         let (mut w, mut r) = split(&init);
         assert_eq!(r.read().0[0].ts, 1);
-        w.write(PriceVector(vec![px(0, 2, 2, 2)]));
-        w.write(PriceVector(vec![px(0, 3, 3, 3)]));
+        w.write(&PriceVector(vec![px(0, 2, 2, 2)]));
+        w.write(&PriceVector(vec![px(0, 3, 3, 3)]));
         let got = r.read();
         assert_eq!(got.0.len(), 1, "oracle: Def — one slot");
         assert_eq!(got.0[0].ts, 3, "oracle: GUIDE-06 §7b latest complete");

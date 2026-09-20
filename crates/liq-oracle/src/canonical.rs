@@ -1,41 +1,23 @@
 //! Canonical prices: `AnswerUpdated` → [`PriceVector`], staleness at
 //! `heartbeat × 1.5` (GUIDE 06 §3, §7b, GUIDE 14).
 
-use crate::feeds::{asset_source_updated_topic0, FeedSet};
+use crate::feeds::{
+    asset_source_updated_topic0, price_oracle_updated_topic0, FeedSet, IAaveOracle, IAggregator,
+    IPoolAddressesProvider,
+};
 use crate::{OracleError, Result};
 use alloy_primitives::{Address, I256, U256};
-use alloy_sol_types::{sol, SolCall, SolEvent};
+use alloy_sol_types::{SolCall, SolEvent};
 use liq_config::rpc::ChainRpc;
-use liq_config::Intern;
+use liq_config::{Intern, Registry};
 use liq_protocol::DecodedLog;
 use liq_types::fixed::Ray;
 use liq_types::{AssetId, HaltReason, HaltScope, HaltSink, Price, PriceVector, SourceKind};
 use smallvec::SmallVec;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-sol! {
-    interface IAggregator {
-        event AnswerUpdated(int256 indexed current, uint256 indexed roundId, uint256 updatedAt);
-        function latestRoundData()
-            external
-            view
-            returns (
-                uint80 roundId,
-                int256 answer,
-                uint256 startedAt,
-                uint256 updatedAt,
-                uint80 answeredInRound
-            );
-        function decimals() external view returns (uint8);
-    }
-    interface IAaveOracle {
-        event AssetSourceUpdated(address indexed asset, address indexed source);
-    }
-}
-
-/// `AnswerUpdated` topic0. Same hash as 03A would use if it decoded this event.
-pub const ANSWER_UPDATED_TOPIC0: alloy_primitives::B256 =
-    IAggregator::AnswerUpdated::SIGNATURE_HASH;
+/// Re-export of the single `AnswerUpdated` topic0 (PonyTail: not duplicated).
+pub use crate::feeds::ANSWER_UPDATED_TOPIC0;
 
 /// Seconds after `last_update` at which the asset is stale: `heartbeat + heartbeat/2`
 /// (`heartbeat × 1.5`, integer). GUIDE 14 trips on `now − last >` this value.
@@ -48,6 +30,44 @@ pub fn stale_after(heartbeat_secs: u32) -> u64 {
     }
 }
 
+const fn u256_from_u128(n: u128) -> U256 {
+    let lo = (n & 0xffff_ffff_ffff_ffff) as u64;
+    let hi = (n >> 64) as u64;
+    U256::from_limbs([lo, hi, 0, 0])
+}
+
+/// `10^n` for n in 0..=27. Indexed by `27 - decimals`.
+const TEN_POW: [U256; 28] = [
+    u256_from_u128(1),
+    u256_from_u128(10),
+    u256_from_u128(100),
+    u256_from_u128(1_000),
+    u256_from_u128(10_000),
+    u256_from_u128(100_000),
+    u256_from_u128(1_000_000),
+    u256_from_u128(10_000_000),
+    u256_from_u128(100_000_000),
+    u256_from_u128(1_000_000_000),
+    u256_from_u128(10_000_000_000),
+    u256_from_u128(100_000_000_000),
+    u256_from_u128(1_000_000_000_000),
+    u256_from_u128(10_000_000_000_000),
+    u256_from_u128(100_000_000_000_000),
+    u256_from_u128(1_000_000_000_000_000),
+    u256_from_u128(10_000_000_000_000_000),
+    u256_from_u128(100_000_000_000_000_000),
+    u256_from_u128(1_000_000_000_000_000_000),
+    u256_from_u128(10_000_000_000_000_000_000),
+    u256_from_u128(100_000_000_000_000_000_000),
+    u256_from_u128(1_000_000_000_000_000_000_000),
+    u256_from_u128(10_000_000_000_000_000_000_000),
+    u256_from_u128(100_000_000_000_000_000_000_000),
+    u256_from_u128(1_000_000_000_000_000_000_000_000),
+    u256_from_u128(10_000_000_000_000_000_000_000_000),
+    u256_from_u128(100_000_000_000_000_000_000_000_000),
+    u256_from_u128(1_000_000_000_000_000_000_000_000_000),
+];
+
 /// Aggregator `answer` at `decimals` → [`Ray`] (1e27). Fail closed on
 /// non-positive or a scale that does not fit.
 pub fn answer_to_ray(answer: I256, decimals: u8) -> Result<Ray> {
@@ -58,34 +78,25 @@ pub fn answer_to_ray(answer: I256, decimals: u8) -> Result<Ray> {
     let Some(exp) = 27u32.checked_sub(u32::from(decimals)) else {
         return Err(OracleError::ScaleOverflow { decimals });
     };
-    let factor = ten_pow(exp, decimals)?;
+        let factor = match usize::try_from(exp) {
+            Ok(i) => TEN_POW
+                .get(i)
+                .copied()
+                .ok_or(OracleError::ScaleOverflow { decimals })?,
+            Err(_) => return Err(OracleError::ScaleOverflow { decimals }),
+        };
     let raw = mag
         .checked_mul(factor)
         .ok_or(OracleError::ScaleOverflow { decimals })?;
     Ok(Ray::from_raw(raw))
 }
 
-fn ten_pow(exp: u32, decimals: u8) -> Result<U256> {
-    let mut factor = U256::from(1u64);
-    let ten = U256::from(10u64);
-    let mut i = 0u32;
-    while i < exp {
-        factor = factor
-            .checked_mul(ten)
-            .ok_or(OracleError::ScaleOverflow { decimals })?;
-        i = i
-            .checked_add(1)
-            .ok_or(OracleError::ScaleOverflow { decimals })?;
-    }
-    Ok(factor)
-}
-
 /// Working canonical book. Single writer (oracle thread).
 pub struct CanonicalBook {
     feeds: FeedSet,
     by_agg: BTreeMap<Address, SmallVec<[u16; 2]>>,
-    /// Per [`AssetId`]: first feed index, heartbeat, last `updatedAt`.
-    by_asset: Vec<AssetSlot>,
+    by_asset: Vec<Option<AssetSlot>>,
+    asset_addrs: Vec<Address>,
     vector: PriceVector,
 }
 
@@ -96,11 +107,14 @@ struct AssetSlot {
 
 impl CanonicalBook {
     /// Size the vector from `intern` (index = [`AssetId`]). Slots without a
-    /// feed stay `ts = 0` and are not a price.
-    pub fn new(feeds: FeedSet, intern: &Intern) -> Result<Self> {
+    /// feed stay `ts = 0` and are not a price. Returns interned assets that a
+    /// tracked market lists (oracle adapter resolved) but have no feed.
+    pub fn new(feeds: FeedSet, intern: &Intern, reg: &Registry) -> Result<(Self, BTreeSet<AssetId>)> {
         let n = intern.assets().len();
         let mut vector = Vec::with_capacity(n);
+        let mut asset_addrs = Vec::with_capacity(n);
         for a in intern.assets() {
+            asset_addrs.push(a.address);
             vector.push(Price {
                 asset: a.id,
                 price: Ray::ZERO,
@@ -116,11 +130,10 @@ impl CanonicalBook {
         let mut by_agg: BTreeMap<Address, SmallVec<[u16; 2]>> = BTreeMap::new();
         for (i, f) in feeds.specs.iter().enumerate() {
             let idx = u16::try_from(i).map_err(|_| OracleError::Load("too many feeds".into()))?;
-            for a in &f.watch {
-                let slot = by_agg.entry(*a).or_default();
-                if !slot.contains(&idx) {
-                    slot.push(idx);
-                }
+            let canon = f.spec.configured_aggregator()?;
+            let slot = by_agg.entry(canon).or_default();
+            if !slot.contains(&idx) {
+                slot.push(idx);
             }
             let ai = usize::from(f.asset.0);
             let Some(slot) = by_asset.get_mut(ai) else {
@@ -145,12 +158,29 @@ impl CanonicalBook {
                 }
             }
         }
-        Ok(Self {
-            feeds,
-            by_agg,
-            by_asset: flatten_slots(by_asset),
-            vector: PriceVector(vector),
-        })
+        let unfed = unfed_listed_assets(&feeds, intern, reg, &by_asset)?;
+        Ok((
+            Self {
+                feeds,
+                by_agg,
+                by_asset,
+                asset_addrs,
+                vector: PriceVector(vector),
+            },
+            unfed,
+        ))
+    }
+
+    /// `None` when the slot has never been written (`ts == 0`).
+    #[must_use]
+    pub fn price(&self, asset: AssetId) -> Option<&Price> {
+        let i = usize::from(asset.0);
+        let p = self.vector.0.get(i)?;
+        if p.ts == 0 {
+            None
+        } else {
+            Some(p)
+        }
     }
 
     #[must_use]
@@ -164,7 +194,7 @@ impl CanonicalBook {
     }
 
     /// Fold one routed log. `true` when the published vector changed.
-    pub fn apply_log(&mut self, log: &DecodedLog<'_>, sink: Option<&dyn HaltSink>) -> Result<bool> {
+    pub fn apply_log(&mut self, log: &DecodedLog<'_>, sink: &dyn HaltSink) -> Result<bool> {
         let Some(t0) = log.topics.first() else {
             return Ok(false);
         };
@@ -173,6 +203,9 @@ impl CanonicalBook {
         }
         if *t0 == asset_source_updated_topic0() {
             return self.apply_source_swap(log, sink);
+        }
+        if *t0 == price_oracle_updated_topic0() {
+            return self.apply_oracle_contract_swap(log, sink);
         }
         Ok(false)
     }
@@ -195,17 +228,14 @@ impl CanonicalBook {
             };
             let price = answer_to_ray(ev.current, feed.spec.decimals)?;
             let asset = feed.asset;
-            self.write_price(asset, price, log.block, ts)?;
-            changed = true;
+            if self.write_price(asset, price, log.block, ts)? {
+                changed = true;
+            }
         }
         Ok(changed)
     }
 
-    fn apply_source_swap(
-        &mut self,
-        log: &DecodedLog<'_>,
-        sink: Option<&dyn HaltSink>,
-    ) -> Result<bool> {
+    fn apply_source_swap(&mut self, log: &DecodedLog<'_>, sink: &dyn HaltSink) -> Result<bool> {
         let ev =
             IAaveOracle::AssetSourceUpdated::decode_raw_log(log.topics.iter().copied(), log.data)
                 .map_err(|_| OracleError::BadAnswerUpdated)?;
@@ -214,9 +244,7 @@ impl CanonicalBook {
                 continue;
             }
             if ev.source != f.spec.proxy {
-                if let Some(s) = sink {
-                    s.halt(HaltScope::Asset(f.asset), HaltReason::ProxyUpgrade);
-                }
+                sink.halt(HaltScope::Protocol(f.protocol), HaltReason::ProxyUpgrade);
                 return Err(OracleError::SourceMigrated {
                     asset: ev.asset,
                     expected: f.spec.proxy,
@@ -227,85 +255,159 @@ impl CanonicalBook {
         Ok(false)
     }
 
-    fn write_price(&mut self, asset: AssetId, price: Ray, block: u64, ts: u64) -> Result<()> {
+    fn apply_oracle_contract_swap(
+        &mut self,
+        log: &DecodedLog<'_>,
+        sink: &dyn HaltSink,
+    ) -> Result<bool> {
+        let _ev = IPoolAddressesProvider::PriceOracleUpdated::decode_raw_log(
+            log.topics.iter().copied(),
+            log.data,
+        )
+        .map_err(|_| OracleError::BadAnswerUpdated)?;
+        let mut hit = false;
+        for f in &self.feeds.specs {
+            sink.halt(HaltScope::Protocol(f.protocol), HaltReason::ProxyUpgrade);
+            hit = true;
+        }
+        if hit {
+            return Err(OracleError::Load(format!(
+                "PriceOracleUpdated at {:#x}",
+                log.address
+            )));
+        }
+        Ok(false)
+    }
+
+    fn write_price(&mut self, asset: AssetId, price: Ray, block: u64, ts: u64) -> Result<bool> {
         let i = usize::from(asset.0);
-        let slot = self.vector.0.get_mut(i).ok_or(OracleError::InternAsset {
-            asset: Address::ZERO,
-        })?;
+        let addr = match self.asset_addrs.get(i).copied() {
+            Some(a) => a,
+            None => {
+                return Err(OracleError::Load(format!(
+                    "asset id {} is outside intern table",
+                    asset.0
+                )))
+            }
+        };
+        let Some(feed_slot) = self.by_asset.get_mut(i) else {
+            return Err(OracleError::InternAsset { asset: addr });
+        };
+        let Some(feed_slot) = feed_slot else {
+            return Err(OracleError::InternAsset { asset: addr });
+        };
+        if feed_slot.last_ts != 0 && ts < feed_slot.last_ts {
+            return Ok(false);
+        }
+        let slot = self
+            .vector
+            .0
+            .get_mut(i)
+            .ok_or(OracleError::InternAsset { asset: addr })?;
         slot.asset = asset;
         slot.price = price;
         slot.source = SourceKind::Canonical;
         slot.block = block;
         slot.ts = ts;
-        if let Some(a) = self.by_asset.get_mut(i) {
-            a.last_ts = ts;
-        }
-        Ok(())
+        feed_slot.last_ts = ts;
+        Ok(true)
     }
 
     /// Asset-scoped staleness. `now` is the canonical block timestamp.
     pub fn check_staleness(&self, now: u64, sink: &dyn HaltSink) {
         for (i, slot) in self.by_asset.iter().enumerate() {
-            if slot.heartbeat_secs == 0 {
+            let Some(slot) = slot else {
                 continue;
-            }
+            };
             let elapsed = now.saturating_sub(slot.last_ts);
             if elapsed > stale_after(slot.heartbeat_secs) {
-                let id = AssetId(u16::try_from(i).unwrap_or(u16::MAX));
-                sink.halt(HaltScope::Asset(id), HaltReason::OracleStale);
+                let Ok(raw) = u16::try_from(i) else {
+                    sink.halt(HaltScope::Global, HaltReason::AdapterPanic);
+                    return;
+                };
+                sink.halt(HaltScope::Asset(AssetId(raw)), HaltReason::OracleStale);
             }
         }
     }
 
-    /// Seed from `latestRoundData` on each watched aggregator. Live chain.
+    /// Seed from `latestRoundData` on each **configured** aggregator. Live chain.
     pub async fn seed<R: ChainRpc + Sync>(&mut self, rpc: &R) -> Result<()> {
+        let block = rpc.block_number().await?;
         let mut seen: BTreeMap<Address, (I256, u64)> = BTreeMap::new();
         for f in &self.feeds.specs {
-            for agg in &f.watch {
-                if seen.contains_key(agg) {
-                    continue;
-                }
-                let data =
-                    alloy_primitives::Bytes::from(IAggregator::latestRoundDataCall {}.abi_encode());
-                let raw = rpc.call(*agg, data).await?;
-                let out = IAggregator::latestRoundDataCall::abi_decode_returns_validate(&raw)
-                    .map_err(|_| OracleError::Load(format!("latestRoundData at {agg:#x}")))?;
-                let ts = u64::try_from(out.updatedAt).map_err(|_| OracleError::BadAnswerUpdated)?;
-                if ts == 0 {
-                    return Err(OracleError::BadAnswerUpdated);
-                }
-                seen.insert(*agg, (out.answer, ts));
+            let agg = f.spec.configured_aggregator()?;
+            if seen.contains_key(&agg) {
+                continue;
             }
+            let data =
+                alloy_primitives::Bytes::from(IAggregator::latestRoundDataCall {}.abi_encode());
+            let raw = rpc.call(agg, data).await?;
+            let out = IAggregator::latestRoundDataCall::abi_decode_returns_validate(&raw)
+                .map_err(|_| OracleError::Load(format!("latestRoundData at {agg:#x}")))?;
+            let ts = u64::try_from(out.updatedAt).map_err(|_| OracleError::BadAnswerUpdated)?;
+            if ts == 0 {
+                return Err(OracleError::BadAnswerUpdated);
+            }
+            seen.insert(agg, (out.answer, ts));
         }
-        let specs: Vec<(SmallVec<[Address; 2]>, u8, AssetId)> = self
+        let specs: Vec<(Address, u8, AssetId)> = self
             .feeds
             .specs
             .iter()
-            .map(|f| (f.watch.clone(), f.spec.decimals, f.asset))
-            .collect();
-        for (watch, decimals, asset) in specs {
-            let Some(agg) = watch.first() else {
-                continue;
-            };
-            let Some((answer, ts)) = seen.get(agg).copied() else {
-                continue;
+            .map(|f| {
+                f.spec
+                    .configured_aggregator()
+                    .map(|a| (a, f.spec.decimals, f.asset))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for (agg, decimals, asset) in specs {
+            let Some((answer, ts)) = seen.get(&agg).copied() else {
+                return Err(OracleError::Load(format!(
+                    "seed missing latestRoundData for {agg:#x}"
+                )));
             };
             let price = answer_to_ray(answer, decimals)?;
-            self.write_price(asset, price, 0, ts)?;
+            self.write_price(asset, price, block, ts)?;
         }
         Ok(())
     }
 }
 
-fn flatten_slots(src: Vec<Option<AssetSlot>>) -> Vec<AssetSlot> {
-    src.into_iter()
-        .map(|s| {
-            s.unwrap_or(AssetSlot {
-                heartbeat_secs: 0,
-                last_ts: 0,
-            })
-        })
-        .collect()
+fn unfed_listed_assets(
+    feeds: &FeedSet,
+    intern: &Intern,
+    reg: &Registry,
+    by_asset: &[Option<AssetSlot>],
+) -> Result<BTreeSet<AssetId>> {
+    let tracked: HashSet<(String, liq_config::OnChainId)> = feeds
+        .specs
+        .iter()
+        .map(|f| (f.spec.protocol.clone(), f.spec.market))
+        .collect();
+    let mut unfed = BTreeSet::new();
+    for proto in reg.protocols.values() {
+        if !tracked.contains(&(proto.family.clone(), proto.market)) {
+            continue;
+        }
+        for proxy in &proto.oracle_adapters {
+            let Some(entry) = reg.oracles.get(proxy) else {
+                continue;
+            };
+            if let Ok(r) = crate::feeds::resolve_one(reg, *proxy, entry) {
+                let Some(id) = intern.asset(r.asset) else {
+                    continue;
+                };
+                let i = usize::from(id.0);
+                match by_asset.get(i) {
+                    Some(None) | None => {
+                        unfed.insert(id);
+                    }
+                    Some(Some(_)) => {}
+                }
+            }
+        }
+    }
+    Ok(unfed)
 }
 
 /// Encode `AnswerUpdated` (tests / fixtures).
@@ -377,7 +479,13 @@ mod tests {
         let intern = Intern::from_registry(&reg).unwrap();
         let set = FeedSet::bind(&feeds, &intern, &reg).unwrap();
         let weth = intern.asset(WETH).unwrap();
-        (CanonicalBook::new(set, &intern).unwrap(), intern, weth)
+        let (book, unfed) = CanonicalBook::new(set, &intern, &reg).unwrap();
+        assert!(
+            unfed.is_empty()
+                || unfed.iter().all(|id| book.price(*id).is_none()),
+            "unfed listed assets must not be readable as prices"
+        );
+        (book, intern, weth)
     }
 
     /// Oracle: 8-decimal Chainlink `1e8` is `Ray::ONE`. Math, not the book.
@@ -451,18 +559,19 @@ mod tests {
         let arena = DecodeArena::with_capacity(4096);
         match router.route(&arena, &log).unwrap() {
             Route::Hit { decoded, .. } => {
-                assert!(book.apply_log(&decoded, None).unwrap());
+                let rec = Rec(Mutex::new(Vec::new()));
+                assert!(book.apply_log(&decoded, &rec).unwrap());
             }
             other => panic!("expected Hit, got {other:?}"),
         }
-        let px = book.vector().0.get(usize::from(weth.0)).unwrap();
+        let px = book.price(weth).expect("seeded via AnswerUpdated");
         assert_eq!(px.asset, weth);
         assert_eq!(px.price, answer_to_ray(ans, 8).unwrap());
         assert!(matches!(px.source, SourceKind::Canonical));
         assert_eq!(px.block, 18_000_000);
         assert_eq!(px.ts, 1_700_000_000);
         let (mut w, mut r) = split(book.vector());
-        w.write(book.vector().clone());
+        w.write(book.vector());
         assert_eq!(
             r.read().0.get(usize::from(weth.0)).unwrap().ts,
             1_700_000_000
