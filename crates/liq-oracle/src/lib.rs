@@ -20,11 +20,15 @@ use alloy_primitives::Address;
 use thiserror::Error;
 
 pub mod canonical;
+pub mod derived;
 pub mod feeds;
 pub mod mevshare;
 pub mod publish;
 
 pub use canonical::{answer_to_ray, stale_after, CanonicalBook, ANSWER_UPDATED_TOPIC0};
+pub use derived::{
+    CrossOrder, DerivedBook, DerivedSpec, Formula, RateScale, DERIVED_CONFIDENCE_CERTAIN,
+};
 pub use feeds::{
     assert_protocol_sources, resolve_registry, FeedFailure, FeedSet, FeedSpec, FeedsBoot,
     FeedsConfig, Mechanism, RegistryOracle,
@@ -90,6 +94,16 @@ pub enum OracleError {
         expected: Address,
         found: Address,
     },
+    #[error("derived rate unknown or zero at {contract:#x}")]
+    UnknownRate { contract: Address },
+    #[error("derived dep price missing (ts=0) for asset id {0}")]
+    MissingDep(u16),
+    #[error("derived rate log decode failed")]
+    BadRateLog,
+    #[error("LP totalSupply is zero")]
+    ZeroLpSupply,
+    #[error("derived fixed-point: {0}")]
+    Fixed(#[from] liq_types::fixed::FixedError),
     #[error(transparent)]
     Config(#[from] liq_config::ConfigError),
 }

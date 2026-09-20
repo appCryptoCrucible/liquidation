@@ -8,10 +8,20 @@ use alloy_primitives::{Address, Bytes, Log, TxHash, B256};
 use smallvec::SmallVec;
 use std::time::Instant;
 
-/// Confidence of a forward-looking price (GUIDE 06 §1). Raw value; scale is
-/// owned by WP 06C.
+/// Confidence of a forward-looking price (GUIDE 06 §1).
+///
+/// Scale (WP 06A-2, reused by 06C): **basis points of certainty**, `0..=10_000`.
+/// `10_000` = observed on-chain (certain). [`SourceKind::Derived`] has no
+/// `Confidence` field because a rate-contract log is certain in this scale.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Confidence(pub u16);
+
+impl Confidence {
+    /// 100% — on-chain observed (rate update, canonical transmit).
+    pub const CERTAIN: Self = Self(10_000);
+    /// Inclusive maximum of the scale.
+    pub const MAX_BPS: u16 = 10_000;
+}
 
 /// Partial MEV-Share hint (GUIDE 06 §4). Matchers must work with missing fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,6 +52,7 @@ pub enum SourceKind {
         confidence: Confidence,
     },
     /// Computed from other prices + on-chain state (LST rates, LP fair value).
+    /// `deps` only — never hint logs (06A-1/06B: keep those off `PriceVector`).
     Derived { deps: SmallVec<[AssetId; 4]> },
 }
 

@@ -36,8 +36,8 @@ const fn u256_from_u128(n: u128) -> U256 {
     U256::from_limbs([lo, hi, 0, 0])
 }
 
-/// `10^n` for n in 0..=27. Indexed by `27 - decimals`.
-const TEN_POW: [U256; 28] = [
+/// `10^n` for n in 0..=27. `answer_to_ray` indexes by `27 - decimals`.
+pub(crate) const TEN_POW: [U256; 28] = [
     u256_from_u128(1),
     u256_from_u128(10),
     u256_from_u128(100),
@@ -78,17 +78,25 @@ pub fn answer_to_ray(answer: I256, decimals: u8) -> Result<Ray> {
     let Some(exp) = 27u32.checked_sub(u32::from(decimals)) else {
         return Err(OracleError::ScaleOverflow { decimals });
     };
-        let factor = match usize::try_from(exp) {
-            Ok(i) => TEN_POW
-                .get(i)
-                .copied()
-                .ok_or(OracleError::ScaleOverflow { decimals })?,
-            Err(_) => return Err(OracleError::ScaleOverflow { decimals }),
-        };
+    let factor = match usize::try_from(exp) {
+        Ok(i) => TEN_POW
+            .get(i)
+            .copied()
+            .ok_or(OracleError::ScaleOverflow { decimals })?,
+        Err(_) => return Err(OracleError::ScaleOverflow { decimals }),
+    };
     let raw = mag
         .checked_mul(factor)
         .ok_or(OracleError::ScaleOverflow { decimals })?;
     Ok(Ray::from_raw(raw))
+}
+
+/// `10^decimals` for `decimals <= 27`.
+pub(crate) fn pow10(decimals: u8) -> Result<U256> {
+    TEN_POW
+        .get(usize::from(decimals))
+        .copied()
+        .ok_or(OracleError::ScaleOverflow { decimals })
 }
 
 /// Working canonical book. Single writer (oracle thread).
@@ -109,7 +117,11 @@ impl CanonicalBook {
     /// Size the vector from `intern` (index = [`AssetId`]). Slots without a
     /// feed stay `ts = 0` and are not a price. Returns interned assets that a
     /// tracked market lists (oracle adapter resolved) but have no feed.
-    pub fn new(feeds: FeedSet, intern: &Intern, reg: &Registry) -> Result<(Self, BTreeSet<AssetId>)> {
+    pub fn new(
+        feeds: FeedSet,
+        intern: &Intern,
+        reg: &Registry,
+    ) -> Result<(Self, BTreeSet<AssetId>)> {
         let n = intern.assets().len();
         let mut vector = Vec::with_capacity(n);
         let mut asset_addrs = Vec::with_capacity(n);
@@ -481,8 +493,7 @@ mod tests {
         let weth = intern.asset(WETH).unwrap();
         let (book, unfed) = CanonicalBook::new(set, &intern, &reg).unwrap();
         assert!(
-            unfed.is_empty()
-                || unfed.iter().all(|id| book.price(*id).is_none()),
+            unfed.is_empty() || unfed.iter().all(|id| book.price(*id).is_none()),
             "unfed listed assets must not be readable as prices"
         );
         (book, intern, weth)

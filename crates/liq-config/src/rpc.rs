@@ -17,6 +17,9 @@ pub trait ChainRpc: Send {
     /// `eth_call` to `to` with calldata `data`. Transport failure →
     /// [`ConfigError::RpcUnavailable`]. A revert is [`ConfigError::CallFailed`].
     async fn call(&self, to: Address, data: Bytes) -> Result<Bytes>;
+
+    /// `eth_blockNumber`. Transport failure → [`ConfigError::RpcUnavailable`].
+    async fn block_number(&self) -> Result<u64>;
 }
 
 /// HTTP JSON-RPC implementor. Constructed from the operator's `rpc_url`.
@@ -79,5 +82,14 @@ impl ChainRpc for HttpRpc {
                 cause: e.to_string(),
             }),
         }
+    }
+
+    async fn block_number(&self) -> Result<u64> {
+        self.provider
+            .get_block_number()
+            .await
+            .map_err(|e| ConfigError::RpcUnavailable {
+                cause: e.to_string(),
+            })
     }
 }
