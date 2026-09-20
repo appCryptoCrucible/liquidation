@@ -64,6 +64,10 @@ mimalloc = { version = "=0.1.52", default-features = false }
 proptest = "=1.11.0"
 loom = "=0.7.2"
 criterion = { version = "=0.8.2", features = ["html_reports"] }
+revm = { version = "=43.0.2", default-features = false, features = ["std"] }
+arrow = { version = "=55.2.0", default-features = false }
+parquet = { version = "=55.2.0", features = ["zstd"] }
+rusqlite = { version = "=0.37.0", features = ["bundled"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
