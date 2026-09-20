@@ -3092,6 +3092,20 @@ dependencies = [
 [[package]]
 name = "liq-engine"
 version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "criterion",
+ "fixedbitset",
+ "liq-adapters-aave-v4",
+ "liq-flash",
+ "liq-protocol",
+ "liq-state",
+ "liq-types",
+ "smallvec",
+ "thiserror",
+ "tracing",
+]
 
 [[package]]
 name = "liq-exec"

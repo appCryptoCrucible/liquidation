@@ -4,5 +4,29 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[dependencies]
+liq-types = { path = "../liq-types" }
+liq-protocol = { path = "../liq-protocol" }
+liq-state = { path = "../liq-state" }
+liq-flash = { path = "../liq-flash" }
+alloy-primitives = { workspace = true }
+fixedbitset = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# Test/bench fixtures only (`-e normal` dep-lint edge stays clean): GUIDE 08's
+# acceptance names "a V4 position with a nonzero risk premium", so the real
+# adapter is the oracle for the time-cross heap and the recompute benchmarks.
+liq-adapters-aave-v4 = { path = "../liq-adapters/aave-v4" }
+alloy-primitives = { workspace = true, features = ["std"] }
+alloy-sol-types = { workspace = true, features = ["std"] }
+smallvec = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "engine"
+harness = false
+
 [lints]
 workspace = true
