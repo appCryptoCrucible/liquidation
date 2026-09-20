@@ -1,0 +1,73 @@
+//! Fail-closed errors. None of these are recoverable at boot: a mismatch or an
+//! unreachable RPC means every downstream number is suspect (REGISTRY.md §4c).
+
+use alloy_primitives::Address;
+use thiserror::Error;
+
+/// Load, validate, or boot-assertion failure.
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    /// Figment / filesystem / JSON failed to produce a typed config.
+    #[error("config load failed: {0}")]
+    Load(String),
+    /// `rpc_url` empty or the transport could not complete a read.
+    #[error("rpc unavailable; refusing to start")]
+    RpcUnavailable,
+    /// Config or registry `chain_id` disagrees with `eth_chainId`.
+    #[error("chain id mismatch: config {expected}, chain {found}")]
+    ChainIdMismatch { expected: u64, found: u64 },
+    /// Committed registry has no tokens. That is not a valid cache of chain truth.
+    #[error("registry has no tokens")]
+    EmptyRegistry,
+    /// Intern table overflowed the id width.
+    #[error("too many {what} to intern")]
+    InternOverflow { what: &'static str },
+    /// Token `decimals()` disagrees with the committed registry.
+    #[error("decimals mismatch for {token:#x}: registry {expected}, chain {found}")]
+    DecimalsMismatch {
+        token: Address,
+        expected: u8,
+        found: u8,
+    },
+    /// Token `symbol` is JSON `null`. Discovery recorded a gap; we do not
+    /// invent a symbol, and we will not start with an unassertable field.
+    #[error("registry symbol is null for {token:#x} (chain says {found:?}); refusing to start")]
+    SymbolMissing { token: Address, found: String },
+    /// Token `symbol()` disagrees with the committed registry.
+    #[error("symbol mismatch for {token:#x}: registry {expected:?}, chain {found:?}")]
+    SymbolMismatch {
+        token: Address,
+        expected: String,
+        found: String,
+    },
+    /// Pool `token0`/`token1` disagree with the committed registry.
+    #[error(
+        "token order mismatch for pool {pool:#x}: registry ({expected0:#x}, {expected1:#x}), chain ({found0:#x}, {found1:#x})"
+    )]
+    TokenOrderMismatch {
+        pool: Address,
+        expected0: Address,
+        expected1: Address,
+        found0: Address,
+        found1: Address,
+    },
+    /// Pool `fee()` disagrees with the committed registry.
+    #[error("fee mismatch for pool {pool:#x}: registry {expected}, chain {found}")]
+    FeeMismatch {
+        pool: Address,
+        expected: u32,
+        found: u32,
+    },
+    /// An `eth_call` reverted, returned empty, or did not ABI-decode.
+    #[error("on-chain view failed for {address:#x} ({what})")]
+    CallFailed {
+        address: Address,
+        what: &'static str,
+    },
+    /// A protocol market id is neither a 20-byte address nor a 32-byte slot.
+    #[error("unrecognised on-chain id {0:?}")]
+    BadOnChainId(String),
+}
+
+/// `Result` with [`ConfigError`].
+pub type Result<T, E = ConfigError> = core::result::Result<T, E>;

@@ -1,0 +1,5 @@
+# Ethereum mainnet only (D01). `rpc_url` is empty in git — set LIQ_RPC_URL.
+# The boot assertion refuses to start if this is still empty at Validate.
+chain_id = 1
+registry_path = "registry/registry.json"
+rpc_url = ""

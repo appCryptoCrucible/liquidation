@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://liquidator.local/registry/schema.json",
+  "title": "Liquidator chain registry",
+  "description": "Static chain-derived decimals, token order, fee tiers, and addresses (REGISTRY.md §2). Boot assertion re-reads decimals/symbol/token0/token1/fee from chain (REGISTRY.md §4c).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "chain_id",
+    "generated_at_block",
+    "tokens",
+    "protocols",
+    "oracles",
+    "pools",
+    "flash_sources",
+    "routers"
+  ],
+  "properties": {
+    "chain_id": {
+      "type": "integer",
+      "const": 1,
+      "description": "EIP-155 chain id. This project is Ethereum mainnet only (D01)."
+    },
+    "generated_at_block": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Block the derivation read from. Not boot-checkable cheaply."
+    },
+    "tokens": {
+      "type": "object",
+      "description": "ERC-20 (and bytes32-metadata) tokens, keyed by address.",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^0x[0-9a-f]{40}$": { "$ref": "#/$defs/token" }
+      }
+    },
+    "protocols": {
+      "type": "object",
+      "description": "Protocol markets/instances, keyed by `family:id`.",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[a-z0-9-]+:0x[0-9a-f]+$": { "$ref": "#/$defs/protocol" }
+      }
+    },
+    "oracles": {
+      "type": "object",
+      "description": "Aggregator proxies, keyed by proxy address.",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^0x[0-9a-f]{40}$": { "$ref": "#/$defs/oracle" }
+      }
+    },
+    "pools": {
+      "type": "object",
+      "description": "DEX pools. token0/token1 are the pool's on-chain order.",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^0x[0-9a-f]{40}$": { "$ref": "#/$defs/pool" }
+      }
+    },
+    "flash_sources": {
+      "type": "object",
+      "description": "Flash-loan sources (GUIDE 07). Empty until 07A fills them."
+    },
+    "routers": {
+      "type": "object",
+      "description": "Allowlisted routers (Curve). Balancer is out of scope (D08)."
+    }
+  },
+  "$defs": {
+    "address": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{40}$"
+    },
+    "bytes32": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{64}$"
+    },
+    "token": {
+      "type": "object",
+      "required": ["symbol", "decimals"],
+      "properties": {
+        "symbol": { "type": ["string", "null"] },
+        "decimals": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "quirks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "no_return_data",
+              "approve_nonzero_reverts",
+              "fee_on_transfer",
+              "rebasing",
+              "low_decimals",
+              "nonstandard_metadata",
+              "symbol_collision"
+            ]
+          }
+        },
+        "symbol_collision": {
+          "type": "object",
+          "required": ["claims", "canonical", "source"],
+          "properties": {
+            "claims": { "type": "string" },
+            "canonical": { "$ref": "#/$defs/address" },
+            "source": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "protocol": {
+      "type": "object",
+      "required": ["family", "market", "deployed_block"],
+      "properties": {
+        "family": { "type": "string" },
+        "market": {
+          "oneOf": [
+            { "$ref": "#/$defs/address" },
+            { "$ref": "#/$defs/bytes32" }
+          ]
+        },
+        "deployed_block": { "type": "integer", "minimum": 0 },
+        "receipt_tokens": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/address" }
+        },
+        "oracle_adapters": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/address" }
+        },
+        "admitted": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "oracle": {
+      "type": "object",
+      "required": ["aggregator", "pair", "decimals", "svr"],
+      "properties": {
+        "aggregator": { "$ref": "#/$defs/address" },
+        "pair": { "type": "string" },
+        "decimals": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "svr": { "type": "boolean" },
+        "source": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "pool": {
+      "type": "object",
+      "required": ["venue", "token0", "token1", "fee"],
+      "properties": {
+        "venue": { "type": "string", "const": "univ3" },
+        "token0": { "$ref": "#/$defs/address" },
+        "token1": { "$ref": "#/$defs/address" },
+        "fee": { "type": "integer", "minimum": 0, "maximum": 16777215 },
+        "factory": { "$ref": "#/$defs/address" },
+        "deployed_block": { "type": "integer", "minimum": 0 },
+        "derived_via": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

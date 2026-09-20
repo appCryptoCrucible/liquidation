@@ -34,6 +34,7 @@ alloy-provider = { version = "=2.4.2", default-features = false, features = ["re
 alloy-rpc-types-eth = { version = "=2.4.2", default-features = false }
 tokio = { version = "=1.47.1", default-features = false, features = ["rt", "macros", "time"] }
 serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.145", default-features = false, features = ["std"] }
 toml = "=1.1.6"
 figment = { version = "=0.10.19", features = ["toml", "env"] }
 tracing = "=0.1.44"
