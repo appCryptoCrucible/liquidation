@@ -21,7 +21,7 @@ pub struct CachePair {
 mod linux {
     use super::{CachePair, CacheSample};
     use crate::error::{ObsError, Result};
-    use perf_event::events::{Cache, CacheOp, CacheResult, Hardware};
+    use perf_event::events::{Cache, CacheOp, CacheResult, WhichCache};
     use perf_event::Builder;
 
     struct Pair {
@@ -31,33 +31,34 @@ mod linux {
 
     impl Pair {
         fn open() -> Result<Self> {
-            let llc = Builder::new(Cache {
-                which: Hardware::CACHE_MISSES,
-                operation: CacheOp::READ,
-                result: CacheResult::MISS,
-            })
-            .build()
-            .or_else(|_| Builder::new(Hardware::CACHE_MISSES).build())
-            .map_err(|e| {
-                tracing::error!(error = %e, "perf_event_open LLC failed");
-                ObsError::PerfUnavailable {
-                    os: "linux",
-                    cause: e.to_string(),
-                }
-            })?;
-            let dtlb = Builder::new(Cache {
-                which: Hardware::DT_TLB,
-                operation: CacheOp::READ,
-                result: CacheResult::MISS,
-            })
-            .build()
-            .map_err(|e| {
-                tracing::error!(error = %e, "perf_event_open dTLB failed");
-                ObsError::PerfUnavailable {
-                    os: "linux",
-                    cause: e.to_string(),
-                }
-            })?;
+            let llc = Builder::new()
+                .kind(Cache {
+                    which: WhichCache::LL,
+                    operation: CacheOp::READ,
+                    result: CacheResult::MISS,
+                })
+                .build()
+                .map_err(|e| {
+                    tracing::error!(error = %e, "perf_event_open LLC failed");
+                    ObsError::PerfUnavailable {
+                        os: "linux",
+                        cause: e.to_string(),
+                    }
+                })?;
+            let dtlb = Builder::new()
+                .kind(Cache {
+                    which: WhichCache::DTLB,
+                    operation: CacheOp::READ,
+                    result: CacheResult::MISS,
+                })
+                .build()
+                .map_err(|e| {
+                    tracing::error!(error = %e, "perf_event_open dTLB failed");
+                    ObsError::PerfUnavailable {
+                        os: "linux",
+                        cause: e.to_string(),
+                    }
+                })?;
             Ok(Self { llc, dtlb })
         }
 
@@ -77,8 +78,8 @@ mod linux {
                 }
             })?;
             Ok(CachePair {
-                llc_load_misses: llc_load_misses.into_count(),
-                dtlb_load_misses: dtlb_load_misses.into_count(),
+                llc_load_misses,
+                dtlb_load_misses,
             })
         }
 
