@@ -15,5 +15,6 @@
 pub mod archive;
 pub mod bench;
 pub mod diff;
+pub mod lite;
 pub mod parity;
 pub mod recall;
