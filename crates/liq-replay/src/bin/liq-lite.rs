@@ -1,4 +1,5 @@
-//! 05F lite validation smoke. `LIQ_RPC_URL` required. Clears nothing.
+//! 05F lite validation smoke. `LIQ_RPC_URL` and `LIQ_LITE_SPOKE` required.
+//! Clears nothing. `flagged_and_declined` is unmeasured (engine DeclineReason).
 
 use std::path::PathBuf;
 
@@ -24,7 +25,7 @@ async fn go() -> Result<(), LiteError> {
          flagged_and_liquidated={}\n\
          liquidated_never_flagged (outside universe)={}\n\
          flagged_nobody_liquidated={}\n\
-         flagged_and_declined={}",
+         flagged_and_declined={} (unmeasured; engine DeclineReason)",
         report.instance,
         report.spoke,
         report.from,
