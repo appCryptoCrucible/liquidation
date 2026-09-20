@@ -21,6 +21,7 @@ pub mod assert;
 pub mod config;
 pub mod error;
 pub mod intern;
+pub mod protocols;
 pub mod registry;
 pub mod rpc;
 pub mod validate;
@@ -32,6 +33,7 @@ pub use assert::assert_registry;
 pub use config::{load, BotConfig, RiskConfig, VenuesConfig};
 pub use error::{ConfigError, Result};
 pub use intern::{AssetRec, FeedRec, Intern, MarketRec};
+pub use protocols::AaveV3Toml;
 pub use registry::{
     OnChainId, OracleEntry, PoolEntry, PoolVenue, ProtocolEntry, Registry, SymbolCollision,
     TokenEntry, TokenQuirk,

@@ -1,0 +1,309 @@
+# SparkLend mainnet (family `spark` in registry/registry.json).
+# Fills `liq_adapters_aave_v3::Config`. Values read on-chain at block 26018679
+# via PoolAddressesProvider 0x02c3ea4e34c0cbd694d2adfa2c690eecbc1793ee
+# (registry key spark:0xc13e21b648a5ee794902342038ff3adab66be987).
+# Liquidation constants from sparkdotfi/sparklend-v1-core LiquidationLogic
+# @ 900c189feef2fafb97dca24c7b6e502dd035925a (no MIN_BASE_MAX_CLOSE_FACTOR).
+# Intern ids: ProtocolId/MarketId/AssetId from registry intern order at this
+# commit. GNO 0x6810e776880c02933d47db1b9fc05908e5386b96 is a live Spark
+# reserve but is absent from registry.tokens; asset=1073 is the first unused
+# intern slot (len(tokens)=1073). Spark oracle adapters are not in
+# registry.oracles; feed ids start at 15 (after the 15 interned feeds).
+
+protocol = 8
+pinned_through = 26018679
+
+[[pools]]
+address = "0xc13e21b648a5ee794902342038ff3adab66be987"
+market = 3480
+oracle = "0x8105f69d9c41644c6a0803fda7d03aa70996cfd9"
+provider = "0x02c3ea4e34c0cbd694d2adfa2c690eecbc1793ee"
+configurator = "0x542dba469bde58faee189ffb60c6b49ce60e0738"
+sentinel = "0x0000000000000000000000000000000000000000"
+sequencer_oracle = "0x0000000000000000000000000000000000000000"
+
+[liquidation]
+close_factor_bps = 5000
+close_factor_hf_wad = 950000000000000000
+min_base_max_close = 0
+oracle_decimals = 8
+
+[[assets]]
+underlying = "0x6b175474e89094c44da98b954eedeac495271d0f"
+asset = 454
+feed = 20
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 18
+
+[[assets]]
+underlying = "0x83f20f44975d03b1b09e64809b757c47f942beea"
+asset = 546
+feed = 15
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 18
+
+[[assets]]
+underlying = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+asset = 677
+feed = 20
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 6
+
+[[assets]]
+underlying = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+asset = 813
+feed = 17
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 18
+
+[[assets]]
+underlying = "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
+asset = 525
+feed = 25
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 18
+
+[[assets]]
+underlying = "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599"
+asset = 154
+feed = 16
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 8
+
+[[assets]]
+underlying = "0x6810e776880c02933d47db1b9fc05908e5386b96"
+asset = 1073
+feed = 21
+siloed = false
+isolated = true
+debt_ceiling = 500000000
+decimals = 18
+
+[[assets]]
+underlying = "0xae78736cd615f374d3085123a210448e74fc6393"
+asset = 734
+feed = 26
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 18
+
+[[assets]]
+underlying = "0xdac17f958d2ee523a2206206994597c13d831ec7"
+asset = 933
+feed = 20
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 6
+
+[[assets]]
+underlying = "0xcd5fe23c85820f7b72d0926fc9b05b43e359b7ee"
+asset = 867
+feed = 24
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 18
+
+[[assets]]
+underlying = "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf"
+asset = 860
+feed = 19
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 8
+
+[[assets]]
+underlying = "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd"
+asset = 692
+feed = 18
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 18
+
+[[assets]]
+underlying = "0xdc035d45d973e3ec169d2276ddab16f1e407384f"
+asset = 938
+feed = 20
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 18
+
+[[assets]]
+underlying = "0x8236a87084f8b84306f72007f36f2618a5634494"
+asset = 536
+feed = 19
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 8
+
+[[assets]]
+underlying = "0x18084fba666a33d37592fa2633fd49a74dd93a88"
+asset = 113
+feed = 19
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 18
+
+[[assets]]
+underlying = "0xbf5495efe5db9ce00f80364c8b423567e58d2110"
+asset = 811
+feed = 22
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 18
+
+[[assets]]
+underlying = "0xa1290d69c65a6fe4df752f95823fae25cb99e5a7"
+asset = 681
+feed = 23
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 18
+
+[[assets]]
+underlying = "0x6c3ea9036406852006290770bedfcaba0e23a0e8"
+asset = 457
+feed = 20
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 6
+
+[[assets]]
+underlying = "0xe343167631d89b6ffc58b88d6b7fb0228795491d"
+asset = 973
+feed = 20
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 6
+
+[[assets]]
+underlying = "0x8292bb45bf1ee4d140127049757c2e0ff06317ed"
+asset = 541
+feed = 20
+siloed = false
+isolated = false
+debt_ceiling = 0
+decimals = 18
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0x6b175474e89094c44da98b954eedeac495271d0f"
+source = "0x42a03f81dd8a1cecd746dc262e4d1cd9fd39f777"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0x83f20f44975d03b1b09e64809b757c47f942beea"
+source = "0x0c0864837c7e65458acd3c665222203217019436"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+source = "0x42a03f81dd8a1cecd746dc262e4d1cd9fd39f777"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+source = "0x2750e4cb635af1fccfb10c0ea54b5b5bfc2759b6"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
+source = "0xe98d51fa014c7ed68018dbfe6347de9c3f39ca39"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599"
+source = "0x230e0321cf38f09e247e50afc7801ea2351fe56f"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0x6810e776880c02933d47db1b9fc05908e5386b96"
+source = "0x4a7ad931cb40b564a1c453545059131b126bc828"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0xae78736cd615f374d3085123a210448e74fc6393"
+source = "0xfddf8d19d092839a26b31365c927ca236b5086cf"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0xdac17f958d2ee523a2206206994597c13d831ec7"
+source = "0x42a03f81dd8a1cecd746dc262e4d1cd9fd39f777"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0xcd5fe23c85820f7b72d0926fc9b05b43e359b7ee"
+source = "0xbe21c54dff3b2f1708970d185aa5b0eeb70556f1"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf"
+source = "0x4219aa1a99f3fe90c2acb97fcbc1204f6485b537"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd"
+source = "0x27f3a665c75afdf43cfbf6b3a859b698f46ef656"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0xdc035d45d973e3ec169d2276ddab16f1e407384f"
+source = "0x42a03f81dd8a1cecd746dc262e4d1cd9fd39f777"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0x8236a87084f8b84306f72007f36f2618a5634494"
+source = "0x4219aa1a99f3fe90c2acb97fcbc1204f6485b537"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0x18084fba666a33d37592fa2633fd49a74dd93a88"
+source = "0x4219aa1a99f3fe90c2acb97fcbc1204f6485b537"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0xbf5495efe5db9ce00f80364c8b423567e58d2110"
+source = "0x52e85eb49e07df74c8a9466d2164b4c4ca60014a"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0xa1290d69c65a6fe4df752f95823fae25cb99e5a7"
+source = "0x70942d6b580741cf50a7906f4100063ee037b8eb"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0x6c3ea9036406852006290770bedfcaba0e23a0e8"
+source = "0x42a03f81dd8a1cecd746dc262e4d1cd9fd39f777"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0xe343167631d89b6ffc58b88d6b7fb0228795491d"
+source = "0x42a03f81dd8a1cecd746dc262e4d1cd9fd39f777"
+
+[[price_sources]]
+pool = "0xc13e21b648a5ee794902342038ff3adab66be987"
+underlying = "0x8292bb45bf1ee4d140127049757c2e0ff06317ed"
+source = "0x42a03f81dd8a1cecd746dc262e4d1cd9fd39f777"

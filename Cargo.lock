@@ -3026,6 +3026,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "bytemuck",
+ "liq-config",
  "liq-protocol",
  "liq-types",
  "smallvec",

@@ -13,5 +13,8 @@ bytemuck = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+liq-config = { path = "../../liq-config" }
+
 [lints]
 workspace = true
