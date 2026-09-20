@@ -51,6 +51,10 @@ interface IMorphoOracle {
     function price() external view returns (uint256);
 }
 
+interface IMorphoIrm {
+    function borrowRateView(MarketParams memory, IMorpho.Market memory) external view returns (uint256);
+}
+
 /*
  * 10C: real liquidatable position per adapter at PINNED_BLOCK, through
  * flash → liquidate → repay swap → profit swap → WETH to sink.
@@ -136,7 +140,7 @@ contract ForkLiveLiquidationsTest is Test {
                 }
             }
         }
-        assertGe(ran, 12, "matrix too thin");
+        assertEq(ran, 21, "matrix combo count");
     }
 
     function test_fork_surplus_borrow_take_balance_on_debt() public onFork {
@@ -147,11 +151,18 @@ contract ForkLiveLiquidationsTest is Test {
         _runOne(PB.A_V3, PB.P_AAVE, USDT, false);
     }
 
+    function test_fork_v4_weth_aave_flash() public onFork {
+        _runOne(PB.A_V4, PB.P_AAVE, WETH, false);
+    }
+
+    function test_fork_morpho_weth_aave_flash() public onFork {
+        _runOne(PB.A_MORPHO, PB.P_AAVE, WETH, false);
+    }
+
     function _allowed(uint8 adapter, uint8 provider, address debt) internal pure returns (bool) {
         if (provider == PB.P_SKY && debt != DAI) return false;
         if (adapter == PB.A_V4 && debt != WETH) return false;
-        if (adapter == PB.A_V4) return false; // live V4: Hub pull vs Executor spoke-approve — frozen 10A; mock coverage in ExecutorCoverage10C
-        if (adapter == PB.A_MORPHO) return false; // Morpho market borrow depth at pin; adapter covered in mock 10C + 10A fork guard
+        if (adapter == PB.A_MORPHO && debt != WETH) return false;
         return true;
     }
 
@@ -323,23 +334,27 @@ contract ForkLiveLiquidationsTest is Test {
     }
 
     function _openAaveV4(address user, uint256 wstAmt) internal {
-        address hub = _v4Hub(0);
         _fundWsteth(user, wstAmt);
-        _approve(WSTETH, user, hub, wstAmt);
+        _approve(WSTETH, user, AAVE_V4_SPOKE, wstAmt);
         vm.prank(user);
         ISpokeEx(AAVE_V4_SPOKE).supply(0, wstAmt, user);
         vm.prank(user);
-        (bool ok,) = AAVE_V4_SPOKE.call(abi.encodeWithSignature("setUsingAsCollateral(uint256,bool)", uint256(0), true));
-        require(ok, "v4 collateral flag");
+        (bool flagged,) = AAVE_V4_SPOKE.call(
+            abi.encodeWithSignature("setUsingAsCollateral(uint256,bool,address)", uint256(0), true, user)
+        );
+        flagged;
         IAaveV4Spoke.UserAccountData memory d0 = IAaveV4Spoke(AAVE_V4_SPOKE).getUserAccountData(user);
         require(d0.totalCollateralValue > 0, "v4 coll");
         uint256 pxW = _aavePrice(WETH);
         uint256 pxS = _aavePrice(WSTETH);
-        uint256 borrowAmt = wstAmt * pxS / pxW * 70 / 100;
+        uint256 borrowAmt = wstAmt * pxS / pxW * 90 / 100;
         vm.prank(user);
         ISpokeEx(AAVE_V4_SPOKE).borrow(1, borrowAmt, user);
-        vm.warp(block.timestamp + 2500 days);
         IAaveV4Spoke.UserAccountData memory d = IAaveV4Spoke(AAVE_V4_SPOKE).getUserAccountData(user);
+        for (uint256 i; i < 8 && d.healthFactor >= 1e18; ++i) {
+            vm.warp(block.timestamp + 2500 days);
+            d = IAaveV4Spoke(AAVE_V4_SPOKE).getUserAccountData(user);
+        }
         require(d.healthFactor < 1e18, "v4 still healthy");
     }
 
@@ -353,11 +368,60 @@ contract ForkLiveLiquidationsTest is Test {
         require(px != 0, "morpho oracle");
         uint256 wethFromColl = wstAmt * (px / 1e18) / 1e18;
         uint256 maxBorrow = wethFromColl * mp.lltv / 1e18;
-        uint256 borrowAmt = maxBorrow * 94 / 100;
+        IMorpho.Market memory m0 = IMorpho(MORPHO).market(MORPHO_WSTETH_WETH);
+        uint256 avail =
+            uint256(m0.totalSupplyAssets) > m0.totalBorrowAssets
+                ? uint256(m0.totalSupplyAssets) - uint256(m0.totalBorrowAssets) : 0;
+        // 99% of LLTV (50% never crosses this IRM). Cap at 80% of remaining depth.
+        uint256 borrowAmt = maxBorrow * 99 / 100;
+        uint256 room = avail * 80 / 100;
+        if (borrowAmt > room) borrowAmt = room;
+        require(borrowAmt > 0, "morpho no room");
         vm.prank(user);
         IMorphoEx(MORPHO).borrow(mp, borrowAmt, 0, user, user);
-        vm.warp(block.timestamp + 2500 days);
+        IMorpho.Market memory mAfter = IMorpho(MORPHO).market(MORPHO_WSTETH_WETH);
+        uint256 rate = IMorphoIrm(mp.irm).borrowRateView(mp, mAfter);
+        require(rate > 0, "morpho irm rate 0");
+        IMorpho.Position memory pos = IMorpho(MORPHO).position(MORPHO_WSTETH_WETH, user);
+        uint256 debtAssets =
+            uint256(pos.borrowShares) * (uint256(mAfter.totalBorrowAssets) + 1) / (uint256(mAfter.totalBorrowShares) + 1e6);
+        // Morpho: collateral.mulDivDown(price, 1e36).mulDivDown(lltv, WAD)
+        uint256 maxHealthy = uint256(pos.collateral) * px / 1e36 * mp.lltv / 1e18;
+        require(debtAssets > 0 && debtAssets <= maxHealthy, "morpho open");
+        // One computed warp: need debt to grow past LLTV. Iterative multi-year
+        // AdaptiveCurve accues explode totals and Morpho.liquidate overflows.
+        uint256 gap = maxHealthy - debtAssets + maxHealthy / 100 + 1;
+        uint256 dt = gap * 1e18 / debtAssets / rate + 1 days;
+        vm.warp(block.timestamp + dt);
         IMorpho(MORPHO).accrueInterest(mp);
+        IMorpho.Market memory m1 = IMorpho(MORPHO).market(MORPHO_WSTETH_WETH);
+        pos = IMorpho(MORPHO).position(MORPHO_WSTETH_WETH, user);
+        debtAssets =
+            uint256(pos.borrowShares) * (uint256(m1.totalBorrowAssets) + 1) / (uint256(m1.totalBorrowShares) + 1e6);
+        maxHealthy = uint256(pos.collateral) * px / 1e36 * mp.lltv / 1e18;
+        for (uint256 i; i < 8 && debtAssets <= maxHealthy; ++i) {
+            vm.warp(block.timestamp + 30 days);
+            IMorpho(MORPHO).accrueInterest(mp);
+            m1 = IMorpho(MORPHO).market(MORPHO_WSTETH_WETH);
+            pos = IMorpho(MORPHO).position(MORPHO_WSTETH_WETH, user);
+            debtAssets =
+                uint256(pos.borrowShares) * (uint256(m1.totalBorrowAssets) + 1) / (uint256(m1.totalBorrowShares) + 1e6);
+            maxHealthy = uint256(pos.collateral) * px / 1e36 * mp.lltv / 1e18;
+        }
+        if (debtAssets <= maxHealthy) {
+            revert(
+                string.concat(
+                    "morpho still healthy rate=",
+                    vm.toString(rate),
+                    " dt=",
+                    vm.toString(dt),
+                    " debt=",
+                    vm.toString(debtAssets),
+                    " max=",
+                    vm.toString(maxHealthy)
+                )
+            );
+        }
     }
 
     function _debtHeld(uint8 adapter, address user, address debt) internal view returns (uint256) {
@@ -381,7 +445,7 @@ contract ForkLiveLiquidationsTest is Test {
         address probe = makeAddr("probe");
         uint256 snap = vm.snapshotState();
         deal(debt, probe, repay * 3);
-        _approve(debt, probe, adapter == PB.A_V3 ? AAVE_V3_POOL : adapter == PB.A_V4 ? _v4Hub(1) : MORPHO, repay * 3);
+        _approve(debt, probe, adapter == PB.A_V3 ? AAVE_V3_POOL : adapter == PB.A_V4 ? AAVE_V4_SPOKE : MORPHO, repay * 3);
         uint256 d0 = IERC20B(debt).balanceOf(probe);
         uint256 c0 = IERC20B(coll).balanceOf(probe);
         vm.startPrank(probe);

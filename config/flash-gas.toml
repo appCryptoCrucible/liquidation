@@ -1,7 +1,8 @@
 # WP 10C — measured wrapping gas per flash provider.
 # Source: forge snapshot, mock world, solc 0.8.28, via_ir, optimizer_runs=200, cancun.
 # Each number is Executor.execute() gas for the same liquidation+repay+profit plan,
-# changing only the flash provider (aave_v4 = P_AAVE flash + V4 adapter tail).
+# changing only the flash provider. aave_v4 is Aave V3 flash + V4 adapter leg
+# (Executor has no Aave V4 flash provider id).
 # Closes 07A/07B deferred gas_overhead. Reference V3 plan ~388019 in .gas-snapshot.
 
 [gas_overhead]
