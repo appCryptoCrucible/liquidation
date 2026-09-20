@@ -1,4 +1,6 @@
 //! Euler `calculateMaxLiquidation` — one debt vault, N collateral vaults.
+//! Repay is per chosen collateral. The quote is one path: the preferred
+//! `(repay, seize)` pair, so `max_repay` cannot overstate a smaller coll.
 
 use alloy_primitives::U256;
 use liq_protocol::{
@@ -11,10 +13,7 @@ use smallvec::SmallVec;
 
 use crate::health::{finish, terms};
 use crate::layout::{CollRow, UserExtra, DEBT_SLOT, UNMAPPED_ASSET};
-use crate::math::{
-    asset_unit, bonus_ray, collateral_adj_value, current_liquidation_ltv, max_liquidation,
-    value_wad,
-};
+use crate::math::{asset_unit, bonus_ray, max_liquidation, value_wad};
 
 #[inline]
 fn cell(v: &[u128], slot: u16) -> u128 {
@@ -44,8 +43,7 @@ pub(crate) fn quote(
     }
 
     let user: &UserExtra = pos.extra.view()?;
-    let mut seize_options = SmallVec::<[SeizeOption; 8]>::new();
-    let mut max_repay = U256::ZERO;
+    let mut best: Option<(SeizeOption, U256, U256)> = None;
     for slot in pos.config.iter() {
         if slot == DEBT_SLOT {
             continue;
@@ -72,15 +70,7 @@ pub(crate) fn quote(
             continue;
         }
         let p = crate::health::price_ray(px, row.asset, None)?;
-        let ltv = current_liquidation_ltv(
-            coll.liquidation_ltv,
-            coll.initial_liquidation_ltv,
-            coll.target_timestamp,
-            coll.ramp_duration,
-            pos.timestamp,
-        );
         let coll_value = value_wad(shares, p, row.decimals)?;
-        let _adj = collateral_adj_value(shares, p, row.decimals, ltv)?;
         let (repay, yield_bal) = max_liquidation(
             t.liability_assets,
             t.liability_value,
@@ -92,16 +82,30 @@ pub(crate) fn quote(
         if repay.is_zero() {
             continue;
         }
-        if repay > max_repay {
-            max_repay = repay;
+        let seize_value = value_wad(yield_bal, p, row.decimals)?;
+        let cand = (
+            SeizeOption {
+                asset: row.asset,
+                max_seize: yield_bal,
+                bonus,
+                curve,
+            },
+            repay,
+            seize_value,
+        );
+        let take = match best.as_ref() {
+            None => true,
+            Some(cur) => {
+                cand.0.bonus > cur.0.bonus || (cand.0.bonus == cur.0.bonus && cand.2 > cur.2)
+            }
+        };
+        if take {
+            best = Some(cand);
         }
-        seize_options.push(SeizeOption {
-            asset: row.asset,
-            max_seize: yield_bal,
-            bonus,
-            curve,
-        });
     }
+    let Some((seize, mut max_repay, _)) = best else {
+        return Err(ProtocolError::EmptyQuote);
+    };
     let cap = cons.per_liquidation_notional_cap.raw();
     if cap != U256::MAX {
         let p_debt = crate::health::price_ray(px, t.debt_row.asset, None)?;
@@ -113,19 +117,16 @@ pub(crate) fn quote(
         )?;
         max_repay = max_repay.min(raw_cap);
     }
-    if max_repay.is_zero() || seize_options.is_empty() {
+    if max_repay.is_zero() {
         return Err(ProtocolError::EmptyQuote);
     }
-    seize_options.sort_by(|a, b| {
-        b.bonus
-            .cmp(&a.bonus)
-            .then_with(|| b.max_seize.cmp(&a.max_seize))
-    });
     let mut repay_options = SmallVec::new();
     repay_options.push(RepayOption {
         asset: t.debt_row.asset,
         max_repay,
     });
+    let mut seize_options = SmallVec::<[SeizeOption; 8]>::new();
+    seize_options.push(seize);
     Ok(Some(Quote {
         position: pos.id,
         key: *pos.key,

@@ -16,14 +16,14 @@ use alloy_primitives::{uint, Address, U256};
 use alloy_sol_types::SolEvent;
 use common::*;
 use liq_adapters_euler_v2::events::{self as ev, evc, halt};
-use liq_adapters_euler_v2::{alloc_meter, math};
+use liq_adapters_euler_v2::{alloc_meter, math, CATALOG_MARKET, FIRST_DISCOVERED_MARKET};
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
-    CallbackShape, Constraints, DirtySet, FlashRoute, HealthState, LegChoice, Protocol,
-    ProtocolError,
+    BlockReason, CallbackShape, Constraints, DirtySet, FlashRoute, HealthState, LegChoice,
+    MarketSlot, Protocol, ProtocolError, StateWriter,
 };
 use liq_types::fixed::WAD;
-use liq_types::LogSubscriber;
+use liq_types::{LogSubscriber, MarketId};
 
 fn full_store(
     d: &Deploy,
@@ -224,20 +224,87 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
     .unwrap_or_else(|f| panic!("{f}"));
     for (i, n) in rep.assertions.iter().enumerate() {
         match i + 1 {
-            4 | 5 | 8 | 9 => {
-                assert_eq!(
-                    *n,
-                    0,
-                    "check {} is vacuous: 10R encode unwired / no liquidatable in this run",
-                    i + 1
-                );
+            4 => assert_eq!(*n, 0, "check 4 needs a fork post-state"),
+            3 => {
+                // Last-healthy is hf>1 (source). Check 3 wants a 1-unit hf<1
+                // neighbor; Euler's HF==1 plateau makes that neighbor hf==1,
+                // so liquidation_price returns None and check 3 may be skipped.
             }
+            5 | 8 => assert_eq!(
+                *n,
+                0,
+                "check {} is on the liquidatable run (healthy-only here)",
+                i + 1
+            ),
+            9 => assert_eq!(
+                *n, 0,
+                "check 9 inapplicable: encode is ExecutorUnwired (D48 / 10R)"
+            ),
             _ => {
                 assert!(*n > 0, "check {} was vacuous", i + 1);
             }
         }
     }
     assert_eq!(rep.alloc_metered, alloc_meter().is_some());
+}
+
+#[test]
+fn liquidatable_through_run_executes_5_and_8_then_check_9_unwired() {
+    let d = Deploy::new();
+    let p = d.adapter();
+    let mut logs_liq = listing_logs(&d);
+    logs_liq.extend(activity_logs_liq(&d));
+    let st_liq = store_after(&p, &logs_liq);
+    let mut logs_ok = listing_logs(&d);
+    logs_ok.extend(activity_logs(&d));
+    let st_ok = store_after(&p, &logs_ok);
+    let px = prices(WETH_P8, USDC_P8);
+    let positions = [
+        PositionFixture {
+            pos: st_liq.view(ALICE_ID, T0).unwrap(),
+            px: &px,
+            post: None,
+        },
+        PositionFixture {
+            pos: st_ok.view(ALICE_ID, T0).unwrap(),
+            px: &px,
+            post: None,
+        },
+    ];
+    let ranks = coverage_ranks();
+    let mut owned = activity_logs_liq(&d);
+    owned.extend(extra_logs(&d));
+    let logs: Vec<LogFixture<'_>> = owned
+        .iter()
+        .map(|l| LogFixture {
+            log: l.view(),
+            max_dirty_rank: rank_of(&ranks, l.topics[0]),
+        })
+        .collect();
+    let flash_sources: Vec<(CallbackShape, Address)> = CallbackShape::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (*s, Address::repeat_byte(0x50 + i as u8)))
+        .collect();
+    let fx = Fixtures {
+        positions: &positions,
+        logs: &logs,
+        flash_sources: &flash_sources,
+        recipient: Address::repeat_byte(0x99),
+    };
+    let mut log_store = store_after(&p, &listing_logs(&d));
+    let err = run(
+        &p,
+        &mut log_store,
+        &fx,
+        alloc_meter().map(|m| m as &dyn Fn() -> u64),
+    )
+    .expect_err("check 9 cannot Ok while encode is ExecutorUnwired");
+    assert_eq!(err.check, 9, "{err}");
+    assert!(
+        err.detail.contains("ExecutorUnwired"),
+        "check 9 inapplicable (D48): {err}"
+    );
 }
 
 #[test]
@@ -480,3 +547,335 @@ fn to_assets_up_matches_owed_lib() {
 }
 
 use common::OwnedLog;
+
+fn intern_bound_adapter(d: &Deploy) -> liq_adapters_euler_v2::EulerV2 {
+    let mut cfg = d.config();
+    cfg.catalog = CATALOG_MARKET;
+    cfg.first_market = FIRST_DISCOVERED_MARKET;
+    cfg.interned = vec![(d.debt_vault, MarketId(42)), (d.coll_vault, MarketId(99))];
+    liq_adapters_euler_v2::EulerV2::new(cfg).expect("intern-bound config")
+}
+
+#[test]
+fn intern_binds_all_euler_vaults_from_registry() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .unwrap();
+    let intern = liq_config::Intern::from_registry(
+        &liq_config::Registry::from_path(&root.join("registry/registry.json")).unwrap(),
+    )
+    .unwrap();
+    let proto = intern.protocol("euler-v2").expect("euler-v2 family");
+    assert_eq!(proto, PROTOCOL);
+    let bound: Vec<(alloy_primitives::Address, MarketId)> = intern
+        .markets()
+        .iter()
+        .filter(|m| m.protocol == proto)
+        .map(|m| match m.key {
+            liq_config::OnChainId::Addr(a) => (a, m.id),
+            liq_config::OnChainId::Slot(_) => panic!("euler-v2 market is an address"),
+        })
+        .collect();
+    let admitted = intern
+        .markets()
+        .iter()
+        .filter(|m| m.protocol == proto && m.admitted)
+        .count();
+    assert_eq!(admitted, 26, "admitted euler-v2 vaults");
+    assert_eq!(bound.len(), 884, "interned euler-v2 vaults");
+    for (_, id) in &bound {
+        assert!(
+            id.0 < 3481,
+            "interned MarketId {id:?} must be in intern 0..=3480"
+        );
+        assert_ne!(*id, CATALOG_MARKET);
+        assert!(id.0 < FIRST_DISCOVERED_MARKET.0);
+    }
+
+    let raw = std::fs::read_to_string(root.join("config/protocols/euler-v2.toml")).unwrap();
+    let mut cfg = liq_adapters_euler_v2::Config::from_toml(&raw).expect("euler-v2.toml");
+    assert_eq!(cfg.catalog, CATALOG_MARKET);
+    assert_eq!(cfg.first_market, FIRST_DISCOVERED_MARKET);
+    assert_eq!(cfg.vaults.len(), 26);
+    cfg.bind_interned(bound.clone()).expect("bind interned");
+    assert_eq!(cfg.interned.len(), 884);
+    for v in &cfg.vaults {
+        let id = cfg
+            .interned
+            .iter()
+            .find(|(a, _)| a == v)
+            .map(|(_, id)| *id)
+            .expect("admitted vault is interned");
+        let rec = intern
+            .markets()
+            .iter()
+            .find(|m| m.protocol == proto && m.key == liq_config::OnChainId::Addr(*v))
+            .expect("registry row");
+        assert_eq!(id, rec.id);
+        assert!(rec.admitted);
+    }
+    liq_adapters_euler_v2::EulerV2::new(cfg).unwrap();
+}
+
+#[test]
+fn proxy_created_uses_intern_ids_then_3512() {
+    let d = Deploy::new();
+    let p = intern_bound_adapter(&d);
+    let extra = Address::repeat_byte(0xd2);
+    let mut logs = listing_logs(&d);
+    logs.push(log(
+        d.factory,
+        &ev::ProxyCreated {
+            proxy: extra,
+            upgradeable: true,
+            implementation: d.impl_,
+            trailingData: d.trailing(d.usdc),
+        },
+        DEPLOY_BLOCK,
+        T0,
+    ));
+    let st = store_after(&p, &logs);
+    let cat = st.markets(CATALOG_MARKET).expect("catalog 3511");
+    assert_eq!(cat.len(), 3);
+    let debt = st
+        .market(MarketSlot {
+            market: MarketId(42),
+            slot: 0,
+        })
+        .expect("interned debt vault");
+    let v: &liq_adapters_euler_v2::layout::VaultRow = debt.body().unwrap();
+    assert_eq!(math::addr_from(v.vault), d.debt_vault);
+    let coll = st
+        .market(MarketSlot {
+            market: MarketId(99),
+            slot: 0,
+        })
+        .expect("interned coll vault");
+    let c: &liq_adapters_euler_v2::layout::VaultRow = coll.body().unwrap();
+    assert_eq!(math::addr_from(c.vault), d.coll_vault);
+    let discovered = st
+        .market(MarketSlot {
+            market: FIRST_DISCOVERED_MARKET,
+            slot: 0,
+        })
+        .expect("uninterned ProxyCreated is 3512");
+    let x: &liq_adapters_euler_v2::layout::VaultRow = discovered.body().unwrap();
+    assert_eq!(math::addr_from(x.vault), extra);
+    assert!(st
+        .market(MarketSlot {
+            market: MarketId(3513),
+            slot: 0
+        })
+        .is_err());
+}
+
+#[test]
+fn hf_equality_is_liquidatable() {
+    let d = Deploy::new();
+    let p = d.adapter();
+    let mut logs = listing_logs(&d);
+    logs.extend(activity_logs_eq(&d));
+    let st = store_after(&p, &logs);
+    let px = prices(WETH_P8, USDC_P8);
+    let h = p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap();
+    let p_coll = U256::from(WETH_P8) * P8_TO_RAY;
+    let p_debt = U256::from(USDC_P8) * P8_TO_RAY;
+    let coll_adj = math::collateral_adj_value(ALICE_SHARES, p_coll, 18, LIQ_LTV).unwrap();
+    let liab = math::value_wad(ALICE_DEBT_EQ, p_debt, 6).unwrap();
+    assert_eq!(coll_adj, liab);
+    assert_eq!(h.state, HealthState::Liquidatable);
+    let lp = p
+        .liquidation_price(st.view(ALICE_ID, T0).unwrap(), &px, WETH_SHARES)
+        .unwrap();
+    if let Some(lp) = lp {
+        let mut px2 = px.clone();
+        if let Some(e) = px2.0.get_mut(usize::from(WETH_SHARES.0)) {
+            e.price = lp.price;
+        }
+        let h_at = p.health(st.view(ALICE_ID, T0).unwrap(), &px2).unwrap();
+        assert_eq!(h_at.state, HealthState::Healthy);
+        assert!(h_at.hf > h.hf);
+    }
+}
+
+#[test]
+fn cool_off_blocks_liquidation() {
+    let d = Deploy::new();
+    let p = d.adapter();
+    let mut logs = listing_logs(&d);
+    logs.push(log(
+        d.debt_vault,
+        &ev::GovSetLiquidationCoolOffTime {
+            newCoolOffTime: 1_000,
+        },
+        DEPLOY_BLOCK,
+        T0,
+    ));
+    logs.extend(activity_logs_liq(&d));
+    logs.push(log(
+        d.evc,
+        &evc::AccountStatusCheck {
+            account: d.alice,
+            controller: d.debt_vault,
+        },
+        DEPLOY_BLOCK + 1,
+        T0,
+    ));
+    let st = store_after(&p, &logs);
+    let px = prices(WETH_P8, USDC_P8);
+    let h = p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap();
+    assert_eq!(
+        h.state,
+        HealthState::Blocked {
+            reason: BlockReason::GracePeriod
+        }
+    );
+    assert!(p
+        .quote(st.view(ALICE_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
+        .unwrap()
+        .is_none());
+    let later = p
+        .health(st.view(ALICE_ID, T0 + 1_000).unwrap(), &px)
+        .unwrap();
+    assert_eq!(later.state, HealthState::Liquidatable);
+}
+
+#[test]
+fn ltv_ramp_matches_source_floor() {
+    let d = Deploy::new();
+    let p = d.adapter();
+    let mut logs = listing_logs(&d);
+    logs.push(log(
+        d.debt_vault,
+        &ev::GovSetLTV {
+            collateral: d.coll_vault,
+            borrowLTV: BORROW_LTV,
+            liquidationLTV: 7_000,
+            initialLiquidationLTV: 8_000,
+            targetTimestamp: alloy_primitives::Uint::<48, 1>::from(T0 + 1_000),
+            rampDuration: 1_000,
+        },
+        DEPLOY_BLOCK,
+        T0,
+    ));
+    logs.extend(activity_logs(&d));
+    let st = store_after(&p, &logs);
+    let mid = T0 + 500;
+    let ltv = math::current_liquidation_ltv(7_000, 8_000, T0 + 1_000, 1_000, mid);
+    assert_eq!(ltv, 7_500);
+    let px = prices(WETH_P8, USDC_P8);
+    let h = p.health(st.view(ALICE_ID, mid).unwrap(), &px).unwrap();
+    let p_coll = U256::from(WETH_P8) * P8_TO_RAY;
+    let p_debt = U256::from(USDC_P8) * P8_TO_RAY;
+    let coll_adj = math::collateral_adj_value(ALICE_SHARES, p_coll, 18, ltv).unwrap();
+    let liab = math::value_wad(ALICE_DEBT_HEALTHY, p_debt, 6).unwrap();
+    let hf = math::mul_div_down(coll_adj, WAD, liab).unwrap();
+    assert_eq!(h.hf, math::hf_wad_to_ray(hf).unwrap());
+}
+
+#[test]
+fn quote_pairs_repay_to_preferred_collateral() {
+    let d = Deploy::new();
+    let mut cfg = d.config();
+    let coll2 = Address::repeat_byte(0xc2);
+    cfg.vaults.push(coll2);
+    cfg.assets.push(liq_adapters_euler_v2::AssetConfig {
+        underlying: coll2,
+        asset: liq_types::AssetId(2),
+        feed: liq_protocol::FeedId(3),
+        decimals: 18,
+    });
+    let p = liq_adapters_euler_v2::EulerV2::new(cfg).unwrap();
+    let mut logs = listing_logs(&d);
+    logs.push(log(
+        d.factory,
+        &ev::ProxyCreated {
+            proxy: coll2,
+            upgradeable: true,
+            implementation: d.impl_,
+            trailingData: d.trailing(d.weth),
+        },
+        DEPLOY_BLOCK,
+        T0,
+    ));
+    logs.push(log(
+        d.debt_vault,
+        &ev::GovSetLTV {
+            collateral: coll2,
+            borrowLTV: BORROW_LTV,
+            liquidationLTV: LIQ_LTV,
+            initialLiquidationLTV: LIQ_LTV,
+            targetTimestamp: alloy_primitives::Uint::<48, 1>::from(T0),
+            rampDuration: 0,
+        },
+        DEPLOY_BLOCK,
+        T0,
+    ));
+    logs.extend(activity_logs_liq(&d));
+    let small = uint!(10_000_000_000_000_000_U256);
+    logs.push(log(
+        d.evc,
+        &evc::CollateralStatus {
+            account: d.alice,
+            collateral: coll2,
+            enabled: true,
+        },
+        DEPLOY_BLOCK + 1,
+        T0,
+    ));
+    logs.push(log(
+        coll2,
+        &ev::Deposit {
+            sender: d.alice,
+            owner: d.alice,
+            assets: small,
+            shares: small,
+        },
+        DEPLOY_BLOCK + 1,
+        T0,
+    ));
+    let st = store_after(&p, &logs);
+    let mut px = prices(WETH_P8, USDC_P8);
+    px.0.push(liq_types::Price {
+        asset: liq_types::AssetId(2),
+        price: liq_types::Ray::from_raw(U256::from(WETH_P8) * P8_TO_RAY),
+        source: liq_types::SourceKind::Canonical,
+        block: DEPLOY_BLOCK,
+        ts: T0,
+    });
+    let q = p
+        .quote(st.view(ALICE_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
+        .unwrap()
+        .expect("liquidatable");
+    assert_eq!(q.repay_options.len(), 1);
+    assert_eq!(q.seize_options.len(), 1);
+    assert_eq!(q.seize_options[0].asset, WETH_SHARES);
+    let p_coll = U256::from(WETH_P8) * P8_TO_RAY;
+    let p_debt = U256::from(USDC_P8) * P8_TO_RAY;
+    let coll_adj = math::collateral_adj_value(ALICE_SHARES, p_coll, 18, LIQ_LTV).unwrap()
+        + math::collateral_adj_value(small, p_coll, 18, LIQ_LTV).unwrap();
+    let liab = math::value_wad(ALICE_DEBT_LIQ, p_debt, 6).unwrap();
+    let min_df = math::min_discount_factor(MAX_DISCOUNT).unwrap();
+    let (repay_pref, _) = math::max_liquidation(
+        ALICE_DEBT_LIQ,
+        liab,
+        coll_adj,
+        ALICE_SHARES,
+        math::value_wad(ALICE_SHARES, p_coll, 18).unwrap(),
+        min_df,
+    )
+    .unwrap();
+    let (repay_small, _) = math::max_liquidation(
+        ALICE_DEBT_LIQ,
+        liab,
+        coll_adj,
+        small,
+        math::value_wad(small, p_coll, 18).unwrap(),
+        min_df,
+    )
+    .unwrap();
+    assert_eq!(q.repay_options[0].max_repay, repay_pref);
+    assert_ne!(repay_pref, repay_small);
+    assert!(repay_pref > repay_small);
+}

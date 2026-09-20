@@ -16,7 +16,6 @@ Liquidation path uses **mid-point** `oracle.getQuote` (`liquidation=true`). Acco
 | D3 | `OwedLib.mulDiv` | floor `owed * vaultAcc / userAcc` | `getCurrentOwed` |
 | D4 | `Assets.toOwed` | `assets << 31` | `increaseBorrow` / remaining after repay |
 | Q1 | `oracle.getQuote` | oracle-defined (mid) | liability token = `vault.asset`; collateral token = **collateral vault** |
-| Q2 | `getLiabilityValue` unit-of-account short-circuit | identity | if `asset == unitOfAccount`, value = owedAssets (no oracle) |
 | L1 | `getCollateralValue` LTV | floor `quote * ltv / CONFIG_SCALE` | `liquidation=true` uses liquidation LTV (ramped) |
 | L2 | `LTVConfigLib.getLTV` ramp | floor `target + (initial-target) * timeRemaining / rampDuration` | only while lowering LTV |
 | H1 | violation | `collateralAdjustedValue > liabilityValue` is healthy | **equal is liquidatable** (`calculateMaxLiquidation`) |
@@ -32,4 +31,4 @@ Liquidation path uses **mid-point** `oracle.getQuote` (`liquidation=true`). Acco
 | S1 | `decreaseBorrow` | `toAssetsUp` then subtract assets, remainder `<< 31` | protocol-favouring on repay |
 | F1 | fee assets | floor `(newBorrows - old) * fee / (CONFIG_SCALE << 31)` | fee share mint; not an HF input |
 
-Adapter `health()` accrues the vault accumulator with R1/A1 to `pos.timestamp` using the last stored `interestRate`, then D3+D1+Q1+L1+H1. `quote()` uses DF1–M4 (`calculateMaxLiquidation`).
+Adapter `health()` accrues the vault accumulator with R1/A1 to `pos.timestamp` using the last stored `interestRate`, then D3+D1+Q1+L1+H1. `quote()` uses DF1–M4 (`calculateMaxLiquidation`) for the **preferred collateral only** (one repay/seize pair; `max_repay` is not `max` across collaterals). Prices come from `PriceVector`; EVK `getLiabilityValue` unit-of-account identity is not a separate path here (Q1 covers both legs).

@@ -23,7 +23,10 @@ use liq_protocol::{
 use liq_types::fixed::WAD;
 use liq_types::{AssetId, LogFilter, LogSubscriber, Price, PriceVector, ProtocolId, Ray};
 
-pub use config::{AssetConfig, Config, ConfigError, SourcePin};
+pub use config::{
+    AssetConfig, Config, ConfigError, SourcePin, CATALOG_MARKET, FIRST_DISCOVERED_MARKET,
+    FOREIGN_MARKET_MAX, FOREIGN_MARKET_MIN,
+};
 
 use crate::events as ev;
 use crate::events::accountLiquidityCall;

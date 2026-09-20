@@ -1,8 +1,9 @@
 //! Store layout for Euler V2 EVK (`euler-xyz/euler-vault-kit` @ `bfb325a6`).
 //!
-//! One interned [`liq_types::MarketId`] per debt EVault. Slot 0 is the
+//! One interned [`liq_types::MarketId`] per debt EVault (the registry intern
+//! id for that vault address, not an adapter-private counter). Slot 0 is the
 //! liability vault ([`VaultRow`]); subsequent slots are recognized collateral
-//! vaults ([`CollRow`]). A catalog market lists `vault → MarketId` so
+//! vaults ([`CollRow`]). A catalog market (id 3511) lists `vault → MarketId` so
 //! `ProxyCreated` discovers rows instead of a hand list of the live universe.
 
 use bytemuck::{Pod, Zeroable};

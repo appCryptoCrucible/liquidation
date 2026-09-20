@@ -37,6 +37,7 @@ pub const WETH_P8: u64 = 1000_0000_0000;
 pub const USDC_P8: u64 = 1_0000_0000;
 pub const ALICE_SHARES: U256 = uint!(1_000_000_000_000_000_000_U256);
 pub const ALICE_DEBT_HEALTHY: U256 = uint!(700_000000_U256);
+pub const ALICE_DEBT_EQ: U256 = uint!(800_000000_U256);
 pub const ALICE_DEBT_LIQ: U256 = uint!(850_000000_U256);
 pub const ALICE_ID: PositionId = PositionId(0);
 pub const BOB_ID: PositionId = PositionId(1);
@@ -80,6 +81,7 @@ impl Deploy {
             catalog: CATALOG,
             first_market: FIRST,
             vaults: vec![self.debt_vault, self.coll_vault],
+            interned: vec![],
             assets: vec![
                 AssetConfig {
                     underlying: self.usdc,
@@ -265,6 +267,10 @@ pub fn activity_logs(d: &Deploy) -> Vec<OwnedLog> {
 
 pub fn activity_logs_liq(d: &Deploy) -> Vec<OwnedLog> {
     user_logs(d, ALICE_DEBT_LIQ)
+}
+
+pub fn activity_logs_eq(d: &Deploy) -> Vec<OwnedLog> {
+    user_logs(d, ALICE_DEBT_EQ)
 }
 
 pub fn store_after(p: &EulerV2, logs: &[OwnedLog]) -> JournalStore {

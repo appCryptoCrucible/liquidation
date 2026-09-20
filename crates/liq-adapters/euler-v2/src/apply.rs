@@ -73,6 +73,31 @@ fn lookup_vault(cfg: &Config, st: &dyn StateWriter, vault: Address) -> Result<Op
     Ok(None)
 }
 
+fn discovered_market(cfg: &Config, st: &dyn StateWriter, vault: Address) -> Result<MarketId> {
+    if let Some(id) = cfg.interned_id(vault) {
+        return Ok(id);
+    }
+    let mut n = 0u32;
+    match st.markets(cfg.catalog) {
+        Ok(rows) => {
+            for row in rows {
+                let e: &CatalogEntry = row.body()?;
+                if cfg.interned_id(addr_from(e.vault)).is_none() {
+                    n = n.checked_add(1).ok_or(FixedError::Overflow)?;
+                }
+            }
+        }
+        Err(ProtocolError::UnknownMarket(_)) => {}
+        Err(e) => return Err(e),
+    }
+    Ok(MarketId(
+        cfg.first_market
+            .0
+            .checked_add(n)
+            .ok_or(FixedError::Overflow)?,
+    ))
+}
+
 fn emitter(cfg: &Config, st: &dyn StateWriter, address: Address) -> Result<Option<Emitter>> {
     if address == cfg.factory {
         return Ok(Some(Emitter::Factory));
@@ -166,7 +191,7 @@ fn ensure_vault(
         Err(e) => return Err(e),
     };
     let cat_slot = u16::try_from(n).map_err(|_| ProtocolError::MalformedLog)?;
-    let market = cfg.assigned_market(cat_slot);
+    let market = discovered_market(cfg, st, vault)?;
     let mut cat = MarketRow::blank(CATALOG_ASSET, 0);
     {
         let e: &mut CatalogEntry = cat.body_mut()?;

@@ -1,4 +1,4 @@
-//! Last healthy price (HF ≥ 1.0) and interest-accumulator crossing.
+//! Last healthy price (HF > 1.0, matching `health()`) and interest-accumulator crossing.
 
 use alloy_primitives::U256;
 use liq_protocol::{PositionRef, ProtocolError, Result, Timestamp};
@@ -27,8 +27,10 @@ fn hf_at_ts(pos: PositionRef<'_>, px: &PriceVector, ts: Timestamp) -> Result<U25
     hf_wad(at, px, None)
 }
 
-fn hf_ge_one(h: U256) -> bool {
-    h == U256::MAX || h >= HF_THRESHOLD_WAD
+/// Last-healthy agrees with `health()`: liquidatable iff `collAdj <= liability`
+/// (`hf == 1` is liquidatable). `U256::MAX` is the no-debt sentinel.
+fn hf_healthy(h: U256) -> bool {
+    h == U256::MAX || h > HF_THRESHOLD_WAD
 }
 
 fn hf_at_price(
@@ -111,41 +113,78 @@ fn boundary(
     let hf_lo = hf_at_price(pos, px, asset, lo, overflow_healthy)?;
     let hf_hi = hf_at_price(pos, px, asset, hi, overflow_healthy)?;
     if danger_up {
-        if hf_ge_one(hf_hi) {
+        if hf_healthy(hf_hi) {
             return Ok(None);
         }
-        if !hf_ge_one(hf_lo) {
+        if !hf_healthy(hf_lo) {
             return Ok(None);
         }
         let mut l = lo;
         let mut h = hi;
         while h.wrapping_sub(l) > U256::ONE {
             let mid = l.wrapping_add(h.wrapping_sub(l).wrapping_shr(1));
-            if hf_ge_one(hf_at_price(pos, px, asset, mid, overflow_healthy)?) {
+            if hf_healthy(hf_at_price(pos, px, asset, mid, overflow_healthy)?) {
                 l = mid;
             } else {
                 h = mid;
             }
         }
-        Ok(Some(l))
+        Ok(pin_last_healthy(pos, px, asset, true, overflow_healthy, l)?)
     } else {
-        if hf_ge_one(hf_lo) {
+        if hf_healthy(hf_lo) {
             return Ok(None);
         }
-        if !hf_ge_one(hf_hi) {
+        if !hf_healthy(hf_hi) {
             return Ok(None);
         }
         let mut l = lo;
         let mut h = hi;
         while h.wrapping_sub(l) > U256::ONE {
             let mid = l.wrapping_add(h.wrapping_sub(l).wrapping_shr(1));
-            if hf_ge_one(hf_at_price(pos, px, asset, mid, overflow_healthy)?) {
+            if hf_healthy(hf_at_price(pos, px, asset, mid, overflow_healthy)?) {
                 h = mid;
             } else {
                 l = mid;
             }
         }
-        Ok(Some(h))
+        Ok(pin_last_healthy(
+            pos,
+            px,
+            asset,
+            false,
+            overflow_healthy,
+            h,
+        )?)
+    }
+}
+
+/// Last tick with `health()` Healthy (`hf > 1`). If the 1-unit danger neighbor
+/// sits on the HF==1 plateau (liquidatable, but `hf` is not `< 1`), return
+/// `None` rather than report that plateau as last-healthy (check 3 / source).
+fn pin_last_healthy(
+    pos: PositionRef<'_>,
+    px: &PriceVector,
+    asset: AssetId,
+    danger_up: bool,
+    overflow_healthy: bool,
+    p: U256,
+) -> Result<Option<U256>> {
+    let danger = if danger_up {
+        match p.checked_add(U256::ONE) {
+            Some(d) => d,
+            None => return Ok(Some(p)),
+        }
+    } else {
+        match p.checked_sub(U256::ONE) {
+            Some(d) if !d.is_zero() => d,
+            _ => return Ok(Some(p)),
+        }
+    };
+    let hf_d = hf_at_price(pos, px, asset, danger, overflow_healthy)?;
+    if hf_d < HF_THRESHOLD_WAD {
+        Ok(Some(p))
+    } else {
+        Ok(None)
     }
 }
 

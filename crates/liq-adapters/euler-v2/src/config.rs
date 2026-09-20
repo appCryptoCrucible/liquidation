@@ -1,10 +1,28 @@
 //! Deployment pin: GenericFactory + EVC + token intern + allowed oracles.
 //! Vaults are **not** the live universe — `ProxyCreated` assigns [`MarketId`]s.
 //! `vaults` are admitted-address subscriptions sourced from the registry pin.
+//!
+//! # MarketId allocator (intern-global)
+//!
+//! `StateStore.market_index` is `MarketId → row` with no `ProtocolId`. Euler
+//! vaults use the interned [`MarketId`] `Intern::from_registry` assigned to
+//! that vault's `OnChainId::Addr` (`registry.protocols` iteration order).
+//! Catalog is an index market, not a vault, and is **not** interned:
+//! [`CATALOG_MARKET`]. Vaults absent from intern (new `ProxyCreated`) take
+//! sequential ids from [`FIRST_DISCOVERED_MARKET`]. Never 3481..=3510
+//! (Liquity V2 rework owns 3508..=3510).
 
 use alloy_primitives::Address;
 use liq_protocol::{BlockNum, FeedId};
 use liq_types::{AssetId, MarketId, ProtocolId};
+
+/// Catalog `vault → MarketId` index. Not interned.
+pub const CATALOG_MARKET: MarketId = MarketId(3511);
+/// First sequential id for vaults not in intern.
+pub const FIRST_DISCOVERED_MARKET: MarketId = MarketId(3512);
+/// Inclusive range reserved for other adapters (Liquity 3508..=3510).
+pub const FOREIGN_MARKET_MIN: u32 = 3481;
+pub const FOREIGN_MARKET_MAX: u32 = 3510;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AssetConfig {
@@ -29,11 +47,15 @@ pub struct Config {
     pub evc: Address,
     /// `vault → MarketId` index market (one row per created proxy).
     pub catalog: MarketId,
-    /// First interned EVault; subsequent are `first_market.0 + n`.
+    /// First sequential id for vaults **not** in [`Self::interned`].
     pub first_market: MarketId,
     /// Admitted vault addresses at the pin block (subscriptions + backfill).
     /// Discovery of the live set is `ProxyCreated` / `getProxyListSlice`.
     pub vaults: Vec<Address>,
+    /// Vault address → intern [`MarketId`] from `Intern::from_registry`.
+    /// Bind every interned euler-v2 vault the process may intern from logs
+    /// (admitted subscriptions plus registry rows seen via `ProxyCreated`).
+    pub interned: Vec<(Address, MarketId)>,
     pub assets: Vec<AssetConfig>,
     pub price_sources: Vec<SourcePin>,
     pub pinned_through: BlockNum,
@@ -54,12 +76,25 @@ pub enum ConfigError {
     ZeroFactory,
     #[error("evc is the zero address")]
     ZeroEvc,
-    #[error("catalog and first_market collide")]
+    #[error("catalog, first_market, or interned MarketId collide")]
     MarketCollision,
+    #[error("market {0:?} is reserved (3481..=3510) or overlaps discovered range")]
+    ReservedMarket(MarketId),
+    #[error("market {0:?} configured twice")]
+    DuplicateMarket(MarketId),
     #[error("address {0} configured twice")]
     DuplicateAddress(Address),
     #[error("asset id {0:?} or underlying configured twice")]
     DuplicateAsset(AssetId),
+    #[error("subscribed vault {0} is missing from interned MarketIds")]
+    UnboundVault(Address),
+    #[error("protocol toml is malformed")]
+    MalformedToml,
+}
+
+#[inline]
+fn is_foreign(id: MarketId) -> bool {
+    id.0 >= FOREIGN_MARKET_MIN && id.0 <= FOREIGN_MARKET_MAX
 }
 
 impl Config {
@@ -73,6 +108,12 @@ impl Config {
         if self.catalog == self.first_market {
             return Err(ConfigError::MarketCollision);
         }
+        if is_foreign(self.catalog) {
+            return Err(ConfigError::ReservedMarket(self.catalog));
+        }
+        if is_foreign(self.first_market) {
+            return Err(ConfigError::ReservedMarket(self.first_market));
+        }
         let mut addrs: Vec<Address> = Vec::new();
         for a in [self.factory, self.evc] {
             if addrs.contains(&a) {
@@ -85,6 +126,31 @@ impl Config {
                 return Err(ConfigError::DuplicateAddress(*v));
             }
             addrs.push(*v);
+        }
+        let mut markets: Vec<MarketId> = Vec::new();
+        let mut intern_addrs: Vec<Address> = Vec::new();
+        for (addr, id) in &self.interned {
+            if *id == self.catalog || *id == self.first_market {
+                return Err(ConfigError::MarketCollision);
+            }
+            if is_foreign(*id) || id.0 >= self.first_market.0 {
+                return Err(ConfigError::ReservedMarket(*id));
+            }
+            if markets.contains(id) {
+                return Err(ConfigError::DuplicateMarket(*id));
+            }
+            markets.push(*id);
+            if intern_addrs.contains(addr) {
+                return Err(ConfigError::DuplicateAddress(*addr));
+            }
+            intern_addrs.push(*addr);
+        }
+        if !self.interned.is_empty() {
+            for v in &self.vaults {
+                if self.interned_id(*v).is_none() {
+                    return Err(ConfigError::UnboundVault(*v));
+                }
+            }
         }
         let mut oracles: Vec<Address> = Vec::new();
         for p in &self.price_sources {
@@ -106,6 +172,33 @@ impl Config {
         Ok(())
     }
 
+    /// Replace the intern map. Call after [`Self::from_toml`] with every
+    /// euler-v2 `(OnChainId::Addr, MarketRec.id)` from `Intern::from_registry`.
+    pub fn bind_interned(
+        &mut self,
+        markets: impl IntoIterator<Item = (Address, MarketId)>,
+    ) -> core::result::Result<(), ConfigError> {
+        self.interned.clear();
+        for (addr, id) in markets {
+            if self.interned.iter().any(|(a, _)| *a == addr) {
+                return Err(ConfigError::DuplicateAddress(addr));
+            }
+            if self.interned.iter().any(|(_, m)| *m == id) {
+                return Err(ConfigError::DuplicateMarket(id));
+            }
+            self.interned.push((addr, id));
+        }
+        self.validate()
+    }
+
+    #[inline]
+    pub(crate) fn interned_id(&self, vault: Address) -> Option<MarketId> {
+        self.interned
+            .iter()
+            .find(|(a, _)| *a == vault)
+            .map(|(_, id)| *id)
+    }
+
     #[inline]
     pub(crate) fn asset_by_underlying(&self, underlying: Address) -> Option<&AssetConfig> {
         self.assets.iter().find(|a| a.underlying == underlying)
@@ -125,11 +218,6 @@ impl Config {
     }
 
     #[inline]
-    pub(crate) fn assigned_market(&self, catalog_slot: u16) -> MarketId {
-        MarketId(self.first_market.0.saturating_add(u32::from(catalog_slot)))
-    }
-
-    #[inline]
     pub(crate) fn is_vault(&self, address: Address) -> bool {
         self.vaults.contains(&address)
     }
@@ -139,4 +227,61 @@ impl Config {
     pub(crate) fn token(&self, address: Address) -> Option<&AssetConfig> {
         self.asset_by_underlying(address)
     }
+
+    /// Parse `config/protocols/euler-v2.toml`. Interned MarketIds are filled
+    /// by [`Self::bind_interned`], not this file.
+    pub fn from_toml(raw: &str) -> core::result::Result<Self, ConfigError> {
+        let f: TomlFile = toml::from_str(raw).map_err(|_| ConfigError::MalformedToml)?;
+        let mut vaults = Vec::with_capacity(f.vaults.len());
+        for v in f.vaults {
+            vaults.push(parse_addr(&v)?);
+        }
+        let mut assets = Vec::with_capacity(f.assets.len());
+        for a in f.assets {
+            assets.push(AssetConfig {
+                underlying: parse_addr(&a.underlying)?,
+                asset: AssetId(a.asset),
+                feed: FeedId(a.feed),
+                decimals: a.decimals,
+            });
+        }
+        let cfg = Self {
+            protocol: ProtocolId(f.protocol),
+            factory: parse_addr(&f.factory)?,
+            evc: parse_addr(&f.evc)?,
+            catalog: MarketId(f.catalog),
+            first_market: MarketId(f.first_market),
+            vaults,
+            interned: Vec::new(),
+            assets,
+            price_sources: Vec::new(),
+            pinned_through: f.pinned_through,
+        };
+        cfg.validate()?;
+        Ok(cfg)
+    }
+}
+
+fn parse_addr(s: &str) -> core::result::Result<Address, ConfigError> {
+    s.parse().map_err(|_| ConfigError::MalformedToml)
+}
+
+#[derive(serde::Deserialize)]
+struct TomlFile {
+    protocol: u16,
+    factory: String,
+    evc: String,
+    catalog: u32,
+    first_market: u32,
+    pinned_through: u64,
+    vaults: Vec<String>,
+    assets: Vec<TomlAsset>,
+}
+
+#[derive(serde::Deserialize)]
+struct TomlAsset {
+    underlying: String,
+    asset: u16,
+    feed: u16,
+    decimals: u8,
 }

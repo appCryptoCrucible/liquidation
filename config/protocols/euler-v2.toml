@@ -5,8 +5,18 @@
 # euler-xyz/euler-interfaces CoreAddresses (same factory).
 # Pin: euler-xyz/euler-vault-kit @ bfb325a6e6ca09613d940b46f72ccfe017353933.
 # Registry intern @ generated_at_block 26015175: ProtocolId 4, 1073 tokens,
-# 15 feeds, 3481 protocol markets. catalog/first_market are adapter-private
-# discovery ids (3481/3482) so they do not collide with intern 0..=3480.
+# 15 feeds, 3481 interned protocol markets (MarketId 0..=3480).
+#
+# MarketId allocator (intern-global; StateStore has no ProtocolId):
+#   1. Bind each euler-v2 vault OnChainId::Addr to Intern::from_registry
+#      MarketRec.id (registry.protocols iteration order). ~884 interned
+#      euler vaults; 26 admitted. W WatchDecoder already binds Liquidate
+#      to those intern ids — adapter discovery must match.
+#   2. Catalog is an Id→MarketId index, not a vault, and is NOT interned:
+#      catalog = 3511.
+#   3. Vaults absent from intern (new ProxyCreated) get sequential ids
+#      from first_market = 3512. Never 3481..=3510 (Liquity rework owns
+#      3508..=3510).
 # `vaults` are the 26 admitted addresses at that pin (subscriptions + backfill).
 # Live universe is ProxyCreated / getProxyListSlice, never this list.
 # Euler oracle adapters are empty in registry.oracles — price_sources is empty
@@ -17,8 +27,8 @@
 protocol = 4
 factory = "0x29a56a1b8214D9Cf7c5561811750D5cBDb45CC8e"
 evc = "0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"
-catalog = 3481
-first_market = 3482
+catalog = 3511
+first_market = 3512
 pinned_through = 26015175
 
 vaults = [
