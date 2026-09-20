@@ -3020,6 +3020,19 @@ name = "liq-adapters"
 version = "0.1.0"
 
 [[package]]
+name = "liq-adapters-aave-v3"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "bytemuck",
+ "liq-protocol",
+ "liq-types",
+ "smallvec",
+ "thiserror",
+]
+
+[[package]]
 name = "liq-adapters-aave-v4"
 version = "0.1.0"
 dependencies = [
