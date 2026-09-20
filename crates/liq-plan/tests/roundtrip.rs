@@ -13,10 +13,9 @@
 use alloy_primitives::{address, b256, Address, U256};
 use liq_exec::wire::LegTail;
 use liq_plan::{
-    decode_batch, ensure_surplus_borrow_profit_legs, morpho_id, BatchPlan, EncodedPlan, FlashGroup,
-    LiqLeg, MorphoMarketPin, SwapLeg, V4ReservePin, ValidateCtx, FLAG_SWEEP, HEADER_LEN,
-    LEG_EXACT_OUT, LEG_TAKE_BALANCE, LIQ_LEG_LEN, SWAP_LEG_HEAD_LEN, VENUE_ROUTER,
-    VENUE_UNIV3_POOL,
+    decode_batch, ensure_surplus_borrow_profit_legs, BatchPlan, EncodedPlan, FlashGroup, LiqLeg,
+    MorphoMarketPin, SwapLeg, V4ReservePin, ValidateCtx, FLAG_SWEEP, HEADER_LEN, LEG_EXACT_OUT,
+    LEG_TAKE_BALANCE, LIQ_LEG_LEN, SWAP_LEG_HEAD_LEN, VENUE_ROUTER, VENUE_UNIV3_POOL,
 };
 use liq_protocol::ExecutorAdapter;
 use liq_types::FlashProvider;
@@ -47,17 +46,18 @@ fn morpho_wsteth_weth() -> MorphoMarketPin {
         morpho: MORPHO,
         loan_token: WETH,
         collateral_token: WSTETH,
-        oracle: address!("bD60A6770b27E084E8617335ddE769241B0e71D8"),
-        irm: address!("870aC11D48B15DB9a138Cf899d20F13F2B675f98"),
+        oracle: address!("2a01EB9496094dA03c4E364Def50f5aD1280AD72"),
+        irm: address!("870aC11D48B15DB9a138Cf899d20F13F79Ba00BC"),
         lltv: U256::from(945_000_000_000_000_000u64),
     }
 }
 
 fn ctx() -> ValidateCtx {
-    let m = morpho_wsteth_weth();
-    let id = morpho_id(&m);
-    let mut pin = m;
-    pin.id = id;
+    // Keep the hardcoded real on-chain Morpho id (C54D…EC41) from
+    // morpho_wsteth_weth(); do NOT overwrite it with the computed id.
+    // check_morpho then verifies keccak(abi.encode(params)) == real id,
+    // so a wrong field order would fail the test instead of passing tautologically.
+    let pin = morpho_wsteth_weth();
     ValidateCtx {
         weth: WETH,
         v4_underlying: vec![
