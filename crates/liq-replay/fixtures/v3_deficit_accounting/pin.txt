@@ -1,0 +1,8 @@
+# Aave V3 DeficitCreated + liquidation of 0x5623db3f8e200ab57c8af93e65785e72f47e3723 at block 25219361 (USDT reserve deficit 3.3+)
+block = 25219361
+tx = 0x67819cbbca3d7cfc7adb1b4586b514b55d710d3f1649e0dd9a4ec795099bf0b6
+tx_index = 88
+protocol = aave-v3
+user = 0x5623db3f8e200ab57c8af93e65785e72f47e3723
+source = blockscout_DeficitCreated_0x2bccfb3f
+a3 = r.deficit_storage_at_n_minus_1

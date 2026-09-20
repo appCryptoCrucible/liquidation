@@ -1,0 +1,8 @@
+# Aave V4 liquidation of 0xd7ad196009fbe5c4210db626719af5439d43e5b9 at block 25230589 (second Main Spoke hit after 25222962; premium accrual over the quiet gap)
+block = 25230589
+tx = 0xd40d5299617cbdb591353462c43aa314c701e0167b60f426d4a93c15c0eda30c
+tx_index = 0
+protocol = aave-v4
+user = 0xd7ad196009fbe5c4210db626719af5439d43e5b9
+source = blockscout_LiquidationCall_0x2a1f12d9
+a3 = hub_premium_shares_at_n_minus_1

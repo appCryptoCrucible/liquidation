@@ -1,0 +1,8 @@
+# Aave V4 liquidation of 0x26b6d597b42e99eaa1f4675eccb3c56cb0c4041b at block 25231319 (Main Spoke; position-manager path vs direct user tx)
+block = 25231319
+tx = 0x992f892d7f65d5dab5b17101aeaeaafb09a615153bcaca2548e894f855c4762d
+tx_index = 208
+protocol = aave-v4
+user = 0x26b6d597b42e99eaa1f4675eccb3c56cb0c4041b
+source = blockscout_LiquidationCall_0x2a1f12d9
+a3 = hub_restore_vs_user_tx_receipt

@@ -1,0 +1,8 @@
+# Aave governance-v3 PayloadExecuted (payloads 0x1af and 0x1b0) at block 25037701 on PayloadsController 0xdabad81af85554e9ae636395611c58f7ec1aaec5 (market-wide reprice)
+block = 25037701
+tx = 0xe2391ea418e16d70196ca3d77dfc836cca1096eebf65e423d52ad867b416478f
+tx_index = 65
+protocol = aave-v3
+user = unobserved
+source = blockscout_PayloadExecuted_0xda6084bb
+a3 = payload_actions_and_crossing_set

@@ -1,0 +1,75 @@
+name: Replay
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Full recall over the archive (GUIDE 05 §7). Empty archive → A3Deferred.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Mandatory before any dependency bump (especially Reth/ExEx)"
+        required: false
+        default: "dep-bump"
+
+jobs:
+  fixtures:
+    name: named fixtures (every commit)
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config libssl-dev
+      - name: Install Rust 1.95.0
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup component add rustfmt clippy
+      - name: cargo test named_fixtures
+        env:
+          LIQ_RECALL_REPORT: ${{ github.workspace }}/recall-report.txt
+        run: cargo test -p liq-replay --test named_fixtures -- --nocapture
+      - name: Publish RecallReport
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recall-report
+          path: recall-report.txt
+          if-no-files-found: warn
+
+  nightly-full:
+    name: full replay (nightly + dep-bump dispatch)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config libssl-dev
+      - name: Install Rust 1.95.0
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: full recall replay
+        env:
+          LIQ_FULL_REPLAY: "1"
+          LIQ_RECALL_REPORT: ${{ github.workspace }}/recall-report.txt
+          LIQ_ARCHIVE_RPC: ${{ secrets.LIQ_ARCHIVE_RPC }}
+        run: cargo test -p liq-replay --test named_fixtures -- --nocapture
+      - name: Publish RecallReport
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recall-report-full
+          path: recall-report.txt
+          if-no-files-found: warn

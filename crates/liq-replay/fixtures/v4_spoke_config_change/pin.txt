@@ -1,0 +1,8 @@
+# Aave V4 liquidation of 0x5b37bb90a77ea7c5e98cd21e51fe220f84e65590 at block 25230612 (Main Spoke; MarketReprice fan-out needs spoke config at N−1)
+block = 25230612
+tx = 0x2def4874e1af3e5c9875ab485707d0fcfdd5b7447cfcf0253c7ceea0b91c1e47
+tx_index = 0
+protocol = aave-v4
+user = 0x5b37bb90a77ea7c5e98cd21e51fe220f84e65590
+source = blockscout_LiquidationCall_0x2a1f12d9
+a3 = spoke_config_logs_in_fixture_window

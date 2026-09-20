@@ -1,0 +1,8 @@
+# Aave V4 liquidation of 0xd7ad196009fbe5c4210db626719af5439d43e5b9 at block 25222962 tx 0x91bf3db6… (Main Spoke collateralReserveId=3 debtReserveId=8; close-factor vs chain)
+block = 25222962
+tx = 0x91bf3db600058afc300de723c37770de9c90d76085d9543251bf5fc20b6d7bd6
+tx_index = 1
+protocol = aave-v4
+user = 0xd7ad196009fbe5c4210db626719af5439d43e5b9
+source = etherscan_LiquidationCall_spoke_0x94e7a5dc
+a3 = target_hf_and_close_factor_from_hub_storage

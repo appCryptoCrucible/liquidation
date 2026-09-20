@@ -1,0 +1,8 @@
+# Aave V3 setUserEMode of 0x572372831a9d6b2e3ee8fa284505599e6125fea9 at block 25220043 (category 1; thresholds change, balances do not)
+block = 25220043
+tx = 0xb5c857f5c8c27f14e43fa30f746ebd8184f9b608e1dcecadc66d83c80952cb69
+tx_index = 9
+protocol = aave-v3
+user = 0x572372831a9d6b2e3ee8fa284505599e6125fea9
+source = blockscout_UserEModeSet_0xd728da87
+a3 = emode_bitmap_and_balances_at_n_minus_1

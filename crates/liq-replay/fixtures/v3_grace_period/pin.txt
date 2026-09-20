@@ -1,0 +1,5 @@
+# Aave V3 grace-period (unhealthy but not liquidatable) is not attested on Ethereum Pool 0x87870bca… in this WP: no PriceOracleSentinel block of a would-be liquidation without inventing HF. A3 N−1 health required (D60).
+status = unobserved
+protocol = aave-v3
+source = none
+a3 = sentinel_and_hf_at_n_minus_1

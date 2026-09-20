@@ -31,5 +31,9 @@ path = "src/bin/liq-diff-health.rs"
 name = "liq-diff-run"
 path = "src/bin/liq-diff-run.rs"
 
+[[test]]
+name = "named_fixtures"
+path = "fixtures/run.rs"
+
 [lints]
 workspace = true

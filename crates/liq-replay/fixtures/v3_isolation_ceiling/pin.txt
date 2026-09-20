@@ -1,0 +1,9 @@
+# Aave V3 IsolationModeTotalDebtUpdated for LDO 0x5a98fcbea516cf06857215779fd812ca3bef1b32 at block 18011028 (isolated ceiling accounting)
+block = 18011028
+tx = 0x59ac6784cb3851f5c84bff17a2e3bebb57a69a405b850eafd4282debcee58480
+tx_index = 92
+protocol = aave-v3
+user = unobserved
+source = blockscout_IsolationModeTotalDebtUpdated_0xaef84d3b
+a3 = join_to_LiquidationCall_via_receipts
+note = LiquidationCall not in Blockscout for this block; user field fail-closed unobserved

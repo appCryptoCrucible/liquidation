@@ -1,0 +1,8 @@
+# Aave V4 liquidation of 0x0fc9b8b7a341da6b41638c2f58cd1509bfa0afd3 at block 25201074 (Main Spoke collateralReserveId=0 debtReserveId=8)
+block = 25201074
+tx = 0xa84b47862293b737d273dd858a9afde860ffa9366e1606a6c14bcf4196a66f3f
+tx_index = 37
+protocol = aave-v4
+user = 0x0fc9b8b7a341da6b41638c2f58cd1509bfa0afd3
+source = blockscout_LiquidationCall_0x2a1f12d9
+a3 = remainder_vs_dust_floor_from_spoke_shares

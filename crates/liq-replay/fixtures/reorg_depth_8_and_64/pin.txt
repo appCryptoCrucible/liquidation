@@ -1,0 +1,5 @@
+# Ethereum execution-layer reorg of depth 8 and 64 is unobserved on canonical mainnet in this WP (post-merge finality). Discarded hashes will not be invented. A3 header/reorg parquet is the seam (D60; 05B ReorgRow).
+status = unobserved
+protocol = ethereum-el
+source = none
+a3 = reorg_headers_depth_8_and_64

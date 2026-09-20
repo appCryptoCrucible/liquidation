@@ -1,0 +1,8 @@
+# Aave V4 liquidation of 0x9e496a37a8101b25ba5035aa915ae9d9fc5247e2 at block 25228649 (Main Spoke; bonus curve vs chain at this HF)
+block = 25228649
+tx = 0x7e54a50295d3b0a61d12611a90f6c9ae7a7ed066800d92b91b73ed547de73ccb
+tx_index = 350
+protocol = aave-v4
+user = 0x9e496a37a8101b25ba5035aa915ae9d9fc5247e2
+source = blockscout_LiquidationCall_0x2a1f12d9
+a3 = bonus_at_three_hf_levels_from_storage

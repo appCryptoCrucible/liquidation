@@ -1,0 +1,8 @@
+# Aave V3 aWETH BalanceTransfer of 0x0fd57c233f1e611da465650b7eb0e7f534e48dd6 at block 25220216 (aToken scaled balance moved in the same tx as LiquidationCall 0x988fd541…)
+block = 25220216
+tx = 0x988fd541b5ebb17d15e273ea8f56b748412ea2f118805c29775abd14f2f1ffb1
+tx_index = 386
+protocol = aave-v3
+user = 0x0fd57c233f1e611da465650b7eb0e7f534e48dd6
+source = blockscout_BalanceTransfer_aWETH_0x4beccb90
+a3 = aToken_only_transfer_without_pool_event_needs_full_receipt

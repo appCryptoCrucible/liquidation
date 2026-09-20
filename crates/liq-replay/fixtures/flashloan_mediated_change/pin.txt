@@ -1,0 +1,8 @@
+# Aave V3+V4 flashloan-mediated liquidation of 0xd7413e4416100f59228ff8030df26dbc4435e0bb (V3) and 0xd7ad196009fbe5c4210db626719af5439d43e5b9 (V4) at block 25222962 tx 0x91bf3db6… (MEV bot 0x81463b0f, intra-tx state churn)
+block = 25222962
+tx = 0x91bf3db600058afc300de723c37770de9c90d76085d9543251bf5fc20b6d7bd6
+tx_index = 1
+protocol = aave-v3
+user = 0xd7413e4416100f59228ff8030df26dbc4435e0bb
+source = etherscan_LiquidationCall_v3_plus_v4_same_tx
+a3 = intra_tx_trace_for_intermediate_hf
