@@ -3152,6 +3152,14 @@ dependencies = [
 [[package]]
 name = "liq-replay"
 version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "liq-adapters-aave-v4",
+ "liq-protocol",
+ "liq-types",
+ "thiserror",
+]
 
 [[package]]
 name = "liq-risk"

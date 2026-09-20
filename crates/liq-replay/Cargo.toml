@@ -4,5 +4,21 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[dependencies]
+liq-types = { path = "../liq-types" }
+liq-protocol = { path = "../liq-protocol" }
+liq-adapters-aave-v4 = { path = "../liq-adapters/aave-v4" }
+alloy-primitives = { workspace = true, features = ["std"] }
+alloy-sol-types = { workspace = true, features = ["std"] }
+thiserror = { workspace = true }
+
+[[bin]]
+name = "liq-diff-health"
+path = "src/bin/liq-diff-health.rs"
+
+[[bin]]
+name = "liq-diff-run"
+path = "src/bin/liq-diff-run.rs"
+
 [lints]
 workspace = true

@@ -39,3 +39,44 @@ jobs:
 
       - name: dependency lint
         run: bash tools/dep-lint.sh
+
+  differential:
+    name: 05A differential (quick 1k)
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config libssl-dev
+
+      - name: Install Rust 1.95.0
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install Foundry
+        run: |
+          curl -L https://foundry.paradigm.xyz | bash
+          /root/.foundry/bin/foundryup
+          echo "/root/.foundry/bin" >> "$GITHUB_PATH"
+
+      - name: Install forge-std
+        working-directory: contracts
+        run: forge install foundry-rs/forge-std --no-git
+
+      - name: Build FFI binary
+        run: cargo build -p liq-replay --bin liq-diff-health
+
+      - name: forge test --quick (1k)
+        working-directory: contracts
+        env:
+          LIQ_DIFF_BIN: ../target/debug/liq-diff-health
+          FOUNDRY_FUZZ_RUNS: "1000"
+        run: forge test --match-path test/differential/HealthDiff.t.sol --fuzz-runs 1000
