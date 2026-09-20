@@ -1,0 +1,48 @@
+# Fluid Vaults mainnet — `Instadapp/fluid-contracts-public` @ `9496626f71a761fc296dc3b2efbfd54c504e18f0`
+#
+# Factory D15: 0x324c5Dc1fC42c7a4D43d92df1eBA58A54d13Bf2d
+# `d15_vaults = 182` is a cardinality check on `totalVaults()` at the pin block,
+# not a typed-in roster. Discovery is `VaultDeployed` / `getVaultAddress`.
+#
+# Intern: ProtocolId 10. MarketIds 4000..=4199 (catalog 4000; vault 1 → 4001).
+# Never intern 0..=3480, 3481..=3999, or 4200+ (Gearbox).
+# AssetIds: DAI 454, USDC 677, WETH 813, USDT 933 (registry.tokens sort).
+# Native 0xEeee… is not interned — native vaults are UNPRICED (do not map to WETH).
+# FeedId(0) is the first interned Aave oracle, not unset. FluidOracle is 1e27;
+# health composes that rate from PriceVector RAY by AssetId. feed=0 is a
+# documented collision.
+#
+# Boot: from_toml → assert_live_factory(totalVaults + getVaultAddress(1)) → Fluid::new.
+# `new` refuses LiveFactoryUnasserted. In-tree: pin-view mock; ignored live test
+# behind LIQ_RPC_URL.
+
+protocol = 10
+factory = "0x324c5Dc1fC42c7a4D43d92df1eBA58A54d13Bf2d"
+catalog = 4000
+first_market = 4001
+d15_vaults = 182
+pinned_through = 26015175
+
+[[assets]]
+underlying = "0x6b175474e89094c44da98b954eedeac495271d0f"
+asset = 454
+feed = 0
+decimals = 18
+
+[[assets]]
+underlying = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+asset = 677
+feed = 0
+decimals = 6
+
+[[assets]]
+underlying = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+asset = 813
+feed = 0
+decimals = 18
+
+[[assets]]
+underlying = "0xdac17f958d2ee523a2206206994597c13d831ec7"
+asset = 933
+feed = 0
+decimals = 6

@@ -1,0 +1,24 @@
+[package]
+name = "liq-adapters-fluid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+liq-types = { path = "../../liq-types" }
+liq-protocol = { path = "../../liq-protocol" }
+alloy-primitives = { workspace = true, features = ["std"] }
+alloy-sol-types = { workspace = true, features = ["std"] }
+bytemuck = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+alloy-provider = { workspace = true }
+alloy-rpc-types-eth = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true
