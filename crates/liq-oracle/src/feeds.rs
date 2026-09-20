@@ -203,9 +203,10 @@ impl FeedsConfig {
                 if a == entry.aggregator {
                     continue;
                 }
-                let same_proxy_known = reg.oracles.iter().any(|(p, e)| {
-                    (*p == spec.proxy || e.pair == entry.pair) && e.aggregator == a
-                });
+                let same_proxy_known = reg
+                    .oracles
+                    .iter()
+                    .any(|(p, e)| (*p == spec.proxy || e.pair == entry.pair) && e.aggregator == a);
                 if !same_proxy_known {
                     return Err(OracleError::AggregatorMismatch {
                         proxy: spec.proxy,
@@ -425,8 +426,7 @@ impl FeedSet {
                 watch,
             });
         }
-        let (source_oracles, providers, deferred_subs) =
-            source_and_provider_subs(reg, &markets)?;
+        let (source_oracles, providers, deferred_subs) = source_and_provider_subs(reg, &markets)?;
         Ok(Self {
             specs,
             aggregators: aggs.into_iter().collect(),
@@ -437,10 +437,7 @@ impl FeedSet {
     }
 }
 
-fn extra_address(
-    proto: &liq_config::ProtocolEntry,
-    key: &str,
-) -> Result<Address> {
+fn extra_address(proto: &liq_config::ProtocolEntry, key: &str) -> Result<Address> {
     let v = proto.extra.get(key).ok_or_else(|| {
         OracleError::Load(format!(
             "protocol {} {:?} missing {key}",
@@ -857,8 +854,8 @@ spoke = "invented"
     #[test]
     #[allow(clippy::float_arithmetic)]
     fn heartbeat_and_deviation_match_vendored_directory() {
-        let pin = std::fs::read_to_string(workspace_root().join("registry/feeds-mainnet.PIN"))
-            .unwrap();
+        let pin =
+            std::fs::read_to_string(workspace_root().join("registry/feeds-mainnet.PIN")).unwrap();
         assert!(pin.contains("feeds-mainnet.json"));
         assert!(pin.contains("b6c836ef449ceebf68f7143e0dc6acf6"));
         let raw = std::fs::read(workspace_root().join("registry/feeds-mainnet.json")).unwrap();
