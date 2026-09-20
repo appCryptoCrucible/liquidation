@@ -1,0 +1,99 @@
+# Euler V2 EVK mainnet (family `euler-v2` in registry/registry.json).
+# Fills `liq_adapters_euler_v2::Config`.
+# Factory GenericFactory 0x29a56a1b8214D9Cf7c5561811750D5cBDb45CC8e (docs/mechanism/euler-v2.md,
+# REGISTRY Family B). EVC 0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383 from
+# euler-xyz/euler-interfaces CoreAddresses (same factory).
+# Pin: euler-xyz/euler-vault-kit @ bfb325a6e6ca09613d940b46f72ccfe017353933.
+# Registry intern @ generated_at_block 26015175: ProtocolId 4, 1073 tokens,
+# 15 feeds, 3481 protocol markets. catalog/first_market are adapter-private
+# discovery ids (3481/3482) so they do not collide with intern 0..=3480.
+# `vaults` are the 26 admitted addresses at that pin (subscriptions + backfill).
+# Live universe is ProxyCreated / getProxyListSlice, never this list.
+# Euler oracle adapters are empty in registry.oracles — price_sources is empty
+# on purpose; unpinned oracles fail closed (UNPRICED / OracleSourceMismatch).
+# Vault share tokens are not in registry.tokens; collateral vault ERC-20s are
+# UNMAPPED until interned.
+
+protocol = 4
+factory = "0x29a56a1b8214D9Cf7c5561811750D5cBDb45CC8e"
+evc = "0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"
+catalog = 3481
+first_market = 3482
+pinned_through = 26015175
+
+vaults = [
+  "0x01864ae3c7d5f507cc4c24ca67b4cabbdda37ecd",
+  "0x038dd0eb275b7de3b07884f1fa106ed6423c45f2",
+  "0x211711f277f146fc947d7053b41bb71bb5b5fc2c",
+  "0x2a356443fee07703266066c6bb1b11b82d8246ad",
+  "0x313603fa690301b0caeef8069c065862f9162162",
+  "0x481d4909d7ca2eb27c4975f08dce07dbef0d3fa7",
+  "0x63ba834bff27dd1d80533a56ca27aa058aaa1130",
+  "0x797dd80692c3b2dadabce8e30c07fde5307d48a9",
+  "0x7fab04ff2717d9a6b71a51c56c29697179597d40",
+  "0x8be237254c0832ff642ad0cb2bdfb8f79d7c7b1a",
+  "0x998d761ec1badaceb064624cc3a1d37a46c88ba4",
+  "0x9bd52f2805c6af014132874124686e7b248c2cbb",
+  "0xa45eac8e33168cefa0b225f500e6d93d43b8f1af",
+  "0xab2726daf820aa9270d14db9b18c8d187cbf2f30",
+  "0xaf5372792a29dc6b296d6ffd4aa3386aff8f9bb2",
+  "0xb57320b253363bf749d5ce6e66592fdc74cce6f7",
+  "0xba98fc35c9dfd69178ad5dce9fa29c64554783b5",
+  "0xbc4b4ac47582c3e38ce5940b80da65401f4628f1",
+  "0xc42d337861878baa4dc820d9e6b6c667c2b57e8a",
+  "0xc6137bc1378c2396051e06417704d31615f77cb9",
+  "0xcbc9b61177444a793b85442d3a953b90f6170b7d",
+  "0xd001f0a15d272542687b2677ba627f48a4333b5d",
+  "0xd8b27cf359b7d15710a5be299af6e7bf904984c2",
+  "0xe0a80d35bb6618cba260120b279d357978c42bce",
+  "0xe1ce9af672f8854845e5474400b6ddc7ae458a10",
+  "0xf26c68e6d26f725858e7cc353ee30e43adf0b732",
+]
+
+[[assets]]
+underlying = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+asset = 677
+feed = 0
+decimals = 6
+
+[[assets]]
+underlying = "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599"
+asset = 154
+feed = 0
+decimals = 8
+
+[[assets]]
+underlying = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+asset = 813
+feed = 0
+decimals = 18
+
+[[assets]]
+underlying = "0xdac17f958d2ee523a2206206994597c13d831ec7"
+asset = 933
+feed = 0
+decimals = 6
+
+[[assets]]
+underlying = "0x8292bb45bf1ee4d140127049757c2e0ff06317ed"
+asset = 541
+feed = 0
+decimals = 18
+
+[[assets]]
+underlying = "0x6c3ea9036406852006290770bedfcaba0e23a0e8"
+asset = 457
+feed = 0
+decimals = 6
+
+[[assets]]
+underlying = "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
+asset = 525
+feed = 0
+decimals = 18
+
+[[assets]]
+underlying = "0x73a15fed60bf67631dc6cd7bc5b6e8da8190acf5"
+asset = 486
+feed = 0
+decimals = 18
