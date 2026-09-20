@@ -1,0 +1,87 @@
+# GUIDE 16 §6 — benchmark harness (WP 16C).
+#
+# GitHub-hosted runners are not the production box. This job is the
+# structural gate: no invented p99, ABSENT/DEFERRED vs the committed
+# pre-tuning baseline. Path A/B/C §4b numbers are UNMEASURED until A3
+# archive + full universe + the box (self-hosted).
+#
+# Production-box job: set repository variable LIQ_PRODUCTION_BOX=true and
+# add a self-hosted runner labeled `liq-box`. Do not treat ubuntu-latest
+# p99.9 as the GUIDE 16 §4b measurement.
+
+name: Bench
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Re-run after tuning, dependency bump, or new adapter"
+        required: false
+        default: "manual"
+
+jobs:
+  harness:
+    name: stage p50/p99/p99.9 · gate · no invented p99
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config libssl-dev
+
+      - name: Install Rust 1.95.0
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup component add rustfmt clippy
+
+      - name: cargo test -p liq-replay bench
+        env:
+          LIQ_BENCH_REPORT: ${{ github.workspace }}/bench-report.txt
+        run: cargo test -p liq-replay --lib -- bench --nocapture
+
+      - name: cargo run liq-bench (gate vs baseline)
+        env:
+          LIQ_BENCH_REPORT: ${{ github.workspace }}/bench-report.txt
+        run: cargo run -p liq-replay --bin liq-bench
+
+      - name: PanicOnAlloc seam (--features alloc-assert)
+        run: cargo test -p liq-replay --features alloc-assert --lib -- bench --nocapture
+
+      - name: clippy -D warnings (default + alloc-assert)
+        run: |
+          cargo clippy -p liq-replay --all-targets -- -D warnings
+          cargo clippy -p liq-replay --features alloc-assert --all-targets -- -D warnings
+
+      - name: Publish bench report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-report
+          path: bench-report.txt
+          if-no-files-found: warn
+
+  box:
+    name: production-box p99.9 (self-hosted)
+    if: ${{ vars.LIQ_PRODUCTION_BOX == 'true' }}
+    runs-on: [self-hosted, liq-box]
+    steps:
+      - uses: actions/checkout@v4
+      - name: release harness on the box
+        env:
+          LIQ_BENCH_REPORT: ${{ github.workspace }}/bench-report.txt
+        run: cargo run -p liq-replay --release --bin liq-bench
+      - name: Publish box report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-report-box
+          path: bench-report.txt
+          if-no-files-found: warn

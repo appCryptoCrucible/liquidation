@@ -13,6 +13,7 @@
 )]
 
 pub mod archive;
+pub mod bench;
 pub mod diff;
 pub mod parity;
 pub mod recall;

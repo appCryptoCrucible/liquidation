@@ -1,0 +1,68 @@
+# liq-bench 16C (GUIDE 16 §6). Unmeasured cells ABSENT/DEFERRED.
+# Pre-tuning baseline (16B not applied). Numeric p99/p99.9 are forbidden here.
+schema=16C.1
+tuning=before
+archive=EMPTY
+a3=DEFERRED
+universe_full=false
+roster_constructed=0
+roster_admitted=0
+pin=ABSENT
+blocks=0
+stage.ingest.n=0
+stage.ingest.p50_ns=ABSENT
+stage.ingest.p99_ns=ABSENT
+stage.ingest.p99_9_ns=ABSENT
+stage.ingest.p99_9_reliable=false
+stage.ingest.note=unmeasured: PINNED_RANGE=None, A3Deferred, archive empty or unpinned, universe unloaded
+stage.state.n=0
+stage.state.p50_ns=ABSENT
+stage.state.p99_ns=ABSENT
+stage.state.p99_9_ns=ABSENT
+stage.state.p99_9_reliable=false
+stage.state.note=unmeasured: PINNED_RANGE=None, A3Deferred, archive empty or unpinned, universe unloaded
+stage.price.n=0
+stage.price.p50_ns=ABSENT
+stage.price.p99_ns=ABSENT
+stage.price.p99_9_ns=ABSENT
+stage.price.p99_9_reliable=false
+stage.price.note=unmeasured: PINNED_RANGE=None, A3Deferred, archive empty or unpinned, universe unloaded
+stage.engine.n=0
+stage.engine.p50_ns=ABSENT
+stage.engine.p99_ns=ABSENT
+stage.engine.p99_9_ns=ABSENT
+stage.engine.p99_9_reliable=false
+stage.engine.note=unmeasured: PINNED_RANGE=None, A3Deferred, archive empty or unpinned, universe unloaded
+stage.router.n=0
+stage.router.p50_ns=ABSENT
+stage.router.p99_ns=ABSENT
+stage.router.p99_9_ns=ABSENT
+stage.router.p99_9_reliable=false
+stage.router.note=unmeasured: PINNED_RANGE=None, A3Deferred, archive empty or unpinned, universe unloaded
+stage.sim.n=0
+stage.sim.p50_ns=ABSENT
+stage.sim.p99_ns=ABSENT
+stage.sim.p99_9_ns=ABSENT
+stage.sim.p99_9_reliable=false
+stage.sim.note=unmeasured: PINNED_RANGE=None, A3Deferred, archive empty or unpinned, universe unloaded
+stage.sign.n=0
+stage.sign.p50_ns=ABSENT
+stage.sign.p99_ns=ABSENT
+stage.sign.p99_9_ns=ABSENT
+stage.sign.p99_9_reliable=false
+stage.sign.note=unmeasured: PINNED_RANGE=None, A3Deferred, archive empty or unpinned, universe unloaded
+path.A.budget_ns=2800000
+path.A.p99_9_ns=ABSENT
+path.A.verdict=UNMEASURED
+path.B.budget_ns=2000000
+path.B.p99_9_ns=ABSENT
+path.B.verdict=UNMEASURED
+path.C.budget_ns=10000000
+path.C.p99_9_ns=ABSENT
+path.C.verdict=UNMEASURED
+llc_first_touch=ABSENT
+llc_reason=no_recompute
+alloc_assert=not_installed
+sim_historical=DEFERRED
+router_parity=DEFERRED
+sign=DEFERRED
