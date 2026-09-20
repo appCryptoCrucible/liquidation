@@ -75,6 +75,83 @@ fn part_name(kind: &str, from: u64, to: u64) -> String {
     format!("{kind}_{from}_{to}.parquet")
 }
 
+/// `{kind}_{from}_{to}.parquet`. Unparseable names fail closed (never treated
+/// as "outside range").
+pub(super) fn parse_partition_range(
+    kind: &str,
+    file_name: &str,
+) -> Result<(u64, u64), ExtractError> {
+    let err = || ExtractError::Parquet(format!("unparseable partition name {file_name}"));
+    let stem = file_name.strip_suffix(".parquet").ok_or_else(err)?;
+    let rest = stem
+        .strip_prefix(kind)
+        .and_then(|s| s.strip_prefix('_'))
+        .ok_or_else(err)?;
+    let (from_s, to_s) = rest.split_once('_').ok_or_else(err)?;
+    if from_s.is_empty() || to_s.is_empty() || to_s.contains('_') {
+        return Err(err());
+    }
+    let file_from: u64 = from_s.parse().map_err(|_| err())?;
+    let file_to: u64 = to_s.parse().map_err(|_| err())?;
+    if file_from > file_to {
+        return Err(err());
+    }
+    Ok((file_from, file_to))
+}
+
+fn ranges_overlap(file_from: u64, file_to: u64, from: u64, to: u64) -> bool {
+    file_from <= to && from <= file_to
+}
+
+/// Directory listing only. Opens no parquet. Non-`.parquet` entries are
+/// ignored; every `.parquet` name must parse or this errors.
+pub(super) fn parquet_files_covering(
+    dir: &Path,
+    kind: &str,
+    from: u64,
+    to: u64,
+) -> Result<Vec<PathBuf>, ExtractError> {
+    let mut out = Vec::new();
+    let rd = fs::read_dir(dir).map_err(|e| ExtractError::Io(e.to_string()))?;
+    for ent in rd {
+        let ent = ent.map_err(|e| ExtractError::Io(e.to_string()))?;
+        let ft = ent
+            .file_type()
+            .map_err(|e| ExtractError::Io(e.to_string()))?;
+        if ft.is_dir() {
+            continue;
+        }
+        let p = ent.path();
+        if p.extension().and_then(|e| e.to_str()) != Some("parquet") {
+            continue;
+        }
+        let name = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| ExtractError::Parquet("non-utf8 partition name".into()))?;
+        let (file_from, file_to) = parse_partition_range(kind, name)?;
+        if ranges_overlap(file_from, file_to, from, to) {
+            out.push(p);
+        }
+    }
+    Ok(out)
+}
+
+pub(super) fn load_covering_parquet<T>(
+    dir: &Path,
+    kind: &str,
+    from: u64,
+    to: u64,
+    read: fn(&Path) -> Result<Vec<T>, ExtractError>,
+) -> Result<Vec<T>, ExtractError> {
+    let files = parquet_files_covering(dir, kind, from, to)?;
+    let mut rows = Vec::new();
+    for p in &files {
+        rows.extend(read(p)?);
+    }
+    Ok(rows)
+}
+
 pub fn write_headers(
     dir: &Path,
     from: u64,
@@ -593,17 +670,15 @@ impl ParquetArchive {
         if !dir.is_dir() {
             return Err(ExtractError::Truncated { from, to });
         }
-        let mut rows = Vec::new();
-        let rd = fs::read_dir(&dir).map_err(|e| ExtractError::Io(e.to_string()))?;
-        for ent in rd {
-            let ent = ent.map_err(|e| ExtractError::Io(e.to_string()))?;
-            let p = ent.path();
-            if p.extension().and_then(|e| e.to_str()) != Some("parquet") {
-                continue;
-            }
-            rows.extend(read_headers(&p)?);
+        load_covering_parquet(&dir, "headers", from, to, read_headers)
+    }
+
+    fn event_rows_covering(&self, from: u64, to: u64) -> Result<Vec<EventRow>, ExtractError> {
+        let dir = self.root.join("events");
+        if !dir.is_dir() {
+            return Ok(Vec::new());
         }
-        Ok(rows)
+        load_covering_parquet(&dir, "events", from, to, read_events)
     }
 }
 
@@ -623,18 +698,13 @@ impl Archive for ParquetArchive {
             Err(_) => return Err(ArchiveError::Unavailable.into()),
         };
         headers_complete(&headers, from, to)?;
-        let dir = self.root.join("events");
-        if !dir.is_dir() {
-            return Ok(());
-        }
-        let rd = fs::read_dir(&dir).map_err(|_| ArchiveError::Unavailable)?;
-        let mut events = Vec::new();
-        for ent in rd {
-            let ent = ent.map_err(|_| ArchiveError::Unavailable)?;
-            events.extend(
-                read_events(&ent.path()).map_err(|_| ArchiveError::Malformed { block: from })?,
-            );
-        }
+        let mut events = match self.event_rows_covering(from, to) {
+            Ok(e) => e,
+            Err(ExtractError::Parquet(_)) => {
+                return Err(ArchiveError::Malformed { block: from }.into());
+            }
+            Err(_) => return Err(ArchiveError::Unavailable.into()),
+        };
         events.sort_by_key(|e| (e.block, e.tx_index, e.log_index));
         for ev in &events {
             if ev.superseded || ev.block < from || ev.block > to {

@@ -1,5 +1,6 @@
 use super::store::{
-    events_path, headers_path, mark_events_reorg, read_events, read_headers, write_events,
+    events_path, headers_path, load_covering_parquet, mark_events_reorg, parse_partition_range,
+    read_events, read_headers, read_prices, write_events, write_prices,
 };
 use super::*;
 use alloy_primitives::{Address, B256};
@@ -179,4 +180,141 @@ fn a3_second_source_is_deferred() {
         second_source_verify(),
         Err(ExtractError::A3Deferred)
     ));
+}
+
+fn tmp_archive(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "liq-05b-d1-{tag}-{}-{}",
+        std::process::id(),
+        tag.len()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+fn header_at(block: u64, byte: u8) -> HeaderRow {
+    HeaderRow {
+        block,
+        hash: B256::repeat_byte(byte),
+        timestamp: block,
+        superseded: false,
+    }
+}
+
+fn event_at(block: u64, byte: u8) -> EventRow {
+    EventRow {
+        block,
+        block_hash: B256::repeat_byte(byte),
+        timestamp: block,
+        tx_hash: B256::repeat_byte(byte),
+        tx_index: 0,
+        log_index: 0,
+        address: Address::repeat_byte(byte),
+        topics: format!("{:#x}", B256::repeat_byte(0xaa)),
+        data_hex: "0xab".into(),
+        superseded: false,
+    }
+}
+
+fn price_at(block: u64, byte: u8) -> ArchivedPrice {
+    ArchivedPrice {
+        block,
+        block_hash: B256::repeat_byte(byte),
+        timestamp: block,
+        tx: B256::repeat_byte(byte),
+        feed: 1,
+        aggregator: Address::repeat_byte(byte),
+        price_ray: "1".into(),
+        decimals: 8,
+        superseded: false,
+    }
+}
+
+fn poison_parquet(dir: &std::path::Path, kind: &str, from: u64, to: u64) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(
+        dir.join(format!("{kind}_{from}_{to}.parquet")),
+        b"not-a-parquet-body",
+    )
+    .unwrap();
+}
+
+#[test]
+fn parse_partition_range_fail_closed() {
+    assert_eq!(
+        parse_partition_range("headers", "headers_100_199.parquet").unwrap(),
+        (100, 199)
+    );
+    assert_eq!(
+        parse_partition_range("events", "events_0_0.parquet").unwrap(),
+        (0, 0)
+    );
+    assert_eq!(
+        parse_partition_range("prices", "prices_8_8.parquet").unwrap(),
+        (8, 8)
+    );
+    assert!(parse_partition_range("headers", "headers_nope.parquet").is_err());
+    assert!(parse_partition_range("headers", "events_1_2.parquet").is_err());
+    assert!(parse_partition_range("headers", "headers_1_2_3.parquet").is_err());
+    assert!(parse_partition_range("headers", "headers_2_1.parquet").is_err());
+    assert!(parse_partition_range("headers", "headers_1.parquet").is_err());
+    assert!(parse_partition_range("headers", "foo.parquet").is_err());
+}
+
+/// Out-of-range partitions are poison parquet. The pre-fix all-files reader
+/// would open them and fail; range skip must not.
+#[test]
+fn logs_does_not_read_partitions_outside_requested_range() {
+    let dir = tmp_archive("skip");
+    std::fs::create_dir_all(dir.join("headers")).unwrap();
+    std::fs::create_dir_all(dir.join("events")).unwrap();
+    std::fs::create_dir_all(dir.join("prices")).unwrap();
+
+    write_headers(&dir.join("headers"), 10, 10, &[header_at(10, 0x11)]).unwrap();
+    write_events(&dir.join("events"), 10, 10, &[event_at(10, 0x11)]).unwrap();
+    write_prices(&dir.join("prices"), 10, 10, &[price_at(10, 0x11)]).unwrap();
+
+    poison_parquet(&dir.join("headers"), "headers", 1000, 1999);
+    poison_parquet(&dir.join("events"), "events", 1000, 1999);
+    poison_parquet(&dir.join("prices"), "prices", 1000, 1999);
+
+    let arch = ParquetArchive::new(dir.clone());
+    let mut seen = 0u64;
+    arch.logs(&[], 10, 10, &mut |log: &DecodedLog<'_>| {
+        seen = seen.saturating_add(1);
+        assert_eq!(log.block, 10);
+        assert_eq!(log.address, Address::repeat_byte(0x11));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(seen, 1);
+
+    let prices = load_covering_parquet(&dir.join("prices"), "prices", 10, 10, read_prices).unwrap();
+    assert_eq!(prices.len(), 1);
+    assert_eq!(prices[0].block, 10);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A parseable covering file plus an unparseable `.parquet` name must error,
+/// not silently drop the bad name (which would skip a whole archive).
+#[test]
+fn unparseable_partition_name_fails_closed() {
+    let dir = tmp_archive("badname");
+    std::fs::create_dir_all(dir.join("headers")).unwrap();
+    write_headers(&dir.join("headers"), 10, 10, &[header_at(10, 0x22)]).unwrap();
+    std::fs::copy(
+        headers_path(&dir, 10, 10),
+        dir.join("headers").join("headers_nope.parquet"),
+    )
+    .unwrap();
+
+    let arch = ParquetArchive::new(dir.clone());
+    let err = arch.logs(&[], 10, 10, &mut |_| Ok(())).unwrap_err();
+    assert!(matches!(
+        err,
+        liq_protocol::ProtocolError::Archive(ArchiveError::Unavailable)
+            | liq_protocol::ProtocolError::Archive(ArchiveError::Malformed { block: 10 })
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
 }
