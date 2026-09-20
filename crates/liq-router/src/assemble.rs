@@ -11,16 +11,17 @@
 use alloy_primitives::{Address, U256};
 use liq_exec::wire::LegTail;
 use liq_flash::fallback_chain;
-use liq_flash::{FlashIndex, Haircut};
+use liq_flash::{fee_amount, FlashIndex, Haircut};
 use liq_plan::{
-    validate, BatchPlan, FlashGroup, LiqLeg, SwapLeg, ValidateCtx, LEG_EXACT_OUT, LEG_TAKE_BALANCE,
-    VENUE_ROUTER, VENUE_UNIV3_POOL,
+    ensure_surplus_borrow_profit_legs, validate, BatchPlan, FlashGroup, LiqLeg, SwapLeg,
+    ValidateCtx, LEG_EXACT_OUT, LEG_TAKE_BALANCE, VENUE_ROUTER, VENUE_UNIV3_POOL,
 };
 use liq_protocol::{ExecutorAdapter, FlashRoute};
 use liq_types::{AssetId, PositionId};
 use smallvec::SmallVec;
 
 use crate::bid::{searcher_net, Bid};
+use crate::exact::{Allocation, ExitQuote};
 use crate::profit::ProfitError;
 use crate::select::{Scored, SelectCfg, SelectedPlan};
 use crate::solver::{PoolBook, PoolId, RouteError, Venue};
@@ -82,6 +83,9 @@ pub struct Assembled {
     /// Per flash-group, the 07B chain excluding the chosen source (next
     /// is `[0]`).
     pub fallbacks: SmallVec<[SmallVec<[FlashRoute; 6]>; 4]>,
+    /// `fee_bps` of the encoded source, parallel to `plan.groups`.
+    /// `reencode_next_source` compares against this, never a hardcoded 0.
+    pub group_fee_bps: SmallVec<[u16; 4]>,
 }
 
 const WEI: U256 = U256::from_limbs([1_000_000_000_000_000_000, 0, 0, 0]);
@@ -97,9 +101,17 @@ fn token(view: &dyn AssembleView, a: AssetId) -> Result<Address, AssembleError> 
     }
 }
 
-/// Worst-acceptable-partial floor in wei: min over included legs of
-/// `searcher_net(Δnet_in_wei, bid_bps)`. A missing conversion fails
-/// closed rather than using a guessed ETH price.
+/// Worst-acceptable-partial floor in **wei** (D29 / GUIDE 12 §4d).
+///
+/// The per-leg numerator is debt-numeraire `contribution − expected gas`
+/// (`swap_out − flash_owed`, then gas). Converted with `per_eth(debt)` —
+/// raw debt units per 1e18 wei. That is the debt/ETH oracle, **not** a
+/// coll→WETH exact quote of leftover collateral after EXACT_OUT. Leftover
+/// coll is unknown until the swaps run; inventing a leftover size to quote
+/// coll→WETH would fabricate the floor. When debt is WETH, `per_eth` is
+/// 1e18 and the conversion is identity. Stable-debt / volatile-coll
+/// divergence versus execution TAKE_BALANCE is priced in the band
+/// (GUIDE 12 §4d), not guessed here. A missing conversion fails closed.
 pub fn min_profit_floor(
     plan: &SelectedPlan,
     bid: &Bid,
@@ -159,27 +171,64 @@ fn venue_bytes(
     }
 }
 
-fn best_encodable_alloc(
-    exit: &crate::exact::ExitQuote,
-    book: &PoolBook,
-    view: &dyn AssembleView,
-) -> Result<(u8, Vec<u8>), AssembleError> {
-    let mut last_err: Option<AssembleError> = None;
+/// Split `pull` across every nonzero `ExitQuote` allocation. Each share is
+/// that pool's `amount_out` fraction of the quote; the last pool takes the
+/// residual so the shares **sum exactly to `protocol_pull`**.
+fn shares_of_pull(
+    exit: &ExitQuote,
+    pull: u128,
+) -> Result<SmallVec<[(Allocation, u128); 6]>, AssembleError> {
+    let mut nz: SmallVec<[&Allocation; 6]> = SmallVec::new();
     for a in &exit.allocs {
-        if a.amount_in.is_zero() {
+        if !a.amount_in.is_zero() && !a.amount_out.is_zero() {
+            nz.push(a);
+        }
+    }
+    if nz.is_empty() {
+        return Err(AssembleError::Missing("allocation"));
+    }
+    let total_out = nz
+        .iter()
+        .try_fold(U256::ZERO, |acc, a| acc.checked_add(a.amount_out))
+        .ok_or(AssembleError::AmountTooLarge)?;
+    if total_out.is_zero() {
+        return Err(AssembleError::Missing("allocation"));
+    }
+    let pull_u = U256::from(pull);
+    let mut out: SmallVec<[(Allocation, u128); 6]> = SmallVec::new();
+    let mut assigned = 0u128;
+    let last = nz
+        .len()
+        .checked_sub(1)
+        .ok_or(AssembleError::Missing("allocation"))?;
+    for (i, a) in nz.iter().enumerate() {
+        let share = if i == last {
+            pull.checked_sub(assigned)
+                .ok_or(AssembleError::AmountTooLarge)?
+        } else {
+            let sh = u128_of(crate::solver::mul_div_512(a.amount_out, pull_u, total_out)?)?;
+            assigned = assigned
+                .checked_add(sh)
+                .ok_or(AssembleError::AmountTooLarge)?;
+            sh
+        };
+        if share == 0 {
             continue;
         }
-        match venue_bytes(book, a.leg.pool, view) {
-            Ok(v) => return Ok(v),
-            Err(e) => last_err = Some(e),
-        }
+        out.push((**a, share));
     }
-    match last_err {
-        Some(e) => Err(e),
-        None => Err(AssembleError::Missing("allocation")),
+    let sum = out
+        .iter()
+        .try_fold(0u128, |a, (_, s)| a.checked_add(*s))
+        .ok_or(AssembleError::AmountTooLarge)?;
+    if sum != pull || out.is_empty() {
+        return Err(AssembleError::Missing("alloc shares"));
     }
+    Ok(out)
 }
 
+/// Encode **every** nonzero allocation. `amount` on each EXACT_OUT swap is
+/// that pool's share of `pull`. One TAKE_BALANCE closer per collateral.
 fn swaps_for_leg(
     s: &Scored,
     book: &PoolBook,
@@ -188,15 +237,25 @@ fn swaps_for_leg(
     pull: u128,
     debt_addr: Address,
     coll_addr: Address,
-) -> Result<(SwapLeg, SwapLeg), AssembleError> {
-    let (venue, data) = best_encodable_alloc(&s.leg.exit, book, view)?;
-    let repay = SwapLeg {
-        venue,
-        token_in: coll_addr,
-        token_out: debt_addr,
-        flags: LEG_EXACT_OUT,
-        amount: pull,
-        data: data.clone(),
+) -> Result<(Vec<SwapLeg>, SwapLeg), AssembleError> {
+    let shares = shares_of_pull(&s.leg.exit, pull)?;
+    let mut repay = Vec::with_capacity(shares.len());
+    let mut last: Option<(u8, Vec<u8>)> = None;
+    for (a, amount) in &shares {
+        let (venue, data) = venue_bytes(book, a.leg.pool, view)?;
+        repay.push(SwapLeg {
+            venue,
+            token_in: coll_addr,
+            token_out: debt_addr,
+            flags: LEG_EXACT_OUT,
+            amount: *amount,
+            data: data.clone(),
+        });
+        last = Some((venue, data));
+    }
+    let (venue, data) = match closer_pair(book, view, coll_addr, weth) {
+        Ok(v) => v,
+        Err(_) => last.ok_or(AssembleError::Missing("allocation"))?,
     };
     let profit = SwapLeg {
         venue,
@@ -207,6 +266,74 @@ fn swaps_for_leg(
         data,
     };
     Ok((repay, profit))
+}
+
+/// UniV3 pool-direct, else allowlisted router, for a token pair present in
+/// the book. Fail closed when neither exists — do not invent a pool.
+fn closer_pair(
+    book: &PoolBook,
+    view: &dyn AssembleView,
+    token_in: Address,
+    token_out: Address,
+) -> Result<(u8, Vec<u8>), AssembleError> {
+    let mut router_err: Option<AssembleError> = None;
+    for p in book.pools() {
+        if !p.tokens.contains(&token_in) || !p.tokens.contains(&token_out) || !p.is_live() {
+            continue;
+        }
+        match p.venue() {
+            Venue::UniV3 => return Ok((VENUE_UNIV3_POOL, p.address.to_vec())),
+            Venue::UniV2 | Venue::CurveStable => {
+                let Some(id) = book.by_address(p.address) else {
+                    continue;
+                };
+                match venue_bytes(book, id, view) {
+                    Ok(v) => return Ok(v),
+                    Err(e) => router_err = Some(e),
+                }
+            }
+        }
+    }
+    match router_err {
+        Some(e) => Err(e),
+        None => Err(AssembleError::Missing("pair pool")),
+    }
+}
+
+fn univ3_addr_for(book: &PoolBook, a: Address, b: Address) -> Option<Address> {
+    book.pools().iter().find_map(|p| {
+        if p.venue() != Venue::UniV3 || !p.is_live() {
+            return None;
+        }
+        let has_a = p.tokens.contains(&a);
+        let has_b = p.tokens.contains(&b);
+        (has_a && has_b).then_some(p.address)
+    })
+}
+
+/// Smallest `flash_amount` that is ≥ `take`, ≥ `pull`, and ≥ `pull + fee(f)`
+/// under the provider's exact `fee_amount`. Iterates because Aave's fee is
+/// charged on the borrowed amount.
+fn flash_cover_fee(
+    provider: liq_types::FlashProvider,
+    fee_bps: u16,
+    pull: u128,
+    take: u128,
+) -> Result<u128, AssembleError> {
+    let mut f = take.max(pull);
+    let mut n = 0u8;
+    while n < 8 {
+        let fee = fee_amount(provider, U256::from(f), fee_bps)
+            .ok_or(AssembleError::Profit(ProfitError::UnpriceableFee))?;
+        let need = U256::from(pull).checked_add(fee).ok_or(RouteError::Math)?;
+        let want = u128_of(need.max(U256::from(take)))?;
+        if want <= f {
+            return Ok(f);
+        }
+        f = want;
+        n = n.checked_add(1).ok_or(AssembleError::AmountTooLarge)?;
+    }
+    Err(AssembleError::Missing("flash fee cover"))
 }
 
 /// Assemble every selected plan. Empty `plans` → empty output (a skipped
@@ -270,6 +397,7 @@ fn assemble_one(
     let mut groups = Vec::new();
     let mut profit_swaps: Vec<SwapLeg> = Vec::new();
     let mut fallbacks: SmallVec<[SmallVec<[FlashRoute; 6]>; 4]> = SmallVec::new();
+    let mut group_fee_bps: SmallVec<[u16; 4]> = SmallVec::new();
     let weth = validate_ctx.weth;
 
     for g in &p.groups {
@@ -310,7 +438,7 @@ fn assemble_one(
                 });
                 let (repay, profit) =
                     swaps_for_leg(s, book, view, weth, pull, debt_addr, coll_addr)?;
-                repay_swaps.push(repay);
+                repay_swaps.extend(repay);
                 // One TAKE_BALANCE closer per collateral across the whole plan.
                 if !profit_swaps
                     .iter()
@@ -326,10 +454,10 @@ fn assemble_one(
                 a.checked_add(l.protocol_pull)
                     .ok_or(AssembleError::AmountTooLarge)
             })?;
-            // Cascade `need` already includes over-borrow (select.rs). Flash
-            // at least the pull; at most this sibling's take.
             let take = u128_of(cg.amount)?;
-            let flash_amt = take.max(pull_sum);
+            // `exact_out == pull` (liq-plan). Fee-charging flashes are funded
+            // by over-borrow: flash_amount ≥ pull + fee(flash_amount).
+            let flash_amt = flash_cover_fee(cg.provider, cg.fee_bps, pull_sum, take)?;
             groups.push(FlashGroup {
                 provider: cg.provider,
                 flash_source: cg.source,
@@ -338,6 +466,7 @@ fn assemble_one(
                 liqs,
                 repay_swaps,
             });
+            group_fee_bps.push(cg.fee_bps);
             let chain = fallback_chain(flash, g.debt, cg.amount, haircut, &cfg.cost);
             let rest: SmallVec<[FlashRoute; 6]> = chain
                 .into_iter()
@@ -352,7 +481,7 @@ fn assemble_one(
     if groups.is_empty() {
         return Err(AssembleError::Missing("groups"));
     }
-    let plan = BatchPlan {
+    let mut plan = BatchPlan {
         flags,
         bid_bps: bid.coinbase_bps,
         gas_cost_wei,
@@ -360,8 +489,63 @@ fn assemble_one(
         groups,
         profit_swaps,
     };
+    route_surplus_debt(&mut plan, book, view, weth)?;
     validate(&plan, validate_ctx)?;
-    Ok(Assembled { plan, fallbacks })
+    Ok(Assembled {
+        plan,
+        fallbacks,
+        group_fee_bps,
+    })
+}
+
+/// When `flash_amount > pull` and debt ≠ WETH, emit TAKE_BALANCE debt→WETH
+/// (`liq-plan::SurplusDebtUnrouted`). Uses a book pool; never invents one.
+fn route_surplus_debt(
+    plan: &mut BatchPlan,
+    book: &PoolBook,
+    view: &dyn AssembleView,
+    weth: Address,
+) -> Result<(), AssembleError> {
+    let mut need_pool: Option<(Address, Address)> = None;
+    for g in &plan.groups {
+        let pull: u128 = g
+            .liqs
+            .iter()
+            .try_fold(0u128, |a, l| a.checked_add(l.protocol_pull))
+            .ok_or(AssembleError::AmountTooLarge)?;
+        if g.debt_asset == weth || g.flash_amount <= pull {
+            continue;
+        }
+        let has = plan.profit_swaps.iter().any(|s| {
+            s.token_in == g.debt_asset && s.token_out == weth && s.flags & LEG_TAKE_BALANCE != 0
+        });
+        if has {
+            continue;
+        }
+        match closer_pair(book, view, g.debt_asset, weth) {
+            Ok((venue, data)) => {
+                plan.profit_swaps.push(SwapLeg {
+                    venue,
+                    token_in: g.debt_asset,
+                    token_out: weth,
+                    flags: LEG_TAKE_BALANCE,
+                    amount: 0,
+                    data,
+                });
+            }
+            Err(_) => need_pool = Some((g.debt_asset, weth)),
+        }
+    }
+    if let Some((debt, w)) = need_pool {
+        let pool =
+            univ3_addr_for(book, debt, w).ok_or(AssembleError::Missing("surplus v3 pool"))?;
+        ensure_surplus_borrow_profit_legs(plan, weth, pool);
+    } else if let Some(g0) = plan.groups.first() {
+        if let Some(pool) = univ3_addr_for(book, g0.debt_asset, weth) {
+            ensure_surplus_borrow_profit_legs(plan, weth, pool);
+        }
+    }
+    Ok(())
 }
 
 /// 07B deferred criterion: on sim `InsufficientLiquidity`, rebuild the
@@ -382,7 +566,7 @@ pub fn reencode_next_source(
         .groups
         .get_mut(group_idx)
         .ok_or(AssembleError::Missing("group"))?;
-    if next.fee_bps > fee_of(g.provider, assembled) {
+    if next.fee_bps > fee_of(group_idx, assembled) {
         return Err(AssembleError::FeeIncreased);
     }
     let pull: u128 = g.liqs.iter().try_fold(0u128, |a, l| {
@@ -399,20 +583,8 @@ pub fn reencode_next_source(
     Ok(plan)
 }
 
-fn fee_of(provider: liq_types::FlashProvider, assembled: &Assembled) -> u16 {
-    assembled
-        .plan
-        .groups
-        .iter()
-        .find(|g| g.provider == provider)
-        .and_then(|_| assembled.fallbacks.first())
-        .map(|_| {
-            // The chosen source's fee is not stored on FlashGroup. Conservative:
-            // treat unknown as 0 so a move onto a fee-charging source is
-            // `FeeIncreased` unless we know the current fee is already ≥.
-            0
-        })
-        .unwrap_or(0)
+fn fee_of(group_idx: usize, assembled: &Assembled) -> u16 {
+    assembled.group_fee_bps.get(group_idx).copied().unwrap_or(0)
 }
 
 /// Walk `fallback_chain` for a debt and return the next route after `used`.
@@ -464,13 +636,15 @@ mod tests {
     use super::*;
     use crate::band::PairTerms;
     use crate::bid::{bid, BidConfig};
-    use crate::exact::GasTerms;
+    use crate::exact::{solve_pair, GasTerms};
     use crate::fixtures::*;
     use crate::profit::{gas_price_in_debt, MarketView};
     use crate::select::{learning_p, select, PositionInput, SelectCfg};
     use crate::solver::Pool;
     use alloy_primitives::{Address, U256};
-    use liq_flash::{CostModel, FlashIndex, FlashSource, HeldAsset, MorphoBlue};
+    use liq_flash::{
+        AavePool, AaveReserve, CostModel, FlashIndex, FlashSource, HeldAsset, MorphoBlue,
+    };
     use liq_plan::FLAG_SWEEP;
     use liq_protocol::{
         AssetMask, BonusCurve, Health, HealthState, Quote, RepayOption, SeizeOption,
@@ -528,7 +702,7 @@ mod tests {
             Some(e18(1))
         }
         fn router_leg(&self, _: Address) -> Option<(Address, Vec<u8>)> {
-            None
+            Some((addr(0x91), Vec::new()))
         }
     }
 
@@ -536,6 +710,7 @@ mod tests {
         let mut assets = HashMap::new();
         assets.insert(tok(0), A0);
         assets.insert(tok(1), A1);
+        assets.insert(tok(2), A2);
         let mut b = PoolBook::new(assets, None, HOP_GAS);
         for p in pools {
             b.add(p).unwrap();
@@ -617,6 +792,133 @@ mod tests {
             weth,
             v4_underlying: Vec::new(),
             morpho: Vec::new(),
+        }
+    }
+
+    const L: u128 = 1_000_000_000_000_000_000_000;
+    const FREE: GasTerms = GasTerms {
+        base_fee_wei: 0,
+        out_per_eth: WEI,
+    };
+
+    fn six_pool_book() -> PoolBook {
+        book(vec![
+            v3(
+                1,
+                3000,
+                60,
+                SQRT_ONE,
+                &[(-6000, 6000, L), (-1200, -600, L), (-3000, -1800, 2 * L)],
+            ),
+            v3(
+                2,
+                500,
+                10,
+                SQRT_ONE,
+                &[(-2000, 2000, L / 2), (-500, 500, L), (-100, 100, 2 * L)],
+            ),
+            v3(
+                3,
+                10_000,
+                200,
+                SQRT_ONE,
+                &[(-20_000, 20_000, 3 * L), (-4000, 0, L)],
+            ),
+            v2(4, e18(2_000), e18(2_000)),
+            v2(5, e18(700), e18(690)),
+            v2(6, e18(5_000), e18(5_050)),
+        ])
+    }
+
+    fn v3_ab(
+        n: u64,
+        a: liq_types::AssetId,
+        b: liq_types::AssetId,
+        ta: Address,
+        tb: Address,
+    ) -> Pool {
+        let mut p = v3(
+            n,
+            500,
+            10,
+            SQRT_ONE,
+            &[(-887_220, 887_220, 50_000_000_000_000_000_000_000)],
+        );
+        p.assets = smallvec::SmallVec::from_slice(&[a, b]);
+        p.tokens = smallvec::SmallVec::from_slice(&[ta, tb]);
+        p
+    }
+
+    fn idx_aave() -> (Vec<Box<dyn FlashSource>>, FlashIndex) {
+        let srcs: Vec<Box<dyn FlashSource>> = vec![Box::new(AavePool::new(
+            addr(0xB0),
+            addr(0xB1),
+            5,
+            &[AaveReserve {
+                asset: A1,
+                underlying: tok(1),
+                atoken: addr(0xB2),
+                balance: e18(10_000_000),
+                flash_enabled: true,
+                active: true,
+                paused: false,
+            }],
+        ))];
+        let mut i = FlashIndex::new(4);
+        i.refresh(&srcs);
+        (srcs, i)
+    }
+
+    fn idx_two_aave() -> (Vec<Box<dyn FlashSource>>, FlashIndex) {
+        let r = |atoken: u64| AaveReserve {
+            asset: A1,
+            underlying: tok(1),
+            atoken: addr(atoken),
+            balance: e18(10_000_000),
+            flash_enabled: true,
+            active: true,
+            paused: false,
+        };
+        let srcs: Vec<Box<dyn FlashSource>> = vec![
+            Box::new(AavePool::new(addr(0xB0), addr(0xB1), 5, &[r(0xB2)])),
+            Box::new(AavePool::new(addr(0xC0), addr(0xC1), 5, &[r(0xC2)])),
+        ];
+        let mut i = FlashIndex::new(4);
+        i.refresh(&srcs);
+        (srcs, i)
+    }
+
+    fn world_one(quote: &Quote) -> World {
+        let mut world = World {
+            tokens: HashMap::new(),
+            metas: HashMap::new(),
+        };
+        world.tokens.insert(A0, tok(0));
+        world.tokens.insert(A1, tok(1));
+        world.tokens.insert(A2, tok(2));
+        world.metas.insert(
+            quote.position,
+            LegMeta {
+                adapter: ExecutorAdapter::AaveV3,
+                market: addr(0x51),
+                borrower: quote.key.user,
+                tail: LegTail::None,
+                protocol_pull: None,
+            },
+        );
+        world
+    }
+
+    fn input_of(quote: &Quote) -> PositionInput<'_> {
+        PositionInput {
+            position: quote.position,
+            protocol: PROTO,
+            health: health(),
+            quote,
+            cause: TriggerKind::Stale,
+            p: learning_p(),
+            gas_success: None,
+            gas_failed: 50_000,
         }
     }
 
@@ -872,5 +1174,246 @@ mod tests {
         let err =
             reencode_with(assembled[0].plan.clone(), 0, &route, 0, &vctx(tok(1))).unwrap_err();
         assert!(matches!(err, AssembleError::FeeIncreased));
+    }
+
+    /// H1: every nonzero allocation is encoded; EXACT_OUT amounts are that
+    /// pool's share and sum to `protocol_pull`. The 12A-1 six-pool book at
+    /// 3000e18 in uses 6 pools — assembly must emit 6 repay swaps, not 1.
+    #[test]
+    fn split_quote_encodes_every_alloc_summing_to_pull() {
+        let bk = six_pool_book();
+        let oracle = solve_pair(&bk, A0, A1, e18(3_000), &FREE, &B).unwrap();
+        let n = oracle
+            .allocs
+            .iter()
+            .filter(|a| !a.amount_in.is_zero())
+            .count();
+        assert_eq!(n, 6, "12A-1 six_pool_solve oracle: {n} pools");
+
+        let (_s, flash) = idx();
+        let mut quote = q(1);
+        quote.repay_options[0].max_repay = e18(10_000);
+        // 100 % bonus: seized stays 3000e18 (six-pool size) while s = 1500e18
+        // so fee+impact cannot eat contribution the way a 5 % bonus would.
+        let fat = Ray::from_raw(RAY);
+        quote.seize_options[0].max_seize = e18(3_000);
+        quote.seize_options[0].bonus = fat;
+        quote.seize_options[0].curve = BonusCurve::Static { bonus: fat };
+        let world = world_one(&quote);
+        let plans = select(
+            &[input_of(&quote)],
+            &cfg(),
+            &flash,
+            H,
+            &bk,
+            None,
+            &world,
+            &FREE,
+        )
+        .unwrap();
+        assert_eq!(plans.len(), 1);
+        let exit_n = plans[0].groups[0].legs[0]
+            .leg
+            .exit
+            .allocs
+            .iter()
+            .filter(|a| !a.amount_in.is_zero())
+            .count();
+        assert_eq!(exit_n, 6, "sized quote must still use 6 pools");
+
+        let bcfg = BidConfig::new(9_900, 9_900, 0, 0).unwrap();
+        let bd = bid(&bcfg, 0, 1).unwrap();
+        let assembled = assemble(
+            &plans,
+            &cfg(),
+            &bk,
+            &world,
+            &vctx(tok(1)),
+            &bd,
+            gas_price_in_debt(&FREE).unwrap(),
+            0,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let g = &assembled[0].plan.groups[0];
+        validate(&assembled[0].plan, &vctx(tok(1))).unwrap();
+        assert_eq!(
+            g.repay_swaps.len(),
+            6,
+            "one swap per alloc, not the first only"
+        );
+        let pull = g.liqs.iter().map(|l| l.protocol_pull).sum::<u128>();
+        let encoded: u128 = g.repay_swaps.iter().map(|s| s.amount).sum();
+        assert_eq!(encoded, pull, "shares must sum to protocol_pull");
+        assert!(g
+            .repay_swaps
+            .iter()
+            .all(|s| s.flags & LEG_EXACT_OUT == LEG_EXACT_OUT));
+        assert!(g.repay_swaps.iter().all(|s| s.amount > 0));
+    }
+
+    /// H4: Aave 5 bps is payable. `exact_out == pull`; flash_amount ≥
+    /// pull + fee. Not a Morpho 0-fee fixture.
+    #[test]
+    fn aave_nonzero_fee_is_funded_by_over_borrow() {
+        let bk = book(vec![deep()]);
+        let (_s, flash) = idx_aave();
+        let quote = q(1);
+        let world = world_one(&quote);
+        let plans = select(
+            &[input_of(&quote)],
+            &cfg(),
+            &flash,
+            H,
+            &bk,
+            None,
+            &world,
+            &GAS,
+        )
+        .unwrap();
+        let bcfg = BidConfig::new(9_900, 9_900, 0, 0).unwrap();
+        let bd = bid(&bcfg, 0, 1).unwrap();
+        let assembled = assemble(
+            &plans,
+            &cfg(),
+            &bk,
+            &world,
+            &vctx(tok(1)),
+            &bd,
+            gas_price_in_debt(&GAS).unwrap(),
+            GAS.base_fee_wei,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let plan = &assembled[0].plan;
+        validate(plan, &vctx(tok(1))).unwrap();
+        let g = &plan.groups[0];
+        assert_eq!(g.provider, liq_types::FlashProvider::Aave);
+        let pull: u128 = g.liqs.iter().map(|l| l.protocol_pull).sum();
+        let exact_out: u128 = g
+            .repay_swaps
+            .iter()
+            .filter(|s| s.flags & LEG_EXACT_OUT != 0)
+            .map(|s| s.amount)
+            .sum();
+        assert_eq!(exact_out, pull, "liq-plan: exact_out == pull");
+        let fee = fee_amount(g.provider, U256::from(g.flash_amount), 5).unwrap();
+        assert!(!fee.is_zero(), "Aave 5 bps is nonzero");
+        assert!(
+            U256::from(g.flash_amount) >= U256::from(pull) + fee,
+            "flash_amount {} must be ≥ pull {} + fee {}",
+            g.flash_amount,
+            pull,
+            fee
+        );
+        assert_eq!(assembled[0].group_fee_bps[0], 5);
+    }
+
+    /// H5: USDC (non-WETH) debt + over_borrow > 0 must emit TAKE_BALANCE
+    /// debt→WETH and `validate()` Ok (`SurplusDebtUnrouted` otherwise).
+    #[test]
+    fn usdc_over_borrow_emits_surplus_take_balance_and_validates() {
+        let bk = book(vec![
+            deep(),
+            v3_ab(8, A0, A2, tok(0), tok(2)),
+            v3_ab(9, A1, A2, tok(1), tok(2)),
+        ]);
+        let (_s, flash) = idx();
+        let quote = q(1);
+        let world = world_one(&quote);
+        let plans = select(
+            &[input_of(&quote)],
+            &cfg(),
+            &flash,
+            H,
+            &bk,
+            None,
+            &world,
+            &GAS,
+        )
+        .unwrap();
+        let bcfg = BidConfig::new(9_900, 9_900, 0, 0).unwrap();
+        let bd = bid(&bcfg, 0, 1).unwrap();
+        let weth = tok(2);
+        let assembled = assemble(
+            &plans,
+            &cfg(),
+            &bk,
+            &world,
+            &vctx(weth),
+            &bd,
+            gas_price_in_debt(&GAS).unwrap(),
+            GAS.base_fee_wei,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let plan = &assembled[0].plan;
+        validate(plan, &vctx(weth)).unwrap();
+        let g = &plan.groups[0];
+        let pull: u128 = g.liqs.iter().map(|l| l.protocol_pull).sum();
+        assert_eq!(g.debt_asset, tok(1), "debt is USDC, not WETH");
+        assert_ne!(g.debt_asset, weth);
+        assert!(g.flash_amount > pull, "over_borrow leaves surplus debt");
+        assert!(
+            plan.profit_swaps.iter().any(|s| {
+                s.token_in == g.debt_asset && s.token_out == weth && s.flags & LEG_TAKE_BALANCE != 0
+            }),
+            "surplus debt must be routed to WETH"
+        );
+    }
+
+    /// H6: current fee is stored, so same-fee Aave → Aave is not
+    /// `FeeIncreased` (the old `fee_of` always returned 0).
+    #[test]
+    fn reencode_same_fee_aave_is_allowed() {
+        let bk = book(vec![deep()]);
+        let (_s, flash) = idx_two_aave();
+        let quote = q(1);
+        let world = world_one(&quote);
+        let plans = select(
+            &[input_of(&quote)],
+            &cfg(),
+            &flash,
+            H,
+            &bk,
+            None,
+            &world,
+            &GAS,
+        )
+        .unwrap();
+        let bcfg = BidConfig::new(9_900, 9_900, 0, 0).unwrap();
+        let bd = bid(&bcfg, 0, 1).unwrap();
+        let assembled = assemble(
+            &plans,
+            &cfg(),
+            &bk,
+            &world,
+            &vctx(tok(1)),
+            &bd,
+            gas_price_in_debt(&GAS).unwrap(),
+            GAS.base_fee_wei,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        assert_eq!(assembled[0].group_fee_bps[0], 5);
+        assert!(
+            !assembled[0].fallbacks[0].is_empty(),
+            "second Aave source is the fallback"
+        );
+        let next = reencode_next_source(&assembled[0], 0, &vctx(tok(1))).unwrap();
+        validate(&next, &vctx(tok(1))).unwrap();
+        assert_eq!(next.groups[0].provider, liq_types::FlashProvider::Aave);
+        assert_ne!(
+            next.groups[0].flash_source,
+            assembled[0].plan.groups[0].flash_source
+        );
     }
 }

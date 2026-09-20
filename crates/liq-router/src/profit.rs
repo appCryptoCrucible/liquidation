@@ -238,7 +238,12 @@ pub fn evaluate(
         Some(w) => route_depth_repay(w, seize.asset, &terms)?,
         None => repay.max_repay, // exact fit_size below is the real ceiling
     };
-    let s0 = min4(repay.max_repay, flash_cap, route_cap, cap);
+    // GUIDE 01 `max_seize` is a real ceiling: close-factor `max_repay` can
+    // demand more coll than the position holds. Fold into the first min4
+    // argument so the WP signature stays four-wide.
+    let seize_cap = repay_for_seized(seize.max_seize, &terms)?;
+    let protocol_cap = repay.max_repay.min(seize_cap);
+    let s0 = min4(protocol_cap, flash_cap, route_cap, cap);
     let s = fit_size(
         ctx.book,
         seize.asset,
@@ -630,6 +635,25 @@ mod tests {
         assert_eq!(leg.s, e18(20), "took the flash-bound partial");
         assert!(leg.s < e18(100));
         assert!(!leg.contribution.is_zero());
+    }
+
+    /// `SeizeOption.max_seize` binds when `max_repay` would seize more
+    /// coll than the position holds. Oracle: `repay_for_seized(max_seize)`
+    /// at 5 % bonus, 1:1 coll_per_debt.
+    #[test]
+    fn max_seize_caps_size_when_max_repay_demands_more_coll() {
+        let bk = book(vec![deep_v3()]);
+        let (_s, idx) = flash_morpho(e18(10_000));
+        // max_repay 100 → seized 105 at 5 %. max_seize 50 binds.
+        let q = quote(&[(A1, e18(100))], &[(A0, e18(50), bonus_5())]);
+        let market = mkt(U256::MAX);
+        let c = ctx(&idx, &bk, &market, &FREE);
+        let leg = best_plan(&c, &q).unwrap().unwrap();
+        let cap = repay_for_seized(e18(50), &terms()).unwrap();
+        assert_eq!(leg.s, cap, "size is repay_for_seized(max_seize)");
+        assert!(leg.s < e18(100), "max_repay did not win");
+        assert!(leg.seized <= e18(50), "must not seize above max_seize");
+        assert_eq!(leg.seized, seized_for(leg.s, &terms()).unwrap());
     }
 
     /// Fee + impact charged on seized, not on `s`. Independent oracle =

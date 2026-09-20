@@ -16,12 +16,12 @@ use liq_types::fixed::RAY;
 use liq_types::{AssetId, PositionId, ProtocolId, Ray, TriggerKind};
 use smallvec::SmallVec;
 
-use crate::exact::{GasTerms, SolveBudget};
+use crate::exact::{solve_batch, GasTerms, SolveBudget};
 use crate::profit::{
-    best_plan, delta_net, expected_contrib_per_gas, expected_gas, gas_price_in_debt, MarketView,
-    ProfitCtx, ProfitError, SizedLeg, LEARNING_P_RAY,
+    best_plan, delta_net, expected_contrib_per_gas, expected_gas, gas_price_in_debt,
+    repay_for_seized, MarketView, ProfitCtx, ProfitError, SizedLeg, LEARNING_P_RAY,
 };
-use crate::solver::PoolBook;
+use crate::solver::{PoolBook, PoolId, RouteError};
 use crate::warm::RouteTable;
 
 /// Why selection refused the whole drain. Per-candidate unavailability is
@@ -245,7 +245,7 @@ fn rank(
     // the first exact_k in admission order (still gated).
     let mut crude: SmallVec<[(U256, usize); 16]> = SmallVec::new();
     for (i, e) in admitted.iter().enumerate() {
-        crude.push((crude_key(e, warm), i));
+        crude.push((crude_key(e, warm, market), i));
     }
     crude.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     let k = usize::from(cfg.exact_k).min(crude.len());
@@ -295,18 +295,59 @@ fn rank(
             .cmp(&a.contrib_per_gas)
             .then(a.position.0.cmp(&b.position.0))
     });
-    pack(scored, cfg, flash, gas)
+    pack(scored, cfg, flash, gas, book)
 }
 
-fn crude_key(e: &Eligible<'_>, warm: Option<&RouteTable>) -> U256 {
-    let Some(t) = warm else {
+/// Warm-tier crude rank: expected contribution-per-gas from the published
+/// bucket quote, not raw `exit_cap` (GUIDE 12 §4f two-stage). Missing pair
+/// / unviable buckets → 0 (admission order), never a guessed depth.
+fn crude_key(e: &Eligible<'_>, warm: Option<&RouteTable>, market: &dyn MarketView) -> U256 {
+    let Some(table) = warm else {
         return U256::ZERO;
     };
     let q = e.quote();
-    let Some(s0) = q.seize_options.first() else {
-        return U256::ZERO;
-    };
-    t.exit_cap(s0.asset)
+    let mut best = U256::ZERO;
+    for repay in q.repay_options.iter() {
+        for seize in q.seize_options.iter() {
+            let Some(mut terms) = market.pair_terms(e.pos.protocol, seize.asset, repay.asset)
+            else {
+                continue;
+            };
+            terms.bonus = seize.bonus;
+            let Some(entry) = table.entry(seize.asset, repay.asset) else {
+                continue;
+            };
+            let Some(bucket) = entry.buckets.iter().rev().find(|b| {
+                b.viable && b.size_in <= seize.max_seize && b.out_min.is_some() && b.hop_gas > 0
+            }) else {
+                continue;
+            };
+            let Some(out) = bucket.out_min else {
+                continue;
+            };
+            let Ok(s) = repay_for_seized(bucket.size_in, &terms) else {
+                continue;
+            };
+            let s = s.min(repay.max_repay);
+            if s.is_zero() {
+                continue;
+            }
+            // Band-published fee bps, floor. Crude rank is not a bid.
+            let fee = s
+                .checked_mul(U256::from(terms.flash_fee_bps))
+                .and_then(|n| n.checked_div(U256::from(10_000u64)))
+                .unwrap_or(U256::ZERO);
+            let owed = s.saturating_add(fee);
+            let contrib = out.saturating_sub(owed);
+            let Some(cpg) = contrib.checked_div(U256::from(bucket.hop_gas)) else {
+                continue;
+            };
+            if cpg > best {
+                best = cpg;
+            }
+        }
+    }
+    best
 }
 
 fn pack(
@@ -314,6 +355,7 @@ fn pack(
     cfg: &SelectCfg,
     flash: &FlashIndex,
     gas: &GasTerms,
+    book: &PoolBook,
 ) -> Result<SmallVec<[SelectedPlan; 4]>, SelectError> {
     let price = gas_price_in_debt(gas)?;
     let mut plans: SmallVec<[SelectedPlan; 4]> = SmallVec::new();
@@ -341,8 +383,10 @@ fn pack(
         let new_gas = cur.hop_and_wrap_gas.saturating_add(incr);
         if new_gas > cfg.header_gas_limit {
             if !cur.groups.is_empty() {
-                seal_cascades(&mut cur, cfg, flash)?;
-                plans.push(cur);
+                seal_cascades(&mut cur, cfg, flash, book, gas)?;
+                if !cur.groups.is_empty() {
+                    plans.push(cur);
+                }
                 if plans.len() >= usize::from(cfg.nonce_slots) {
                     return Ok(plans);
                 }
@@ -361,8 +405,10 @@ fn pack(
         push_leg(&mut cur, s, incr);
     }
     if !cur.groups.is_empty() && plans.len() < usize::from(cfg.nonce_slots) {
-        seal_cascades(&mut cur, cfg, flash)?;
-        plans.push(cur);
+        seal_cascades(&mut cur, cfg, flash, book, gas)?;
+        if !cur.groups.is_empty() {
+            plans.push(cur);
+        }
     }
     Ok(plans)
 }
@@ -392,16 +438,36 @@ fn seal_cascades(
     plan: &mut SelectedPlan,
     cfg: &SelectCfg,
     flash: &FlashIndex,
+    book: &PoolBook,
+    gas: &GasTerms,
 ) -> Result<(), SelectError> {
     for g in &mut plan.groups {
-        let need = g.need.saturating_add(cfg.over_borrow);
+        // GUIDE 12 §4c: K collaterals sharing output pools are sequential
+        // on a displaced book. Independent `best_plan` quotes inflate net.
+        apply_displaced(g, book, gas, &cfg.budget)?;
+        if g.legs.is_empty() {
+            continue;
+        }
+        // Cascade must cover principal + flash fee so assemble can set
+        // `flash_amount >= pull + fee` without exceeding source depth.
+        let need = g
+            .legs
+            .iter()
+            .try_fold(cfg.over_borrow, |a, s| {
+                a.checked_add(s.leg.s)?.checked_add(s.leg.flash_fee)
+            })
+            .ok_or(ProfitError::Missing("cascade need"))?;
+        g.need = g
+            .legs
+            .iter()
+            .fold(U256::ZERO, |a, s| a.saturating_add(s.leg.s));
         let c = plan_cascade(flash, g.debt, need, &cfg.cost, cfg.close_bps)
             .ok_or(ProfitError::Missing("cascade"))?;
         if c.funded.is_zero() {
             return Err(ProfitError::Missing("cascade funded").into());
         }
-        // Partial cascade: shrink legs so Σ s ≤ funded (partial beats skip).
-        if c.funded < g.need {
+        // Partial cascade: shrink legs so Σ (s+fee) ≤ funded.
+        if c.funded < need {
             shrink_to_funded(g, c.funded);
         }
         g.cascade = c;
@@ -411,6 +477,85 @@ fn seal_cascades(
     Ok(())
 }
 
+/// Re-quote a packed group with 12A-1 [`solve_batch`]. Scratch pool ids
+/// are remapped back onto the book's `PoolId`s so assembly encodes the
+/// pools the solver actually used (solve_batch's ids are scratch indices).
+fn apply_displaced(
+    g: &mut DebtGroup,
+    book: &PoolBook,
+    gas: &GasTerms,
+    budget: &SolveBudget,
+) -> Result<(), SelectError> {
+    if g.legs.len() < 2 {
+        return Ok(());
+    }
+    let colls: SmallVec<[(liq_types::AssetId, U256); 8]> =
+        g.legs.iter().map(|s| (s.leg.coll, s.leg.seized)).collect();
+    let mut batch = match solve_batch(book, &colls, g.debt, gas, budget) {
+        Ok(b) => b,
+        Err(RouteError::InsufficientLiquidity | RouteError::StalePool) => {
+            g.legs.clear();
+            g.need = U256::ZERO;
+            return Ok(());
+        }
+        Err(e) => return Err(ProfitError::Route(e).into()),
+    };
+    remap_scratch_ids(book, &colls, g.debt, &mut batch);
+    for (qi, &oi) in batch.order.iter().enumerate() {
+        let Some(scored) = g.legs.get_mut(usize::from(oi)) else {
+            continue;
+        };
+        let Some(q) = batch.quotes.get(qi) else {
+            continue;
+        };
+        scored.leg.exit = q.clone();
+        scored.leg.seized = q.amount_in;
+        scored.leg.swap_out = q.amount_out;
+        scored.leg.hop_gas = q.hop_gas;
+        scored.leg.contribution = q.amount_out.saturating_sub(scored.leg.flash_owed);
+        if let Ok(cpg) = expected_contrib_per_gas(
+            scored.leg.contribution,
+            scored.p.raw(),
+            scored.gas_success,
+            scored.gas_failed,
+        ) {
+            scored.contrib_per_gas = cpg;
+        }
+    }
+    g.legs.retain(|s| !s.leg.contribution.is_zero());
+    g.need = g
+        .legs
+        .iter()
+        .fold(U256::ZERO, |a, s| a.saturating_add(s.leg.s));
+    Ok(())
+}
+
+/// Inverse of `solve_batch`'s first-seen scratch remapping. Must iterate
+/// `book.legs` in the same order `exact.rs` does.
+fn remap_scratch_ids(
+    book: &PoolBook,
+    colls: &[(liq_types::AssetId, U256)],
+    debt: liq_types::AssetId,
+    batch: &mut crate::exact::BatchQuote,
+) {
+    let mut ids: SmallVec<[PoolId; 16]> = SmallVec::new();
+    for &(coll, _) in colls {
+        for leg in book.legs(coll, debt) {
+            if !ids.contains(&leg.pool) {
+                ids.push(leg.pool);
+            }
+        }
+    }
+    for q in &mut batch.quotes {
+        for a in &mut q.allocs {
+            let Some(&pid) = usize::try_from(a.leg.pool.0).ok().and_then(|i| ids.get(i)) else {
+                continue;
+            };
+            a.leg.pool = pid;
+        }
+    }
+}
+
 fn shrink_to_funded(g: &mut DebtGroup, funded: U256) {
     let mut left = funded;
     let mut keep = SmallVec::new();
@@ -418,8 +563,9 @@ fn shrink_to_funded(g: &mut DebtGroup, funded: U256) {
         if left.is_zero() {
             break;
         }
-        if s.leg.s <= left {
-            left = left.saturating_sub(s.leg.s);
+        let take = s.leg.s.saturating_add(s.leg.flash_fee);
+        if take <= left {
+            left = left.saturating_sub(take);
             keep.push(s);
         } else {
             // Partial the last included leg. Contribution scaled by s'/s
@@ -454,7 +600,7 @@ mod tests {
     use crate::band::PairTerms;
     use crate::exact::GasTerms;
     use crate::fixtures::*;
-    use crate::profit::MarketView;
+    use crate::profit::{best_plan, MarketView, ProfitCtx};
     use crate::solver::{Pool, PoolBook};
     use alloy_primitives::U256;
     use liq_flash::{FlashIndex, FlashSource, Haircut, HeldAsset, MorphoBlue};
@@ -765,5 +911,57 @@ mod tests {
         let needle = concat!("Elig", "ible {");
         let ctors = code.matches(needle).count();
         assert_eq!(ctors, 1, "Eligible is constructed only in admit()");
+    }
+
+    /// GUIDE 12 §4c: two positions that share an output pool must be
+    /// re-quoted with `solve_batch` on the displaced book. Packed
+    /// contribution is strictly below the sum of independent quotes on a
+    /// mid-depth V2 pool (impact is superlinear).
+    #[test]
+    fn packed_contribution_below_independent_when_pool_shared() {
+        let a = q(20, e18(10));
+        let b = q(21, e18(10));
+        // 1000e18 reserves: 10.5e18 in is ~1 % of the book — displacement
+        // is material, independent quotes still profitable.
+        let bk = book(vec![v2(1, e18(1_000), e18(1_000))]);
+        let (_s, flash) = idx();
+        let pctx = ProfitCtx {
+            protocol: PROTO,
+            flash: &flash,
+            haircut: H,
+            book: &bk,
+            warm: None,
+            market: &Mkt,
+            gas: &GAS,
+            budget: &B,
+        };
+        let c1 = best_plan(&pctx, &a).unwrap().unwrap().contribution;
+        let c2 = best_plan(&pctx, &b).unwrap().unwrap().contribution;
+        let independent = c1.checked_add(c2).unwrap();
+        assert!(!c1.is_zero() && !c2.is_zero(), "each leg profitable alone");
+
+        let inputs = [
+            inp(&a, true, learning_p(), 50_000),
+            inp(&b, true, learning_p(), 50_000),
+        ];
+        let plans = select(&inputs, &cfg(), &flash, H, &bk, None, &Mkt, &GAS).unwrap();
+        let packed = plans
+            .iter()
+            .flat_map(|p| p.groups.iter())
+            .flat_map(|g| g.legs.iter())
+            .fold(U256::ZERO, |acc, s| acc.saturating_add(s.leg.contribution));
+        assert_eq!(
+            plans
+                .iter()
+                .flat_map(|p| p.groups.iter())
+                .map(|g| g.legs.len())
+                .sum::<usize>(),
+            2,
+            "both legs packed into the batch"
+        );
+        assert!(
+            packed < independent,
+            "sequential displacement must cut net: packed {packed} vs independent {independent}"
+        );
     }
 }
