@@ -18,6 +18,8 @@ use crate::error::Result;
 pub enum ExecutorAdapter {
     AaveV3 = 0,
     AaveV4 = 1,
+    /// D48 first deploy; `Executor.sol` `A_MORPHO = 2`.
+    MorphoBlue = 2,
 }
 
 /// One liquidation leg — 77 wire bytes (PLAN-ENCODING §1b).
@@ -69,10 +71,11 @@ mod tests {
     use super::ExecutorAdapter;
 
     /// Oracle: an independent implementation — `Executor.sol` constants
-    /// `A_AAVE_V3 = 0`, `A_AAVE_V4 = 1`.
+    /// `A_AAVE_V3 = 0`, `A_AAVE_V4 = 1`, `A_MORPHO = 2`.
     #[test]
     fn adapter_discriminants_match_executor_sol() {
         assert_eq!(ExecutorAdapter::AaveV3 as u8, 0);
         assert_eq!(ExecutorAdapter::AaveV4 as u8, 1);
+        assert_eq!(ExecutorAdapter::MorphoBlue as u8, 2);
     }
 }

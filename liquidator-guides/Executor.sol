@@ -188,7 +188,8 @@ contract Executor {
     // Adapter ids
     uint8 private constant A_AAVE_V3   = 0;
     uint8 private constant A_AAVE_V4   = 1;
-    // A_COMPOUND_V3, A_MORPHO, … added per GUIDE 15
+    uint8 private constant A_MORPHO    = 2;
+    // A_COMPOUND_V3, … added per GUIDE 15 / 10R-n
 
     // Flags
     uint8 private constant F_SWEEP = 1 << 0; // sweep after this plan

@@ -1,6 +1,7 @@
 liq-engine   liq-adapters
 liq-engine   liq-adapters-aave-v4
 liq-engine   liq-adapters-aave-v3
+liq-engine   liq-adapters-morpho-blue
 liq-engine   liq-oracle
 liq-engine   liq-obs
 liq-engine   liq-router
@@ -9,6 +10,7 @@ liq-protocol liq-state
 liq-protocol liq-adapters
 liq-protocol liq-adapters-aave-v4
 liq-protocol liq-adapters-aave-v3
+liq-protocol liq-adapters-morpho-blue
 liq-types    liq-protocol
 liq-obs      liq-engine
 liq-obs      liq-state
