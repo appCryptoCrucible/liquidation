@@ -1,0 +1,122 @@
+# Silo V2 mainnet (family `silo-v2` in registry/registry.json).
+# Fills `liq_adapters_silo_v2::Config`. Isolated pairs: one MarketId per
+# SiloConfig (the interned admitted *debt* silo). Slot 0 = getSilos().0,
+# slot 1 = getSilos().1. Liquidation is on the hook receiver, not the Silo.
+#
+# Pin: silo-finance/silo-contracts-v2 @ 570a668a98a88a6a2b92697e7b9a3b1c6299dce7
+# getConfig / getSilos via Tenderly public mainnet at block 26014442.
+# Intern: ProtocolId 6; AssetId USDC=677 RLP=303 xUSD=970 savUSD=776;
+# MarketId 3427 / 3254 / 3468 (debt silos). Silo solvency oracles are not in
+# registry.oracles — feed=0, price via AssetId.
+#
+# borrowed_usd at pin block 26014442 (docs/mechanism/silo-v2.md; do not invent):
+#   0xce6ab1c7…018a  375_815.26
+#   0x1de3ba67…9bc2  2_238_887_423.44   # outlier — do not round
+#   0xf82c626e…02db  103_565.48
+
+protocol = 6
+pinned_through = 26014442
+
+factories = [
+    "0x22a3cf6149bfa611bafc89fd721918ec3cf7b581",
+    "0x1dab4a310447185144467076b116dac7aec3b48f",
+]
+
+[[pairs]]
+silo_config = "0x10930071079d2cfff317aba9d2dd997309dd9985"
+hook_receiver = "0x61de975075ddb4f9e1e693634ffdf21a3cf8c191"
+market = 3427
+
+[pairs.silo0]
+silo = "0x9ab28417d70ada724c6bdf855bf2346c59e5e766"
+token = "0x4956b52ae2ff65d74ca2d61207523288e4528f96"
+protected_share = "0x34d74dc42daf68c9997e6e49780670828f5b5120"
+debt_share = "0x1f90070c3170ea439d042acac3f593f10d6b3519"
+solvency_oracle = "0x6dfd2c79b34d05cc713f7725db984f3d18b79aae"
+lt = 880000000000000000
+liquidation_fee = 40000000000000000
+liquidation_target_ltv = 870000000000000000
+
+[pairs.silo1]
+silo = "0xce6ab1c71981e79cd30052c521c162674251018a"
+token = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+protected_share = "0xda0f3759b10e35db6247a341206511c226bfdda0"
+debt_share = "0x9615169de459c8f5c57ddd13c2cdc1445ed20bc4"
+solvency_oracle = "0x349f637c7f1106f3f200a8b976b4c670dfd1ba0b"
+lt = 0
+liquidation_fee = 0
+liquidation_target_ltv = 0
+
+[[pairs]]
+silo_config = "0xb0b37f551e18c540cf7748589d24589945fc1f61"
+hook_receiver = "0x96b7bcc80e3f35ca8fd8ff3a72f3c1f877e9d784"
+market = 3254
+
+[pairs.silo0]
+silo = "0x2e3a8f2dd842910ff8a3c65d93b129806e500417"
+token = "0xe2fc85bfb48c4cf147921fbe110cf92ef9f26f94"
+protected_share = "0x8bb83c1e1c6d68dcb3ba8596fde45533efe6f31d"
+debt_share = "0x294fada544463a98f927b5f161cb257e1d129bb8"
+solvency_oracle = "0xe38eabeab0d194057fde3de1c63661e8fab053b3"
+lt = 920000000000000000
+liquidation_fee = 40000000000000000
+liquidation_target_ltv = 910000000000000000
+
+[pairs.silo1]
+silo = "0x1de3ba67da79a81bc0c3922689c98550e4bd9bc2"
+token = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+protected_share = "0xc9b87d7e8c6b3d991b6be15d46e0386fe4c2a573"
+debt_share = "0xe5314cc2a2fa0b1c58cb597f0b5930343f3ac768"
+solvency_oracle = "0x349f637c7f1106f3f200a8b976b4c670dfd1ba0b"
+lt = 0
+liquidation_fee = 0
+liquidation_target_ltv = 0
+
+[[pairs]]
+silo_config = "0x74b21d458b9d5cf59f4b4e10a2e829c221670ee3"
+hook_receiver = "0xeb0c0d0be8a823d8b374f46858cf34028a8e7a3f"
+market = 3468
+
+[pairs.silo0]
+silo = "0xd796071dc7f9418c1004545bb830429a359c34eb"
+token = "0xb8d89678e75a973e74698c976716308abb8a46a4"
+protected_share = "0x13f887fb0e73cc11b838c6bbfbc61ea51d29485d"
+debt_share = "0x3f6aa4f32daabef901e79e6c9d26a2febe59895f"
+solvency_oracle = "0xdfae0124a3a1bcd192408bfec0c0e9327f116857"
+lt = 920000000000000000
+liquidation_fee = 50000000000000000
+liquidation_target_ltv = 910000000000000000
+
+[pairs.silo1]
+silo = "0xf82c626e99c68e7af81f4e6afc8cd25ca13702db"
+token = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+protected_share = "0xfe06c860625034a6f610c23fc4babf76d38f1450"
+debt_share = "0xc1e80c07e8dd43bb83ced5eccec98eda65639992"
+solvency_oracle = "0xecb7d114d0322f239f83486662c8c942efbff049"
+lt = 0
+liquidation_fee = 0
+liquidation_target_ltv = 0
+
+[[assets]]
+underlying = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+asset = 677
+feed = 0
+decimals = 6
+
+[[assets]]
+underlying = "0x4956b52ae2ff65d74ca2d61207523288e4528f96"
+asset = 303
+feed = 0
+decimals = 18
+
+[[assets]]
+underlying = "0xe2fc85bfb48c4cf147921fbe110cf92ef9f26f94"
+asset = 970
+feed = 0
+decimals = 6
+
+[[assets]]
+underlying = "0xb8d89678e75a973e74698c976716308abb8a46a4"
+asset = 776
+feed = 0
+decimals = 18
