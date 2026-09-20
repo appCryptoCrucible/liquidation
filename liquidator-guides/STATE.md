@@ -7,7 +7,7 @@ survives a cold start.
 Status values: `todo` · `in_progress` · `blocked` · `done`
 A `done` with an empty evidence field is treated as `todo`.
 
-Last updated: 2026-09-20T04:52Z (C2 done PASS after triage ffbcff3; C1 done db238a6; 15B done a195c47; 07B done 7f5fbb0; 07A done 8a33525; 02B done 6e02280; 03A done 972c98f)
+Last updated: 2026-09-20T05:33Z (C3 builder done fbada80, Fable review running; C2 done PASS after triage ffbcff3; C1 done db238a6; 15B done a195c47; 07B done 7f5fbb0; 07A done 8a33525; 02B done 6e02280; 03A done 972c98f)
 
 ---
 
@@ -87,7 +87,7 @@ commit on the WP's owned paths is expired by the next coordinator (§4.2).
 |---|---|---|---|---|---|---|---|
 | C1 | Registry discovery | — | — | T3 | `in_progress` (review) | coord-02 2026-09-19T13:45Z; review f84b7616 2026-09-19T18:29Z | build done: `tools/registry/discover.py` + `registry/registry.json` (2.84MB) + `registry/registry.meta.json` @ block 26012212; 128 admitted (D27 $50k); univ3 counts bug + checkpointing bug fixed (ed0c5776); 224 failures classified `no_such_function` (no fabrication); reviewer independently spot-checks failures on-chain |
 | C2 | Registry re-derivation + identity check | C1 | — | T2 | `done` (PASS after triage) | coord-02 02:45Z; builder b8624508 Grok 4.6 FAIL; review 035886d5 Opus PASS; commit ffbcff3 04:52Z | Independent re-derivation FAIL triaged by Opus: 4/7 discrepancies were C2 deficiencies (chunked price call, Ajna WAD scaling, Silo config keying). 2 real C1 bugs found+fixed: Aave V4 22->57 spokes (hardcoded SpokeSet topic missed 31); stale debt accounting (Morpho pre-accrual slot understated 235 markets + 2 clearing $50k; Silo 4.3x understatement). 9 impostor tokens flagged incl fake Tether USD under $20M Morpho debt. admitted 190->192, entries 3446->3481. 22 post-fix assertions pass. Registry good for C3. Hole: 268 markets with real debt but no price source (67/508 debt tokens priced) — all un-admitted, not assumed $1. Carry-forward: C3 prune filter; C4 needs more price sources; rederive.py convergence unverified |
-| C3 | Prune filter from committed registry | C2 | — | T3 | `todo` | | draft exists: `d15_receipts_log_filter.toml` (1533 addrs) — regenerate from C2's registry, add flash sources + aggregators |
+| C3 | Prune filter from committed registry | C2 | — | T3 → T2 | `in_progress` (review) | coord-02 05:33Z; builder b55d4d5f Composer 2.5 done fbada80 05:33Z; review 7dd66a08 Fable running | Merged regenerator `tools/d15/regenerate.py` re-runs against committed registry.json in ~16min. Output `ops/reth/reth.toml` (full GUIDE 16 §0b prune profile + receipts_log_filter). Total 10303 filter addresses (7570 Essential + 2733 completion). before=0 everywhere except known deploy blocks (D52). 15-class checklist: 14 PASS, 1 FAIL (#7 Gearbox not in registry.json — C1 gap, not silent omission). 9 Fluid vaults with resolver failures logged (configs.oracle empty/no code at word 29), not fabricated. Diff vs legacy 8434: +2936 (C2 registry), -1067 (legacy-only paths). C4-ready for all protocols in committed registry. Carry-forward: H1 sign-off; Gearbox gap (C1 follow-up); 9 Fluid vaults |
 | H1 | **Human:** prune profile sign-off | C3 | — | human | `todo` | | |
 | A1 | OS install, strip, TuneD | — | — | human+T2 | `todo` | | |
 | A2 | `reth download` → `reth.toml` → node | H1, A1 | — | human+T2 | `todo` | | |
