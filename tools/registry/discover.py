@@ -511,33 +511,82 @@ class Builder:
             if r:
                 hubs.append(self.al(cand))
         pc.instances = len(hubs)
-        spokes: dict[str, str] = {}
+        # The hub's own registry is the complete listing: a SpokeSet log sweep from a recent
+        # start block only sees spokes listed inside that window (observed: 22 of 53).
+        spokes: dict[str, dict[str, Any]] = {}
+        n_assets = 0
         for hub in hubs:
-            logs = self.get_logs(hub, [TOPIC_AAVE_V4_SPOKE_SET], AAVE_V4_LOGS_FROM, self.head)
-            for lg in logs:
-                if len(lg["topics"]) >= 3:
-                    t = lg["topics"][2].hex() if hasattr(lg["topics"][2], "hex") else lg["topics"][2]
-                    if not str(t).startswith("0x"):
-                        t = "0x" + t
-                    sp = self.cs("0x" + t[-40:])
-                    if self.has_code(sp):
-                        spokes[self.al(sp)] = hub
-        pc.reserves = 0
-        for sp in sorted(spokes):
-            key = f"aave-v4:{sp}"
-            self.protocols[key] = {
+            n = int.from_bytes(self.call1(hub, "getAssetCount()")[:32], "big")
+            und = self.multicall(
+                [(hub, sel("getAssetUnderlyingAndDecimals(uint256)") + encode(["uint256"], [i])) for i in range(n)]
+            )
+            cnt = self.multicall(
+                [(hub, sel("getSpokeCount(uint256)") + encode(["uint256"], [i])) for i in range(n)]
+            )
+            calls: list[tuple[str, bytes]] = []
+            idx: list[int] = []
+            for i in range(n):
+                if not cnt[i][0] or len(cnt[i][1]) < 32:
+                    self.failures[f"{family}:getSpokeCount:{hub}:{i}"] = "eth_call failed"
+                    continue
+                for j in range(int.from_bytes(cnt[i][1][:32], "big")):
+                    calls.append(
+                        (hub, sel("getSpokeAddress(uint256,uint256)") + encode(["uint256", "uint256"], [i, j]))
+                    )
+                    idx.append(i)
+            for (ok, ret), i in zip(self.multicall(calls), idx):
+                sp = addr_word(ret[:32]) if ok and ret else None
+                if not sp:
+                    self.failures[f"{family}:getSpokeAddress:{hub}:{i}"] = "empty"
+                    continue
+                e = spokes.setdefault(self.al(sp), {"hubs": [], "hub_assets": []})
+                if hub not in e["hubs"]:
+                    e["hubs"].append(hub)
+                a = addr_word(und[i][1][:32]) if und[i][0] else None
+                if a:
+                    self.ensure_token(a)
+                    if self.al(a) not in e["hub_assets"]:
+                        e["hub_assets"].append(self.al(a))
+            n_assets += n
+            self.protocols[f"aave-v4:{hub}"] = {
                 "family": family,
-                "market": sp,
-                "hub": spokes[sp],
+                "market": hub,
+                "kind": "hub",
+                "hub": hub,
+                "asset_count": n,
                 "deployed_block": 0,
                 "receipt_tokens": [],
                 "oracle_adapters": [],
                 "admitted": True,
             }
-        # spokes count as instances alongside hubs
+        pc.reserves = n_assets
+        order = sorted(spokes)
+        sres = self.multicall([(sp, sel("asset()")) for sp in order])
+        tres = self.multicall([(sp, sel("totalAssets()")) for sp in order])
+        for sp, (ok_a, a_r), (ok_t, t_r) in zip(order, sres, tres):
+            asset = addr_word(a_r[:32]) if ok_a and a_r else None
+            if asset:
+                self.ensure_token(asset)
+            else:
+                self.failures[f"{family}:spoke_asset:{sp}"] = "asset() failed"
+            self.protocols[f"aave-v4:{sp}"] = {
+                "family": family,
+                "market": sp,
+                "kind": "spoke",
+                "hub": spokes[sp]["hubs"][0],
+                "hubs": spokes[sp]["hubs"],
+                "hub_assets": spokes[sp]["hub_assets"],
+                "asset": self.al(asset) if asset else None,
+                "total_assets": int.from_bytes(t_r[:32], "big") if ok_t and t_r else None,
+                "deployed_block": 0,
+                "receipt_tokens": [],
+                "oracle_adapters": [],
+                "admitted": True,
+            }
         pc.instances = len(hubs) + len(spokes)
         self.notes.append(
-            f"aave-v4: {len(hubs)} hubs (getAssetCount verified), {len(spokes)} spokes from hub logs"
+            f"aave-v4: {len(hubs)} hubs (getAssetCount verified), {len(spokes)} spokes "
+            "via getSpokeCount/getSpokeAddress"
         )
 
     def discover_compound_v2(self):
@@ -671,13 +720,52 @@ class Builder:
             (MORPHO_BLUE, sel("market(bytes32)") + encode(["bytes32"], [mid])) for mid in market_ids
         ]
         mres = self.multicall(mcalls)
-        for mid, (loan, coll, oracle, irm, lltv), (ok_b, bor_r) in zip(market_ids, params, mres):
+        # market() exposes the slot as of lastUpdate. The live debt a liquidation repays is
+        # expectedTotalBorrowAssets: accrue at IRM.borrowRateView with Morpho's own
+        # MathLib.wTaylorCompounded. Batched, so this costs one extra multicall round-trip.
+        ts = self.w3.eth.get_block(self.head)["timestamp"]
+        rate_calls: list[tuple[str, bytes]] = []
+        rate_idx: list[int] = []
+        for n, ((loan, coll, oracle, irm, lltv), (ok_b, bor_r)) in enumerate(zip(params, mres)):
+            if not ok_b or not bor_r or len(bor_r) < 192 or not irm or int(irm, 16) == 0:
+                continue
+            rate_calls.append(
+                (
+                    irm,
+                    sel(
+                        "borrowRateView((address,address,address,address,uint256),"
+                        "(uint128,uint128,uint128,uint128,uint128,uint128))"
+                    )
+                    + encode(
+                        [
+                            "(address,address,address,address,uint256)",
+                            "(uint128,uint128,uint128,uint128,uint128,uint128)",
+                        ],
+                        [(loan, coll, oracle, irm, int(lltv)), decode(["uint128"] * 6, bor_r)],
+                    ),
+                )
+            )
+            rate_idx.append(n)
+        rates: dict[int, int] = {}
+        for n, (ok_r, r_r) in zip(rate_idx, self.multicall(rate_calls)):
+            if ok_r and r_r and len(r_r) >= 32:
+                rates[n] = int.from_bytes(r_r[:32], "big")
+            else:
+                self.failures[f"{family}:borrowRateView:{n}"] = "borrowRateView() failed; using stored debt"
+        for n, (mid, (loan, coll, oracle, irm, lltv), (ok_b, bor_r)) in enumerate(
+            zip(market_ids, params, mres)
+        ):
             self.ensure_token(loan)
             self.ensure_token(coll)
             mkey = "0x" + mid.hex()
             borrowed_raw = 0
             if ok_b and bor_r and len(bor_r) >= 96:
                 borrowed_raw = int.from_bytes(bor_r[64:96], "big")
+                if (rate := rates.get(n)) and borrowed_raw:
+                    x = rate * max(0, ts - int.from_bytes(bor_r[128:160], "big"))
+                    borrowed_raw += (
+                        borrowed_raw * (x + (x * x) // (2 * WAD) + (x * x * x) // (6 * WAD * WAD))
+                    ) // WAD
             borrowed_usd = self._borrowed_usd(borrowed_raw, loan) if borrowed_raw else 0.0
             admit = borrowed_usd is not None and borrowed_usd >= INTERIM_ADMISSION_USD
             if admit:
@@ -798,14 +886,14 @@ class Builder:
                 borrowed_raw = 0
                 if asset:
                     self.ensure_token(asset)
-                    # ISilo.getCollateralAndDebtTotalsStorage() → (totalCollateralAssets, totalDebtAssets)
-                    tot = self.call1(silo, "getCollateralAndDebtTotalsStorage()")
-                    if tot and len(tot) >= 64:
-                        borrowed_raw = int.from_bytes(tot[32:64], "big")
+                    # ISilo.getDebtAssets() = stored debt + accrued interest. The
+                    # getCollateralAndDebtTotalsStorage() pair is the raw slot as of
+                    # interestRateTimestamp and understates a stale silo (observed: 4.3x).
+                    tot = self.call1(silo, "getDebtAssets()")
+                    if tot and len(tot) >= 32:
+                        borrowed_raw = int.from_bytes(tot[:32], "big")
                     else:
-                        self.failures[f"{family}:totals:{self.al(silo)}"] = (
-                            "getCollateralAndDebtTotalsStorage() failed"
-                        )
+                        self.failures[f"{family}:totals:{self.al(silo)}"] = "getDebtAssets() failed"
                 else:
                     self.failures[f"{family}:asset:{self.al(silo)}"] = "asset() failed"
                 borrowed_usd = (
@@ -971,10 +1059,11 @@ class Builder:
             self.ensure_token(on_t0)
             self.ensure_token(on_t1)
         # PoolCreated sweep over the last 3M blocks (~14 months); full-archive sweep from
-        # UNIV3_FACTORY_DEPLOY is C3-scale volume. Keep only pools touching a *protocol*
-        # tracked asset. The membership test runs against a frozen snapshot: ensure_token()
-        # below grows tracked_assets, and testing the live set lets each new pool's other
-        # token admit the next pool (observed: 30k pools / 27k tokens of noise).
+        # UNIV3_FACTORY_DEPLOY is C3-scale volume. Keep only pools whose *both* tokens are
+        # tracked (protocol collateral/debt tokens + HUB_ASSETS): a pool pairing a tracked
+        # asset with an untracked token is not an exit. The membership test runs against a
+        # frozen snapshot: ensure_token() below grows tracked_assets, and testing the live set
+        # lets each new pool's other token admit the next pool (observed: 30k pools of noise).
         sweep_from = max(UNIV3_FACTORY_DEPLOY, self.head - UNIV3_SWEEP_BLOCKS)
         tracked = frozenset(self.tracked_assets)
         logs = self.get_logs(
