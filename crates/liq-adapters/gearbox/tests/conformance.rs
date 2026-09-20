@@ -16,11 +16,11 @@ use alloy_primitives::{uint, Address, Bytes, U256};
 use common::*;
 use liq_adapters_gearbox::config::ConfigError;
 use liq_adapters_gearbox::events::{configurator, facade, factory, halt, pool, quota};
-use liq_adapters_gearbox::layout::{UNDERLYING_SLOT, UNMAPPED_ASSET};
+use liq_adapters_gearbox::layout::{TokenRow, UNDERLYING_SLOT, UNMAPPED_ASSET};
 use liq_adapters_gearbox::{alloc_meter, math, Config, GearboxV3, PROTOCOL};
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
-    CallbackShape, Constraints, DirtySet, FlashRoute, HealthState, LegChoice, Protocol,
+    CallbackShape, Constraints, DirtySet, FlashRoute, HealthState, LegChoice, MarketSlot, Protocol,
     ProtocolError, StateWriter,
 };
 use liq_types::{LogSubscriber, PositionKey, PriceVector, Ray};
@@ -489,7 +489,59 @@ fn assert_live_registry_fees_then_new() {
     assert_eq!(cfg.managers.len(), 1);
     assert_eq!(cfg.managers[0].fees.liquidation_discount, DISCOUNT);
     assert_eq!(cfg.managers[0].market.0, 4201);
+    for t in &cfg.managers[0].tokens {
+        assert_eq!(t.ramp_start, math::STATIC_LT_RAMP_START);
+        assert!(t.ramp_start > u64::from(u32::MAX));
+    }
     GearboxV3::new(cfg).expect("asserted config boots");
+}
+
+#[test]
+fn assert_live_registry_accepts_uint40_max_static_lt_then_new() {
+    let d = Deploy::new();
+    let mut cfg = d.config();
+    cfg.live_fees_asserted = false;
+    cfg.managers.clear();
+    let rpc = mock_registry(&d);
+    cfg.assert_live_registry(&rpc, DEPLOY_BLOCK)
+        .expect("pin static LT type(uint40).max is not truncation");
+    assert!(cfg.live_fees_asserted);
+    for t in &cfg.managers[0].tokens {
+        assert_eq!(t.ramp_start, math::STATIC_LT_RAMP_START);
+        assert!(t.ramp_start > u64::from(u32::MAX));
+    }
+    let p = GearboxV3::new(cfg).expect("asserted config boots");
+    let mut st = store_after(&p, &listing_logs(&d));
+    let l = log(
+        d.configurator,
+        &configurator::SetTokenLiquidationThreshold {
+            token: d.coll,
+            liquidationThreshold: LT_COLL,
+        },
+        DEPLOY_BLOCK + 1,
+        T0,
+    );
+    p.apply_log(&mut st, &l.view())
+        .expect("static LT event folds");
+    let row = st
+        .market(MarketSlot {
+            market: MARKET,
+            slot: 1,
+        })
+        .expect("coll token row");
+    let tok: &TokenRow = row.body().expect("TokenRow");
+    assert_eq!(tok.ramp_start, math::STATIC_LT_RAMP_START);
+    assert_eq!(
+        math::get_liquidation_threshold(
+            tok.lt_initial,
+            tok.lt_final,
+            tok.ramp_start,
+            tok.ramp_duration,
+            T0
+        )
+        .expect("static LT"),
+        LT_COLL
+    );
 }
 
 #[test]

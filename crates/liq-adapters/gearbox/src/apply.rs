@@ -16,7 +16,7 @@ use crate::events::{configurator, facade, factory, halt, manager, pool, quota};
 use crate::layout::{
     AccountExtra, ManagerRow, QuotaExtra, TokenRow, UNDERLYING_SLOT, UNMAPPED_ASSET,
 };
-use crate::math::{addr20, PERCENTAGE_FACTOR};
+use crate::math::{addr20, PERCENTAGE_FACTOR, STATIC_LT_RAMP_START};
 
 #[inline]
 fn decode<E: SolEvent>(log: &DecodedLog<'_>) -> Result<E> {
@@ -474,7 +474,7 @@ fn configurator_log(
         let rows = patch_token(st, m.market, tok.slot, Some(ts), |b| {
             b.lt_initial = ev.liquidationThreshold;
             b.lt_final = ev.liquidationThreshold;
-            b.ramp_start = u64::from(u32::MAX);
+            b.ramp_start = STATIC_LT_RAMP_START;
             b.ramp_duration = 0;
             b.flags |= TokenRow::LISTED;
             Ok(())

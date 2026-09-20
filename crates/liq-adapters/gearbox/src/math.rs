@@ -3,6 +3,7 @@
 //! @ `510fc6541c3767ce825929b4c311826fe81d6fa5`.
 //! Directions: `docs/coverage/gearbox-rounding.md`.
 
+use alloy_primitives::aliases::U40;
 use alloy_primitives::{uint, Address, U256};
 use liq_protocol::{ProtocolError, Result};
 use liq_types::fixed::{mul_div, FixedError, Rounding, RAY, WAD, WAD_RAY_RATIO};
@@ -12,6 +13,16 @@ use liq_types::Ray;
 pub const PERCENTAGE_FACTOR: U256 = uint!(10_000_U256);
 /// Pin `MAX_SANE_ENABLED_TOKENS`.
 pub const MAX_SANE_ENABLED_TOKENS: u8 = 20;
+/// Pin `CreditConfiguratorV3._setLiquidationThreshold`:
+/// `timestampRampStart: type(uint40).max`. Alloy `U40::MAX` is `2^40-1`.
+pub const STATIC_LT_RAMP_START: u64 = {
+    let [limb] = *U40::MAX.as_limbs();
+    limb
+};
+
+const _: () = {
+    assert!(STATIC_LT_RAMP_START > u32::MAX as u64);
+};
 
 #[inline]
 pub fn mul_div_down(a: U256, b: U256, d: U256) -> Result<U256> {
@@ -106,6 +117,8 @@ pub fn has_bad_debt(
 }
 
 /// `CreditLogic.getLiquidationThreshold` (linear ramp, floor via integer mix).
+/// Pin static LT writes [`STATIC_LT_RAMP_START`] (`type(uint40).max`); the first
+/// branch is the pin (`now <= timestampRampStart` → `ltInitial`). Not `u32::MAX`.
 #[inline]
 pub fn get_liquidation_threshold(
     lt_initial: u16,
@@ -370,6 +383,7 @@ pub fn remaining_funds_bound(
 )]
 mod pin_math {
     use super::*;
+    use alloy_primitives::aliases::U40;
     use alloy_primitives::uint;
 
     /// Pin `_calcPartialLiquidationPayments` with identical RAY prices.
@@ -426,6 +440,29 @@ mod pin_math {
         assert_ne!(one, two, "fixture must witness association");
         assert_eq!(one, uint!(23_U256));
         assert_eq!(two, uint!(22_U256));
+    }
+
+    #[test]
+    fn static_lt_uint40_max_is_no_ramp() {
+        let [limb] = *U40::MAX.as_limbs();
+        assert_eq!(STATIC_LT_RAMP_START, limb);
+        assert!(STATIC_LT_RAMP_START > u64::from(u32::MAX));
+        let now_after_u32 = u64::from(u32::MAX).saturating_add(1);
+        assert_eq!(
+            get_liquidation_threshold(8_500, 7_000, STATIC_LT_RAMP_START, 0, 1_700_000_000)
+                .unwrap(),
+            8_500
+        );
+        assert_eq!(
+            get_liquidation_threshold(8_500, 7_000, STATIC_LT_RAMP_START, 0, now_after_u32)
+                .unwrap(),
+            8_500
+        );
+        assert_eq!(
+            get_liquidation_threshold(8_500, 7_000, STATIC_LT_RAMP_START, 0, STATIC_LT_RAMP_START)
+                .unwrap(),
+            8_500
+        );
     }
 
     #[test]

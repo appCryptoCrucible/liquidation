@@ -17,7 +17,7 @@ no protocol-level liquidation premium. `liquidationDiscount = PERCENTAGE_FACTOR 
 | H2 | `_isExpired` | `>=` | `expirable && expirationDate != 0 && now >= expirationDate`; expired is liquidatable even if healthy |
 | H3 | `_hasBadDebt` | product compare | `totalValue * liquidationDiscount < (debt + accruedInterest) * PERCENTAGE_FACTOR`; uses **non-expired** discount even on expired accounts; `ILossPolicy` is an extra full-close gate, not evaluated off-chain |
 | H4 | `CollateralLogic.calcOneTokenCollateral` | floor then min | `min(valueUSD * LT / PF, quotaUSD)`; quoted tokens only + underlying (`quotaUSD = max` for underlying) |
-| H5 | `CreditLogic.getLiquidationThreshold` | floor mix | linear ramp `ltInitial → ltFinal`; static = `ltInitial` with ramp start in the future |
+| H5 | `CreditLogic.getLiquidationThreshold` | floor mix | linear ramp `ltInitial → ltFinal`; static LT is `ltInitial` with `timestampRampStart = type(uint40).max` (`CreditConfiguratorV3._setLiquidationThreshold`); `now <= start` → `ltInitial` — not `u32::MAX` |
 | H6 | `CreditLogic.calcAccruedInterest` | floor | `(amount * indexNow) / indexLast - amount`; adapter does **not** invent a pool IRM — `indexNow = indexLast` unless stored |
 | H7 | `CreditLogic.calcTotalDebt` | add | `debt + accruedInterest + accruedFees` |
 | L1 | `CreditLogic.calcLiquidationPayments` | floor | `totalFunds = totalValue * discount / PF`; `amountToPool += totalValue * feeLiq / PF`; identity `amountWithFee` at this pin |

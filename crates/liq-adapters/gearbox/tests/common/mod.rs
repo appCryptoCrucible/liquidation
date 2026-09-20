@@ -25,6 +25,7 @@ use liq_adapters_gearbox::events::views::{
     IContractsRegister, ICreditFacadeV3, ICreditManagerV3, IPoolV3,
 };
 use liq_adapters_gearbox::events::{facade, factory, pool, quota};
+use liq_adapters_gearbox::math::STATIC_LT_RAMP_START;
 use liq_adapters_gearbox::{GearboxV3, CATALOG_MARKET, FIRST_MANAGER_MARKET, PROTOCOL};
 use liq_protocol::conformance::JournalStore;
 use liq_protocol::{DecodedLog, FeedId, Protocol};
@@ -87,7 +88,7 @@ impl Deploy {
                 slot: 0,
                 lt_initial: LT_UNDERLYING,
                 lt_final: LT_UNDERLYING,
-                ramp_start: u64::from(u32::MAX),
+                ramp_start: STATIC_LT_RAMP_START,
                 ramp_duration: 0,
                 asset: UNDERLYING,
                 feed: FeedId(0),
@@ -99,7 +100,7 @@ impl Deploy {
                 slot: 1,
                 lt_initial: LT_COLL,
                 lt_final: LT_COLL,
-                ramp_start: u64::from(u32::MAX),
+                ramp_start: STATIC_LT_RAMP_START,
                 ramp_duration: 0,
                 asset: COLL,
                 feed: FeedId(0),
@@ -431,7 +432,7 @@ pub fn mock_registry(d: &Deploy) -> MockRpc {
                 &ltParamsReturn {
                     ltInitial: lt,
                     ltFinal: lt,
-                    timestampRampStart: U40::from(u32::MAX),
+                    timestampRampStart: U40::MAX,
                     rampDuration: U24::ZERO,
                 },
             )),

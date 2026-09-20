@@ -507,9 +507,8 @@ fn load_manager<R: RegistryRpc>(
         )?;
         let lt_t = ICreditManagerV3::ltParamsCall::abi_decode_returns(&lt_raw)
             .map_err(|_| ConfigError::RegistryCall(manager))?;
-        if U256::from(lt_t.timestampRampStart) > U256::from(u32::MAX) {
-            return Err(ConfigError::TruncatingParam);
-        }
+        // Pin static LT is `type(uint40).max` (`2^40-1` > `u32::MAX`). Store as
+        // u64; `get_liquidation_threshold` uses CreditLogic `now <= start`.
         let ramp_start = u64::try_from(U256::from(lt_t.timestampRampStart))
             .map_err(|_| ConfigError::TruncatingParam)?;
         let ramp_duration = u32::try_from(U256::from(lt_t.rampDuration))

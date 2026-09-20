@@ -73,7 +73,7 @@ Then `Err(ExecutorUnwired)`:
 | facade.paused | Paused | 0x62e78cea01bee320cd4e420270b5ea74000d11b0c9f74754ebdbfc544b05a258 | MarketReprice | Blocked |
 | facade.unpaused | Unpaused | 0x5db9ee0a495bf2e6ff9c91a7834c1ba4fdd244a5e8aa4e537bd38aeae4b073aa | MarketReprice | |
 | configurator.addToken | AddCollateralToken | 0x7c3f95f8569977586927f95930461a261e2121e326fcb513242f9e5c8b8ea6dc | None | universe is live `getCreditManagers` + `getTokenByMask` at boot |
-| configurator.setLT | SetTokenLiquidationThreshold | 0xda5e841a0cb137f4a60661969e409f01ef7627723a4a929414e4f69b5475ee8c | MarketReprice | static LT (ramp start far) |
+| configurator.setLT | SetTokenLiquidationThreshold | 0xda5e841a0cb137f4a60661969e409f01ef7627723a4a929414e4f69b5475ee8c | MarketReprice | static LT (`timestampRampStart = type(uint40).max`) |
 | configurator.rampLT | ScheduleTokenLiquidationThresholdRamp | 0xa8193c198aab4146e3640f414ba8473918c6d028f45b27fb08b185a16c15ce23 | MarketReprice | |
 | configurator.forbidToken | ForbidToken | 0x9d65afef45c30b784a1e4621dbcbb194ebb6aabe16c9a4abce9ab1775a962b76 | None | forbidden still counts on-chain; unmodeled |
 | configurator.allowToken | AllowToken | 0x14009112f2dcb15cad32dab6bf972d6d85286e4ae1178f27323ffe25359459e6 | None | |
