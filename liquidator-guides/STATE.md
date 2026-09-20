@@ -7,7 +7,7 @@ survives a cold start.
 Status values: `todo` · `in_progress` · `blocked` · `done`
 A `done` with an empty evidence field is treated as `todo`.
 
-Last updated: 2026-09-20T08:41Z (00D done PASS 8aac137; C3 partial rework bd18deb re-review running; C2 done PASS after triage ffbcff3; C1 done db238a6; 15B done a195c47; 07B done 7f5fbb0; 07A done 8a33525; 02B done 6e02280; 03A done 972c98f)
+Last updated: 2026-09-20T14:13Z (10B done PASS 241f734 polish 4c0c140; 10A done PASS; 04A done PASS; 04B done PASS; 05A done PASS; 06A-1 done PASS; 06A-2 done PASS; 06B done PASS; 15A-1 done PASS; 15A-2 done PASS; 00D done PASS 8aac137; C3 done PASS H1-complete 23d9614; C2 done PASS ffbcff3; C1 done db238a6; 15B done a195c47; 07B done 7f5fbb0; 07A done 8a33525; 02B done 6e02280; 03A done 972c98f; H1 signed off 09:29Z; 10C build dispatched b916b843 Grok 4.6)
 
 ---
 
@@ -85,7 +85,7 @@ commit on the WP's owned paths is expired by the next coordinator (§4.2).
 
 | WP | Name | Depends on | Gate / Track | Tier | Status | claimed_by | Evidence |
 |---|---|---|---|---|---|---|---|
-| C1 | Registry discovery | — | — | T3 | `in_progress` (review) | coord-02 2026-09-19T13:45Z; review f84b7616 2026-09-19T18:29Z | build done: `tools/registry/discover.py` + `registry/registry.json` (2.84MB) + `registry/registry.meta.json` @ block 26012212; 128 admitted (D27 $50k); univ3 counts bug + checkpointing bug fixed (ed0c5776); 224 failures classified `no_such_function` (no fabrication); reviewer independently spot-checks failures on-chain |
+| C1 | Registry discovery | — | — | T3 | `done` | coord-02 2026-09-19T13:45Z; review f84b7616 Fable PASS 2026-09-19T18:29Z; reconcile f84b7616; commit db238a6 | 3446 protocol entries, **190 admitted** markets (morpho 161 + euler 26 + silo 3 at D27 $50k; compound-v2 266 forks + aave-v3/v4/spark/sky instance-level). 996 univ3 exit-liquidity pools, 1081 tokens. Block 26014442. Snowball fix (2 defects): (1) frozenset snapshot of tracked_assets before PoolCreated sweep (live set grew inside loop); (2) AND filter (both tokens tracked) replacing OR at discover.py L988 — OR kept 30,584 pools because every WETH-pair touches tracked WETH; AND keeps 996. clean_univ3.py applied in-place (pools 31154→996, tokens 30105→1081). Review Fable PASS (f84b7616): 190 admitted verified, 12/12 RPC-confirmed, 22 topic0 recomputed, 8/8 mutations caught. Reconcile: killed 4 zombie discover.py processes, fixed snowball. 317 failures logged (oracle/token/admission), not blocking. Carry-forward: C2 review of cleaned registry; C3 full-archive sweep with liquidity filtering |
 | C2 | Registry re-derivation + identity check | C1 | — | T2 | `done` (PASS after triage) | coord-02 02:45Z; builder b8624508 Grok 4.6 FAIL; review 035886d5 Opus PASS; commit ffbcff3 04:52Z | Independent re-derivation FAIL triaged by Opus: 4/7 discrepancies were C2 deficiencies (chunked price call, Ajna WAD scaling, Silo config keying). 2 real C1 bugs found+fixed: Aave V4 22->57 spokes (hardcoded SpokeSet topic missed 31); stale debt accounting (Morpho pre-accrual slot understated 235 markets + 2 clearing $50k; Silo 4.3x understatement). 9 impostor tokens flagged incl fake Tether USD under $20M Morpho debt. admitted 190->192, entries 3446->3481. 22 post-fix assertions pass. Registry good for C3. Hole: 268 markets with real debt but no price source (67/508 debt tokens priced) — all un-admitted, not assumed $1. Carry-forward: C3 prune filter; C4 needs more price sources; rederive.py convergence unverified |
 | C3 | Prune filter from committed registry | C2 | — | T3 → T2 | `done` (PASS, H1-complete) | coord-02 05:33Z; builder b55d4d5f Composer 2.5 done fbada80 05:33Z; review 7dd66a08 Fable REWORK 05:48Z (13 defects); rework c2085b7f Composer 2.5 ERRORED bd18deb 08:37Z (partial); re-review 57d19e0b Fable PASS (conditional) 08:53Z; pre-H1 fix 30e7ed43 Grok 4.6 done 23d9614 09:27Z | **13074 addresses** (13073 - 7 no-code + 3 Liquity PriceFeeds + 5 V4 historical sources). All 15 checklist classes PASS. reth.toml parses OK (13074 quoted keys). H1-complete for log coverage. Pre-H1 fixes: (1) Liquity V2 3 PriceFeeds from PriceFeedAddressChanged constructor logs @ blocks 22516078/98/117; (2) Aave V4 UpdateReserveSource 0xb828dda2, 113 logs, 5 historical sources (Capped rsETH/USDC/LBTC/wstETH + Fixed USDG); (3) add_asset gating via try_erc20_asset, 7 no-code cross-chain tokens dropped (asset/erc20 1587->1580). Reproducibility proven. **H1 unblocked — human sign-off before sync.** Post-sync hygiene (not blocking): D9 per-root unresolved bookkeeping, D11 classifier itemization, D12 stale tracked drafts, C2 registry mis-kinding 40 Wrapped-Aave tokens as spoke, Gearbox C1 gap |
 | H1 | **Human:** prune profile sign-off | C3 | — | human | `done` (signed off 09:29Z) | C3 done 23d9614 — 13074 addresses, all 15 checklist classes PASS, H1-complete for log coverage. **Signed off by user 2026-09-20 09:29Z.** Prune profile locked. A2 eligible pending A1. |
@@ -157,9 +157,9 @@ Each row needs its own drift week before going live.
 | Adapter | Built | Drift 7d | Recall | Shadow 2w | Live |
 |---|---|---|---|---|---|
 | Aave V4 | `built` | `todo` | `todo` | `todo` | `no` |
-| Aave V3 | `todo` | `todo` | `todo` | `todo` | `no` |
-| Morpho Blue | `todo` | `todo` | `todo` | `todo` | `no` |
-| Spark | `todo` | `todo` | `todo` | `todo` | `no` |
+| Aave V3 | `built` | `todo` | `todo` | `todo` | `no` |
+| Morpho Blue | `built` | `todo` | `todo` | `todo` | `no` |
+| Spark | `built` | `todo` | `todo` | `todo` | `no` |
 | ~~Compound V3~~ | `deferred` | — | — | — | `no` | 
 | *(add rows per GUIDE 15 Step 1)* | | | | | |
 
