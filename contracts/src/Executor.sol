@@ -18,8 +18,11 @@ import {
  *    any address of its choosing, cannot change PROFIT_SINK, and cannot make an
  *    arbitrary external call.
  *  - PROFIT_SINK is immutable. Every token that leaves this contract, other than
- *    a flashloan repayment or a liquidation repay, goes there. A compromised
- *    OPERATOR key therefore cannot steal; the worst it can do is waste gas.
+ *    a flashloan repayment or a liquidation repay, goes there. An operator can
+ *    route a transaction's realized proceeds to an arbitrary recipient via the
+ *    allowlisted routers (plan-controlled calldata + exact approval), but cannot
+ *    touch the standing balance: `gross = wethAfter - wethBefore` underflows if
+ *    that balance falls, so theft is capped at the transaction's own earnings.
  *  - sweep() is permissionless for exactly that reason: the destination is fixed,
  *    so letting anyone push funds out is a backstop, not a risk.
  *  - Callback authentication uses transient storage (EIP-1153). Every flashloan
@@ -119,12 +122,17 @@ contract Executor {
     /// `(loanToken, collateralToken)`. Encoder bug, not a race: revert all.
     error LegMismatch();
     error FlashLoanRejected();
+    error ZeroAddress();
 
     constructor(
         address operator_, address profitSink_,
         address univ3Factory_, bytes32 univ3InitHash_,
         address routerA_, address routerB_, address weth_
     ) {
+        if (operator_ == address(0) || profitSink_ == address(0) || univ3Factory_ == address(0)
+            || routerA_ == address(0) || routerB_ == address(0) || weth_ == address(0)) {
+            revert ZeroAddress();
+        }
         OPERATOR             = operator_;
         PROFIT_SINK          = profitSink_;
         UNIV3_FACTORY        = univ3Factory_;
@@ -171,6 +179,9 @@ contract Executor {
             }
             _arm(fg.flashSource);
             _initiate(fg, plan);     // returns only after the callback settled
+            if (fg.provider != P_UNIV3 && fg.provider != P_UNIV4) {
+                fg.debtAsset.safeApprove(fg.flashSource, 0);
+            }
             _disarm();
 
             uint256 f;
@@ -510,9 +521,22 @@ contract Executor {
         MarketParams memory mp = morpho.idToMarketParams(id);
         if (mp.loanToken != debtAsset || mp.collateralToken != l.collateralAsset) revert LegMismatch();
 
-        morpho.accrueInterest(mp);
-        IMorpho.Market memory m = morpho.market(id);
-        IMorpho.Position memory pos = morpho.position(id, l.borrower);
+        IMorpho.Market memory m;
+        IMorpho.Position memory pos;
+        try morpho.accrueInterest(mp) {
+            try morpho.market(id) returns (IMorpho.Market memory m_) {
+                m = m_;
+            } catch {
+                return false;
+            }
+            try morpho.position(id, l.borrower) returns (IMorpho.Position memory p_) {
+                pos = p_;
+            } catch {
+                return false;
+            }
+        } catch {
+            return false;
+        }
         if (pos.borrowShares == 0) return false;
 
         // SharesMathLib.toSharesDown: same expression, same operands as Morpho.
@@ -586,6 +610,7 @@ contract Executor {
             );
         } else if (s.venue == S_ROUTER) {
             address target = address(bytes20(data[0:20]));
+            if (target == address(0)) revert RouterNotAllowed(target);
             if (target != ROUTER_A && target != ROUTER_B) revert RouterNotAllowed(target);
             // Exact approval, then zeroed unconditionally after the call. A
             // router that does not consume the full amount would otherwise

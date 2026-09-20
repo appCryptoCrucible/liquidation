@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {Executor} from "../../src/Executor.sol";
 import {PlanBuilder as PB} from "../unit/PlanBuilder.sol";
 import {ExecutorTestBase} from "../unit/Base.sol";
+import {MockERC20, LazyFlashProvider} from "../unit/Mocks.sol";
 
 /*
  * Stateful fuzz over many liquidations of random size, bid and sweep flag,
@@ -16,12 +17,72 @@ contract Handler is ExecutorTestBase {
     uint256 public ghostBids;       // Σ bids the handler expected to be paid
     uint256 public liquidations;
     uint256 public rejections;
+    uint256 public lazyRuns;
+
+    LazyFlashProvider public lazy;
+
+    struct Pair { address token; address spender; }
+    Pair[] internal _tracked;
+    mapping(bytes32 => bool) internal _seen;
 
     function setUp() public override {} // the invariant test builds the world
 
-    function init() external { super.setUp(); }
+    function init() external {
+        super.setUp();
+        lazy = new LazyFlashProvider();
+        debt.mint(address(lazy), 1e15);
+        _track(address(debt), address(pool));
+        _track(address(debt), address(lazy));
+        _track(address(coll), address(pCollDebt));
+        _track(address(coll), address(pCollWeth));
+        _track(address(coll), address(routerA));
+        _track(address(debt), address(spoke));
+        _track(address(debt), address(morpho));
+        _seedLazyOnce();
+    }
+
+    function _seedLazyOnce() internal {
+        address b = makeAddr("lazy-borrower");
+        pool.setPosition(b, 0.9e18, REPAY, COLL_OUT);
+        bytes memory plan = bytes.concat(
+            PB.header(PB.F_SWEEP, 0, 0, 0, 1),
+            PB.groupHead(PB.P_AAVE, address(lazy), address(debt), REPAY, 1, 1),
+            PB.legV3(address(pool), b, address(coll), REPAY),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.profit(1, _profitLeg())
+        );
+        vm.prank(operator);
+        ex.execute(plan);
+        address[] memory dust = new address[](1);
+        dust[0] = address(debt);
+        ex.sweep(dust);
+        ghostGross += uint256(GROSS_WETH);
+        liquidations++;
+        lazyRuns++;
+    }
+
+    function trackedCount() external view returns (uint256) { return _tracked.length; }
+    function trackedPair(uint256 i) external view returns (address token, address spender) {
+        Pair storage p = _tracked[i];
+        return (p.token, p.spender);
+    }
+    function residualAllowance(address token, address spender) external view returns (uint256) {
+        return MockERC20(token).allowance(address(ex), spender);
+    }
+
+    function _track(address token, address spender) internal {
+        bytes32 k = keccak256(abi.encodePacked(token, spender));
+        if (_seen[k]) return;
+        _seen[k] = true;
+        _tracked.push(Pair(token, spender));
+    }
 
     function liquidate(uint256 seed, uint16 bidBps, bool sweepFlag) external {
+        bool useLazy = uint256(keccak256(abi.encode(seed, "lazy"))) & 1 == 0;
+        _liquidate(seed, bidBps, sweepFlag, useLazy);
+    }
+
+    function _liquidate(uint256 seed, uint16 bidBps, bool sweepFlag, bool useLazy) internal {
         uint128 size = uint128(bound(seed, 1e6, 100_000e6));          // 1 .. 100k DEBT
         uint256 bonusBps = bound(uint256(keccak256(abi.encode(seed))), 500, 1500);
         bidBps = uint16(bound(bidBps, 0, 3000));
@@ -33,10 +94,14 @@ contract Handler is ExecutorTestBase {
         uint128 spent = uint128((uint256(owed) * 1e8 + 60_000e6 - 1) / 60_000e6);
         if (spent > collOut) return; // sub-unit sizes where the bonus does not cover the fee
 
+        address flash = useLazy ? address(lazy) : address(pool);
+        _track(address(debt), flash);
+        _track(address(debt), address(pool));
+
         pool.setPosition(b, 0.9e18, size, collOut);
         bytes memory plan = bytes.concat(
             PB.header(sweepFlag ? PB.F_SWEEP : 0, bidBps, 0, 0, 1),
-            PB.groupHead(PB.P_AAVE, address(pool), address(debt), size, 1, 1),
+            PB.groupHead(PB.P_AAVE, flash, address(debt), size, 1, 1),
             PB.legV3(address(pool), b, address(coll), size),
             PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, owed),
             PB.profit(1, _profitLeg())
@@ -44,6 +109,14 @@ contract Handler is ExecutorTestBase {
         uint256 gross = uint256(collOut - spent) * 2e11;
         vm.prank(operator);
         ex.execute(plan);
+        if (useLazy) {
+            // Under-pull leaves the unpulled premium as DEBT dust; sweep it so
+            // the only-WETH resting invariant stays exact.
+            address[] memory dust = new address[](1);
+            dust[0] = address(debt);
+            ex.sweep(dust);
+            lazyRuns++;
+        }
         ghostGross += gross;
         ghostBids  += gross * bidBps / 10_000;
         liquidations++;
@@ -52,6 +125,7 @@ contract Handler is ExecutorTestBase {
     function beaten(uint256 seed) external {
         address b = address(uint160(uint256(keccak256(abi.encode("h", seed)))));
         pool.setPosition(b, 1.2e18, REPAY, COLL_OUT);
+        _track(address(debt), address(pool));
         vm.prank(operator);
         try ex.execute(_plan(PB.F_SWEEP, 0, 0, 0, 1, PB.legV3(address(pool), b, address(coll), REPAY))) {
             revert("beaten leg must not execute");
@@ -109,6 +183,7 @@ contract ExecutorInvariantTest is ExecutorTestBase {
     function afterInvariant() public view {
         require(h.liquidations() > 0, "vacuous run: no liquidations");
         require(h.rejections() > 0, "vacuous run: no rejections");
+        require(h.lazyRuns() > 0, "vacuous run: no under-pulling flash source");
     }
 
     /// Exact-out repay and take-balance profit leave nothing behind but WETH.
@@ -118,12 +193,14 @@ contract ExecutorInvariantTest is ExecutorTestBase {
         assertEq(address(h.ex()).balance, 0);
     }
 
-    /// No counterparty keeps an allowance between transactions.
+    /// No counterparty keeps an allowance between transactions — universal over
+    /// every (token, spender) the handler's plans touched, including the under-
+    /// pulling flash source.
     function invariant_no_standing_allowance() public view {
-        address e = address(h.ex());
-        assertEq(h.debt().allowance(e, address(h.pool())), 0);
-        assertEq(h.coll().allowance(e, address(h.pCollDebt())), 0);
-        assertEq(h.coll().allowance(e, address(h.pCollWeth())), 0);
-        assertEq(h.coll().allowance(e, address(h.routerA())), 0);
+        uint256 n = h.trackedCount();
+        for (uint256 i; i < n; ++i) {
+            (address token, address spender) = h.trackedPair(i);
+            assertEq(h.residualAllowance(token, spender), 0);
+        }
     }
 }

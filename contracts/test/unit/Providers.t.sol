@@ -5,7 +5,7 @@ import {Executor} from "../../src/Executor.sol";
 import {MarketParams} from "../../src/lib/Interfaces.sol";
 import {PlanBuilder as PB} from "./PlanBuilder.sol";
 import {ExecutorTestBase} from "./Base.sol";
-import {MockERC20, MockUniV3Pool, MockDssFlash} from "./Mocks.sol";
+import {MockERC20, MockUniV3Pool, MockDssFlash, LazyFlashProvider} from "./Mocks.sol";
 
 /// The other four flash providers, the Aave V4 and Morpho adapters, and a
 /// sequential multi-group cascade (D32).
@@ -46,6 +46,13 @@ contract ProvidersAndAdaptersTest is ExecutorTestBase {
         assertEq(debt.balanceOf(address(pm)), before, "zero-fee, fully settled");
         assertEq(weth.balanceOf(sink), GROSS_0FEE);
         _assertClean();
+    }
+
+    function test_lazy_flash_provider_residual_allowance_is_zero() public {
+        LazyFlashProvider lazy = new LazyFlashProvider();
+        debt.mint(address(lazy), 1e15);
+        _exec(_planWith(PB.P_AAVE, address(lazy), OWED, _v3Leg(), 1));
+        assertEq(debt.allowance(address(ex), address(lazy)), 0, "D1: residual flash allowance");
     }
 
     function test_morpho_flash_repaid_by_pull() public {

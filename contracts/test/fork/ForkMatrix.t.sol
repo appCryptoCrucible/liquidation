@@ -51,7 +51,10 @@ contract ForkMatrixTest is Test {
         if (bytes(url).length == 0) return;
         vm.createSelectFork(url);
         forked = true;
-        ex = new Executor(operator, sink, UNIV3_FACTORY, UNIV3_INIT_HASH, address(0), address(0), WETH);
+        ex = new Executor(
+            operator, sink, UNIV3_FACTORY, UNIV3_INIT_HASH,
+            makeAddr("routerA"), makeAddr("routerB"), WETH
+        );
     }
 
     modifier onFork() {

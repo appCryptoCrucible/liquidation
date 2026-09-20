@@ -80,3 +80,45 @@ jobs:
           LIQ_DIFF_BIN: ../target/debug/liq-diff-health
           FOUNDRY_FUZZ_RUNS: "1000"
         run: forge test --match-path test/differential/HealthDiff.t.sol --fuzz-runs 1000
+
+  foundry:
+    name: forge test · snapshot · safe-erc20
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config libssl-dev
+
+      - name: Install Foundry
+        run: |
+          curl -L https://foundry.paradigm.xyz | bash
+          /root/.foundry/bin/foundryup
+          echo "/root/.foundry/bin" >> "$GITHUB_PATH"
+
+      - name: Install forge-std
+        working-directory: contracts
+        run: forge install foundry-rs/forge-std --no-git
+
+      - name: forge test (unit + invariant + fork skip)
+        working-directory: contracts
+        run: forge test --no-match-path test/differential/HealthDiff.t.sol
+
+      - name: forge snapshot --check (2%)
+        working-directory: contracts
+        run: forge snapshot --check --tolerance 2 --no-match-contract ExecutorInvariantTest --no-match-path test/differential/HealthDiff.t.sol
+
+      - name: no raw IERC20 transfer/approve in src
+        run: |
+          if grep -REn 'IERC20\([^)]+\)\.(transfer|approve)\(' contracts/src; then
+            echo "raw IERC20.transfer/approve is forbidden; use SafeTransfer"
+            exit 1
+          fi
+          echo "ok: no raw IERC20.transfer/approve in contracts/src"

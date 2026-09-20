@@ -18,6 +18,49 @@ contract ExecutorFlowTest is ExecutorTestBase {
 
     // ── happy path ────────────────────────────────────────────────────
 
+    function test_constructor_rejects_zero_operator() public {
+        bytes32 h = factory.initHash();
+        vm.expectRevert(Executor.ZeroAddress.selector);
+        new Executor(address(0), sink, address(factory), h, address(routerA), address(routerB), address(weth));
+    }
+    function test_constructor_rejects_zero_sink() public {
+        bytes32 h = factory.initHash();
+        vm.expectRevert(Executor.ZeroAddress.selector);
+        new Executor(operator, address(0), address(factory), h, address(routerA), address(routerB), address(weth));
+    }
+    function test_constructor_rejects_zero_factory() public {
+        bytes32 h = factory.initHash();
+        vm.expectRevert(Executor.ZeroAddress.selector);
+        new Executor(operator, sink, address(0), h, address(routerA), address(routerB), address(weth));
+    }
+    function test_constructor_rejects_zero_router_a() public {
+        bytes32 h = factory.initHash();
+        vm.expectRevert(Executor.ZeroAddress.selector);
+        new Executor(operator, sink, address(factory), h, address(0), address(routerB), address(weth));
+    }
+    function test_constructor_rejects_zero_router_b() public {
+        bytes32 h = factory.initHash();
+        vm.expectRevert(Executor.ZeroAddress.selector);
+        new Executor(operator, sink, address(factory), h, address(routerA), address(0), address(weth));
+    }
+    function test_constructor_rejects_zero_weth() public {
+        bytes32 h = factory.initHash();
+        vm.expectRevert(Executor.ZeroAddress.selector);
+        new Executor(operator, sink, address(factory), h, address(routerA), address(routerB), address(0));
+    }
+
+    function test_zero_address_router_target_reverts() public {
+        bytes memory plan = bytes.concat(
+            PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
+            PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 1),
+            PB.legV3(address(pool), borrower, address(coll), REPAY),
+            PB.routerSwap(address(0), address(coll), address(debt), PB.L_EXACT_OUT, OWED, ""),
+            PB.profit(1, _profitLeg())
+        );
+        vm.expectRevert(abi.encodeWithSelector(Executor.RouterNotAllowed.selector, address(0)));
+        _exec(plan);
+    }
+
     function test_reference_liquidation_pays_gross_to_sink() public {
         _exec(_refPlan());
         assertEq(weth.balanceOf(sink), GROSS_WETH, "sink receives gross WETH");

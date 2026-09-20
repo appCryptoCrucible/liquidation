@@ -148,6 +148,19 @@ contract MockAavePool {
 
 /// Aave-shaped provider that hands out funds and returns without calling
 /// back (and without pulling, so the only thing wrong is the missing call).
+/// Lends the full amount, then pulls less than the callback approved
+/// (`amount`, not `amount + premium`). Residual allowance must be zeroed
+/// by the Executor after `_initiate` returns (D1).
+contract LazyFlashProvider {
+    uint256 public premiumBps = 5;
+    function flashLoanSimple(address receiver, address asset, uint256 amount, bytes calldata params, uint16) external {
+        uint256 premium = amount * premiumBps / 10_000;
+        Tok.push(asset, receiver, amount);
+        require(IFlashReceiver(receiver).executeOperation(asset, amount, premium, receiver, params), "cb");
+        Tok.pull(asset, receiver, address(this), amount); // under-pull vs amount+premium approval
+    }
+}
+
 contract SilentFlashProvider {
     function flashLoanSimple(address receiver, address asset, uint256 amount, bytes calldata, uint16) external {
         Tok.push(asset, receiver, amount);
