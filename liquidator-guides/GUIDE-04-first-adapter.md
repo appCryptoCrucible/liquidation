@@ -67,11 +67,17 @@ Map onto GUIDE 02's store:
 
 ```
 collateral_value = Σ over set bits in config:
-    suppliedShares[slot] · addExRate[slot] · price[asset] · collateralRisk[slot]
+    suppliedShares[slot] · addExRate[slot] · price[asset] · collateralFactor[slot]
 debt_value = Σ:
     drawnShares[slot] · drawnIndex[slot] · price[asset]  + accrued_premium
 hf = collateral_value / debt_value          (normalized: 1.0 is the boundary)
 ```
+
+> **Correction (Opus review, 2026-09-20):** the collateral weight is
+> `collateralFactor` from the user's **snapshotted dynamic config**, not
+> `collateralRisk`. `collateralRisk` is a separate reserve parameter that feeds
+> only the risk-premium calculation. The adapter implements the contract
+> (`Spoke._processUserAccountData`); the prior guide formula was wrong.
 
 Requirements:
 
