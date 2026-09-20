@@ -394,8 +394,6 @@ fn apply_pool(
                     .ok_or(FixedError::Overflow)?;
                 Ok(())
             })?;
-            let id = intern(cfg, st, market, ev.user)?;
-            let _ = positions(&[id]);
             Ok(DirtySet::MarketAccrual(rows))
         }
         pool::DeficitCovered::SIGNATURE_HASH => {
