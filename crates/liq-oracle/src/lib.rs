@@ -1,8 +1,8 @@
 ﻿//! Price feeds, canonical PriceVector publish, MEV-Share, and fusion.
 //!
 //! WP 06A-1: feed registry (`feeds`), canonical book (`canonical`),
-//! triple-buffer publish (`publish`). 06A-2 derived; 06B MEV-Share; 08B
-//! governance timelock poller.
+//! triple-buffer publish (`publish`). 06A-2 derived; 06B MEV-Share; 06D
+//! public-mempool `transmit()`; 08B governance timelock poller.
 
 #![deny(clippy::todo, clippy::unimplemented)]
 #![cfg_attr(
@@ -24,6 +24,7 @@ pub mod canonical;
 pub mod derived;
 pub mod feeds;
 pub mod governance;
+pub mod mempool_oracle;
 pub mod mevshare;
 pub mod publish;
 
@@ -39,6 +40,7 @@ pub use governance::{
     execution_due, GovernanceConfig, GovernancePoller, PayloadView, Timelock, TimelockKind,
     PIN_BLOCK,
 };
+pub use mempool_oracle::{MempoolOracle, PendingTx, RING_CAP, TRANSMIT_SELECTOR};
 pub use publish::{split, PricePublish, PriceRead};
 
 /// Fail-closed oracle errors. None are recoverable at boot or on a bad log.
@@ -110,6 +112,8 @@ pub enum OracleError {
     ZeroLpSupply,
     #[error("derived fixed-point: {0}")]
     Fixed(#[from] liq_types::fixed::FixedError),
+    #[error("OCR transmit() calldata could not be decoded")]
+    BadTransmit,
     #[error("governance read failed: {0}")]
     Governance(String),
     #[error("payload {id} ABI too short ({len} bytes)")]

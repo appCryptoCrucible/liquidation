@@ -25,6 +25,7 @@ reqwest = { workspace = true }
 eventsource-stream = { workspace = true }
 futures-util = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "time", "net", "io-util"] }
+rtrb = { workspace = true }
 
 [dev-dependencies]
 liq-node = { path = "../liq-node" }
