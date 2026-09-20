@@ -342,11 +342,29 @@ storage_history = { distance = 10_064 }
 "0x62d63197660c080236193ca60b70e49a08e90368" = { before = 0 }  # aave-v4 hub — registry.aave-v4.hub
 "0x943827dca022d0f354a8a8c332da1e5eb9f9f931" = { before = 0 }  # aave-v4 hub — registry.aave-v4.hub
 "0xcca852bc40e560adc3b1cc58ca5b55638ce826c9" = { before = 0 }  # aave-v4 hub — registry.aave-v4.hub
-"0x62a897c3e81d809c7444bb63d7d51e1f2ebb6c3d" = { before = 0 }  # aave-v4 oracle_aggregator — aave-v4:0x0083421f.getReserveSource(4)→ASSET_TO_USD_AGGREGATOR()→aggre
-"0x25ded2f9ae6ae9416693ab63abe3ab25493861fd" = { before = 0 }  # aave-v4 oracle_source — aave-v4:0x0083421f.getReserveSource(4)
-"0x5a6fcb0ebc018b6fd94fc5f5a9f0948d0d40f040" = { before = 0 }  # aave-v4 oracle_source — aave-v4:0x47a7cC7F.getReserveSource(1)
-"0x89f6eb404abf19fe817426dd2e2e0f14d1a5712e" = { before = 0 }  # aave-v4 oracle_source — aave-v4:0x692cD2F7.getReserveSource(0)
-"0x9b4a96210bc8d9d55b1908b465d8b0de68b7ff83" = { before = 0 }  # aave-v4 oracle_source — aave-v4:0x0083421f.getReserveSource(4)→ASSET_TO_USD_AGGREGATOR()
+"0x62a897c3e81d809c7444bb63d7d51e1f2ebb6c3d" = { before = 0 }  # aave-v4 oracle_aggregator — aave-v4:0x99B2B6CE.UpdateReserveSource(12)→ASSET_TO_USD_AGGREGATOR()→a
+"0x96d6e33b411dc1f4e3f1e894a5a5d9ce0f96738d" = { before = 0 }  # aave-v4 oracle_aggregator — aave-v4:0x99B2B6CE.UpdateReserveSource(6)→aggregator()
+"0xd8b9aa6e811c935ef63e877cfa7be276931293da" = { before = 0 }  # aave-v4 oracle_aggregator — aave-v4:0x99B2B6CE.UpdateReserveSource(5)→aggregator()
+"0x20807cf61ad17c31837776fa39847a2fa1839e81" = { before = 0 }  # aave-v4 oracle_aggregator_phase — aave-v4:0x99B2B6CE.UpdateReserveSource(6)→phaseAggregators(6)
+"0x8116b273cd75d79c382afacc706659ded5e0a59d" = { before = 0 }  # aave-v4 oracle_aggregator_phase — aave-v4:0x99B2B6CE.UpdateReserveSource(5)→phaseAggregators(4)
+"0x8cde021f0bfa5f82610e8ce46493cf66ac04af53" = { before = 0 }  # aave-v4 oracle_aggregator_phase — aave-v4:0x99B2B6CE.UpdateReserveSource(6)→phaseAggregators(3)
+"0xbd11bc57fc140614190cabc1b4c316aba220bae4" = { before = 0 }  # aave-v4 oracle_aggregator_phase — aave-v4:0x99B2B6CE.UpdateReserveSource(6)→phaseAggregators(4)
+"0xc8b5381a98c7dc8b91f4149303397da56061ebaf" = { before = 0 }  # aave-v4 oracle_aggregator_phase — aave-v4:0x99B2B6CE.UpdateReserveSource(6)→phaseAggregators(2)
+"0xc8f8d8d5ab0f874f00d74b1ef448151631bc3473" = { before = 0 }  # aave-v4 oracle_aggregator_phase — aave-v4:0x99B2B6CE.UpdateReserveSource(5)→phaseAggregators(2)
+"0xdfd03bfc3465107ce570a0397b247f546a42d0fa" = { before = 0 }  # aave-v4 oracle_aggregator_phase — aave-v4:0x99B2B6CE.UpdateReserveSource(6)→phaseAggregators(5)
+"0xe3f0dede4b499c07e12475087ab1a084b5f93bc0" = { before = 0 }  # aave-v4 oracle_aggregator_phase — aave-v4:0x99B2B6CE.UpdateReserveSource(5)→phaseAggregators(3)
+"0xf2d87e37ea1e54c7aa913d2447a5f69f61c114cf" = { before = 0 }  # aave-v4 oracle_aggregator_phase — aave-v4:0x99B2B6CE.UpdateReserveSource(5)→phaseAggregators(1)
+"0x25ded2f9ae6ae9416693ab63abe3ab25493861fd" = { before = 0 }  # aave-v4 oracle_source — aave-v4:0x99B2B6CE.UpdateReserveSource(12)
+"0x2c1d072e956affc0d435cb7ac38ef18d24d9127c" = { before = 0 }  # aave-v4 oracle_source — aave-v4:0x99B2B6CE.UpdateReserveSource(6)
+"0x47f52b2e43d0386cf161e001835b03ad49889e3b" = { before = 0 }  # aave-v4 oracle_source — aave-v4:0x37C31699.UpdateReserveSource(0)
+"0x547a514d5e3769680ce22b2361c10ea13619e8a9" = { before = 0 }  # aave-v4 oracle_source — aave-v4:0x99B2B6CE.UpdateReserveSource(5)
+"0x581b8bc9d6104f71ad6da1f483b67500968c5994" = { before = 0 }  # aave-v4 oracle_source — aave-v4:0x99B2B6CE.UpdateReserveSource(7)
+"0x5a6fcb0ebc018b6fd94fc5f5a9f0948d0d40f040" = { before = 0 }  # aave-v4 oracle_source — aave-v4:0x47a7cC7F.UpdateReserveSource(1)
+"0x5c1771583dbbae5afed71acd2bfc0ea4029ebb04" = { before = 0 }  # aave-v4 oracle_source — aave-v4:0x198Cac7f.UpdateReserveSource(0)
+"0x869c9ae2c8fbe82a8b0f768b9f791f89e083222c" = { before = 0 }  # aave-v4 oracle_source — aave-v4:0x99B2B6CE.UpdateReserveSource(1)
+"0x89f6eb404abf19fe817426dd2e2e0f14d1a5712e" = { before = 0 }  # aave-v4 oracle_source — aave-v4:0x692cD2F7.UpdateReserveSource(0)
+"0x9b4a96210bc8d9d55b1908b465d8b0de68b7ff83" = { before = 0 }  # aave-v4 oracle_source — aave-v4:0x99B2B6CE.UpdateReserveSource(12)→ASSET_TO_USD_AGGREGATOR()
+"0xf29b1e3b68fd59dd0a413811fd5d0abae653216d" = { before = 0 }  # aave-v4 oracle_source — aave-v4:0x99B2B6CE.UpdateReserveSource(11)
 "0x0a65197b16c5969f92672051c9c9c0c75b369135" = { before = 0 }  # aave-v4 spoke — registry.aave-v4.spoke
 "0x2087513383330b961a3753b47627bbf149f31c70" = { before = 0 }  # aave-v4 spoke — registry.aave-v4.spoke
 "0x2226749630775ee20230ad65214fb339087ef30d" = { before = 0 }  # aave-v4 spoke — registry.aave-v4.spoke
@@ -878,7 +896,6 @@ storage_history = { distance = 10_064 }
 "0x1ea1ccfecc55938a71c67150c41e7eba0743e94c" = { before = 0 }  # asset erc20 — compound-v2 cToken(0xF9DF4aa2).underlying()
 "0x1ee774b40eecef1ed4bb702c83a97dc949c900e5" = { before = 0 }  # asset erc20 — registry.tokens
 "0x1f214fc757d64eba7ee3d4222859ebc8a5b8ae28" = { before = 0 }  # asset erc20 — registry.tokens
-"0x1f32b1c2345538c0c6f582fcb022739c4a194ebb" = { before = 0 }  # asset erc20 — morpho loan
 "0x1f573d6fb3f13d689ff844b4ce37794d79a7ff1c" = { before = 0 }  # asset erc20 — compound-v2 cToken(0x81E34672).underlying()
 "0x1f7aa7104db822987e1f44a66df709a8c4fb301a" = { before = 0 }  # asset erc20 — registry.tokens
 "0x1f84a51296691320478c98b8d77f2bbd17d34350" = { before = 0 }  # asset erc20 — registry.tokens
@@ -991,7 +1008,6 @@ storage_history = { distance = 10_064 }
 "0x326171f120abcb3dd9a5659533a9db0ea473ddc5" = { before = 0 }  # asset erc20 — registry.tokens
 "0x32bd822d615a3658a68b6fdd30c2fcb2c996d678" = { before = 0 }  # asset erc20 — compound-v2 cToken(0xc7f34f09).underlying()
 "0x3301ee63fb29f863f2333bd4466acb46cd8323e6" = { before = 0 }  # asset erc20 — compound-v2 cToken(0x50dC71dC).underlying()
-"0x33243bfb60c05d9f20a0064365dc10f5ee599956" = { before = 0 }  # asset erc20 — euler vault asset
 "0x332a8ee60edff0a11cf3994b1b846bbc27d3dcd6" = { before = 0 }  # asset erc20 — registry.tokens
 "0x3365554a61ceff74a76528f9e86c1e87946d16a5" = { before = 0 }  # asset erc20 — registry.tokens
 "0x337e7456b420bd3481e7fa61fa9850343d610d34" = { before = 0 }  # asset erc20 — compound-v2 cToken(0x59B8022F).underlying()
@@ -1292,7 +1308,6 @@ storage_history = { distance = 10_064 }
 "0x6503de9fe77d256d9d823f2d335ce83ece9e153f" = { before = 0 }  # asset erc20 — registry.tokens
 "0x651d4b8168488fa163d85304662e8278d4c55baa" = { before = 0 }  # asset erc20 — registry.tokens
 "0x653ba68f6aa4b5b9a957e21628cd514a43e5a684" = { before = 0 }  # asset erc20 — registry.tokens
-"0x656d2c7a970d13073a6a58fae18f39abf31fae41" = { before = 0 }  # asset erc20 — euler vault asset
 "0x657d9aba1dbb59e53f9f3ecaa878447dcfc96dcb" = { before = 0 }  # asset erc20 — registry.tokens
 "0x657e8c867d8b37dcc18fa4caead9c45eb088c642" = { before = 0 }  # asset erc20 — registry.tokens
 "0x65a44528e8868166401ea08b549e19552af589db" = { before = 0 }  # asset erc20 — registry.tokens
@@ -1458,7 +1473,6 @@ storage_history = { distance = 10_064 }
 "0x8292bb45bf1ee4d140127049757c2e0ff06317ed" = { before = 0 }  # asset erc20 — registry.aave-v4.hub_assets
 "0x82b853db31f025858792d8fa969f2a1dc245c179" = { before = 0 }  # asset erc20 — registry.tokens
 "0x82c3c0f95f2b7b6b1f0d2c9ba2334a2aff66d0c1" = { before = 0 }  # asset erc20 — registry.tokens
-"0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" = { before = 0 }  # asset erc20 — morpho collateral
 "0x833adaef212c5cd3f78906b44bbfb18258f238f0" = { before = 0 }  # asset erc20 — registry.tokens
 "0x8350e622bd7ddc332171ecf91e718ab534e9bece" = { before = 0 }  # asset erc20 — registry.tokens
 "0x837010619aeb2ae24141605afc8f66577f6fb2e7" = { before = 0 }  # asset erc20 — compound-v2 cToken(0x0C91F179).underlying()
@@ -1470,7 +1484,6 @@ storage_history = { distance = 10_064 }
 "0x845f64673a2407320c2cc12e23b669dc16f7a473" = { before = 0 }  # asset erc20 — registry.tokens
 "0x84631c0d0081fde56deb72f6de77abbbf6a9f93a" = { before = 0 }  # asset erc20 — gearbox collateral
 "0x8464f6ecae1ea58ec816c13f964030eab8ec123a" = { before = 0 }  # asset erc20 — registry.tokens
-"0x84b78bc998e4b1a63f2cf9ebfe76c55fc96a5a9b" = { before = 0 }  # asset erc20 — morpho collateral
 "0x84d17ef6bec165484c320b852eeb294203e191be" = { before = 0 }  # asset erc20 — registry.tokens
 "0x853d955acef822db058eb8505911ed77f175b99e" = { before = 0 }  # asset erc20 — registry.tokens
 "0x856c4efb76c1d1ae02e20ceb03a2a6a08b0b8dc3" = { before = 0 }  # asset erc20 — registry.tokens
@@ -1552,7 +1565,6 @@ storage_history = { distance = 10_064 }
 "0x910836b41791e07b4ac107c0dfbc41ffd07d2702" = { before = 0 }  # asset erc20 — registry.tokens
 "0x91094d333e018f81874d62e27522479bec131b5f" = { before = 0 }  # asset erc20 — registry.tokens
 "0x911d86c72155c33993d594b0ec7e6206b4c803da" = { before = 0 }  # asset erc20 — registry.tokens
-"0x912ce59144191c1204e64559fe8253a0e49e6548" = { before = 0 }  # asset erc20 — euler vault asset
 "0x917459337caac939d41d7493b3999f571d20d667" = { before = 0 }  # asset erc20 — registry.tokens
 "0x917cee801a67f933f2e6b33fc0cd1ed2d5909d88" = { before = 0 }  # asset erc20 — registry.tokens
 "0x91ae9c5fa27bc20251e7b580343e0968d3ae4891" = { before = 0 }  # asset erc20 — registry.tokens
@@ -2142,7 +2154,6 @@ storage_history = { distance = 10_064 }
 "0xec5a52c685cc3ad79a6a347abace330d69e0b1ed" = { before = 0 }  # asset erc20 — registry.tokens
 "0xec67005c4e498ec7f55e092bd1d35cbc47c91892" = { before = 0 }  # asset erc20 — compound-v2 cToken(0xDbb5e308).underlying()
 "0xec6a70f62a83418c7fb238182ed2865f80491a8b" = { before = 0 }  # asset erc20 — registry.tokens
-"0xecac9c5f704e954931349da37f60e39f515c11c1" = { before = 0 }  # asset erc20 — euler vault asset
 "0xecfafdc7741323a945a163ed068b5a3c43483957" = { before = 0 }  # asset erc20 — registry.tokens
 "0xed025a9fe4b30bcd68460bca42583090c2266468" = { before = 0 }  # asset erc20 — compound-v2 cToken(0xF61159B4).underlying()
 "0xed1167b6dc64e8a366db86f2e952a482d0981ebd" = { before = 0 }  # asset erc20 — registry.tokens
@@ -6084,7 +6095,6 @@ storage_history = { distance = 10_064 }
 "0xb611401574061947abac7d2406711f115be22a6e" = { before = 0 }  # euler-v2 oracle_aggregator — euler:0x0685191d router.getConfiguredOracle(asset,uoa)→feed()→aggregat
 "0xb996d9f788d1ff0516c033794f438f10d6d7190d" = { before = 0 }  # euler-v2 oracle_aggregator — euler:0xcAd0be6e router.getConfiguredOracle(asset,uoa)→oracleCrossQuot
 "0xc499ec76e2f5ac15e127a352bc40cf24fc472401" = { before = 0 }  # euler-v2 oracle_aggregator — euler:0x7d67eFCF.getConfiguredOracle(0xA35b1B31,uoa)→oracleBaseCross()
-"0xd8b9aa6e811c935ef63e877cfa7be276931293da" = { before = 0 }  # euler-v2 oracle_aggregator — euler:0xD1552d87 router.getConfiguredOracle(asset,uoa)→feed()→aggregat
 "0xe07f52971153db2713ace5ebaaf2ea8b0a9230b7" = { before = 0 }  # euler-v2 oracle_aggregator — euler:0xeBA46a92 router.getConfiguredOracle(asset,uoa)→feed()→aggregat
 "0xe902cd939a0605001257a5719b4d6d5478b490b4" = { before = 0 }  # euler-v2 oracle_aggregator — euler:0x4078Ba53 router.getConfiguredOracle(asset,uoa)→oracleBaseCross
 "0xfd69366dd8f8aae18c8344f66cc841782e73b2f0" = { before = 0 }  # euler-v2 oracle_aggregator — euler:0xa74c76A8.getConfiguredOracle(0xd5F7838F,uoa)→oracleBaseCross()
@@ -6094,16 +6104,12 @@ storage_history = { distance = 10_064 }
 "0x2e1d7e5ba9a04ff2aa15be73b812fe1f8a43c3d7" = { before = 0 }  # euler-v2 oracle_aggregator_phase — euler:0x2f563b8c router.getConfiguredOracle(asset,uoa)→feed()→phaseAgg
 "0x34bb31af1f1c1158086543b1c4e717bdb064153a" = { before = 0 }  # euler-v2 oracle_aggregator_phase — euler:0xa74c76A8.getConfiguredOracle(0xd5F7838F,uoa)→oracleBaseCross()
 "0x6ddc724c6dbf1856ba0142e6a021008f4b4344ca" = { before = 0 }  # euler-v2 oracle_aggregator_phase — euler:0xeBA46a92 router.getConfiguredOracle(asset,uoa)→feed()→phaseAgg
-"0x8116b273cd75d79c382afacc706659ded5e0a59d" = { before = 0 }  # euler-v2 oracle_aggregator_phase — euler:0xD1552d87 router.getConfiguredOracle(asset,uoa)→feed()→phaseAgg
 "0x85fbd46eded893392e52a02bc5ac0294fb06f88d" = { before = 0 }  # euler-v2 oracle_aggregator_phase — euler:0x82c710B9 router.getConfiguredOracle(asset,uoa)→feed()→phaseAgg
 "0x98953e9c76573e06ec265bdde1dbb89fa02d56d3" = { before = 0 }  # euler-v2 oracle_aggregator_phase — euler:0xd50Cf025 router.getConfiguredOracle(asset,uoa)→feed()→phaseAgg
 "0xa1487cffb8f3010711043aac82bd6b4d118f89f2" = { before = 0 }  # euler-v2 oracle_aggregator_phase — euler:0xFf09741C router.getConfiguredOracle(asset,uoa)→oracleBaseCross
 "0xa6fa156482a3028846c886fcc94ca8ec607187b4" = { before = 0 }  # euler-v2 oracle_aggregator_phase — euler:0xFc323C17 router.getConfiguredOracle(asset,uoa)→feed()→phaseAgg
 "0xaa745106db818bfecc39250260df4d453498279f" = { before = 0 }  # euler-v2 oracle_aggregator_phase — euler:0x7d67eFCF.getConfiguredOracle(0xA35b1B31,uoa)→oracleBaseCross()
 "0xadcd1b19a0190e18d961993c5671d3f5d47c13ea" = { before = 0 }  # euler-v2 oracle_aggregator_phase — euler:0xcAd0be6e router.getConfiguredOracle(asset,uoa)→oracleCrossQuot
-"0xc8f8d8d5ab0f874f00d74b1ef448151631bc3473" = { before = 0 }  # euler-v2 oracle_aggregator_phase — euler:0xD1552d87 router.getConfiguredOracle(asset,uoa)→feed()→phaseAgg
-"0xe3f0dede4b499c07e12475087ab1a084b5f93bc0" = { before = 0 }  # euler-v2 oracle_aggregator_phase — euler:0xD1552d87 router.getConfiguredOracle(asset,uoa)→feed()→phaseAgg
-"0xf2d87e37ea1e54c7aa913d2447a5f69f61c114cf" = { before = 0 }  # euler-v2 oracle_aggregator_phase — euler:0xD1552d87 router.getConfiguredOracle(asset,uoa)→feed()→phaseAgg
 "0xf3d70857b489ecc6768d0982b773e1cba9e1f00b" = { before = 0 }  # euler-v2 oracle_aggregator_phase — euler:0x0685191d router.getConfiguredOracle(asset,uoa)→feed()→phaseAgg
 "0x00136f1891dfebf9ede97b36525ae6092df89266" = { before = 0 }  # euler-v2 oracle_router — vault.oracle()
 "0x001cf643df5a164c80457f0a2ac070c3b7399876" = { before = 0 }  # euler-v2 oracle_router — vault.oracle()
@@ -6332,7 +6338,6 @@ storage_history = { distance = 10_064 }
 "0x5147ea642caef7bd9c1265aadca78f997abb9649" = { before = 0 }  # euler-v2 oracle_source — euler:0x41d2d958 router.getConfiguredOracle(asset,uoa)→feed()
 "0x5163195bdac96b9be790c80edbc55be03f436e0b" = { before = 0 }  # euler-v2 oracle_source — euler:0x30B241De router.getConfiguredOracle(asset,uoa)→oracleBaseCross
 "0x53be6a5e436a6aa591161d62caa573511f8eb56e" = { before = 0 }  # euler-v2 oracle_source — euler:0xA2f92e2d router.getConfiguredOracle(asset,uoa)→oracleCrossQuot
-"0x547a514d5e3769680ce22b2361c10ea13619e8a9" = { before = 0 }  # euler-v2 oracle_source — euler:0xD1552d87 router.getConfiguredOracle(asset,uoa)→feed()
 "0x56f31bbf98a7e13ba956abf627142fef603f9cbc" = { before = 0 }  # euler-v2 oracle_source — euler:0x97Ef9d52 router.getConfiguredOracle(asset,uoa)→oracleBaseCross
 "0x570e09372fd3f1c3013daa464c1c226fdf044ecb" = { before = 0 }  # euler-v2 oracle_source — euler:0xf8973F8c router.getConfiguredOracle(asset,uoa)→oracleBaseCross
 "0x592b8e963fc9853e16bdb74c5b806ac90ad96929" = { before = 0 }  # euler-v2 oracle_source — euler:0xbC351610 router.getConfiguredOracle(asset,uoa)→oracleBaseCross
@@ -7859,6 +7864,9 @@ storage_history = { distance = 10_064 }
 "0xa741a32f9dcfe6adba088fd0f97e90742d7d5da3" = { before = 0 }  # liquity-v2 borrowerOperations — TroveManager(0xA2895d6A).borrowerOperations()
 "0xe8119fc02953b27a1b48d2573855738485a17329" = { before = 0 }  # liquity-v2 borrowerOperations — TroveManager(0xb2B2ABEb).borrowerOperations()
 "0xf949982b91c8c61e952b3ba942cbbfaef5386684" = { before = 22283450 }  # liquity-v2 collateral_registry — root:liquity/bold
+"0x34f1e9c7dcc279ec70d3c4488eb2d80fba8b7b2b" = { before = 0 }  # liquity-v2 priceFeed — PriceFeedAddressChanged constructor log
+"0xcc5f8102eb670c89a4a3c567c13851260303c24f" = { before = 0 }  # liquity-v2 priceFeed — PriceFeedAddressChanged constructor log
+"0xe7aa2ba9e086a379d3beb224098bc634a46e314e" = { before = 0 }  # liquity-v2 priceFeed — PriceFeedAddressChanged constructor log
 "0x14d8d8011df2b396ed2bbc4959bb73250324f386" = { before = 0 }  # liquity-v2 sortedTroves — TroveManager(0xb2B2ABEb).sortedTroves()
 "0x84eb85a8c25049255614f0536bea8f31682e86f1" = { before = 0 }  # liquity-v2 sortedTroves — TroveManager(0xA2895d6A).sortedTroves()
 "0xa25269e41bd072513849f2e64ad221e84f3063f4" = { before = 0 }  # liquity-v2 sortedTroves — TroveManager(0x7bcb64B2).sortedTroves()
@@ -9263,7 +9271,6 @@ storage_history = { distance = 10_064 }
 "0x9404dc13440f6bac4323691b3d36a2a4af1a0e29" = { before = 0 }  # morpho-blue oracle_aggregator — morpho:0x7adf71a9→BASE_FEED_1()→aggregator()
 "0x94ac91b209043162e6761942563a9f1f8dd75209" = { before = 0 }  # morpho-blue oracle_aggregator — morpho:0x3f726033→BASE_FEED_2()→aggregator()
 "0x95dc7c293ad1706c80bcde068b609ca61b3ff78c" = { before = 0 }  # morpho-blue oracle_aggregator — morpho:0x4f3eff3e→BASE_FEED_1()→aggregator()
-"0x96d6e33b411dc1f4e3f1e894a5a5d9ce0f96738d" = { before = 0 }  # morpho-blue oracle_aggregator — morpho:0x2b6efe10→BASE_FEED_1()→aggregator()
 "0x9ddb5fba9a737860c7cced0d9177af56ab16c183" = { before = 0 }  # morpho-blue oracle_aggregator — morpho:0x36090775→BASE_FEED_1()→aggregator()
 "0xa0b5260bdfd1011c4bcdc7a099c75bff6340b38c" = { before = 0 }  # morpho-blue oracle_aggregator — morpho:0x9f40c1d2→QUOTE_FEED_2()→aggregator()
 "0xa0cd5ba4b03fe29c9448652ee0aa1b10739ab22d" = { before = 0 }  # morpho-blue oracle_aggregator — morpho:0x814b1df0→BASE_FEED_1()→aggregator()
@@ -9287,7 +9294,6 @@ storage_history = { distance = 10_064 }
 "0x158228e08c52f3e2211ccbc8ec275fa93f6033fc" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x89064883→BASE_FEED_1()→phaseAggregators(4)
 "0x203030eeca9646f4ee21eb0f2358d8bfb7aa3881" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x89064883→BASE_FEED_1()→phaseAggregators(2)
 "0x204a6fe11de66aa463879f47f3533dd87d47020d" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x20565e2b→BASE_FEED_1()→phaseAggregators(3)
-"0x20807cf61ad17c31837776fa39847a2fa1839e81" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x2b6efe10→BASE_FEED_1()→phaseAggregators(6)
 "0x3a6e27b663593e34a7fb80ba9544d9e8babdf001" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0xcfb71463→QUOTE_FEED_1()→phaseAggregators(3)
 "0x4162dd6aa55a115ced63779134679f0275382ab5" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x9f40c1d2→QUOTE_FEED_2()→phaseAggregators(2)
 "0x4d3adf7f00e68c53c7feea132493dcec5822f59a" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x4f3eff3e→BASE_FEED_1()→phaseAggregators(2)
@@ -9303,21 +9309,17 @@ storage_history = { distance = 10_064 }
 "0x81076d6ff2620ea9dd7ba9c1015f0d09a3a732e6" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0xc29b3bc0→BASE_FEED_1()→phaseAggregators(4)
 "0x87cfea02c8322653a7335c6f72be19ce54ecbfb5" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x9f40c1d2→QUOTE_FEED_2()→phaseAggregators(3)
 "0x8a4d74003870064d41d4f84940550911fbfccf04" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x637060c4→BASE_FEED_1()→phaseAggregators(4)
-"0x8cde021f0bfa5f82610e8ce46493cf66ac04af53" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x2b6efe10→BASE_FEED_1()→phaseAggregators(3)
 "0x908edc7e1974ecab1ca7164424bc4cac287d83ad" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x6686788b→BASE_FEED_1()→phaseAggregators(1)
 "0x9cb248e68fb81d0cfe7d6b3265fe6bf123a71fe0" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x1b4a3f92→BASE_FEED_1()→phaseAggregators(1)
 "0xaec0d77fdd6a2a34ec3eaf915260496ae27f9d25" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x637060c4→BASE_FEED_1()→phaseAggregators(2)
 "0xbb96e202df5ff5b728b063c7a17b693a603b5772" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0xcfb71463→QUOTE_FEED_1()→phaseAggregators(2)
-"0xbd11bc57fc140614190cabc1b4c316aba220bae4" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x2b6efe10→BASE_FEED_1()→phaseAggregators(4)
 "0xbd72da70007e47aaf1bbd84918675392cf6885f7" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0xc29b3bc0→BASE_FEED_1()→phaseAggregators(3)
-"0xc8b5381a98c7dc8b91f4149303397da56061ebaf" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x2b6efe10→BASE_FEED_1()→phaseAggregators(2)
 "0xcac109af977ac94929a5dd37ed8af763bad78151" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x637060c4→BASE_FEED_1()→phaseAggregators(5)
 "0xcadb2f2e0ed54b92d105095499b6b753ec0a5c17" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0xc20560b8→BASE_FEED_1()→phaseAggregators(1)
 "0xd00a14a8d25692f7f2565a2fe3b98b468b91324d" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x06387f46→BASE_FEED_1()→phaseAggregators(2)
 "0xd866a07dea5ee3c093e21d33660b5579c21f140b" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x89064883→BASE_FEED_1()→phaseAggregators(3)
 "0xda31bc2b08f22ae24aed5f6eb1e71e96867ba196" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0xbc693693→BASE_FEED_2()→phaseAggregators(1)
 "0xdf005cad29aac8b1170960807f99b62aaed1bb0a" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x2b397b78→QUOTE_FEED_1()→phaseAggregators(3)
-"0xdfd03bfc3465107ce570a0397b247f546a42d0fa" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x2b6efe10→BASE_FEED_1()→phaseAggregators(5)
 "0xe1766147bf67c20a6377f309079cb15ec423cfab" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0xc29b3bc0→BASE_FEED_1()→phaseAggregators(2)
 "0xe4b36bbc01ead5a378d4cb088604bfe5ab2cefe3" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x637060c4→BASE_FEED_1()→phaseAggregators(3)
 "0xe6c7ae04e83aa7e491988caeecf5bd6a240a0d14" = { before = 0 }  # morpho-blue oracle_aggregator_phase — morpho:0x6e8f5b2d→BASE_FEED_1()→phaseAggregators(2)
@@ -9401,7 +9403,6 @@ storage_history = { distance = 10_064 }
 "0x28b82a7fee03281dc63f02570560d1f4690b7520" = { before = 0 }  # morpho-blue oracle_source — morpho:0x2c7aa77c→BASE_FEED_1()
 "0x29774067ffdf33a5bbb3fecf49821a2015236117" = { before = 0 }  # morpho-blue oracle_source — morpho:0x07ed3029→BASE_FEED_1()
 "0x2bb37d8bea49b4e7dfe3e95337d9662c9e120874" = { before = 0 }  # morpho-blue oracle_source — morpho:0x56c136fc→QUOTE_FEED_1()
-"0x2c1d072e956affc0d435cb7ac38ef18d24d9127c" = { before = 0 }  # morpho-blue oracle_source — morpho:0x2b6efe10→BASE_FEED_1()
 "0x2c47b8cd75c818969b398911b70c633e280552d4" = { before = 0 }  # morpho-blue oracle_source — morpho:0xcb88fa5f→BASE_FEED_1()
 "0x2c8116dc81a73c4051d2a232dbb586d256de6dfe" = { before = 0 }  # morpho-blue oracle_source — morpho:0xc08b9ff2→BASE_FEED_1()
 "0x2d21f93e5e330b7d38bbfcc59877cd9182118198" = { before = 0 }  # morpho-blue oracle_source — morpho:0xd46f66d7→BASE_FEED_1()

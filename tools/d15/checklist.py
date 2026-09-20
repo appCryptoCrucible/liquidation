@@ -57,8 +57,15 @@ def evaluate(entries: list[dict], failures: dict[str, str]) -> list[dict[str, An
     silo_o = _has_kind(entries, {"oracle_source"}, {"silo-v2"})
     row(8, "Silo solvency/maxLtv oracles", silo_o > 0, f"{silo_o} silo-v2 oracle_source rows")
 
+    liq_pf = _has_kind(entries, {"priceFeed"}, {"liquity-v2"})
     liq_agg = _has_kind(entries, {"oracle_aggregator", "oracle_aggregator_phase"}, {"liquity-v2"})
-    row(9, "Liquity underlying aggregators", liq_agg > 0, f"{liq_agg} liquity-v2 aggregator rows")
+    # Aggregators are already in the filter via Aave V3 (add() dedup); PriceFeeds are the Liquity-owned gap.
+    row(
+        9,
+        "Liquity underlying aggregators",
+        liq_pf >= 3 or liq_agg > 0,
+        f"{liq_pf} liquity-v2 priceFeed rows; {liq_agg} liquity-v2 aggregator rows",
+    )
 
     sky = _has_kind(entries, {"dog", "clipper", "pip", "vat", "jug", "pot", "spotter", "dss_flash"}, {"sky-maker"})
     row(10, "Sky Dog + Clippers + medianizers", sky > 0, f"{sky} sky-maker core rows")

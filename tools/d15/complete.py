@@ -9,7 +9,7 @@ Reads d15_addresses.json (output of discover_d15_addresses.py) and adds, from ch
      wrapper getters, plus every HISTORICAL phase aggregator (AggregatorProxy
      `phaseAggregators(i)` and Chainlink FeedRegistry `getPhaseFeed`). A replay
      over the archive needs the aggregator that was live then, not only now.
-  2. Aave V4 spoke-oracle sources (AssetSourceUpdated logs, getSourceOfAsset).
+  2. Aave V4 spoke-oracle sources (UpdateReserveSource logs, getReserveSource).
   3. Compound V3: every comet from the Configurator's CometDeployed logs, each
      comet's asset price feeds and base feed.
   4. Morpho Blue: every market's oracle and IRM from CreateMarket logs.
@@ -393,13 +393,15 @@ class Completer:
                     continue
                 m = re.search(r"getSourceOfAsset\((0x[0-9a-fA-F]{40})\)", e.get("source", ""))
                 if m:
-                    self.add_asset(m.group(1), f"{proto} reserve")
+                    self.try_erc20_asset(m.group(1), f"{proto} reserve")
                 if e["kind"] in ("oracle_proxy",):
                     roots.append((e["address"], f"{proto}:{e['source'][:48]}"))
             self.resolve_feeds(proto, roots)
 
     def aave_v4(self, base_entries: list[dict], from_block: int):
-        tp = topic("AssetSourceUpdated(address,address)")
+        # V4 IAaveOracle emits UpdateReserveSource(uint256 indexed reserveId, address indexed source).
+        # topics[1] is reserveId, NOT an address — never pass it to add_asset.
+        tp = topic("UpdateReserveSource(uint256,address)")
         oracle_seen: dict[str, str] = {}
         for e in base_entries + self.entries:
             if e["protocol"] == "aave-v4" and e["kind"] == "spoke_oracle":
@@ -407,19 +409,41 @@ class Completer:
         oracles = [Web3.to_checksum_address(a) for a in oracle_seen.values()]
         head = self.w3.eth.block_number
         roots = []
-        seen_oracles = set()
+        pending_asset: list[tuple[str, int]] = []
+        seen_rid: set[tuple[str, int]] = set()
+        n_logs = 0
         for lg in self.get_logs(oracles, [tp], from_block, head):
-            o = lg["address"]
-            seen_oracles.add(o.lower())
-            asset = is_addr_word(bytes(lg["topics"][1]))
-            src = is_addr_word(bytes(lg["topics"][2]))
-            if asset:
-                self.add_asset(asset, "aave-v4 reserve")
-            if src:
-                roots.append((src, f"aave-v4:{o[:10]}.AssetSourceUpdated({asset[:10] if asset else '?'})"))
-        for o in oracles:
-            if o.lower() in seen_oracles:
+            n_logs += 1
+            o = Web3.to_checksum_address(lg["address"])
+            topics = lg["topics"]
+            if len(topics) < 3:
+                self.failures[f"aave-v4:UpdateReserveSource:{n_logs}"] = (
+                    "UpdateReserveSource log missing indexed reserveId/source"
+                )
                 continue
+            rid = int.from_bytes(bytes(topics[1]), "big")
+            src = is_addr_word(bytes(topics[2]))
+            if src:
+                roots.append((src, f"aave-v4:{o[:10]}.UpdateReserveSource({rid})"))
+            k = (o.lower(), rid)
+            if k not in seen_rid:
+                seen_rid.add(k)
+                pending_asset.append((o, rid))
+        if pending_asset:
+            ares = self.multicall(
+                [(o, sel("getReserveAsset(uint256)") + encode(["uint256"], [rid])) for o, rid in pending_asset]
+            )
+            for (o, rid), (ok, ret) in zip(pending_asset, ares):
+                asset = is_addr_word(ret[:32]) if ok else None
+                if asset:
+                    self.try_erc20_asset(asset, "aave-v4 reserve")
+                else:
+                    self.failures[f"aave-v4:getReserveAsset:{o[:10]}:{rid}"] = (
+                        "getReserveAsset(reserveId) failed for UpdateReserveSource log"
+                    )
+        self.notes.append(f"aave-v4: {n_logs} UpdateReserveSource logs")
+        for o in oracles:
+            # Current-state enumeration unions with historical log sources (deduped by add()).
             # V4 SpokeOracle is keyed by reserveId, not asset. Verified on-chain 2026-09-19:
             # selector e4337e38 == getReserveSource(uint256) returns the source address
             # (main_spoke_oracle reserve 0 -> 0x5424384B…, the WETH SVR feed); reserve ids
@@ -432,14 +456,17 @@ class Completer:
                 if src:
                     found += 1
                     roots.append((src, f"aave-v4:{o[:10]}.getReserveSource({i})"))
-                    asset_ret = self.call1(o, "getReserveAsset(uint256)", (i,), ("uint256",))
-                    asset = is_addr_word(asset_ret[:32]) if asset_ret else None
-                    if asset:
-                        self.try_erc20_asset(asset, "aave-v4 reserve")
+                    if (o.lower(), i) not in seen_rid:
+                        asset_ret = self.call1(o, "getReserveAsset(uint256)", (i,), ("uint256",))
+                        asset = is_addr_word(asset_ret[:32]) if asset_ret else None
+                        if asset:
+                            self.try_erc20_asset(asset, "aave-v4 reserve")
             if found == 0:
                 self.failures[f"aave-v4:{o}"] = "getReserveSource(uint256) returned no sources — confirm this oracle's ABI at C3"
         if not roots:
-            self.failures["aave-v4:oracle_sources"] = "no AssetSourceUpdated logs and getSourceOfAsset failed — confirm V4 oracle ABI"
+            self.failures["aave-v4:oracle_sources"] = (
+                "no UpdateReserveSource logs and getReserveSource failed — confirm V4 oracle ABI"
+            )
         for src, s in roots:
             self.add("aave-v4", "oracle_source", src, s)
         self.resolve_feeds("aave-v4", roots)
@@ -467,7 +494,7 @@ class Completer:
                     asset = is_addr_word(ret[32:64])
                     feed = is_addr_word(ret[64:96])
                     if asset:
-                        self.add_asset(asset, "compound-v3 collateral")
+                        self.try_erc20_asset(asset, "compound-v3 collateral")
                     if feed:
                         roots.append((feed, f"compound-v3:{c[:10]}.getAssetInfo({i}).priceFeed"))
             ok, ret = res[n]
@@ -479,7 +506,7 @@ class Completer:
             if ok:
                 b = is_addr_word(ret[:32])
                 if b:
-                    self.add_asset(b, "compound-v3 base")
+                    self.try_erc20_asset(b, "compound-v3 base")
         for f, s in roots:
             self.add("compound-v3", "oracle_source", f, s)
         self.resolve_feeds("compound-v3", roots)
@@ -511,8 +538,8 @@ class Completer:
         for lg in logs:
             loan, coll, oracle, irm, lltv = decode(["(address,address,address,address,uint256)"], bytes(lg["data"]))[0]
             n += 1
-            self.add_asset(loan, "morpho loan")
-            self.add_asset(coll, "morpho collateral")
+            self.try_erc20_asset(loan, "morpho loan")
+            self.try_erc20_asset(coll, "morpho collateral")
             if irm and irm.lower() != ZERO:
                 self.add("morpho-blue", "irm", irm, "CreateMarket.irm")
             if oracle and oracle.lower() != ZERO and self.has_code(oracle):
@@ -537,7 +564,7 @@ class Completer:
             router = is_addr_word(o[:32]) if ok_o else None
             uoa = is_addr_word(u[:32]) if ok_u else None
             if asset:
-                self.add_asset(asset, "euler vault asset")
+                self.try_erc20_asset(asset, "euler vault asset")
             if not (router and uoa):
                 continue
             routers.add(router)
@@ -558,7 +585,7 @@ class Completer:
         for (router, uoa, cv), (ok, ret) in zip(coll_meta, cres):
             ca = is_addr_word(ret[:32]) if ok else None
             if ca:
-                self.add_asset(ca, "euler collateral asset")
+                self.try_erc20_asset(ca, "euler collateral asset")
                 pair_calls.append((router, sel("getConfiguredOracle(address,address)") + encode(["address", "address"], [ca, uoa])))
                 pair_meta.append(f"euler:{router[:10]}.getConfiguredOracle({ca[:10]},uoa)")
         pres = self.multicall(pair_calls)
@@ -572,7 +599,7 @@ class Completer:
         # routers' fallback oracles too
         self.resolve_feeds("euler-v2", roots + [(r, f"euler:router:{r[:10]}") for r in sorted(routers)])
 
-    def liquity_v2(self, collateral_registry: str):
+    def liquity_v2(self, collateral_registry: str, from_block: int):
         cr = Web3.to_checksum_address(collateral_registry)
         ret = self.call1(cr, "totalCollaterals()")
         n = int.from_bytes(ret[:32], "big") if ret else 0
@@ -590,9 +617,9 @@ class Completer:
             ("borrowerOperations", "borrowerOperations()"),
             ("sortedTroves", "sortedTroves()"),
             ("troveNFT", "troveNFT()"),
-            ("priceFeed", "priceFeed()"),
         ]
         feed_roots: list[tuple[str, str]] = []
+        tms: list[str] = []
         for i in range(n):
             ok_tm, tm_ret = res[2 * i]
             ok_tok, tok_ret = res[2 * i + 1]
@@ -603,14 +630,41 @@ class Completer:
             if not tm:
                 self.failures[f"liquity-v2:tm:{i}"] = "getTroveManager failed"
                 continue
+            tms.append(tm)
             self.add("liquity-v2", "troveManager", tm, f"CollateralRegistry.getTroveManager({i})")
             gres = self.multicall([(tm, sel(sig)) for _, sig in tm_getters])
             for (kind, sig), (ok, gret) in zip(tm_getters, gres):
                 ad = is_addr_word(gret[:32]) if ok else None
                 if ad and self.has_code(ad):
                     self.add("liquity-v2", kind, ad, f"TroveManager({tm[:10]}).{sig}")
-                    if kind == "priceFeed":
-                        feed_roots.append((ad, f"liquity-v2:{ad[:10]}"))
+        # priceFeed is internal on LiquityBase; constructor emits PriceFeedAddressChanged(address)
+        # (not indexed — address is in log data). Do not call TroveManager.priceFeed().
+        tp = topic("PriceFeedAddressChanged(address)")
+        head = self.w3.eth.block_number
+        logs = self.get_logs(tms, [tp], from_block, head) if tms else []
+        seen_pf: set[str] = set()
+        for lg in logs:
+            data = bytes(lg["data"])
+            ad = is_addr_word(data[:32]) if len(data) >= 32 else None
+            if not ad:
+                self.failures[f"liquity-v2:priceFeedLog:{lg['blockNumber']}"] = (
+                    "PriceFeedAddressChanged log has no address in data"
+                )
+                continue
+            if ad.lower() in seen_pf:
+                continue
+            seen_pf.add(ad.lower())
+            if self.has_code(ad):
+                self.add("liquity-v2", "priceFeed", ad, "PriceFeedAddressChanged constructor log")
+                feed_roots.append((ad, f"liquity-v2:{ad[:10]}"))
+            else:
+                self.failures[f"liquity-v2:priceFeed:{ad[:10]}"] = (
+                    "PriceFeedAddressChanged address has no code"
+                )
+        if tms and len(seen_pf) < len(tms):
+            self.failures["liquity-v2:priceFeed"] = (
+                f"PriceFeedAddressChanged resolved {len(seen_pf)} feeds for {len(tms)} TroveManagers"
+            )
         self.resolve_feeds("liquity-v2", feed_roots)
 
     def sky(self, ilk_registry: str, dog: str, spotter: str):
@@ -636,7 +690,7 @@ class Completer:
             if pip:
                 pips.append((pip, f"sky:{name}.pip"))
             if gem:
-                self.add_asset(gem, f"sky gem {name}")
+                self.try_erc20_asset(gem, f"sky gem {name}")
         self.resolve_feeds("sky-maker", pips)
 
     def gearbox(self, credit_managers: list[str]):
@@ -662,7 +716,7 @@ class Completer:
         for po, (ok, ret) in zip(tok_meta, tres):
             t = is_addr_word(ret[:32]) if ok else None
             if t:
-                self.add_asset(t, "gearbox collateral")
+                self.try_erc20_asset(t, "gearbox collateral")
                 feed_calls.append((po, sel("priceFeeds(address)") + encode(["address"], [t])))
                 feed_meta.append((po, t))
         fres = self.multicall(feed_calls)
@@ -944,7 +998,7 @@ def run_completion(c: Completer, base_entries: list[dict], skip_dex: bool) -> No
     )
     step("morpho", c.morpho, ROOTS["morpho_blue"], 18_883_124)
     step("euler", c.euler, by[("euler-v2", "vault")])
-    step("liquity-v2", c.liquity_v2, ROOTS["liquity_v2_collateral_registry"])
+    step("liquity-v2", c.liquity_v2, ROOTS["liquity_v2_collateral_registry"], 22_283_450)
     ilk_reg = by[("sky-maker", "ilk_registry")][0] if by[("sky-maker", "ilk_registry")] else ROOTS["ilk_registry"]
     step("sky", c.sky, ilk_reg, _sky_dog(), _sky_spotter())
     cms = by[("gearbox-v3", "credit_manager")]

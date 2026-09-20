@@ -1,13 +1,13 @@
 {
- "generated_at": "2026-09-20T07:19:52+0200",
+ "generated_at": "2026-09-20T09:24:53+0200",
  "chain_id": 1,
  "registry_block": 26015175,
  "rpc": "https://ethereum.publicnode.com",
  "logs_rpc": "https://gateway.tenderly.co/public/mainnet",
- "head_block": 26016453,
+ "head_block": 26017091,
  "tier": "registry Essential + completion (D15 15-class)",
  "base_count": 7565,
- "added_count": 5508,
+ "added_count": 5509,
  "counts_by_class": {
   "aave-v3/aToken": 160,
   "aave-v3/addresses_provider": 3,
@@ -18,15 +18,16 @@
   "aave-v3/pool": 3,
   "aave-v3/price_oracle": 3,
   "aave-v4/hub": 4,
-  "aave-v4/oracle_aggregator": 1,
-  "aave-v4/oracle_source": 4,
+  "aave-v4/oracle_aggregator": 3,
+  "aave-v4/oracle_aggregator_phase": 9,
+  "aave-v4/oracle_source": 11,
   "aave-v4/spoke": 53,
   "aave-v4/spoke_oracle": 13,
   "ajna/erc20_pool_factory": 1,
   "ajna/erc721_collateral": 9,
   "ajna/erc721_pool_factory": 1,
   "ajna/pool": 235,
-  "asset/erc20": 1587,
+  "asset/erc20": 1580,
   "chainlink/oracle_aggregator": 46,
   "chainlink/oracle_aggregator_phase": 179,
   "compound-v2/cToken": 1960,
@@ -41,10 +42,10 @@
   "curve/meta_registry": 1,
   "curve/pool": 712,
   "euler-v2/oracle_adapter": 356,
-  "euler-v2/oracle_aggregator": 16,
-  "euler-v2/oracle_aggregator_phase": 15,
+  "euler-v2/oracle_aggregator": 15,
+  "euler-v2/oracle_aggregator_phase": 11,
   "euler-v2/oracle_router": 183,
-  "euler-v2/oracle_source": 164,
+  "euler-v2/oracle_source": 163,
   "euler-v2/vault": 884,
   "fluid/liquidity_layer": 1,
   "fluid/oracle_source": 166,
@@ -62,15 +63,16 @@
   "liquity-v2/activePool": 3,
   "liquity-v2/borrowerOperations": 3,
   "liquity-v2/collateral_registry": 1,
+  "liquity-v2/priceFeed": 3,
   "liquity-v2/sortedTroves": 3,
   "liquity-v2/stabilityPool": 3,
   "liquity-v2/troveManager": 3,
   "liquity-v2/troveNFT": 3,
   "morpho-blue/adaptive_curve_irm": 1,
   "morpho-blue/market_oracle": 1354,
-  "morpho-blue/oracle_aggregator": 55,
-  "morpho-blue/oracle_aggregator_phase": 44,
-  "morpho-blue/oracle_source": 517,
+  "morpho-blue/oracle_aggregator": 54,
+  "morpho-blue/oracle_aggregator_phase": 39,
+  "morpho-blue/oracle_source": 516,
   "morpho-blue/rate_provider": 7,
   "morpho-blue/singleton": 1,
   "oracle-network/chainlink_feed_registry": 1,
@@ -149,6 +151,81 @@
   "aave-v4:0x8Dabe53E": "spoke.ORACLE() failed",
   "aave-v4:0xa0e97e45": "spoke.ORACLE() failed",
   "aave-v4:0x6493a238": "spoke.ORACLE() failed",
+  "aave-v4:getReserveAsset:0x99B2B6CE:0": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x99B2B6CE:1": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x99B2B6CE:2": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x99B2B6CE:3": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x99B2B6CE:4": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x99B2B6CE:5": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x99B2B6CE:6": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x99B2B6CE:7": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x99B2B6CE:8": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x99B2B6CE:9": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x99B2B6CE:10": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x99B2B6CE:11": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x99B2B6CE:12": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x99B2B6CE:13": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x664D73b6:0": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x664D73b6:1": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xd8B153Fa:0": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xd8B153Fa:1": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x37C31699:0": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x37C31699:1": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x198Cac7f:0": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x198Cac7f:1": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x198Cac7f:2": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x0083421f:0": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x0083421f:1": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x0083421f:2": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x0083421f:3": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x0083421f:4": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x0083421f:5": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x0083421f:6": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x0083421f:7": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xB3CE6E7b:0": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xB3CE6E7b:1": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xB3CE6E7b:2": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xB3CE6E7b:3": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xB3CE6E7b:4": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xB3CE6E7b:5": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xB3CE6E7b:6": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xdA1266a7:0": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xdA1266a7:1": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xdA1266a7:2": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xdA1266a7:3": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xdA1266a7:4": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xdA1266a7:5": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xdA1266a7:6": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xdA1266a7:7": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xdA1266a7:8": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xdA1266a7:9": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xdA1266a7:10": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xc390dbe9:0": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xc390dbe9:1": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xc390dbe9:2": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xc390dbe9:3": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xc390dbe9:4": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xc390dbe9:5": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xc390dbe9:6": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xc390dbe9:7": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xc390dbe9:8": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xc390dbe9:9": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x9b91a094:0": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x9b91a094:1": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x9b91a094:2": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x9b91a094:3": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x692cD2F7:0": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x692cD2F7:1": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x692cD2F7:2": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x692cD2F7:3": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x47a7cC7F:0": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x47a7cC7F:1": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x47a7cC7F:2": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x47a7cC7F:3": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x8CEcC12b:0": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x8CEcC12b:1": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0x692cD2F7:4": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
+  "aave-v4:getReserveAsset:0xdA1266a7:11": "getReserveAsset(reserveId) failed for UpdateReserveSource log",
   "compound-v2:0x0cEA0a94": "comptroller.oracle() failed",
   "compound-v2:0x2C7D993E": "comptroller.oracle() failed",
   "compound-v2:0x3E639b86": "comptroller.oracle() failed",
@@ -418,6 +495,22 @@
   "asset:0xCB0477d1": "decimals() failed \u2014 not ERC-20 (compound-v2 cToken(0xEb058A3D).underlying())",
   "asset:0x32BB5a14": "decimals() failed \u2014 not ERC-20 (compound-v2 cToken(0x5778DCe0).underlying())",
   "asset:0xaCF63E56": "decimals() failed \u2014 not ERC-20 (compound-v2 cToken(0xc6e0dD41).underlying())",
+  "asset:0x833589fc": "decimals() failed \u2014 not ERC-20 (morpho collateral)",
+  "asset:0x1f32b1c2": "decimals() failed \u2014 not ERC-20 (morpho loan)",
+  "asset:0x84b78bc9": "decimals() failed \u2014 not ERC-20 (morpho collateral)",
+  "asset:0x091356e6": "decimals() failed \u2014 not ERC-20 (morpho collateral)",
+  "asset:0x94f6cb4f": "decimals() failed \u2014 not ERC-20 (morpho collateral)",
+  "asset:0x2a5c94fe": "decimals() failed \u2014 not ERC-20 (morpho collateral)",
+  "asset:0x9fb57943": "decimals() failed \u2014 not ERC-20 (morpho collateral)",
+  "asset:0x912CE591": "decimals() failed \u2014 not ERC-20 (euler vault asset)",
+  "asset:0x33243BfB": "decimals() failed \u2014 not ERC-20 (euler vault asset)",
+  "asset:0x83e06986": "decimals() failed \u2014 not ERC-20 (euler vault asset)",
+  "asset:0xecAc9C5F": "decimals() failed \u2014 not ERC-20 (euler vault asset)",
+  "asset:0x10674C8C": "decimals() failed \u2014 not ERC-20 (euler vault asset)",
+  "asset:0x656d2c7A": "decimals() failed \u2014 not ERC-20 (euler vault asset)",
+  "oracle-unresolved:0xCC5F8102": "liquity-v2:0xCC5F8102: no oracle_aggregator reached within depth 5",
+  "oracle-unresolved:0xe7Aa2Ba9": "liquity-v2:0xe7Aa2Ba9: no oracle_aggregator reached within depth 5",
+  "oracle-unresolved:0x34F1E9c7": "liquity-v2:0x34F1E9c7: no oracle_aggregator reached within depth 5",
   "oracle-unresolved:0x81FE72B5": "sky:ETH-C.pip: no oracle_aggregator reached within depth 5",
   "oracle-unresolved:0xc7B91C40": "sky:ALLOCATOR-GROVE-A.pip: no oracle_aggregator reached within depth 5",
   "oracle-unresolved:0xd2473237": "sky:RWA002-A.pip: no oracle_aggregator reached within depth 5",
@@ -740,9 +833,10 @@
   "oracle-unresolved:0x2bDE6cD8": "fluid:0x1e3a423b: no oracle_aggregator reached within depth 5"
  },
  "notes": [
+  "aave-v4: 113 UpdateReserveSource logs",
   "morpho-blue: 1782 markets from CreateMarket; 1728 distinct-or-not oracles resolved",
   "fluid: 182 vaults via VaultResolver; 173 oracle roots resolved",
-  "uniswap-v3: 1949 pools for 13100 asset\u00d7hub pairs \u00d7 4 fee tiers (flash sources + exit venues)",
+  "uniswap-v3: 1947 pools for 12996 asset\u00d7hub pairs \u00d7 4 fee tiers (flash sources + exit venues)",
   "curve: 1084 pool hits from MetaRegistry for tracked pairs (deduped on address)",
   "kyber-elastic: 27 pools"
  ],
@@ -54525,33 +54619,152 @@
   {
    "protocol": "aave-v4",
    "kind": "oracle_source",
-   "address": "0x25DEd2f9aE6ae9416693AB63Abe3aB25493861FD",
-   "source": "aave-v4:0x0083421f.getReserveSource(4)"
+   "address": "0x869C9Ae2C8fbe82a8b0F768b9F791f89E083222C",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(1)"
   },
   {
    "protocol": "aave-v4",
    "kind": "oracle_source",
-   "address": "0x5A6FcB0ebc018b6FD94Fc5f5A9F0948d0D40f040",
-   "source": "aave-v4:0x47a7cC7F.getReserveSource(1)"
+   "address": "0x547a514d5e3769680Ce22B2361c10Ea13619e8a9",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(5)"
+  },
+  {
+   "protocol": "aave-v4",
+   "kind": "oracle_source",
+   "address": "0x2c1d072e956AFFC0D435Cb7AC38EF18d24d9127c",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(6)"
+  },
+  {
+   "protocol": "aave-v4",
+   "kind": "oracle_source",
+   "address": "0x581b8Bc9d6104F71ad6da1f483B67500968C5994",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(7)"
+  },
+  {
+   "protocol": "aave-v4",
+   "kind": "oracle_source",
+   "address": "0x25DEd2f9aE6ae9416693AB63Abe3aB25493861FD",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(12)"
+  },
+  {
+   "protocol": "aave-v4",
+   "kind": "oracle_source",
+   "address": "0x47F52B2e43D0386cF161e001835b03Ad49889e3b",
+   "source": "aave-v4:0x37C31699.UpdateReserveSource(0)"
+  },
+  {
+   "protocol": "aave-v4",
+   "kind": "oracle_source",
+   "address": "0xF29b1e3b68Fd59DD0a413811fD5d0AbaE653216d",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(11)"
+  },
+  {
+   "protocol": "aave-v4",
+   "kind": "oracle_source",
+   "address": "0x5C1771583dbbAE5AFEd71ACD2BfC0eA4029EBB04",
+   "source": "aave-v4:0x198Cac7f.UpdateReserveSource(0)"
   },
   {
    "protocol": "aave-v4",
    "kind": "oracle_source",
    "address": "0x89F6Eb404AbF19FE817426dD2E2E0F14D1a5712e",
-   "source": "aave-v4:0x692cD2F7.getReserveSource(0)"
+   "source": "aave-v4:0x692cD2F7.UpdateReserveSource(0)"
   },
   {
    "protocol": "aave-v4",
    "kind": "oracle_source",
-   "address": "0x9B4a96210bc8D9D55b1908B465D8B0de68B7fF83",
-   "source": "aave-v4:0x0083421f.getReserveSource(4)\u2192ASSET_TO_USD_AGGREGATOR()",
+   "address": "0x5A6FcB0ebc018b6FD94Fc5f5A9F0948d0D40f040",
+   "source": "aave-v4:0x47a7cC7F.UpdateReserveSource(1)"
+  },
+  {
+   "protocol": "aave-v4",
+   "kind": "oracle_aggregator",
+   "address": "0xd8B9aA6E811c935eF63e877CFA7Be276931293DA",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(5)\u2192aggregator()",
    "depth": 1
   },
   {
    "protocol": "aave-v4",
    "kind": "oracle_aggregator",
+   "address": "0x96d6e33B411dc1f4E3F1e894A5A5d9CE0F96738D",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(6)\u2192aggregator()",
+   "depth": 1
+  },
+  {
+   "protocol": "aave-v4",
+   "kind": "oracle_source",
+   "address": "0x9B4a96210bc8D9D55b1908B465D8B0de68B7fF83",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(12)\u2192ASSET_TO_USD_AGGREGATOR()",
+   "depth": 1
+  },
+  {
+   "protocol": "aave-v4",
+   "kind": "oracle_aggregator_phase",
+   "address": "0xF2d87E37EA1e54c7Aa913d2447A5f69f61C114Cf",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(5)\u2192phaseAggregators(1)",
+   "phase": 1
+  },
+  {
+   "protocol": "aave-v4",
+   "kind": "oracle_aggregator_phase",
+   "address": "0xc8f8d8d5aB0F874f00d74B1eF448151631bc3473",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(5)\u2192phaseAggregators(2)",
+   "phase": 2
+  },
+  {
+   "protocol": "aave-v4",
+   "kind": "oracle_aggregator_phase",
+   "address": "0xe3f0dEdE4B499c07e12475087AB1A084b5F93bc0",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(5)\u2192phaseAggregators(3)",
+   "phase": 3
+  },
+  {
+   "protocol": "aave-v4",
+   "kind": "oracle_aggregator_phase",
+   "address": "0x8116B273cD75d79C382aFacc706659DEd5E0a59d",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(5)\u2192phaseAggregators(4)",
+   "phase": 4
+  },
+  {
+   "protocol": "aave-v4",
+   "kind": "oracle_aggregator_phase",
+   "address": "0xc8b5381A98c7dc8B91f4149303397dA56061eBaF",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(6)\u2192phaseAggregators(2)",
+   "phase": 2
+  },
+  {
+   "protocol": "aave-v4",
+   "kind": "oracle_aggregator_phase",
+   "address": "0x8cDE021F0BfA5f82610e8cE46493cF66AC04Af53",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(6)\u2192phaseAggregators(3)",
+   "phase": 3
+  },
+  {
+   "protocol": "aave-v4",
+   "kind": "oracle_aggregator_phase",
+   "address": "0xbd11BC57fC140614190CABC1B4c316aba220BAe4",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(6)\u2192phaseAggregators(4)",
+   "phase": 4
+  },
+  {
+   "protocol": "aave-v4",
+   "kind": "oracle_aggregator_phase",
+   "address": "0xDfd03BfC3465107Ce570a0397b247F546a42D0fA",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(6)\u2192phaseAggregators(5)",
+   "phase": 5
+  },
+  {
+   "protocol": "aave-v4",
+   "kind": "oracle_aggregator_phase",
+   "address": "0x20807Cf61AD17c31837776fA39847A2Fa1839E81",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(6)\u2192phaseAggregators(6)",
+   "phase": 6
+  },
+  {
+   "protocol": "aave-v4",
+   "kind": "oracle_aggregator",
    "address": "0x62a897c3e81d809c7444BB63D7D51E1F2EbB6C3D",
-   "source": "aave-v4:0x0083421f.getReserveSource(4)\u2192ASSET_TO_USD_AGGREGATOR()\u2192aggregator()",
+   "source": "aave-v4:0x99B2B6CE.UpdateReserveSource(12)\u2192ASSET_TO_USD_AGGREGATOR()\u2192aggregator()",
    "depth": 2
   },
   {
@@ -56597,13 +56810,6 @@
    "kind": "oracle_source",
    "address": "0x3B9c09bde7776C32C518e2E787412A9bBaA7685F",
    "source": "morpho:0x3308fed4\u2192BASE_FEED_1()",
-   "depth": 1
-  },
-  {
-   "protocol": "morpho-blue",
-   "kind": "oracle_source",
-   "address": "0x2c1d072e956AFFC0D435Cb7AC38EF18d24d9127c",
-   "source": "morpho:0x2b6efe10\u2192BASE_FEED_1()",
    "depth": 1
   },
   {
@@ -60024,13 +60230,6 @@
   },
   {
    "protocol": "morpho-blue",
-   "kind": "oracle_aggregator",
-   "address": "0x96d6e33B411dc1f4E3F1e894A5A5d9CE0F96738D",
-   "source": "morpho:0x2b6efe10\u2192BASE_FEED_1()\u2192aggregator()",
-   "depth": 2
-  },
-  {
-   "protocol": "morpho-blue",
    "kind": "oracle_source",
    "address": "0x3f11C47E7ed54b24D7EFC222FD406d8E1F49Fb69",
    "source": "morpho:0x0705cdc1\u2192BASE_FEED_1()\u2192oracle()",
@@ -60588,41 +60787,6 @@
    "address": "0x68e5F5dA6C1b65Ea8Fa0b0d88f578da02076aDcC",
    "source": "morpho:0xc20560b8\u2192BASE_FEED_1()\u2192phaseAggregators(2)",
    "phase": 2
-  },
-  {
-   "protocol": "morpho-blue",
-   "kind": "oracle_aggregator_phase",
-   "address": "0xc8b5381A98c7dc8B91f4149303397dA56061eBaF",
-   "source": "morpho:0x2b6efe10\u2192BASE_FEED_1()\u2192phaseAggregators(2)",
-   "phase": 2
-  },
-  {
-   "protocol": "morpho-blue",
-   "kind": "oracle_aggregator_phase",
-   "address": "0x8cDE021F0BfA5f82610e8cE46493cF66AC04Af53",
-   "source": "morpho:0x2b6efe10\u2192BASE_FEED_1()\u2192phaseAggregators(3)",
-   "phase": 3
-  },
-  {
-   "protocol": "morpho-blue",
-   "kind": "oracle_aggregator_phase",
-   "address": "0xbd11BC57fC140614190CABC1B4c316aba220BAe4",
-   "source": "morpho:0x2b6efe10\u2192BASE_FEED_1()\u2192phaseAggregators(4)",
-   "phase": 4
-  },
-  {
-   "protocol": "morpho-blue",
-   "kind": "oracle_aggregator_phase",
-   "address": "0xDfd03BfC3465107Ce570a0397b247F546a42D0fA",
-   "source": "morpho:0x2b6efe10\u2192BASE_FEED_1()\u2192phaseAggregators(5)",
-   "phase": 5
-  },
-  {
-   "protocol": "morpho-blue",
-   "kind": "oracle_aggregator_phase",
-   "address": "0x20807Cf61AD17c31837776fA39847A2Fa1839E81",
-   "source": "morpho:0x2b6efe10\u2192BASE_FEED_1()\u2192phaseAggregators(6)",
-   "phase": 6
   },
   {
    "protocol": "morpho-blue",
@@ -64197,13 +64361,6 @@
   {
    "protocol": "euler-v2",
    "kind": "oracle_source",
-   "address": "0x547a514d5e3769680Ce22B2361c10Ea13619e8a9",
-   "source": "euler:0xD1552d87 router.getConfiguredOracle(asset,uoa)\u2192feed()",
-   "depth": 1
-  },
-  {
-   "protocol": "euler-v2",
-   "kind": "oracle_source",
    "address": "0x3792AE101b15Eef45bF713b562383e0399659D64",
    "source": "euler:0x5a006400 router.getConfiguredOracle(asset,uoa)\u2192oracleBaseCross()",
    "depth": 1
@@ -65156,13 +65313,6 @@
   {
    "protocol": "euler-v2",
    "kind": "oracle_aggregator",
-   "address": "0xd8B9aA6E811c935eF63e877CFA7Be276931293DA",
-   "source": "euler:0xD1552d87 router.getConfiguredOracle(asset,uoa)\u2192feed()\u2192aggregator()",
-   "depth": 2
-  },
-  {
-   "protocol": "euler-v2",
-   "kind": "oracle_aggregator",
    "address": "0x95A0D99507e9b248C18C4Dc111Af9EB66681992e",
    "source": "euler:0xFc323C17 router.getConfiguredOracle(asset,uoa)\u2192feed()\u2192aggregator()",
    "depth": 2
@@ -65278,34 +65428,6 @@
    "address": "0x2E1D7e5Ba9A04ff2AA15be73b812fe1F8A43c3d7",
    "source": "euler:0x2f563b8c router.getConfiguredOracle(asset,uoa)\u2192feed()\u2192phaseAggregators(1)",
    "phase": 1
-  },
-  {
-   "protocol": "euler-v2",
-   "kind": "oracle_aggregator_phase",
-   "address": "0xF2d87E37EA1e54c7Aa913d2447A5f69f61C114Cf",
-   "source": "euler:0xD1552d87 router.getConfiguredOracle(asset,uoa)\u2192feed()\u2192phaseAggregators(1)",
-   "phase": 1
-  },
-  {
-   "protocol": "euler-v2",
-   "kind": "oracle_aggregator_phase",
-   "address": "0xc8f8d8d5aB0F874f00d74B1eF448151631bc3473",
-   "source": "euler:0xD1552d87 router.getConfiguredOracle(asset,uoa)\u2192feed()\u2192phaseAggregators(2)",
-   "phase": 2
-  },
-  {
-   "protocol": "euler-v2",
-   "kind": "oracle_aggregator_phase",
-   "address": "0xe3f0dEdE4B499c07e12475087AB1A084b5F93bc0",
-   "source": "euler:0xD1552d87 router.getConfiguredOracle(asset,uoa)\u2192feed()\u2192phaseAggregators(3)",
-   "phase": 3
-  },
-  {
-   "protocol": "euler-v2",
-   "kind": "oracle_aggregator_phase",
-   "address": "0x8116B273cD75d79C382aFacc706659DEd5E0a59d",
-   "source": "euler:0xD1552d87 router.getConfiguredOracle(asset,uoa)\u2192feed()\u2192phaseAggregators(4)",
-   "phase": 4
   },
   {
    "protocol": "euler-v2",
@@ -65491,6 +65613,24 @@
    "kind": "troveNFT",
    "address": "0x7ae430E25b67f19B431e1D1Dc048a5BCF24C0873",
    "source": "TroveManager(0xb2B2ABEb).troveNFT()"
+  },
+  {
+   "protocol": "liquity-v2",
+   "kind": "priceFeed",
+   "address": "0xCC5F8102eb670c89a4a3c567C13851260303c24F",
+   "source": "PriceFeedAddressChanged constructor log"
+  },
+  {
+   "protocol": "liquity-v2",
+   "kind": "priceFeed",
+   "address": "0xe7Aa2Ba9E086A379d3beb224098bC634a46e314E",
+   "source": "PriceFeedAddressChanged constructor log"
+  },
+  {
+   "protocol": "liquity-v2",
+   "kind": "priceFeed",
+   "address": "0x34F1E9c7dcc279ec70d3c4488EB2D80FBa8B7b2B",
+   "source": "PriceFeedAddressChanged constructor log"
   },
   {
    "protocol": "sky-maker",
@@ -85607,12 +85747,6 @@
   {
    "protocol": "asset",
    "kind": "erc20",
-   "address": "0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb",
-   "source": "morpho loan"
-  },
-  {
-   "protocol": "asset",
-   "kind": "erc20",
    "address": "0x1F573D6Fb3F13d689FF844B4cE37794d79a7FF1C",
    "source": "compound-v2 cToken(0x81E34672).underlying()"
   },
@@ -85837,12 +85971,6 @@
    "kind": "erc20",
    "address": "0x3301Ee63Fb29F863f2333Bd4466acb46CD8323E6",
    "source": "compound-v2 cToken(0x50dC71dC).underlying()"
-  },
-  {
-   "protocol": "asset",
-   "kind": "erc20",
-   "address": "0x33243BfB60C05d9F20A0064365DC10F5Ee599956",
-   "source": "euler vault asset"
   },
   {
    "protocol": "asset",
@@ -86405,12 +86533,6 @@
   {
    "protocol": "asset",
    "kind": "erc20",
-   "address": "0x656d2c7A970d13073a6A58FAe18F39abf31Fae41",
-   "source": "euler vault asset"
-  },
-  {
-   "protocol": "asset",
-   "kind": "erc20",
    "address": "0x674C6Ad92Fd080e4004b2312b45f796a192D27a0",
    "source": "compound-v2 cToken(0x4A265E2f).underlying()"
   },
@@ -86693,12 +86815,6 @@
   {
    "protocol": "asset",
    "kind": "erc20",
-   "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-   "source": "morpho collateral"
-  },
-  {
-   "protocol": "asset",
-   "kind": "erc20",
    "address": "0x837010619aeb2AE24141605aFC8f66577f6fb2e7",
    "source": "compound-v2 cToken(0x0C91F179).underlying()"
   },
@@ -86725,12 +86841,6 @@
    "kind": "erc20",
    "address": "0x84631c0d0081FDe56DeB72F6DE77abBbF6A9f93a",
    "source": "gearbox collateral"
-  },
-  {
-   "protocol": "asset",
-   "kind": "erc20",
-   "address": "0x84B78Bc998E4B1a63F2CF9EbfE76C55FC96a5A9b",
-   "source": "morpho collateral"
   },
   {
    "protocol": "asset",
@@ -86887,12 +86997,6 @@
    "kind": "erc20",
    "address": "0x903bEF1736CDdf2A537176cf3C64579C3867A881",
    "source": "compound-v2 cToken(0xaFf95ac1).underlying()"
-  },
-  {
-   "protocol": "asset",
-   "kind": "erc20",
-   "address": "0x912CE59144191C1204E64559FE8253a0e49E6548",
-   "source": "euler vault asset"
   },
   {
    "protocol": "asset",
@@ -88027,12 +88131,6 @@
    "kind": "erc20",
    "address": "0xec67005c4E498Ec7f55E092bd1d35cbC47C91892",
    "source": "compound-v2 cToken(0xDbb5e308).underlying()"
-  },
-  {
-   "protocol": "asset",
-   "kind": "erc20",
-   "address": "0xecAc9C5F704e954931349Da37F60E39f515c11c1",
-   "source": "euler vault asset"
   },
   {
    "protocol": "asset",

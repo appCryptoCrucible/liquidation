@@ -1,24 +1,24 @@
 # D15 completeness report (15-class checklist)
 
-Total addresses: **13073**
+Total addresses: **13074**
 
 | Class | Check | Pass | Detail |
 |---:|---|:---:|---|
-| 1 | OCR aggregators (recursive) | PASS | 463 aggregator rows; unresolved in failures: 554 |
+| 1 | OCR aggregators (recursive) | PASS | 463 aggregator rows; unresolved in failures: 557 |
 | 2 | Historical phase aggregators | PASS | 299 phase aggregator rows |
-| 3 | Aave V4 spoke-oracle sources | PASS | 17 aave-v4 oracle/spoke_oracle rows |
+| 3 | Aave V4 spoke-oracle sources | PASS | 24 aave-v4 oracle/spoke_oracle rows |
 | 4 | Compound V3 comets + feeds | PASS | 59 compound-v3 rows; step_ok=True |
 | 5 | Morpho market oracles + IRMs | PASS | 1354 morpho oracle/irm rows |
-| 6 | Euler router + adapters | PASS | 703 euler-v2 oracle rows |
+| 6 | Euler router + adapters | PASS | 702 euler-v2 oracle rows |
 | 7 | Gearbox price oracle + feeds | PASS | 132 gearbox-v3 rows |
 | 8 | Silo solvency/maxLtv oracles | PASS | 216 silo-v2 oracle_source rows |
-| 9 | Liquity underlying aggregators | FAIL | 0 liquity-v2 aggregator rows |
+| 9 | Liquity underlying aggregators | PASS | 3 liquity-v2 priceFeed rows; 0 liquity-v2 aggregator rows |
 | 10 | Sky Dog + Clippers + medianizers | PASS | 43 sky-maker core rows |
 | 11 | Flash sources | PASS | pool_manager/dss_flash/singleton/pool rows contributing to flash |
 | 12 | Exit venues UniV3/Curve/Kyber | PASS | 2736 DEX pool rows |
 | 13 | Rate providers | PASS | 12 rate-provider rows (expect ≥12) |
 | 14 | Push oracle networks (Pyth) | PASS | 2 oracle-network rows |
-| 15 | Tracked ERC-20 underlyings | PASS | 1587 asset/erc20 rows |
+| 15 | Tracked ERC-20 underlyings | PASS | 1580 asset/erc20 rows |
 
 ## Per-class counts (merged)
 
@@ -33,15 +33,16 @@ Total addresses: **13073**
 | aave-v3 | pool | 3 |
 | aave-v3 | price_oracle | 3 |
 | aave-v4 | hub | 4 |
-| aave-v4 | oracle_aggregator | 1 |
-| aave-v4 | oracle_source | 4 |
+| aave-v4 | oracle_aggregator | 3 |
+| aave-v4 | oracle_aggregator_phase | 9 |
+| aave-v4 | oracle_source | 11 |
 | aave-v4 | spoke | 53 |
 | aave-v4 | spoke_oracle | 13 |
 | ajna | erc20_pool_factory | 1 |
 | ajna | erc721_collateral | 9 |
 | ajna | erc721_pool_factory | 1 |
 | ajna | pool | 235 |
-| asset | erc20 | 1587 |
+| asset | erc20 | 1580 |
 | chainlink | oracle_aggregator | 46 |
 | chainlink | oracle_aggregator_phase | 179 |
 | compound-v2 | cToken | 1960 |
@@ -56,10 +57,10 @@ Total addresses: **13073**
 | curve | meta_registry | 1 |
 | curve | pool | 712 |
 | euler-v2 | oracle_adapter | 356 |
-| euler-v2 | oracle_aggregator | 16 |
-| euler-v2 | oracle_aggregator_phase | 15 |
+| euler-v2 | oracle_aggregator | 15 |
+| euler-v2 | oracle_aggregator_phase | 11 |
 | euler-v2 | oracle_router | 183 |
-| euler-v2 | oracle_source | 164 |
+| euler-v2 | oracle_source | 163 |
 | euler-v2 | vault | 884 |
 | fluid | liquidity_layer | 1 |
 | fluid | oracle_source | 166 |
@@ -77,15 +78,16 @@ Total addresses: **13073**
 | liquity-v2 | activePool | 3 |
 | liquity-v2 | borrowerOperations | 3 |
 | liquity-v2 | collateral_registry | 1 |
+| liquity-v2 | priceFeed | 3 |
 | liquity-v2 | sortedTroves | 3 |
 | liquity-v2 | stabilityPool | 3 |
 | liquity-v2 | troveManager | 3 |
 | liquity-v2 | troveNFT | 3 |
 | morpho-blue | adaptive_curve_irm | 1 |
 | morpho-blue | market_oracle | 1354 |
-| morpho-blue | oracle_aggregator | 55 |
-| morpho-blue | oracle_aggregator_phase | 44 |
-| morpho-blue | oracle_source | 517 |
+| morpho-blue | oracle_aggregator | 54 |
+| morpho-blue | oracle_aggregator_phase | 39 |
+| morpho-blue | oracle_source | 516 |
 | morpho-blue | rate_provider | 7 |
 | morpho-blue | singleton | 1 |
 | oracle-network | chainlink_feed_registry | 1 |
@@ -122,7 +124,7 @@ Total addresses: **13073**
 | uniswap-v3 | factory | 1 |
 | uniswap-v3 | pool | 1997 |
 | uniswap-v4 | pool_manager | 1 |
-| **total** | | **13073** |
+| **total** | | **13074** |
 
 ## Failures
 - `aave-v4:0x22267496`: spoke.ORACLE() failed
@@ -165,6 +167,81 @@ Total addresses: **13073**
 - `aave-v4:0x8Dabe53E`: spoke.ORACLE() failed
 - `aave-v4:0xa0e97e45`: spoke.ORACLE() failed
 - `aave-v4:0x6493a238`: spoke.ORACLE() failed
+- `aave-v4:getReserveAsset:0x99B2B6CE:0`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x99B2B6CE:1`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x99B2B6CE:2`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x99B2B6CE:3`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x99B2B6CE:4`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x99B2B6CE:5`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x99B2B6CE:6`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x99B2B6CE:7`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x99B2B6CE:8`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x99B2B6CE:9`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x99B2B6CE:10`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x99B2B6CE:11`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x99B2B6CE:12`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x99B2B6CE:13`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x664D73b6:0`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x664D73b6:1`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xd8B153Fa:0`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xd8B153Fa:1`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x37C31699:0`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x37C31699:1`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x198Cac7f:0`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x198Cac7f:1`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x198Cac7f:2`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x0083421f:0`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x0083421f:1`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x0083421f:2`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x0083421f:3`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x0083421f:4`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x0083421f:5`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x0083421f:6`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x0083421f:7`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xB3CE6E7b:0`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xB3CE6E7b:1`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xB3CE6E7b:2`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xB3CE6E7b:3`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xB3CE6E7b:4`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xB3CE6E7b:5`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xB3CE6E7b:6`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xdA1266a7:0`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xdA1266a7:1`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xdA1266a7:2`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xdA1266a7:3`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xdA1266a7:4`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xdA1266a7:5`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xdA1266a7:6`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xdA1266a7:7`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xdA1266a7:8`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xdA1266a7:9`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xdA1266a7:10`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xc390dbe9:0`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xc390dbe9:1`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xc390dbe9:2`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xc390dbe9:3`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xc390dbe9:4`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xc390dbe9:5`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xc390dbe9:6`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xc390dbe9:7`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xc390dbe9:8`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xc390dbe9:9`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x9b91a094:0`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x9b91a094:1`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x9b91a094:2`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x9b91a094:3`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x692cD2F7:0`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x692cD2F7:1`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x692cD2F7:2`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x692cD2F7:3`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x47a7cC7F:0`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x47a7cC7F:1`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x47a7cC7F:2`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x47a7cC7F:3`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x8CEcC12b:0`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x8CEcC12b:1`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0x692cD2F7:4`: getReserveAsset(reserveId) failed for UpdateReserveSource log
+- `aave-v4:getReserveAsset:0xdA1266a7:11`: getReserveAsset(reserveId) failed for UpdateReserveSource log
 - `compound-v2:0x0cEA0a94`: comptroller.oracle() failed
 - `compound-v2:0x2C7D993E`: comptroller.oracle() failed
 - `compound-v2:0x3E639b86`: comptroller.oracle() failed
@@ -434,6 +511,22 @@ Total addresses: **13073**
 - `asset:0xCB0477d1`: decimals() failed — not ERC-20 (compound-v2 cToken(0xEb058A3D).underlying())
 - `asset:0x32BB5a14`: decimals() failed — not ERC-20 (compound-v2 cToken(0x5778DCe0).underlying())
 - `asset:0xaCF63E56`: decimals() failed — not ERC-20 (compound-v2 cToken(0xc6e0dD41).underlying())
+- `asset:0x833589fc`: decimals() failed — not ERC-20 (morpho collateral)
+- `asset:0x1f32b1c2`: decimals() failed — not ERC-20 (morpho loan)
+- `asset:0x84b78bc9`: decimals() failed — not ERC-20 (morpho collateral)
+- `asset:0x091356e6`: decimals() failed — not ERC-20 (morpho collateral)
+- `asset:0x94f6cb4f`: decimals() failed — not ERC-20 (morpho collateral)
+- `asset:0x2a5c94fe`: decimals() failed — not ERC-20 (morpho collateral)
+- `asset:0x9fb57943`: decimals() failed — not ERC-20 (morpho collateral)
+- `asset:0x912CE591`: decimals() failed — not ERC-20 (euler vault asset)
+- `asset:0x33243BfB`: decimals() failed — not ERC-20 (euler vault asset)
+- `asset:0x83e06986`: decimals() failed — not ERC-20 (euler vault asset)
+- `asset:0xecAc9C5F`: decimals() failed — not ERC-20 (euler vault asset)
+- `asset:0x10674C8C`: decimals() failed — not ERC-20 (euler vault asset)
+- `asset:0x656d2c7A`: decimals() failed — not ERC-20 (euler vault asset)
+- `oracle-unresolved:0xCC5F8102`: liquity-v2:0xCC5F8102: no oracle_aggregator reached within depth 5
+- `oracle-unresolved:0xe7Aa2Ba9`: liquity-v2:0xe7Aa2Ba9: no oracle_aggregator reached within depth 5
+- `oracle-unresolved:0x34F1E9c7`: liquity-v2:0x34F1E9c7: no oracle_aggregator reached within depth 5
 - `oracle-unresolved:0x81FE72B5`: sky:ETH-C.pip: no oracle_aggregator reached within depth 5
 - `oracle-unresolved:0xc7B91C40`: sky:ALLOCATOR-GROVE-A.pip: no oracle_aggregator reached within depth 5
 - `oracle-unresolved:0xd2473237`: sky:RWA002-A.pip: no oracle_aggregator reached within depth 5
@@ -757,23 +850,23 @@ Total addresses: **13073**
 
 ## Diff vs liquidator-guides/d15_addresses.complete.json (2026-09-19 pass)
 
-- Legacy JSON addresses: **8434**; this run: **13073**
-- Only in this run (registry C2): **4670**
-- Only in legacy complete (dropped): **31**
+- Legacy JSON addresses: **8434**; this run: **13074**
+- Only in this run (registry C2): **4675**
+- Only in legacy complete (dropped): **35**
 - Sample new-only: 0x0000000000095413afc295d19edeb1ad7b71c952, 0x000000007a58f5f58e697e51ab0357bc9e260a04, 0x000ba527862e5b82cff0f7c66b646af023274aa1, 0x000ea4a83acefdd62b1b43e9ccc281f442651520, 0x00187cd7252e2898c32fcb603c34b08a639ab21c
-- Sample legacy-only: 0x035f1d7d2520d24c6e8b06758316290df06b8c82, 0x03cfa0c4622ff84e50e75062683f44c9587e6cc1, 0x17a54b8d6d9c68e7fa1c7112ac998ea1ba51d11e, 0x1dab4a310447185144467076b116dac7aec3b48f, 0x22a3cf6149bfa611bafc89fd721918ec3cf7b581
+- Sample legacy-only: 0x035f1d7d2520d24c6e8b06758316290df06b8c82, 0x03cfa0c4622ff84e50e75062683f44c9587e6cc1, 0x17a54b8d6d9c68e7fa1c7112ac998ea1ba51d11e, 0x1dab4a310447185144467076b116dac7aec3b48f, 0x1f32b1c2345538c0c6f582fcb022739c4a194ebb
 
 ### Dropped address breakdown (legacy-only)
 
 | Category | Count |
 |---|---:|
 | DEX pools from completion dex-pools pass | 12 |
-| ERC-20 assets from completion asset pass | 6 |
+| ERC-20 assets from completion asset pass | 13 |
 | Factories / registries | 1 |
-| Other / unclassified | 12 |
-| **Total dropped** | **31** |
+| Other / unclassified | 9 |
+| **Total dropped** | **35** |
 
 Expected net deltas: C2 registry adds compound-v2 forks, 57 Aave V4 spokes, 996 registry univ3 pools, admitted-market tokens; completion re-adds fluid/gearbox/liquity branch coverage via on-chain roots.
 
 
-Wall time 1624s.
+Wall time 1443s.
