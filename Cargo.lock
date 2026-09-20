@@ -3162,6 +3162,8 @@ name = "liq-oracle"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-provider",
+ "alloy-rpc-types-eth 2.4.2",
  "alloy-signer 1.6.1",
  "alloy-signer-local",
  "alloy-sol-types",

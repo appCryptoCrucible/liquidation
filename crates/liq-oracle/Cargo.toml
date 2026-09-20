@@ -10,6 +10,8 @@ liq-protocol = { path = "../liq-protocol" }
 liq-config = { path = "../liq-config" }
 alloy-primitives = { workspace = true, features = ["std", "serde"] }
 alloy-sol-types = { workspace = true, features = ["std"] }
+alloy-provider = { workspace = true }
+alloy-rpc-types-eth = { workspace = true }
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 serde = { workspace = true }

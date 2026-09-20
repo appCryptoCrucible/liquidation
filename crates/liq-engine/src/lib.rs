@@ -10,6 +10,9 @@
 //! * [`engine`] — [`Engine`]: `on_price_tick`, `on_block`, `on_dirty`,
 //!   `on_flash_change`; canonical prices mutate state, pending prices only
 //!   evaluate, predicted prices never fire.
+//! * [`triggers`] — WP 08B: derived-rate fan-out into `on_price_tick`,
+//!   `ThresholdIndex` crossing precompute, stale-N gate, `ParamChange` fire
+//!   at the execution block.
 //!
 //! Single-writer by construction (GUIDE 08 §5b): the engine owns every
 //! structure, is driven synchronously from the ExEx thread, and holds no
@@ -22,6 +25,7 @@ pub mod candidate;
 pub mod engine;
 pub mod heap;
 pub mod threshold;
+pub mod triggers;
 
 use liq_types::fixed::FixedError;
 use liq_types::{AssetId, ProtocolId};
@@ -31,6 +35,10 @@ pub use candidate::{Candidate, CandidateQueue, Drain, TriggerCause};
 pub use engine::{Engine, EngineConfig, Stats, World};
 pub use heap::TimeCrossHeap;
 pub use threshold::{Side, ThresholdIndex};
+pub use triggers::{
+    attach_crossing, crossing_set, fire_param_change, kind, on_derived_tick, registered_set,
+    take_ripe, StaleConfig, TriggerError,
+};
 
 /// Engine failure. Every variant is `Copy` and heap-free: the error path
 /// on the hot thread never allocates (RUST-CONVENTIONS §10). Any `Err` from

@@ -1,7 +1,8 @@
 ﻿//! Price feeds, canonical PriceVector publish, MEV-Share, and fusion.
 //!
 //! WP 06A-1: feed registry (`feeds`), canonical book (`canonical`),
-//! triple-buffer publish (`publish`). 06A-2 / 06B / 06C / 06D extend this crate.
+//! triple-buffer publish (`publish`). 06A-2 derived; 06B MEV-Share; 08B
+//! governance timelock poller.
 
 #![deny(clippy::todo, clippy::unimplemented)]
 #![cfg_attr(
@@ -22,6 +23,7 @@ use thiserror::Error;
 pub mod canonical;
 pub mod derived;
 pub mod feeds;
+pub mod governance;
 pub mod mevshare;
 pub mod publish;
 
@@ -32,6 +34,10 @@ pub use derived::{
 pub use feeds::{
     assert_protocol_sources, resolve_registry, FeedFailure, FeedSet, FeedSpec, FeedsBoot,
     FeedsConfig, Mechanism, RegistryOracle,
+};
+pub use governance::{
+    execution_due, GovernanceConfig, GovernancePoller, PayloadView, Timelock, TimelockKind,
+    PIN_BLOCK,
 };
 pub use publish::{split, PricePublish, PriceRead};
 
@@ -104,6 +110,12 @@ pub enum OracleError {
     ZeroLpSupply,
     #[error("derived fixed-point: {0}")]
     Fixed(#[from] liq_types::fixed::FixedError),
+    #[error("governance read failed: {0}")]
+    Governance(String),
+    #[error("payload {id} ABI too short ({len} bytes)")]
+    PayloadTruncated { id: u64, len: usize },
+    #[error("payload_lookback is 0")]
+    ZeroPayloadLookback,
     #[error(transparent)]
     Config(#[from] liq_config::ConfigError),
 }
