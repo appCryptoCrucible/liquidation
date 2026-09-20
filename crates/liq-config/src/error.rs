@@ -11,8 +11,8 @@ pub enum ConfigError {
     #[error("config load failed: {0}")]
     Load(String),
     /// `rpc_url` empty or the transport could not complete a read.
-    #[error("rpc unavailable; refusing to start")]
-    RpcUnavailable,
+    #[error("rpc unavailable; refusing to start: {cause}")]
+    RpcUnavailable { cause: String },
     /// Config or registry `chain_id` disagrees with `eth_chainId`.
     #[error("chain id mismatch: config {expected}, chain {found}")]
     ChainIdMismatch { expected: u64, found: u64 },
@@ -40,16 +40,34 @@ pub enum ConfigError {
         expected: String,
         found: String,
     },
-    /// Pool `token0`/`token1` disagree with the committed registry.
-    #[error(
-        "token order mismatch for pool {pool:#x}: registry ({expected0:#x}, {expected1:#x}), chain ({found0:#x}, {found1:#x})"
-    )]
-    TokenOrderMismatch {
+    /// Pool `token0()` disagrees with the committed registry.
+    #[error("token0 mismatch for pool {pool:#x}: registry {expected:#x}, chain {found:#x}")]
+    Token0Mismatch {
         pool: Address,
-        expected0: Address,
-        expected1: Address,
-        found0: Address,
-        found1: Address,
+        expected: Address,
+        found: Address,
+    },
+    /// Pool `token1()` disagrees with the committed registry.
+    #[error("token1 mismatch for pool {pool:#x}: registry {expected:#x}, chain {found:#x}")]
+    Token1Mismatch {
+        pool: Address,
+        expected: Address,
+        found: Address,
+    },
+    /// Oracle proxy `decimals()` disagrees with the committed registry.
+    #[error("oracle decimals mismatch for {proxy:#x}: registry {expected}, chain {found}")]
+    OracleDecimalsMismatch {
+        proxy: Address,
+        expected: u8,
+        found: u8,
+    },
+    /// Oracle proxy `aggregator()` disagrees with the committed registry.
+    /// A proxy upgraded underneath us is this alert, not a mystery.
+    #[error("aggregator mismatch for {proxy:#x}: registry {expected:#x}, chain {found:#x}")]
+    AggregatorMismatch {
+        proxy: Address,
+        expected: Address,
+        found: Address,
     },
     /// Pool `fee()` disagrees with the committed registry.
     #[error("fee mismatch for pool {pool:#x}: registry {expected}, chain {found}")]

@@ -19,14 +19,12 @@ impl ConfigVersion {
         #[derive(Serialize)]
         struct Payload<'a> {
             chain_id: u64,
-            rpc_url: &'a str,
             risk: &'a crate::config::RiskConfig,
             venues: &'a crate::config::VenuesConfig,
             registry: &'a Registry,
         }
         let bytes = serde_json::to_vec(&Payload {
             chain_id: config.chain_id,
-            rpc_url: &config.rpc_url,
             risk: &config.risk,
             venues: &config.venues,
             registry,

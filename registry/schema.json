@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://liquidator.local/registry/schema.json",
   "title": "Liquidator chain registry",
-  "description": "Static chain-derived decimals, token order, fee tiers, and addresses (REGISTRY.md §2). Boot assertion re-reads decimals/symbol/token0/token1/fee from chain (REGISTRY.md §4c).",
+  "description": "Static chain-derived decimals, token order, fee tiers, aggregator, and addresses (REGISTRY.md §2). Boot assertion re-reads decimals/symbol/token0/token1/fee/oracle decimals/aggregator from chain (REGISTRY.md §4c).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -39,7 +39,8 @@
       "description": "Protocol markets/instances, keyed by `family:id`.",
       "additionalProperties": false,
       "patternProperties": {
-        "^[a-z0-9-]+:0x[0-9a-f]+$": { "$ref": "#/$defs/protocol" }
+        "^[a-z0-9-]+:0x[0-9a-f]+$": { "$ref": "#/$defs/protocol" },
+        "^[a-z0-9-]+:[a-z0-9-]+$": { "$ref": "#/$defs/protocol" }
       }
     },
     "oracles": {
@@ -148,7 +149,7 @@
     },
     "pool": {
       "type": "object",
-      "required": ["venue", "token0", "token1", "fee"],
+      "required": ["venue", "token0", "token1", "fee", "factory", "deployed_block"],
       "properties": {
         "venue": { "type": "string", "const": "univ3" },
         "token0": { "$ref": "#/$defs/address" },

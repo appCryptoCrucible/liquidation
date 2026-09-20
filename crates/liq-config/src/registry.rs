@@ -12,6 +12,7 @@ use std::str::FromStr;
 
 /// Chain-derived static data. Keys are lowercase hex as committed.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Registry {
     pub chain_id: u64,
     pub generated_at_block: u64,
@@ -27,6 +28,7 @@ pub struct Registry {
 
 /// One ERC-20 (or bytes32-metadata) token.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct TokenEntry {
     /// `None` when discovery could not decode `symbol()` (JSON `null`). Not a guess.
     pub symbol: Option<String>,
@@ -92,6 +94,7 @@ pub struct ProtocolEntry {
 
 /// Aggregator proxy (REGISTRY.md §2 `oracles`).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct OracleEntry {
     pub aggregator: Address,
     pub pair: String,
@@ -103,6 +106,7 @@ pub struct OracleEntry {
 
 /// DEX pool. `token0`/`token1` are the pool's on-chain order, never sorted.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct PoolEntry {
     pub venue: PoolVenue,
     pub token0: Address,
@@ -260,5 +264,40 @@ mod tests {
         let wbtc = reg.tokens.get(&WBTC).unwrap();
         assert!(wbtc.quirks.contains(&TokenQuirk::LowDecimals));
         assert_eq!(wbtc.decimals, 8);
+    }
+
+    /// Oracle: schema `additionalProperties: false` is enforced by serde, not
+    /// just by schema.json. Negative: a typo'd `quirk` key must not load as
+    /// `quirks = []`.
+    #[test]
+    fn unknown_token_field_is_load_error() {
+        let err = Registry::from_slice(
+            br#"{
+            "chain_id": 1,
+            "generated_at_block": 0,
+            "tokens": {
+                "0xdac17f958d2ee523a2206206994597c13d831ec7": {
+                    "symbol": "USDT",
+                    "decimals": 6,
+                    "quirk": ["no_return_data"]
+                }
+            },
+            "protocols": {},
+            "oracles": {},
+            "pools": {},
+            "flash_sources": {},
+            "routers": {}
+        }"#,
+        )
+        .unwrap_err();
+        match err {
+            crate::error::ConfigError::Load(msg) => {
+                assert!(
+                    msg.contains("unknown field") && msg.contains("quirk"),
+                    "expected unknown-field error, got {msg}"
+                );
+            }
+            other => panic!("expected Load, got {other:?}"),
+        }
     }
 }

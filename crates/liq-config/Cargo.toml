@@ -17,11 +17,11 @@ toml = { workspace = true }
 figment = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-tokio = { workspace = true }
 
 [dev-dependencies]
 figment = { workspace = true, features = ["toml", "env", "test"] }
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
+jsonschema = "=0.26.2"
 
 [lints]
 workspace = true

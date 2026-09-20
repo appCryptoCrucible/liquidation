@@ -4,6 +4,7 @@
 use crate::error::ConfigError;
 use crate::Result;
 use alloy_primitives::{Address, Bytes};
+use alloy_provider::transport::RpcError;
 use alloy_provider::{Provider, ProviderBuilder, RootProvider};
 use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
 
@@ -29,9 +30,13 @@ impl HttpRpc {
     /// the first [`ChainRpc`] method does. Empty URL fails closed.
     pub fn connect(rpc_url: &str) -> Result<Self> {
         if rpc_url.is_empty() {
-            return Err(ConfigError::RpcUnavailable);
+            return Err(ConfigError::RpcUnavailable {
+                cause: "empty rpc_url".into(),
+            });
         }
-        let url = rpc_url.parse().map_err(|_| ConfigError::RpcUnavailable)?;
+        let url = rpc_url.parse().map_err(|e| ConfigError::RpcUnavailable {
+            cause: format!("invalid rpc_url: {e}"),
+        })?;
         let provider = ProviderBuilder::new()
             .disable_recommended_fillers()
             .connect_http(url);
@@ -44,7 +49,9 @@ impl ChainRpc for HttpRpc {
         self.provider
             .get_chain_id()
             .await
-            .map_err(|_| ConfigError::RpcUnavailable)
+            .map_err(|e| ConfigError::RpcUnavailable {
+                cause: e.to_string(),
+            })
     }
 
     async fn call(&self, to: Address, data: Bytes) -> Result<Bytes> {
@@ -64,7 +71,13 @@ impl ChainRpc for HttpRpc {
                     Ok(bytes)
                 }
             }
-            Err(_) => Err(ConfigError::RpcUnavailable),
+            Err(RpcError::ErrorResp(_)) => Err(ConfigError::CallFailed {
+                address: to,
+                what: "eth_call reverted",
+            }),
+            Err(e) => Err(ConfigError::RpcUnavailable {
+                cause: e.to_string(),
+            }),
         }
     }
 }

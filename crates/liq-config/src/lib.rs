@@ -1,8 +1,9 @@
 ﻿//! Figment config load, Validate trait, ConfigVersion, and registry boot assertion.
 //!
-//! Startup order (GUIDE 17): `assert_registry` → `Validate` → the rest of the
-//! process. A registry that disagrees with chain, or an RPC that does not
-//! answer, refuses to start. There is no degraded mode (REGISTRY.md §4c).
+//! Startup order (GUIDE 17): load → intern → a single `eth_chainId` checked
+//! against config and registry → token/pool/oracle views. A registry that
+//! disagrees with chain, or an RPC that does not answer, refuses to start.
+//! There is no degraded mode (REGISTRY.md §4c).
 
 #![deny(clippy::todo, clippy::unimplemented)]
 #![cfg_attr(
@@ -49,7 +50,8 @@ pub struct Loaded {
 }
 
 /// Load config + registry, intern identities, log [`ConfigVersion`], then
-/// re-read every token/pool field from chain. Any failure refuses to start.
+/// re-read every token/pool/oracle field from chain. Any failure refuses to
+/// start. `eth_chainId` is fetched once.
 pub async fn boot(config_dir: &Path) -> Result<Loaded> {
     let config = load(config_dir)?;
     let registry = Registry::from_path(&config.registry_path)?;
@@ -63,8 +65,21 @@ pub async fn boot(config_dir: &Path) -> Result<Loaded> {
     );
     let intern = Intern::from_registry(&registry)?;
     let rpc = HttpRpc::connect(&config.rpc_url)?;
-    config.validate(&rpc).await?;
-    registry.validate(&rpc).await?;
+    config.validate_local(&rpc).await?;
+    let found = rpc.chain_id().await?;
+    if found != config.chain_id {
+        return Err(ConfigError::ChainIdMismatch {
+            expected: config.chain_id,
+            found,
+        });
+    }
+    if found != registry.chain_id {
+        return Err(ConfigError::ChainIdMismatch {
+            expected: registry.chain_id,
+            found,
+        });
+    }
+    crate::assert::assert_registry_views(&registry, &rpc).await?;
     Ok(Loaded {
         config,
         registry,
@@ -100,18 +115,34 @@ mod tests {
         drifted.tokens.get_mut(&usdc).unwrap().decimals = 8;
         let c = ConfigVersion::hash(&cfg, &drifted).unwrap();
         assert_ne!(a, c, "a decimals edit must change ConfigVersion");
+        let mut other_box = cfg.clone();
+        other_box.rpc_url = "http://other-box:8545".into();
+        let d = ConfigVersion::hash(&other_box, &reg).unwrap();
+        assert_eq!(a, d, "rpc_url is per-box and must not enter ConfigVersion");
         let _ = Intern::from_registry(&reg).unwrap();
     }
 
-    /// Oracle: `registry/schema.json` is JSON. Negative: a truncated schema file
-    /// fails this before anyone treats it as the contract.
+    /// Oracle: `registry/schema.json` is the contract for the committed file.
+    /// Negative: a protocol key or missing pool field the schema rejects is a
+    /// test failure, not a silent skip.
     #[test]
-    fn schema_json_parses() {
-        let p = workspace_root().join("registry/schema.json");
-        let raw = std::fs::read(&p).unwrap();
-        let v: serde_json::Value = serde_json::from_slice(&raw).unwrap();
-        assert_eq!(v["type"], "object");
-        assert!(v["properties"]["tokens"].is_object());
-        assert!(v["properties"]["pools"].is_object());
+    fn schema_json_validates_committed_registry() {
+        let root = workspace_root();
+        let schema: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("registry/schema.json")).unwrap())
+                .unwrap();
+        let instance: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("registry/registry.json")).unwrap())
+                .unwrap();
+        assert_eq!(schema["type"], "object");
+        let validator = jsonschema::validator_for(&schema).expect("schema.json compiles");
+        let errors: Vec<String> = validator
+            .iter_errors(&instance)
+            .map(|e| e.to_string())
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "registry.json failed schema.json: {errors:?}"
+        );
     }
 }

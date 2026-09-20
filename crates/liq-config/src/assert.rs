@@ -1,6 +1,7 @@
 //! Boot assertion (REGISTRY.md §4c). Re-reads `decimals`/`symbol` for every
-//! token and `token0`/`token1`/`fee` for every pool from chain. Any mismatch
-//! or RPC failure refuses to start.
+//! token, `token0`/`token1`/`fee` for every pool, and `decimals`/`aggregator`
+//! for every oracle proxy from chain. Any mismatch or RPC failure refuses to
+//! start.
 
 use crate::error::ConfigError;
 use crate::registry::{PoolVenue, Registry};
@@ -30,6 +31,12 @@ sol! {
         function token0() external view returns (address);
         function token1() external view returns (address);
         function fee() external view returns (uint24);
+    }
+    interface AggregatorV3Interface {
+        function decimals() external view returns (uint8);
+    }
+    interface EACAggregatorProxy {
+        function aggregator() external view returns (address);
     }
     interface IMulticall3 {
         struct Call3 {
@@ -67,6 +74,14 @@ enum Expect<'a> {
         pool: Address,
         expected: u32,
     },
+    OracleDecimals {
+        proxy: Address,
+        expected: u8,
+    },
+    Aggregator {
+        proxy: Address,
+        expected: Address,
+    },
 }
 
 /// Re-read every boot-checkable field. Fail closed on mismatch or RPC fault.
@@ -80,6 +95,18 @@ pub async fn assert_registry<R: ChainRpc + Sync>(reg: &Registry, rpc: &R) -> Res
             expected: reg.chain_id,
             found,
         });
+    }
+    assert_registry_views(reg, rpc).await
+}
+
+/// Token / pool / oracle views. Does not call `eth_chainId` — `boot` fetches
+/// that once and checks config + registry against it.
+pub(crate) async fn assert_registry_views<R: ChainRpc + Sync>(
+    reg: &Registry,
+    rpc: &R,
+) -> Result<()> {
+    if reg.tokens.is_empty() {
+        return Err(ConfigError::EmptyRegistry);
     }
 
     let mut calls: Vec<IMulticall3::Call3> = Vec::new();
@@ -138,14 +165,39 @@ pub async fn assert_registry<R: ChainRpc + Sync>(reg: &Registry, rpc: &R) -> Res
         });
     }
 
+    for (addr, oracle) in &reg.oracles {
+        calls.push(call3(
+            *addr,
+            Bytes::from(AggregatorV3Interface::decimalsCall {}.abi_encode()),
+        ));
+        expect.push(Expect::OracleDecimals {
+            proxy: *addr,
+            expected: oracle.decimals,
+        });
+        calls.push(call3(
+            *addr,
+            Bytes::from(EACAggregatorProxy::aggregatorCall {}.abi_encode()),
+        ));
+        expect.push(Expect::Aggregator {
+            proxy: *addr,
+            expected: oracle.aggregator,
+        });
+    }
+
     let mut offset = 0;
     while offset < calls.len() {
         let end = core::cmp::min(offset.saturating_add(BATCH), calls.len());
         let Some(slice) = calls.get(offset..end) else {
-            return Err(ConfigError::RpcUnavailable);
+            return Err(ConfigError::CallFailed {
+                address: MULTICALL3,
+                what: "multicall batch slice",
+            });
         };
         let Some(exp) = expect.get(offset..end) else {
-            return Err(ConfigError::RpcUnavailable);
+            return Err(ConfigError::CallFailed {
+                address: MULTICALL3,
+                what: "multicall expect slice",
+            });
         };
         let results = aggregate3(rpc, slice).await?;
         if results.len() != slice.len() {
@@ -187,9 +239,11 @@ async fn aggregate3<R: ChainRpc + Sync>(
         .abi_encode(),
     );
     let raw = rpc.call(MULTICALL3, data).await?;
-    IMulticall3::aggregate3Call::abi_decode_returns(&raw).map_err(|_| ConfigError::CallFailed {
-        address: MULTICALL3,
-        what: "aggregate3 decode",
+    IMulticall3::aggregate3Call::abi_decode_returns_validate(&raw).map_err(|_| {
+        ConfigError::CallFailed {
+            address: MULTICALL3,
+            what: "aggregate3 decode",
+        }
     })
 }
 
@@ -199,18 +253,19 @@ fn check_one(exp: &Expect<'_>, row: &IMulticall3::Result) -> Result<()> {
         Expect::Token0 { pool, .. } | Expect::Token1 { pool, .. } | Expect::Fee { pool, .. } => {
             (*pool, "pool view")
         }
+        Expect::OracleDecimals { proxy, .. } | Expect::Aggregator { proxy, .. } => {
+            (*proxy, "oracle view")
+        }
     };
     if !row.success {
         return Err(ConfigError::CallFailed { address, what });
     }
     match exp {
         Expect::Decimals { token, expected } => {
-            let found =
-                IERC20::decimalsCall::abi_decode_returns(&row.returnData).map_err(|_| {
-                    ConfigError::CallFailed {
-                        address: *token,
-                        what: "decimals decode",
-                    }
+            let found = IERC20::decimalsCall::abi_decode_returns_validate(&row.returnData)
+                .map_err(|_| ConfigError::CallFailed {
+                    address: *token,
+                    what: "decimals decode",
                 })?;
             if found != *expected {
                 return Err(ConfigError::DecimalsMismatch {
@@ -228,7 +283,7 @@ fn check_one(exp: &Expect<'_>, row: &IMulticall3::Result) -> Result<()> {
             let found = if *bytes32 {
                 symbol_from_bytes32(*token, &row.returnData)?
             } else {
-                IERC20::symbolCall::abi_decode_returns(&row.returnData).map_err(|_| {
+                IERC20::symbolCall::abi_decode_returns_validate(&row.returnData).map_err(|_| {
                     ConfigError::CallFailed {
                         address: *token,
                         what: "symbol decode",
@@ -251,61 +306,40 @@ fn check_one(exp: &Expect<'_>, row: &IMulticall3::Result) -> Result<()> {
             }
         }
         Expect::Token0 { pool, expected } => {
-            let found =
-                IUniswapV3Pool::token0Call::abi_decode_returns(&row.returnData).map_err(|_| {
-                    ConfigError::CallFailed {
-                        address: *pool,
-                        what: "token0 decode",
-                    }
+            let found = IUniswapV3Pool::token0Call::abi_decode_returns_validate(&row.returnData)
+                .map_err(|_| ConfigError::CallFailed {
+                    address: *pool,
+                    what: "token0 decode",
                 })?;
             if found != *expected {
-                return Err(ConfigError::TokenOrderMismatch {
+                return Err(ConfigError::Token0Mismatch {
                     pool: *pool,
-                    expected0: *expected,
-                    expected1: Address::ZERO,
-                    found0: found,
-                    found1: Address::ZERO,
+                    expected: *expected,
+                    found,
                 });
             }
         }
         Expect::Token1 { pool, expected } => {
-            let found =
-                IUniswapV3Pool::token1Call::abi_decode_returns(&row.returnData).map_err(|_| {
-                    ConfigError::CallFailed {
-                        address: *pool,
-                        what: "token1 decode",
-                    }
+            let found = IUniswapV3Pool::token1Call::abi_decode_returns_validate(&row.returnData)
+                .map_err(|_| ConfigError::CallFailed {
+                    address: *pool,
+                    what: "token1 decode",
                 })?;
-            // token0 already checked; a token1-only mismatch still names both
-            // slots so the operator sees the on-chain pair.
             if found != *expected {
-                return Err(ConfigError::TokenOrderMismatch {
+                return Err(ConfigError::Token1Mismatch {
                     pool: *pool,
-                    expected0: Address::ZERO,
-                    expected1: *expected,
-                    found0: Address::ZERO,
-                    found1: found,
+                    expected: *expected,
+                    found,
                 });
             }
         }
         Expect::Fee { pool, expected } => {
-            let found =
-                IUniswapV3Pool::feeCall::abi_decode_returns(&row.returnData).map_err(|_| {
-                    ConfigError::CallFailed {
-                        address: *pool,
-                        what: "fee decode",
-                    }
-                })?;
-            let Some(&limb) = found.into_limbs().first() else {
-                return Err(ConfigError::CallFailed {
+            let found = IUniswapV3Pool::feeCall::abi_decode_returns_validate(&row.returnData)
+                .map_err(|_| ConfigError::CallFailed {
                     address: *pool,
-                    what: "fee limbs",
-                });
-            };
-            let found_u32 = u32::try_from(limb).map_err(|_| ConfigError::CallFailed {
-                address: *pool,
-                what: "fee width",
-            })?;
+                    what: "fee decode",
+                })?;
+            let found_u32 = found.to::<u32>();
             if found_u32 != *expected {
                 return Err(ConfigError::FeeMismatch {
                     pool: *pool,
@@ -314,12 +348,42 @@ fn check_one(exp: &Expect<'_>, row: &IMulticall3::Result) -> Result<()> {
                 });
             }
         }
+        Expect::OracleDecimals { proxy, expected } => {
+            let found =
+                AggregatorV3Interface::decimalsCall::abi_decode_returns_validate(&row.returnData)
+                    .map_err(|_| ConfigError::CallFailed {
+                    address: *proxy,
+                    what: "oracle decimals decode",
+                })?;
+            if found != *expected {
+                return Err(ConfigError::OracleDecimalsMismatch {
+                    proxy: *proxy,
+                    expected: *expected,
+                    found,
+                });
+            }
+        }
+        Expect::Aggregator { proxy, expected } => {
+            let found =
+                EACAggregatorProxy::aggregatorCall::abi_decode_returns_validate(&row.returnData)
+                    .map_err(|_| ConfigError::CallFailed {
+                        address: *proxy,
+                        what: "aggregator decode",
+                    })?;
+            if found != *expected {
+                return Err(ConfigError::AggregatorMismatch {
+                    proxy: *proxy,
+                    expected: *expected,
+                    found,
+                });
+            }
+        }
     }
     Ok(())
 }
 
 fn symbol_from_bytes32(token: Address, data: &[u8]) -> Result<String> {
-    let raw = IERC20Bytes32::symbolCall::abi_decode_returns(data).map_err(|_| {
+    let raw = IERC20Bytes32::symbolCall::abi_decode_returns_validate(data).map_err(|_| {
         ConfigError::CallFailed {
             address: token,
             what: "symbol bytes32 decode",
@@ -357,7 +421,7 @@ impl Validate for Registry {
 mod tests {
     use super::assert_registry;
     use crate::error::ConfigError;
-    use crate::registry::{PoolEntry, PoolVenue, Registry, TokenEntry, TokenQuirk};
+    use crate::registry::{OracleEntry, PoolEntry, PoolVenue, Registry, TokenEntry, TokenQuirk};
     use crate::rpc::HttpRpc;
     use alloy_primitives::{address, Address};
     use std::collections::BTreeMap;
@@ -372,6 +436,10 @@ mod tests {
     const TUSD_WETH: Address = address!("0x714b8443D0AdA18Ece1fCE5702567e313Bfa8f29");
     const TUSD: Address = address!("0x0000000000085d4780B73119b644AE5Ecd22b376");
     const UNI_FACTORY: Address = address!("0x1F98431c8aD98523631AE4a59f267346ea31F984");
+    /// Aave V3 WETH source (Chainlink EACAggregatorProxy). First oracle in the
+    /// committed registry — decimals + aggregator are chain-derived, not guessed.
+    const AAVE_WETH_PROXY: Address = address!("0x5424384B256154046E9667dDfAaa5e550145215e");
+    const AAVE_WETH_AGG: Address = address!("0x7c7FdFCa295a787DED12Bb5c1A49A8d2Cc20E3f8");
 
     fn rpc_url() -> String {
         std::env::var("LIQ_RPC_URL")
@@ -427,6 +495,19 @@ mod tests {
         t
     }
 
+    fn aave_weth_oracle() -> (Address, OracleEntry) {
+        (
+            AAVE_WETH_PROXY,
+            OracleEntry {
+                aggregator: AAVE_WETH_AGG,
+                pair: "aave-v3/0xc02aaa39".into(),
+                decimals: 8,
+                svr: false,
+                source: "aave-v3:getSourceOfAsset".into(),
+            },
+        )
+    }
+
     fn tiny_registry(tokens: BTreeMap<Address, TokenEntry>) -> Registry {
         let mut pools = BTreeMap::new();
         pools.insert(
@@ -454,11 +535,14 @@ mod tests {
     }
 
     /// Oracle: chain (WETH/USDC/USDT/MKR decimals+symbol, TUSD/WETH pool
-    /// token0/token1/fee). Negative: a wrong registry must not pass.
+    /// token0/token1/fee, one Aave V3 Chainlink proxy decimals+aggregator).
+    /// Negative: a wrong registry must not pass.
     #[tokio::test(flavor = "current_thread")]
     async fn live_subset_matches_chain() {
         let rpc = live_rpc();
-        let reg = tiny_registry(tokens_weth_usdc_usdt_mkr());
+        let mut reg = tiny_registry(tokens_weth_usdc_usdt_mkr());
+        let (proxy, entry) = aave_weth_oracle();
+        reg.oracles.insert(proxy, entry);
         tokio::time::timeout(Duration::from_secs(45), assert_registry(&reg, &rpc))
             .await
             .expect("rpc timed out — fail closed")
@@ -525,6 +609,33 @@ mod tests {
         }
     }
 
+    /// Oracle: REGISTRY.md §4c — a proxy upgraded underneath us is an alert.
+    /// Flip committed aggregator decimals 8 → 18; boot must refuse.
+    #[tokio::test(flavor = "current_thread")]
+    async fn corrupting_oracle_decimals_fails_startup() {
+        let rpc = live_rpc();
+        let mut reg = tiny_registry(tokens_weth_usdc_usdt_mkr());
+        let (proxy, mut entry) = aave_weth_oracle();
+        entry.decimals = 18;
+        reg.oracles.insert(proxy, entry);
+        let err = tokio::time::timeout(Duration::from_secs(45), assert_registry(&reg, &rpc))
+            .await
+            .expect("rpc timed out — fail closed")
+            .unwrap_err();
+        match err {
+            ConfigError::OracleDecimalsMismatch {
+                proxy: got,
+                expected,
+                found,
+            } => {
+                assert_eq!(got, AAVE_WETH_PROXY);
+                assert_eq!(expected, 18);
+                assert_eq!(found, 8);
+            }
+            other => panic!("expected OracleDecimalsMismatch, got {other}"),
+        }
+    }
+
     /// Oracle: REGISTRY.md §4c — no degraded mode. A closed port is not a
     /// reason to start on cached decimals.
     #[tokio::test(flavor = "current_thread")]
@@ -535,7 +646,7 @@ mod tests {
             .await
             .expect("hung rpc");
         assert!(
-            matches!(err, Err(ConfigError::RpcUnavailable)),
+            matches!(err, Err(ConfigError::RpcUnavailable { .. })),
             "got {err:?}"
         );
     }
@@ -545,7 +656,7 @@ mod tests {
     fn empty_rpc_url_is_unavailable() {
         assert!(matches!(
             HttpRpc::connect(""),
-            Err(ConfigError::RpcUnavailable)
+            Err(ConfigError::RpcUnavailable { .. })
         ));
     }
 

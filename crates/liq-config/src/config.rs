@@ -70,8 +70,10 @@ pub fn load(config_dir: &Path) -> Result<BotConfig> {
     Ok(cfg)
 }
 
-impl Validate for BotConfig {
-    async fn validate<R: ChainRpc + Sync>(&self, rpc: &R) -> Result<()> {
+impl BotConfig {
+    /// Structural checks and nested `Validate`. Does not call `eth_chainId`
+    /// — `boot` fetches that once and checks config + registry against it.
+    pub(crate) async fn validate_local<R: ChainRpc + Sync>(&self, rpc: &R) -> Result<()> {
         if self.chain_id != 1 {
             return Err(ConfigError::ChainIdMismatch {
                 expected: 1,
@@ -79,7 +81,9 @@ impl Validate for BotConfig {
             });
         }
         if self.rpc_url.is_empty() {
-            return Err(ConfigError::RpcUnavailable);
+            return Err(ConfigError::RpcUnavailable {
+                cause: "empty rpc_url".into(),
+            });
         }
         if !self.registry_path.is_file() {
             return Err(ConfigError::Load(format!(
@@ -87,6 +91,15 @@ impl Validate for BotConfig {
                 self.registry_path.display()
             )));
         }
+        self.risk.validate(rpc).await?;
+        self.venues.validate(rpc).await?;
+        Ok(())
+    }
+}
+
+impl Validate for BotConfig {
+    async fn validate<R: ChainRpc + Sync>(&self, rpc: &R) -> Result<()> {
+        self.validate_local(rpc).await?;
         let found = rpc.chain_id().await?;
         if found != self.chain_id {
             return Err(ConfigError::ChainIdMismatch {
@@ -94,8 +107,6 @@ impl Validate for BotConfig {
                 found,
             });
         }
-        self.risk.validate(rpc).await?;
-        self.venues.validate(rpc).await?;
         Ok(())
     }
 }
@@ -131,8 +142,9 @@ mod tests {
     use super::load;
     use figment::Jail;
 
-    /// Oracle: GUIDE 00 §4 — env overrides the file. Negative: the file value
-    /// must not win once `LIQ_RPC_URL` is set (secrets never have to sit on disk).
+    /// Oracle: GUIDE 00 §4 — env overrides the file. Does not touch
+    /// `LIQ_RPC_URL` (that var is also read by live assertion tests in
+    /// parallel threads; figment Jail only serializes other Jails).
     #[test]
     #[allow(clippy::result_large_err)]
     fn env_overrides_toml() {
@@ -147,10 +159,10 @@ rpc_url = "http://from-file"
             )?;
             jail.create_file("risk.toml", "[risk]\n")?;
             jail.create_file("venues.toml", "[venues]\n")?;
-            jail.set_env("LIQ_RPC_URL", "http://from-env");
+            jail.set_env("LIQ_CHAIN_ID", "11155111");
             let cfg = load(jail.directory()).map_err(|e| figment::Error::from(e.to_string()))?;
-            assert_eq!(cfg.rpc_url, "http://from-env");
-            assert_eq!(cfg.chain_id, 1);
+            assert_eq!(cfg.chain_id, 11155111);
+            assert_eq!(cfg.rpc_url, "http://from-file");
             Ok(())
         });
     }
