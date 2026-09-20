@@ -7,23 +7,17 @@
 use crate::canonical::answer_to_ray;
 use crate::feeds::FeedSet;
 use crate::{OracleError, Result};
-use alloy_primitives::{Address, Bytes, TxHash, I256};
+use alloy_primitives::{Address, I256};
 use alloy_sol_types::{SolCall, SolValue};
 use liq_types::{AssetId, Confidence, PriceTick, SourceKind};
 
-/// Same capacity 03B allocates (`GUIDE 03` §4b).
-pub const RING_CAP: usize = 4096;
+// Seam types live in the cycle-breaker `liq-types` so the 03B producer
+// (`liq-node`) and this 06D consumer share them without depending on each
+// other (06D review D1). Re-exported here to preserve the crate API.
+pub use liq_types::{PendingTx, RING_CAP};
 
 /// Selector `transmit(bytes32[3],bytes,bytes32[],bytes32[],bytes32)`.
 pub const TRANSMIT_SELECTOR: [u8; 4] = [0x6f, 0xad, 0xcf, 0x72];
-
-/// Pending tx as 03B pushes it. `to` is the callee (aggregator).
-#[derive(Clone, Debug)]
-pub struct PendingTx {
-    pub hash: TxHash,
-    pub to: Address,
-    pub input: Bytes,
-}
 
 alloy_sol_types::sol! {
     function transmit(
