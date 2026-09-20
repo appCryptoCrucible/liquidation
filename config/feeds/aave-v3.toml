@@ -1,0 +1,116 @@
+# Aave V3 feeds. Addresses from registry/registry.json `oracles`.
+# heartbeat_secs / deviation_bps from Chainlink reference-data-directory
+# feeds-mainnet.json, matched by registry aggregator address.
+# threshold is percent → deviation_bps = threshold × 100 (0.5 = 50).
+# Unresolved registry oracles (pair prefix has no token) are not listed here;
+# see `FeedsConfig::resolve_registry` failures.
+
+[[feed]]
+protocol = "aave-v3"
+market = "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2"
+asset = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+mechanism = "chainlink-push"
+proxy = "0x5424384b256154046e9667ddfaaa5e550145215e"
+standard_aggregator = "0x7c7fdfca295a787ded12bb5c1a49a8d2cc20e3f8"
+decimals = 8
+heartbeat_secs = 3600
+deviation_bps = 50
+
+[[feed]]
+protocol = "aave-v3"
+market = "0x4e033931ad43597d96d6bcc25c280717730b58b1"
+asset = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+mechanism = "chainlink-push"
+proxy = "0x5424384b256154046e9667ddfaaa5e550145215e"
+standard_aggregator = "0x7c7fdfca295a787ded12bb5c1a49a8d2cc20e3f8"
+decimals = 8
+heartbeat_secs = 3600
+deviation_bps = 50
+
+[[feed]]
+protocol = "aave-v3"
+market = "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2"
+asset = "0x514910771af9ca656af840dff83e8264ecf986ca"
+mechanism = "chainlink-push"
+proxy = "0xc7e9b623ed51f033b32ae7f1282b1ad62c28c183"
+standard_aggregator = "0x64c67984a458513c6bab23a815916b1b1075cf3a"
+decimals = 8
+heartbeat_secs = 3600
+deviation_bps = 100
+
+[[feed]]
+protocol = "aave-v3"
+market = "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2"
+asset = "0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9"
+mechanism = "chainlink-push"
+proxy = "0xf02c1e2a3b77c1cacc72f72b44f7d0a4c62e4a85"
+standard_aggregator = "0xcd07b31d85756098334eddc92de755deae8fe62f"
+decimals = 8
+heartbeat_secs = 3600
+deviation_bps = 100
+
+[[feed]]
+protocol = "aave-v3"
+market = "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2"
+asset = "0xd533a949740bb3306d119cc777fa900ba034cd52"
+mechanism = "chainlink-push"
+proxy = "0xcd627aa160a6fa45eb793d19ef54f5062f20f33f"
+standard_aggregator = "0xda0da298550e8e449b935cea865c8100f3ca1b73"
+decimals = 8
+heartbeat_secs = 86400
+deviation_bps = 100
+
+[[feed]]
+protocol = "aave-v3"
+market = "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2"
+asset = "0xba100000625a3754423978a60c9317c58a424e3d"
+mechanism = "chainlink-push"
+proxy = "0xdf2917806e30300537aeb49a7663062f4d1f2b5f"
+standard_aggregator = "0x2a29c3696dd424d3e703f5f3f2d6af86598e9303"
+decimals = 8
+heartbeat_secs = 86400
+deviation_bps = 200
+
+[[feed]]
+protocol = "aave-v3"
+market = "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2"
+asset = "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984"
+mechanism = "chainlink-push"
+proxy = "0x553303d460ee0afb37edff9be42922d8ff63220e"
+standard_aggregator = "0xdef8c51d7c1040637a198effc39613865b32ea51"
+decimals = 8
+heartbeat_secs = 3600
+deviation_bps = 100
+
+[[feed]]
+protocol = "aave-v3"
+market = "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2"
+asset = "0xd33526068d116ce69f19a9ee46f0bd304f21a51f"
+mechanism = "chainlink-push"
+proxy = "0x4e155ed98afe9034b7a5962f6c84c86d869daa9d"
+standard_aggregator = "0x92455f206f6433f161c09a31b0e02a195afcf23c"
+decimals = 8
+heartbeat_secs = 86400
+deviation_bps = 200
+
+[[feed]]
+protocol = "aave-v3"
+market = "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2"
+asset = "0x18084fba666a33d37592fa2633fd49a74dd93a88"
+mechanism = "chainlink-push"
+proxy = "0xb41e773f507f7a7ea890b1afb7d2b660c30c8b0a"
+standard_aggregator = "0xdc715c751f1cc129a6b47fedc87d9918a4580502"
+decimals = 8
+heartbeat_secs = 3600
+deviation_bps = 50
+
+[[feed]]
+protocol = "aave-v3"
+market = "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2"
+asset = "0x68749665ff8d2d112fa859aa293f07a622782f38"
+mechanism = "chainlink-push"
+proxy = "0x214ed9da11d2fbe465a6fc601a91e62ebec1a0d6"
+standard_aggregator = "0x0e3dd634ffbf7ea89bbdcf09ccc463302fd5f903"
+decimals = 8
+heartbeat_secs = 86400
+deviation_bps = 30

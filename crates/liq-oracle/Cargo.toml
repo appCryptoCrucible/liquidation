@@ -4,5 +4,26 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[dependencies]
+liq-types = { path = "../liq-types" }
+liq-protocol = { path = "../liq-protocol" }
+liq-config = { path = "../liq-config" }
+alloy-primitives = { workspace = true, features = ["std", "serde"] }
+alloy-sol-types = { workspace = true, features = ["std"] }
+serde = { workspace = true }
+figment = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+triple_buffer = { workspace = true }
+smallvec = { workspace = true }
+
+[dev-dependencies]
+liq-node = { path = "../liq-node" }
+alloy-primitives = { workspace = true, features = ["std", "serde"] }
+arrayvec = { workspace = true }
+figment = { workspace = true, features = ["toml", "env", "test"] }
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+serde_json = { workspace = true }
+
 [lints]
 workspace = true
