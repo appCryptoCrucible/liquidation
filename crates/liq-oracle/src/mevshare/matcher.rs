@@ -141,17 +141,18 @@ fn answer_from_calldata(data: &Bytes) -> Result<I256> {
 
 fn median_from_report(report: &[u8]) -> Result<I256> {
     let decoded = OcrReport::abi_decode(report).map_err(|_| MevShareError::BadCallData)?;
-    let mut obs: Vec<I256> = Vec::with_capacity(decoded.observations.len());
-    for o in decoded.observations {
-        let s = o.to_string();
-        obs.push(s.parse::<I256>().map_err(|_| MevShareError::BadCallData)?);
-    }
+    let mut obs = decoded.observations;
     if obs.is_empty() {
         return Err(MevShareError::BadCallData);
     }
     obs.sort_unstable();
     let mid = obs.len().checked_div(2).ok_or(MevShareError::BadCallData)?;
-    obs.get(mid).copied().ok_or(MevShareError::BadCallData)
+    let median = obs.get(mid).copied().ok_or(MevShareError::BadCallData)?;
+    // Single conversion for the median (was per-observation in the original: ~31 string allocs → 1)
+    median
+        .to_string()
+        .parse::<I256>()
+        .map_err(|_| MevShareError::BadCallData)
 }
 
 fn answer_from_logs(logs: &[Log], aggregator: Address) -> Result<I256> {
