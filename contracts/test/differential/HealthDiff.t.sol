@@ -18,7 +18,7 @@ contract HealthDiffTest is Test {
             DiffCase memory c = Generator.generate(uint256(keccak256(abi.encode(i, "05A"))));
             AccountView memory v = HealthOracle.viewAccount(c);
             if (HealthOracle.inBand(v.healthFactor)) inBand++;
-            _assertDimsVary(c, i);
+            _assertDimsInRange(c, i);
         }
         // Uniform-over-HF-space sampling spends almost no mass in a 1% window.
         // < 90% in-band is a generator bug (TESTING.md §3).
@@ -35,17 +35,17 @@ contract HealthDiffTest is Test {
         cmd[1] = "--case";
         cmd[2] = vm.toString(abi.encode(c));
         bytes memory got = vm.ffi(cmd);
-        (uint256 hf, uint256 coll, uint256 debtRay) = abi.decode(got, (uint256, uint256, uint256));
+        (uint256 hf, uint256 coll, uint256 debtWadGot) = abi.decode(got, (uint256, uint256, uint256));
         uint256 collWad = oracle.totalCollateralValue / 1e8;
         uint256 debtWad = (oracle.totalDebtValueRay / 1e27)
             + (oracle.totalDebtValueRay % 1e27 == 0 ? 0 : 1);
         debtWad = debtWad / 1e8;
         assertEq(hf, oracle.healthFactor, "04A health() != Spoke view (oracle is the chain)");
         assertEq(coll, collWad, "collateral Wad (H4) mismatch");
-        assertEq(debtRay, debtWad, "debt Wad (H2 then H4) mismatch");
+        assertEq(debtWadGot, debtWad, "debt Wad (H2 then H4) mismatch");
     }
 
-    function _assertDimsVary(DiffCase memory c, uint256 i) private pure {
+    function _assertDimsInRange(DiffCase memory c, uint256 i) private pure {
         i;
         require(c.spokeKind < 4, "spokeKind");
         require(c.emodeKind < 3, "emodeKind");

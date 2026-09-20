@@ -38,7 +38,7 @@ fn run() -> Result<Vec<u8>, String> {
     Ok(encode_view(
         v.health_factor_wad,
         v.total_collateral_value,
-        v.total_debt_value_ray,
+        v.total_debt_value_wad,
     ))
 }
 

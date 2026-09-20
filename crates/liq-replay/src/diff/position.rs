@@ -28,7 +28,7 @@ const HALTED: u8 = 1 << 3;
 pub struct AdapterView {
     pub health_factor_wad: U256,
     pub total_collateral_value: U256,
-    pub total_debt_value_ray: U256,
+    pub total_debt_value_wad: U256,
 }
 
 #[derive(Debug, Error)]
@@ -64,7 +64,7 @@ fn view_from_health(h: Health) -> Result<AdapterView, CaseError> {
     Ok(AdapterView {
         health_factor_wad,
         total_collateral_value: h.collateral_value.raw(),
-        total_debt_value_ray: h.debt_value.raw(),
+        total_debt_value_wad: h.debt_value.raw(),
     })
 }
 
