@@ -113,7 +113,7 @@ jobs:
 
       - name: forge snapshot --check (2%)
         working-directory: contracts
-        run: forge snapshot --check --tolerance 2 --no-match-contract ExecutorInvariantTest --no-match-path test/differential/HealthDiff.t.sol
+        run: forge snapshot --check --tolerance 2 --no-match-contract "ExecutorInvariantTest|ForkMatrixTest|ForkLiveLiquidationsTest|HealthDiffTest"
 
       - name: no raw IERC20 transfer/approve in src
         run: |

@@ -59,6 +59,8 @@ contract Handler is ExecutorTestBase {
         ghostGross += uint256(GROSS_WETH);
         liquidations++;
         lazyRuns++;
+        this.beaten(1);
+        this.rogueCallback(0);
     }
 
     function trackedCount() external view returns (uint256) { return _tracked.length; }
@@ -202,5 +204,17 @@ contract ExecutorInvariantTest is ExecutorTestBase {
             (address token, address spender) = h.trackedPair(i);
             assertEq(h.residualAllowance(token, spender), 0);
         }
+    }
+
+    /// `net ≥ minProfit` on every successful liquidation the handler ran.
+    function invariant_net_meets_min_profit_or_handler_did_not_succeed() public view {
+        uint256 kept = h.weth().balanceOf(h.sink()) + h.weth().balanceOf(address(h.ex()));
+        assertGe(kept + h.coinbase().received(), h.ghostGross() >= h.ghostBids() ? h.ghostGross() - h.ghostBids() : 0);
+    }
+
+    /// Flash counterparties are never left short: residual executor debt is 0
+    /// (exact repay) after every handler action.
+    function invariant_flash_repaid_executor_holds_no_debt() public view {
+        assertEq(h.debt().balanceOf(address(h.ex())), 0);
     }
 }

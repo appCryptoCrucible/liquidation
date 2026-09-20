@@ -46,10 +46,13 @@ contract ForkMatrixTest is Test {
     Executor ex;
     bool forked;
 
+    /// Pinned by 10C. 10A forked the tip; live liquidations need a fixed block.
+    uint256 constant PINNED_BLOCK = 26_019_284;
+
     function setUp() public {
         string memory url = vm.envOr("MAINNET_RPC_URL", string(""));
         if (bytes(url).length == 0) return;
-        vm.createSelectFork(url);
+        vm.createSelectFork(url, PINNED_BLOCK);
         forked = true;
         ex = new Executor(
             operator, sink, UNIV3_FACTORY, UNIV3_INIT_HASH,
