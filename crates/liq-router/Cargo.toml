@@ -6,3 +6,29 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+liq-types = { path = "../liq-types" }
+liq-protocol = { path = "../liq-protocol" }
+alloy-primitives = { workspace = true, features = ["std"] }
+alloy-sol-types = { workspace = true, features = ["std"] }
+arc-swap = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# Canonical Solidity-port of Uniswap V3 `SwapMath` / `SqrtPriceMath` /
+# `TickMath` / `FullMath` (0xKitsune). This is the primitive layer both
+# `amms-rs` and `Dex-Math-Core-rs` delegate to; taken directly (see lib.rs
+# "Dependency deviation"). Pinned exactly; no default features so the
+# optional `alloy` umbrella (async runtime, RPC clients) never enters this tree.
+uniswap_v3_math = { version = "=0.6.2", default-features = false }
+
+[dev-dependencies]
+# 07B eligibility filter, driven with the real RouteCache in cache tests.
+liq-flash = { path = "../liq-flash" }
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "solve"
+harness = false
