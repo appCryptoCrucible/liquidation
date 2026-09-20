@@ -208,6 +208,33 @@ fn intern_trove(
     Ok(id)
 }
 
+/// Pin `onRemoveFromBatch` (TroveManager.sol L1920–2005): `interestBatchManager
+/// = 0` and `batchDebtShares = 0` before `TroveUpdated`, then `BatchUpdated`
+/// for remaining members. Clearing here (and on close/liquidate) so
+/// `BatchUpdated` cannot re-match the leaver.
+fn clear_batch_denorm(st: &mut dyn StateWriter, pos: PositionId) -> Result<()> {
+    let mut dx = *st.slot_extra(pos, BOLD_SLOT)?.view::<TroveDebtExtra>()?;
+    dx.batch_debt_shares = 0;
+    dx.batch_recorded_debt = 0;
+    dx.batch_total_shares = 0;
+    let mut dxr = *st.slot_extra(pos, BOLD_SLOT)?;
+    *dxr.view_mut::<TroveDebtExtra>()? = dx;
+    st.set_slot_extra(pos, BOLD_SLOT, dxr)?;
+
+    let mut cx = *st.slot_extra(pos, COLL_SLOT)?.view::<TroveCollExtra>()?;
+    cx.batch_manager = [0u8; 20];
+    cx.batch_management_fee = 0;
+    let mut cxr = *st.slot_extra(pos, COLL_SLOT)?;
+    *cxr.view_mut::<TroveCollExtra>()? = cx;
+    st.set_slot_extra(pos, COLL_SLOT, cxr)?;
+    Ok(())
+}
+
+#[inline]
+fn is_batched(manager: [u8; 20]) -> bool {
+    manager != [0u8; 20]
+}
+
 fn patch_branch(
     st: &mut dyn StateWriter,
     market: MarketId,
@@ -287,6 +314,14 @@ fn tm(
     if topic0 == events::TroveUpdated::SIGNATURE_HASH {
         let ev = decode::<events::TroveUpdated>(log)?;
         let pos = intern_trove(cfg, st, b.market, ev.troveId)?;
+        let cx = *st.slot_extra(pos, COLL_SLOT)?.view::<TroveCollExtra>()?;
+        let extra = *st.extra(pos)?.view::<TroveExtra>()?;
+        let was_batched = is_batched(cx.batch_manager);
+        // `onApplyTroveInterest` for a still-batched trove emits BatchUpdated
+        // then TroveUpdated (L1623–1656). BatchUpdated already wrote
+        // last_debt_update = this timestamp; do not unbatch. Leave-batch
+        // (`onRemoveFromBatch` L1944) emits TroveUpdated first.
+        let batch_already_this_ts = extra.last_debt_update == last_update(log.timestamp)?;
         write_trove(
             st,
             pos,
@@ -299,6 +334,9 @@ fn tm(
             log.timestamp,
             None,
         )?;
+        if was_batched && !batch_already_this_ts {
+            clear_batch_denorm(st, pos)?;
+        }
         return Ok(positions(&[pos]));
     }
     if topic0 == events::BatchedTroveUpdated::SIGNATURE_HASH {
@@ -347,6 +385,12 @@ fn tm(
         let mut repr = *st.extra(pos)?;
         *repr.view_mut::<TroveExtra>()? = extra;
         st.set_extra(pos, repr)?;
+        if ev.operation == op::REMOVE_FROM_BATCH
+            || ev.operation == op::CLOSE_TROVE
+            || ev.operation == op::LIQUIDATE
+        {
+            clear_batch_denorm(st, pos)?;
+        }
         return Ok(positions(&[pos]));
     }
     if topic0 == events::BatchUpdated::SIGNATURE_HASH {

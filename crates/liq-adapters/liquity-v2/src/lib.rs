@@ -37,6 +37,9 @@ pub struct LiquityV2 {
 
 impl LiquityV2 {
     pub fn new(cfg: Config) -> core::result::Result<Self, ConfigError> {
+        if !cfg.live_registry_asserted {
+            return Err(ConfigError::LiveRegistryUnasserted);
+        }
         cfg.validate()?;
         Ok(Self { cfg })
     }

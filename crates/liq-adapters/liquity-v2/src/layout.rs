@@ -8,8 +8,9 @@ use bytemuck::{Pod, Zeroable};
 use liq_types::AssetId;
 
 /// Slot 0 body: branch immutables (toml snapshot of `AddressesRegistry`,
-/// live-asserted by [`crate::Config::assert_live_registry`]) plus
-/// `L_coll` / `L_boldDebt` / SP deposits / shutdown.
+/// copied only after [`crate::LiquityV2::new`] which requires
+/// [`crate::Config::assert_live_registry`]) plus `L_coll` / `L_boldDebt` /
+/// SP deposits / shutdown.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
 pub struct BranchRow {

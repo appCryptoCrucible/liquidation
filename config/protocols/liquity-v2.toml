@@ -3,16 +3,17 @@
 # Addresses from `contracts/addresses/1.json` at that pin.
 # MCR / CCR / penalties are the pin deploy-script numbers baked into each
 # branch `AddressesRegistry` as immutables. `Config::validate` checks
-# Constants.sol bounds only. `Config::assert_live_registry(provider, block)`
-# eth_calls MCR/CCR/LIQUIDATION_PENALTY_SP/LIQUIDATION_PENALTY_REDISTRIBUTION
-# and fails closed on a live disagree. `liq-bot` must call that at boot
-# (this crate does not own liq-bot). In-tree caller: ignored test
+# Constants.sol bounds only. Boot is fail-closed:
+# `Config::from_toml` → `Config::assert_live_registry(provider, block)`
+# (eth_call MCR/CCR/LIQUIDATION_PENALTY_SP/LIQUIDATION_PENALTY_REDISTRIBUTION)
+# → `LiquityV2::new`. `new` returns `LiveRegistryUnasserted` unless the assert
+# succeeded on that config. In-tree: pin-view mock in tests; ignored
 # `live_addresses_registry_matches_toml` behind LIQ_RPC_URL.
 #
 # Intern: BOLD 418, wstETH 525, rETH 734, WETH 813 (registry.tokens sort).
 # Family `liquity-v2` is not interned (9 families → ids 0..=8); protocol = 9.
-# Euler owns catalog=3481 and vaults first_market=3482 ..= 3507 (26 admitted).
-# Liquity branches take the next free adapter-private slots: 3508 WETH,
+# Intern markets occupy 0..=3480 (len 3481). Euler intern vaults 561..=1444;
+# Euler catalog 3511, first_market 3512. Liquity adapter-private: 3508 WETH,
 # 3509 wstETH, 3510 rETH.
 # Feeds 27..=29 are config-local Liquity PriceFeeds (15 interned oracles,
 # Spark used 15..=26). BOLD has no USD source (feed 30); PriceVector required.

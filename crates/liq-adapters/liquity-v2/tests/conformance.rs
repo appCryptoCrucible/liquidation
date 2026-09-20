@@ -15,12 +15,11 @@ mod common;
 use alloy_primitives::{address, uint, Address, Bytes, U256};
 use alloy_sol_types::{SolCall, SolEvent};
 use common::*;
-use liq_adapters_liquity_v2::config::{
-    CCRCall, ConfigError, LIQUIDATION_PENALTY_REDISTRIBUTIONCall, LIQUIDATION_PENALTY_SPCall,
-    MCRCall, RegistryRpc,
-};
+use liq_adapters_liquity_v2::config::{ConfigError, RegistryRpc};
 use liq_adapters_liquity_v2::events::{self as ev, halt, liq};
-use liq_adapters_liquity_v2::layout::TroveExtra;
+use liq_adapters_liquity_v2::layout::{
+    TroveCollExtra, TroveDebtExtra, TroveExtra, BOLD_SLOT, COLL_SLOT,
+};
 use liq_adapters_liquity_v2::{alloc_meter, math, Config, LiquityV2};
 use liq_config::{Intern, OnChainId, Registry};
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
@@ -520,6 +519,13 @@ fn toml_matches_pin_1_json_and_intern() {
     assert_eq!(cfg.branches[0].market, MarketId(3508));
     assert_eq!(cfg.branches[1].market, MarketId(3509));
     assert_eq!(cfg.branches[2].market, MarketId(3510));
+    assert!(!cfg.live_registry_asserted);
+    assert_eq!(
+        LiquityV2::new(cfg.clone()).unwrap_err(),
+        ConfigError::LiveRegistryUnasserted
+    );
+    let cfg = assert_pin_registry(cfg);
+    assert!(cfg.live_registry_asserted);
     LiquityV2::new(cfg.clone()).unwrap();
 
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -550,53 +556,32 @@ fn toml_matches_pin_1_json_and_intern() {
     assert_eq!(intern.feeds().len(), 15);
 }
 
-struct PinRpc {
-    rows: Vec<(Address, [u8; 4], U256)>,
-}
-
-impl RegistryRpc for PinRpc {
-    fn eth_call(
-        &self,
-        to: Address,
-        data: &[u8],
-        _block: u64,
-    ) -> core::result::Result<Bytes, ConfigError> {
-        let sel = data.get(..4).ok_or(ConfigError::RegistryCall(to))?;
-        for (addr, s, v) in &self.rows {
-            if *addr == to && s.as_slice() == sel {
-                return Ok(Bytes::copy_from_slice(&v.to_be_bytes::<32>()));
-            }
-        }
-        Err(ConfigError::RegistryCall(to))
-    }
-}
-
-fn pin_rpc_from_cfg(cfg: &Config) -> PinRpc {
-    let mut rows = Vec::new();
-    for b in &cfg.branches {
-        rows.push((b.addresses_registry, MCRCall::SELECTOR, U256::from(b.mcr)));
-        rows.push((b.addresses_registry, CCRCall::SELECTOR, U256::from(b.ccr)));
-        rows.push((
-            b.addresses_registry,
-            LIQUIDATION_PENALTY_SPCall::SELECTOR,
-            U256::from(b.penalty_sp),
-        ));
-        rows.push((
-            b.addresses_registry,
-            LIQUIDATION_PENALTY_REDISTRIBUTIONCall::SELECTOR,
-            U256::from(b.penalty_redist),
-        ));
-    }
-    PinRpc { rows }
+#[test]
+fn new_refuses_unasserted_config() {
+    let raw = include_str!("../../../../config/protocols/liquity-v2.toml");
+    let cfg = Config::from_toml(raw).expect("liquity-v2.toml");
+    assert!(!cfg.live_registry_asserted);
+    assert_eq!(
+        LiquityV2::new(cfg).unwrap_err(),
+        ConfigError::LiveRegistryUnasserted
+    );
+    let d = Deploy::new();
+    assert!(!d.config().live_registry_asserted);
+    assert_eq!(
+        LiquityV2::new(d.config()).unwrap_err(),
+        ConfigError::LiveRegistryUnasserted
+    );
 }
 
 #[test]
 fn assert_live_registry_matches_pin_immutables() {
     let raw = include_str!("../../../../config/protocols/liquity-v2.toml");
-    let cfg = Config::from_toml(raw).expect("liquity-v2.toml");
+    let mut cfg = Config::from_toml(raw).expect("liquity-v2.toml");
     let rpc = pin_rpc_from_cfg(&cfg);
     cfg.assert_live_registry(&rpc, cfg.pinned_through)
         .expect("pin views equal toml");
+    assert!(cfg.live_registry_asserted);
+    LiquityV2::new(cfg).expect("asserted config boots");
 }
 
 #[test]
@@ -612,6 +597,11 @@ fn assert_live_registry_refuses_mcr_mismatch() {
         ConfigError::RegistryMismatch { field, .. } => assert_eq!(field, "MCR"),
         other => panic!("expected RegistryMismatch, got {other:?}"),
     }
+    assert!(!cfg.live_registry_asserted);
+    assert_eq!(
+        LiquityV2::new(cfg).unwrap_err(),
+        ConfigError::LiveRegistryUnasserted
+    );
 }
 
 #[test]
@@ -646,6 +636,164 @@ fn batched_icr_wei_equals_get_current_icr_order() {
     );
     let wrong_hf = math::hf_from_icr(icr_wrong, U256::from(MCR_WETH)).unwrap();
     assert_ne!(h.hf, wrong_hf);
+}
+
+#[test]
+fn remove_from_batch_icr_is_unbatched() {
+    // Pin onRemoveFromBatch (TroveManager L1920–2005): last member out.
+    // TroveUpdated then TroveOperation(removeFromBatch) then BatchUpdated
+    // after interestBatchManager = 0. Health discriminator is manager != 0.
+    // Unbatched entireDebt has no leftover management fee (L969–976).
+    let d = Deploy::new();
+    let p = d.adapter();
+    let last_shares = BATCH_TOTAL;
+    let (b, t) = (DEPLOY_BLOCK, T0);
+    let mut logs = vec![
+        log(
+            TM,
+            &ev::BatchedTroveUpdated {
+                troveId: d.trove_id,
+                interestBatchManager: BATCH_MANAGER,
+                batchDebtShares: last_shares,
+                coll: BATCH_ENTIRE,
+                stake: BATCH_ENTIRE,
+                snapshotOfTotalCollRedist: U256::ZERO,
+                snapshotOfTotalDebtRedist: U256::ZERO,
+            },
+            b,
+            t,
+        ),
+        log(
+            TM,
+            &ev::TroveOperation {
+                troveId: d.trove_id,
+                operation: ev::op::OPEN_TROVE_AND_JOIN_BATCH,
+                annualInterestRate: BATCH_RATE,
+                debtIncreaseFromRedist: U256::ZERO,
+                debtIncreaseFromUpfrontFee: U256::ZERO,
+                debtChangeFromOperation: alloy_primitives::I256::try_from(BATCH_DEBT).unwrap(),
+                collIncreaseFromRedist: U256::ZERO,
+                collChangeFromOperation: alloy_primitives::I256::try_from(BATCH_ENTIRE).unwrap(),
+            },
+            b,
+            t,
+        ),
+        log(
+            TM,
+            &ev::BatchUpdated {
+                interestBatchManager: BATCH_MANAGER,
+                operation: 0,
+                debt: BATCH_DEBT,
+                coll: BATCH_ENTIRE,
+                annualInterestRate: BATCH_RATE,
+                annualManagementFee: BATCH_FEE,
+                totalDebtShares: last_shares,
+                debtIncreaseFromUpfrontFee: U256::ZERO,
+            },
+            b,
+            t,
+        ),
+        log(
+            SP,
+            &ev::StabilityPoolBoldBalanceUpdated {
+                newBalance: SP_BOLD,
+            },
+            b,
+            t,
+        ),
+    ];
+    let (recorded, interest, fee) = math::batch_trove_debt(
+        BATCH_DEBT,
+        last_shares,
+        last_shares,
+        BATCH_RATE,
+        BATCH_FEE,
+        U256::from(T_WEEK - T0),
+    )
+    .unwrap();
+    let entire_at_leave = recorded + interest + fee;
+    logs.push(log(
+        TM,
+        &ev::TroveUpdated {
+            troveId: d.trove_id,
+            debt: entire_at_leave,
+            coll: BATCH_ENTIRE,
+            stake: BATCH_ENTIRE,
+            annualInterestRate: BATCH_RATE,
+            snapshotOfTotalCollRedist: U256::ZERO,
+            snapshotOfTotalDebtRedist: U256::ZERO,
+        },
+        DEPLOY_BLOCK,
+        T_WEEK,
+    ));
+    logs.push(log(
+        TM,
+        &ev::TroveOperation {
+            troveId: d.trove_id,
+            operation: ev::op::REMOVE_FROM_BATCH,
+            annualInterestRate: BATCH_RATE,
+            debtIncreaseFromRedist: U256::ZERO,
+            debtIncreaseFromUpfrontFee: U256::ZERO,
+            debtChangeFromOperation: alloy_primitives::I256::ZERO,
+            collIncreaseFromRedist: U256::ZERO,
+            collChangeFromOperation: alloy_primitives::I256::ZERO,
+        },
+        DEPLOY_BLOCK,
+        T_WEEK,
+    ));
+    logs.push(log(
+        TM,
+        &ev::BatchUpdated {
+            interestBatchManager: BATCH_MANAGER,
+            operation: 5,
+            debt: U256::ZERO,
+            coll: U256::ZERO,
+            annualInterestRate: BATCH_RATE,
+            annualManagementFee: BATCH_FEE,
+            totalDebtShares: U256::ZERO,
+            debtIncreaseFromUpfrontFee: U256::ZERO,
+        },
+        DEPLOY_BLOCK,
+        T_WEEK,
+    ));
+    let st = store_after(&p, &logs);
+    let dx = *st
+        .slot_extra(ALICE_ID, BOLD_SLOT)
+        .unwrap()
+        .view::<TroveDebtExtra>()
+        .unwrap();
+    assert_eq!(dx.batch_debt_shares, 0);
+    assert_eq!(dx.batch_recorded_debt, 0);
+    assert_eq!(dx.batch_total_shares, 0);
+    let cx = *st
+        .slot_extra(ALICE_ID, COLL_SLOT)
+        .unwrap()
+        .view::<TroveCollExtra>()
+        .unwrap();
+    assert_eq!(cx.batch_manager, [0u8; 20]);
+    assert_eq!(cx.batch_management_fee, 0);
+
+    let t_after = T_WEEK + 604_800;
+    let period = U256::from(t_after - T_WEEK);
+    let unbatched_interest = math::calc_interest(entire_at_leave * BATCH_RATE, period).unwrap();
+    let leftover_fee = math::calc_interest(entire_at_leave * BATCH_FEE, period).unwrap();
+    assert_ne!(leftover_fee, U256::ZERO);
+    let entire = entire_at_leave + unbatched_interest;
+    let icr = math::compute_cr(BATCH_ENTIRE, entire, WAD).unwrap();
+    let h = p
+        .health(
+            st.view(ALICE_ID, t_after).unwrap(),
+            &prices(WAD, BOLD_USD_WAD),
+        )
+        .unwrap();
+    let want = math::hf_from_icr(icr, U256::from(MCR_WETH)).unwrap();
+    assert_eq!(h.hf, want, "ICR must follow unbatched pos.debt after leave");
+    let icr_with_fee = math::compute_cr(BATCH_ENTIRE, entire + leftover_fee, WAD).unwrap();
+    let hf_with_fee = math::hf_from_icr(icr_with_fee, U256::from(MCR_WETH)).unwrap();
+    assert_ne!(
+        h.hf, hf_with_fee,
+        "leftover batch management fee must not accrue after leave"
+    );
 }
 
 #[test]
@@ -847,7 +995,7 @@ fn icr_equal_mcr_is_not_liquidatable() {
 fn live_addresses_registry_matches_toml() {
     let url = std::env::var("LIQ_RPC_URL").expect("LIQ_RPC_URL required for live registry assert");
     let raw = include_str!("../../../../config/protocols/liquity-v2.toml");
-    let cfg = Config::from_toml(raw).expect("liquity-v2.toml");
+    let mut cfg = Config::from_toml(raw).expect("liquity-v2.toml");
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -886,4 +1034,5 @@ fn live_addresses_registry_matches_toml() {
     let rpc = Live { provider, rt };
     cfg.assert_live_registry(&rpc, cfg.pinned_through)
         .expect("live AddressesRegistry immutables must equal toml");
+    LiquityV2::new(cfg).expect("live-asserted config boots");
 }

@@ -75,22 +75,20 @@ fn extra_coll(pos: PositionRef<'_>) -> Result<TroveCollExtra> {
         .copied()
 }
 
-fn accrued_unbatched(
-    recorded: U256,
-    extra: &TroveExtra,
-    coll_x: &TroveCollExtra,
-    ts: u64,
-    shutdown: u64,
-) -> Result<(U256, U256)> {
+/// Pin `_getLatestTroveData` L969–976: unbatched interest only, no management fee.
+fn accrued_unbatched(recorded: U256, extra: &TroveExtra, ts: u64, shutdown: u64) -> Result<U256> {
     let period = interest_period(u64::from(extra.last_debt_update), shutdown, ts)?;
     let rate = U256::from(extra.annual_interest_rate);
-    let fee = U256::from(coll_x.batch_management_fee);
     let w_rate = recorded.checked_mul(rate).ok_or(FixedError::Overflow)?;
-    let w_fee = recorded.checked_mul(fee).ok_or(FixedError::Overflow)?;
-    Ok((
-        calc_interest(w_rate, period)?,
-        calc_interest(w_fee, period)?,
-    ))
+    calc_interest(w_rate, period)
+}
+
+#[inline]
+fn is_batched(coll_x: &TroveCollExtra) -> bool {
+    // Pin `_getLatestTroveData` L957: `interestBatchManager != address(0)`.
+    // Not `totalDebtShares == 0` — last member out still has leftover denorm
+    // until leave is applied, and on-chain the discriminator is the manager.
+    coll_x.batch_manager != [0u8; 20]
 }
 
 fn accrued_batched(
@@ -149,11 +147,10 @@ pub(crate) fn terms(pos: PositionRef<'_>) -> Result<Terms<'_>> {
         U256::from(coll_x.snapshot_coll),
     )?;
     let shutdown = u64::from(branch.shutdown_time);
-    let (recorded, interest, batch_fee) = if debt_x.batch_total_shares == 0 {
+    let (recorded, interest, batch_fee) = if !is_batched(&coll_x) {
         let recorded = U256::from(cell(pos.debt, BOLD_SLOT));
-        let (interest, batch_fee) =
-            accrued_unbatched(recorded, &extra, &coll_x, pos.timestamp, shutdown)?;
-        (recorded, interest, batch_fee)
+        let interest = accrued_unbatched(recorded, &extra, pos.timestamp, shutdown)?;
+        (recorded, interest, U256::ZERO)
     } else {
         accrued_batched(&debt_x, &extra, &coll_x, pos.timestamp, shutdown)?
     };

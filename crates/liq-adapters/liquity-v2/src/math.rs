@@ -26,7 +26,8 @@ pub const MIN_LIQUIDATION_PENALTY_SP: U256 = uint!(50_000_000_000_000_000_U256);
 /// `Constants.sol` `MAX_LIQUIDATION_PENALTY_REDISTRIBUTION`.
 pub const MAX_LIQUIDATION_PENALTY_REDISTRIBUTION: U256 = uint!(200_000_000_000_000_000_U256);
 /// Pin deploy-script WETH `MCR` (`110 * _1pct`). Runtime truth is the live
-/// `AddressesRegistry` immutable, asserted by [`crate::Config::assert_live_registry`].
+/// `AddressesRegistry` immutable; [`crate::LiquityV2::new`] requires
+/// [`crate::Config::assert_live_registry`] to have matched it.
 pub const PIN_MCR_WETH: U256 = uint!(1_100_000_000_000_000_000_U256);
 /// Pin deploy-script SETH `MCR` (`120 * _1pct`).
 pub const PIN_MCR_SETH: U256 = uint!(1_200_000_000_000_000_000_U256);

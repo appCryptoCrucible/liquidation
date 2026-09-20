@@ -18,6 +18,7 @@ Source: `LiquityMath.sol`, `LiquityBase._calcInterest`, `TroveManager._getOffset
 | G2 | `ETH_GAS_COMPENSATION` | constant `0.0375 ether` | WETH `transferFrom` the gas pool, not native ETH |
 | H1 | `_isLiquidatable` | `ICR < MCR` strict | `Status.active` or `Status.zombie` only; no `unredeemable` at this pin |
 | H2 | adapter `hf` | floor `ICR * RAY / MCR` | `hf = 1.0` ⇔ `ICR >= MCR` under this floor |
+| H3 | unbatched `entireDebt` | no management fee | `_getLatestTroveData` L969–976 when `interestBatchManager == 0` (after `removeFromBatch`) |
 | P1 | last healthy coll price | ceil `MCR * entireDebt / entireColl` (WAD), then `* 1e9` RAY | one RAY down floors to `p_wad - 1` |
 
-Adapter `health()` applies pending redistribution and I1 / B2 to `pos.timestamp`, then C1 + H1. ICR does not load WETH; `quote()` does (gas-pool seize). `quote()` uses G1+G2 only: `BonusCurve::Static { bonus: 0 }`, `max_repay = 0`. Never a flash-repay-seize incentive mantissa. Empty SP still pays `ETH_GAS_COMPENSATION` (0.0375 WETH).
+Adapter `health()` applies pending redistribution and I1 / B2 to `pos.timestamp`, then C1 + H1. Batched vs unbatched is `interestBatchManager != 0` (not `totalShares`). ICR does not load WETH; `quote()` does (gas-pool seize). `quote()` uses G1+G2 only: `BonusCurve::Static { bonus: 0 }`, `max_repay = 0`. Never a flash-repay-seize incentive mantissa. Empty SP still pays `ETH_GAS_COMPENSATION` (0.0375 WETH).

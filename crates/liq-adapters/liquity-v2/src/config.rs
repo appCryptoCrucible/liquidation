@@ -3,9 +3,11 @@
 //! MCR/CCR/penalties in toml are the pin deploy-script numbers written into
 //! each branch `AddressesRegistry` as immutables (`liquity/bold` @ `c8a5a4ee`).
 //! [`Config::validate`] checks Constants.sol *bounds* only.
-//! [`Config::assert_live_registry`] `eth_call`s the live immutables and
-//! refuses a disagree. `liq-bot` must invoke that at boot (this crate does
-//! not own the process); the ignored live test is the in-tree caller.
+//! Boot is fail-closed: [`Config::from_toml`] → [`Config::assert_live_registry`]
+//! → [`crate::LiquityV2::new`]. `new` returns
+//! [`ConfigError::LiveRegistryUnasserted`] unless `assert_live_registry`
+//! succeeded on that config (the flag starts false; only a successful assert
+//! sets it true). There is no unasserted constructor.
 
 use alloy_primitives::{Address, Bytes, U256};
 use alloy_sol_types::{sol, SolCall};
@@ -29,11 +31,9 @@ pub use IAddressesRegistry::{
 
 /// Synchronous `eth_call` at a block. Boot-only; not on the hot path.
 ///
-/// `liq-bot` (and any other process that constructs [`crate::LiquityV2`] from
-/// this toml) must implement this against a real node and pass it to
-/// [`Config::assert_live_registry`] after [`Config::from_toml`]. This crate
-/// does not own `liq-bot`. Tests: a pin-view double for decoder/mismatch,
-/// plus `#[ignore]` `live_addresses_registry_matches_toml` behind `LIQ_RPC_URL`.
+/// [`Config::assert_live_registry`] is the only setter of
+/// [`Config::live_registry_asserted`]. Tests use a pin-view double; the
+/// ignored `live_addresses_registry_matches_toml` test uses `LIQ_RPC_URL`.
 pub trait RegistryRpc {
     fn eth_call(
         &self,
@@ -84,6 +84,9 @@ pub struct Config {
     pub weth: AssetConfig,
     pub branches: Vec<BranchConfig>,
     pub pinned_through: BlockNum,
+    /// False until [`Self::assert_live_registry`] succeeds. [`crate::LiquityV2::new`]
+    /// returns [`ConfigError::LiveRegistryUnasserted`] while this is false.
+    pub live_registry_asserted: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -121,6 +124,8 @@ pub enum ConfigError {
     },
     #[error("AddressesRegistry eth_call failed at {0}")]
     RegistryCall(Address),
+    #[error("live AddressesRegistry was not asserted")]
+    LiveRegistryUnasserted,
     #[error("protocol toml is malformed")]
     MalformedToml,
 }
@@ -184,17 +189,15 @@ impl Config {
     }
 
     /// `eth_call` each branch `AddressesRegistry` immutable at `block`.
-    /// Mismatch or RPC/decode failure → `Err`. Bounds are still [`validate`].
-    ///
-    /// Boot path: `Config::from_toml` → `assert_live_registry(rpc, block)` →
-    /// `LiquityV2::new`. `liq-bot` must wire the middle call; this crate does
-    /// not. In-tree: `live_addresses_registry_matches_toml` (`#[ignore]`,
-    /// `LIQ_RPC_URL`).
+    /// Mismatch or RPC/decode failure → `Err` and
+    /// [`Self::live_registry_asserted`] stays false. Bounds are still
+    /// [`validate`]. Success is the only path that sets the flag true.
     pub fn assert_live_registry<R: RegistryRpc>(
-        &self,
+        &mut self,
         provider: &R,
         block: BlockNum,
     ) -> core::result::Result<(), ConfigError> {
+        self.live_registry_asserted = false;
         self.validate()?;
         for b in &self.branches {
             let reg = b.addresses_registry;
@@ -231,6 +234,7 @@ impl Config {
                 U256::from(b.penalty_redist),
             )?;
         }
+        self.live_registry_asserted = true;
         Ok(())
     }
 
@@ -274,8 +278,9 @@ impl Config {
 
     /// Parse `config/protocols/liquity-v2.toml`. MCR/CCR/penalties are the
     /// pin deploy-script numbers baked into `AddressesRegistry` immutables.
-    /// [`validate`] checks Constants.sol bounds. Live disagree is caught
-    /// only if the process calls [`Config::assert_live_registry`].
+    /// [`validate`] checks Constants.sol bounds. The live-assert flag is
+    /// false; [`crate::LiquityV2::new`] refuses this config until
+    /// [`Self::assert_live_registry`] succeeds.
     pub fn from_toml(raw: &str) -> core::result::Result<Self, ConfigError> {
         let f: TomlFile = toml::from_str(raw).map_err(|_| ConfigError::MalformedToml)?;
         let mut branches = Vec::with_capacity(f.branches.len());
@@ -305,6 +310,7 @@ impl Config {
             weth: parse_asset(f.weth)?,
             branches,
             pinned_through: f.pinned_through,
+            live_registry_asserted: false,
         };
         cfg.validate()?;
         Ok(cfg)

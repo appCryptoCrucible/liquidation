@@ -14,8 +14,12 @@
     clippy::cast_possible_truncation
 )]
 
-use alloy_primitives::{address, uint, Address, B256, U256};
-use alloy_sol_types::SolEvent;
+use alloy_primitives::{address, uint, Address, Bytes, B256, U256};
+use alloy_sol_types::{SolCall, SolEvent};
+use liq_adapters_liquity_v2::config::{
+    CCRCall, ConfigError, LIQUIDATION_PENALTY_REDISTRIBUTIONCall, LIQUIDATION_PENALTY_SPCall,
+    MCRCall, RegistryRpc,
+};
 use liq_adapters_liquity_v2::events::{self as ev};
 use liq_adapters_liquity_v2::{AssetConfig, BranchConfig, Config, LiquityV2};
 use liq_protocol::conformance::JournalStore;
@@ -125,11 +129,12 @@ impl Deploy {
                 penalty_redist: PENALTY_REDIST_WETH,
             }],
             pinned_through: DEPLOY_BLOCK,
+            live_registry_asserted: false,
         }
     }
 
     pub fn adapter(&self) -> LiquityV2 {
-        LiquityV2::new(self.config()).expect("fixture config validates")
+        LiquityV2::new(assert_pin_registry(self.config())).expect("fixture config asserted")
     }
 
     pub fn wsteth_config(&self) -> Config {
@@ -166,11 +171,13 @@ impl Deploy {
                 penalty_redist: PENALTY_REDIST_SETH,
             }],
             pinned_through: DEPLOY_BLOCK,
+            live_registry_asserted: false,
         }
     }
 
     pub fn wsteth_adapter(&self) -> LiquityV2 {
-        LiquityV2::new(self.wsteth_config()).expect("wsteth fixture config validates")
+        LiquityV2::new(assert_pin_registry(self.wsteth_config()))
+            .expect("wsteth fixture config asserted")
     }
 }
 
@@ -179,6 +186,53 @@ pub fn pack_trove_id(user: Address, hi: u8) -> U256 {
     b[0] = hi;
     b[12..32].copy_from_slice(user.as_slice());
     U256::from_be_bytes(b)
+}
+
+pub struct PinRpc {
+    rows: Vec<(Address, [u8; 4], U256)>,
+}
+
+impl RegistryRpc for PinRpc {
+    fn eth_call(
+        &self,
+        to: Address,
+        data: &[u8],
+        _block: u64,
+    ) -> core::result::Result<Bytes, ConfigError> {
+        let sel = data.get(..4).ok_or(ConfigError::RegistryCall(to))?;
+        for (addr, s, v) in &self.rows {
+            if *addr == to && s.as_slice() == sel {
+                return Ok(Bytes::copy_from_slice(&v.to_be_bytes::<32>()));
+            }
+        }
+        Err(ConfigError::RegistryCall(to))
+    }
+}
+
+pub fn pin_rpc_from_cfg(cfg: &Config) -> PinRpc {
+    let mut rows = Vec::new();
+    for b in &cfg.branches {
+        rows.push((b.addresses_registry, MCRCall::SELECTOR, U256::from(b.mcr)));
+        rows.push((b.addresses_registry, CCRCall::SELECTOR, U256::from(b.ccr)));
+        rows.push((
+            b.addresses_registry,
+            LIQUIDATION_PENALTY_SPCall::SELECTOR,
+            U256::from(b.penalty_sp),
+        ));
+        rows.push((
+            b.addresses_registry,
+            LIQUIDATION_PENALTY_REDISTRIBUTIONCall::SELECTOR,
+            U256::from(b.penalty_redist),
+        ));
+    }
+    PinRpc { rows }
+}
+
+pub fn assert_pin_registry(mut cfg: Config) -> Config {
+    let rpc = pin_rpc_from_cfg(&cfg);
+    cfg.assert_live_registry(&rpc, cfg.pinned_through)
+        .expect("fixture pin views equal config immutables");
+    cfg
 }
 
 #[derive(Clone, Debug)]

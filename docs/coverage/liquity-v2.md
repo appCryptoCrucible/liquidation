@@ -9,7 +9,7 @@ topic0 = keccak256(canonical ABI signature). `ITroveManager.Status` / `ITroveEve
 
 `batchLiquidateTroves(uint256[] _troveArray)` is the liquidation ABI (not an event). Selector `0xef49a6b4`. Empty → `EmptyData`. None liquidatable → `NothingToLiquidate`. Per id: skip unless `Status.active` or `Status.zombie` (this pin has no `unredeemable`); liquidate iff `getCurrentICR(id, price) < MCR`. Counterparty is the Stability Pool. Liquidator profit is gas compensation only (`ETH_GAS_COMPENSATION` + coll gas from `collSPPortion`). `encode` returns `ProtocolError::ExecutorUnwired` until 10R.
 
-Boot: `Config::from_toml` then `Config::assert_live_registry(provider, block)` eth_calls each branch `AddressesRegistry` MCR/CCR/penalties (immutables) and refuses a toml disagree. `liq-bot` must call it; this crate does not own that process. Markets 3508 WETH / 3509 wstETH / 3510 rETH (Euler occupies 3481–3507).
+Boot is fail-closed: `Config::from_toml` then `Config::assert_live_registry(provider, block)` eth_calls each branch `AddressesRegistry` MCR/CCR/penalties (immutables) and refuses a toml disagree, then `LiquityV2::new`. `new` returns `ConfigError::LiveRegistryUnasserted` unless that assert succeeded on the same config. Markets 3508 WETH / 3509 wstETH / 3510 rETH. Euler intern vaults 561..=1444, catalog 3511, first_market 3512.
 
 | DirtySet | when |
 |---|---|
@@ -22,10 +22,10 @@ Boot: `Config::from_toml` then `Config::assert_live_registry(provider, block)` e
 
 | path | function/event | log topic(s) | DirtySet | notes |
 |---|---|---|---|---|
-| tm.troveUpdated | TroveManager → TroveUpdated | 0x0fba2673863b12c7b8463f3fa2f9b0cb1d534c573cdec5b5d895ee00d6ce6f5e | Positions | recorded debt/coll/stake/rate/snapshots; 0 < debt < MIN_DEBT → zombie |
-| tm.troveOperation | TroveManager → TroveOperation | 0x962110f281c1213763cd97a546b337b3cbfd25a31ea9723e9d8b7376ba45da1a | Positions | Operation uint8; liquidate → closedByLiquidation |
+| tm.troveUpdated | TroveManager → TroveUpdated | 0x0fba2673863b12c7b8463f3fa2f9b0cb1d534c573cdec5b5d895ee00d6ce6f5e | Positions | recorded debt/coll/stake/rate/snapshots; 0 < debt < MIN_DEBT → zombie; leave-batch (TroveUpdated before BatchUpdated) clears denorm |
+| tm.troveOperation | TroveManager → TroveOperation | 0x962110f281c1213763cd97a546b337b3cbfd25a31ea9723e9d8b7376ba45da1a | Positions | Operation uint8; liquidate → closedByLiquidation; removeFromBatch/close/liquidate clear batch denorm |
 | tm.batchedTroveUpdated | TroveManager → BatchedTroveUpdated | 0x6464838e073667756f10746b26734b60870fdcad31d7861c6e5603430bccac61 | Positions | shares + batch manager; debt from BatchUpdated denorm |
-| tm.batchUpdated | TroveManager → BatchUpdated | 0xecf6daab6f1facdfdd8dfe32b525744d8a7a940824dd52e2b53c24028ee5faa0 | Positions | scan market positions sharing the manager |
+| tm.batchUpdated | TroveManager → BatchUpdated | 0xecf6daab6f1facdfdd8dfe32b525744d8a7a940824dd52e2b53c24028ee5faa0 | Positions | scan market positions with batch_manager == event manager (leavers already 0) |
 | tm.liquidation | TroveManager.batchLiquidateTroves → Liquidation | 0x7243af9a1cff94d3429b2ee00b78c1c10589259f20dc167cb67704f38f9e824e | MarketAccrual | L_coll / L_boldDebt; field 8 is `_L_ETH` in ABI |
 | tm.redemption | TroveManager.redeemCollateral → Redemption | 0x84ec8e1674d62e3a8ff294b1a7f53527d2d10291765fadf94e0ce431b2334334 | None | trove deltas arrive as TroveUpdated |
 | tm.redemptionFee | TroveManager → RedemptionFeePaidToTrove | 0xc7e8309b9b14e7a8561ed352b9fd8733de32417fb7b6a69f5671f79e7bb29ddd | None | |
