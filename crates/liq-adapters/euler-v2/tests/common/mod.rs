@@ -16,14 +16,18 @@
 use alloy_primitives::{uint, Address, Bytes, B256, U256};
 use alloy_sol_types::SolEvent;
 use liq_adapters_euler_v2::events::{self as ev, evc};
-use liq_adapters_euler_v2::{AssetConfig, Config, EulerV2, SourcePin};
+use liq_adapters_euler_v2::{
+    AssetConfig, Config, EulerV2, SourcePin, CATALOG_MARKET, FIRST_DISCOVERED_MARKET,
+};
 use liq_protocol::conformance::JournalStore;
 use liq_protocol::{DecodedLog, FeedId, Protocol};
 use liq_types::{AssetId, MarketId, PositionId, Price, PriceVector, ProtocolId, Ray, SourceKind};
 
 pub const PROTOCOL: ProtocolId = ProtocolId(4);
-pub const CATALOG: MarketId = MarketId(0);
-pub const FIRST: MarketId = MarketId(1);
+pub const CATALOG: MarketId = CATALOG_MARKET;
+pub const FIRST: MarketId = FIRST_DISCOVERED_MARKET;
+pub const DEBT_MARKET: MarketId = MarketId(0);
+pub const COLL_MARKET: MarketId = MarketId(1);
 pub const USDC: AssetId = AssetId(0);
 pub const WETH_SHARES: AssetId = AssetId(1);
 pub const DEPLOY_BLOCK: u64 = 100;
@@ -81,7 +85,10 @@ impl Deploy {
             catalog: CATALOG,
             first_market: FIRST,
             vaults: vec![self.debt_vault, self.coll_vault],
-            interned: vec![],
+            interned: vec![
+                (self.debt_vault, DEBT_MARKET),
+                (self.coll_vault, COLL_MARKET),
+            ],
             assets: vec![
                 AssetConfig {
                     underlying: self.usdc,

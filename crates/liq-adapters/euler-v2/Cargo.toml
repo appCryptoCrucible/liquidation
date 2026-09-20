@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 liq-types = { path = "../../liq-types" }
 liq-protocol = { path = "../../liq-protocol" }
+liq-config = { path = "../../liq-config" }
 alloy-primitives = { workspace = true, features = ["std"] }
 alloy-sol-types = { workspace = true, features = ["std"] }
 bytemuck = { workspace = true }
@@ -17,7 +18,6 @@ toml = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
-liq-config = { path = "../../liq-config" }
 
 [lints]
 workspace = true

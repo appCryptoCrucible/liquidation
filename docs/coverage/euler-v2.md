@@ -27,7 +27,7 @@ Last-healthy `liquidation_price` uses the same predicate as `health()`: liquidat
 
 `StateStore.market_index` is intern-global (`MarketId → row`, no `ProtocolId`). Allocator:
 
-1. Bind each euler-v2 vault `OnChainId::Addr` to `Intern::from_registry` `MarketRec.id` (`registry.protocols` iteration order). Registry has ~884 euler-v2 rows (26 admitted). Bind every interned vault the adapter may intern from logs. W `WatchDecoder` already maps `Liquidate` to those intern ids.
+1. Bind each euler-v2 vault `OnChainId::Addr` to `Intern::from_registry` `MarketRec.id` (`registry.protocols` iteration order). Registry has ~884 euler-v2 rows (26 admitted). Bind every interned vault the adapter may intern from logs. Production path: `Config::load(registry_root)` or `Config::from_toml` then `bind_from_intern(&Intern)`. `from_toml` alone leaves `interned` empty; `EulerV2::new` / `validate` refuse that when `vaults` is non-empty. W `WatchDecoder` already maps `Liquidate` to those intern ids.
 2. Catalog (vault→MarketId index, not a vault) is **not** interned: **3511**.
 3. Vaults not in intern (new `ProxyCreated`) take sequential ids from **3512**. Never 3481–3510 (Liquity rework owns 3508–3510).
 

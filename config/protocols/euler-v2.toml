@@ -10,8 +10,11 @@
 # MarketId allocator (intern-global; StateStore has no ProtocolId):
 #   1. Bind each euler-v2 vault OnChainId::Addr to Intern::from_registry
 #      MarketRec.id (registry.protocols iteration order). ~884 interned
-#      euler vaults; 26 admitted. W WatchDecoder already binds Liquidate
-#      to those intern ids — adapter discovery must match.
+#      euler vaults; 26 admitted. Production: Config::load(registry_root)
+#      or from_toml + bind_from_intern(&Intern). from_toml alone leaves
+#      interned empty; EulerV2::new refuses that when vaults is non-empty.
+#      W WatchDecoder already binds Liquidate to those intern ids —
+#      adapter discovery must match.
 #   2. Catalog is an Id→MarketId index, not a vault, and is NOT interned:
 #      catalog = 3511.
 #   3. Vaults absent from intern (new ProxyCreated) get sequential ids

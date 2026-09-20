@@ -11,8 +11,15 @@
 //! [`CATALOG_MARKET`]. Vaults absent from intern (new `ProxyCreated`) take
 //! sequential ids from [`FIRST_DISCOVERED_MARKET`]. Never 3481..=3510
 //! (Liquity V2 rework owns 3508..=3510).
+//!
+//! Production load is [`Config::load`] / [`Config::from_toml`] then
+//! [`Config::bind_from_intern`]. [`Config::from_toml`] leaves `interned` empty;
+//! [`crate::EulerV2::new`] refuses that whenever `vaults` is non-empty.
+
+use std::path::Path;
 
 use alloy_primitives::Address;
+use liq_config::{Intern, OnChainId, Registry};
 use liq_protocol::{BlockNum, FeedId};
 use liq_types::{AssetId, MarketId, ProtocolId};
 
@@ -88,6 +95,16 @@ pub enum ConfigError {
     DuplicateAsset(AssetId),
     #[error("subscribed vault {0} is missing from interned MarketIds")]
     UnboundVault(Address),
+    #[error("vaults are configured but interned MarketIds are empty")]
+    EmptyInterned,
+    #[error("intern has no euler-v2 family")]
+    MissingEulerFamily,
+    #[error("euler-v2 intern market is not an address")]
+    InternNotAddress,
+    #[error("toml protocol id does not match intern euler-v2 family")]
+    ProtocolMismatch,
+    #[error("failed to load {0}")]
+    Load(&'static str),
     #[error("protocol toml is malformed")]
     MalformedToml,
 }
@@ -98,7 +115,7 @@ fn is_foreign(id: MarketId) -> bool {
 }
 
 impl Config {
-    pub fn validate(&self) -> core::result::Result<(), ConfigError> {
+    fn validate_shape(&self) -> core::result::Result<(), ConfigError> {
         if self.factory == Address::ZERO {
             return Err(ConfigError::ZeroFactory);
         }
@@ -145,13 +162,6 @@ impl Config {
             }
             intern_addrs.push(*addr);
         }
-        if !self.interned.is_empty() {
-            for v in &self.vaults {
-                if self.interned_id(*v).is_none() {
-                    return Err(ConfigError::UnboundVault(*v));
-                }
-            }
-        }
         let mut oracles: Vec<Address> = Vec::new();
         for p in &self.price_sources {
             if oracles.contains(&p.oracle) {
@@ -167,6 +177,21 @@ impl Config {
                 .any(|b| b.asset == a.asset || b.underlying == a.underlying)
             {
                 return Err(ConfigError::DuplicateAsset(a.asset));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate(&self) -> core::result::Result<(), ConfigError> {
+        self.validate_shape()?;
+        if !self.vaults.is_empty() {
+            if self.interned.is_empty() {
+                return Err(ConfigError::EmptyInterned);
+            }
+            for v in &self.vaults {
+                if self.interned_id(*v).is_none() {
+                    return Err(ConfigError::UnboundVault(*v));
+                }
             }
         }
         Ok(())
@@ -191,8 +216,46 @@ impl Config {
         self.validate()
     }
 
+    /// Copy every euler-v2 `(OnChainId::Addr, MarketRec.id)` from `intern`
+    /// (admitted and not), then [`Self::validate`].
+    pub fn bind_from_intern(&mut self, intern: &Intern) -> core::result::Result<(), ConfigError> {
+        let proto = intern
+            .protocol("euler-v2")
+            .ok_or(ConfigError::MissingEulerFamily)?;
+        if proto != self.protocol {
+            return Err(ConfigError::ProtocolMismatch);
+        }
+        let mut markets = Vec::new();
+        for m in intern.markets() {
+            if m.protocol != proto {
+                continue;
+            }
+            let OnChainId::Addr(addr) = m.key else {
+                return Err(ConfigError::InternNotAddress);
+            };
+            markets.push((addr, m.id));
+        }
+        self.bind_interned(markets)
+    }
+
+    /// Parse committed `euler-v2.toml` and bind intern MarketIds from
+    /// `registry/registry.json` under `registry_root`.
+    pub fn load(registry_root: &Path) -> core::result::Result<Self, ConfigError> {
+        let raw = std::fs::read_to_string(registry_root.join("config/protocols/euler-v2.toml"))
+            .map_err(|_| ConfigError::Load("euler-v2.toml"))?;
+        let mut cfg = Self::from_toml(&raw)?;
+        let intern = Intern::from_registry(
+            &Registry::from_path(&registry_root.join("registry/registry.json"))
+                .map_err(|_| ConfigError::Load("registry.json"))?,
+        )
+        .map_err(|_| ConfigError::Load("intern"))?;
+        cfg.bind_from_intern(&intern)?;
+        Ok(cfg)
+    }
+
     #[inline]
-    pub(crate) fn interned_id(&self, vault: Address) -> Option<MarketId> {
+    #[must_use]
+    pub fn interned_id(&self, vault: Address) -> Option<MarketId> {
         self.interned
             .iter()
             .find(|(a, _)| *a == vault)
@@ -228,8 +291,8 @@ impl Config {
         self.asset_by_underlying(address)
     }
 
-    /// Parse `config/protocols/euler-v2.toml`. Interned MarketIds are filled
-    /// by [`Self::bind_interned`], not this file.
+    /// Parse `config/protocols/euler-v2.toml`. `interned` is empty; bind via
+    /// [`Self::bind_from_intern`] or [`Self::load`] before [`crate::EulerV2::new`].
     pub fn from_toml(raw: &str) -> core::result::Result<Self, ConfigError> {
         let f: TomlFile = toml::from_str(raw).map_err(|_| ConfigError::MalformedToml)?;
         let mut vaults = Vec::with_capacity(f.vaults.len());
@@ -257,7 +320,7 @@ impl Config {
             price_sources: Vec::new(),
             pinned_through: f.pinned_through,
         };
-        cfg.validate()?;
+        cfg.validate_shape()?;
         Ok(cfg)
     }
 }

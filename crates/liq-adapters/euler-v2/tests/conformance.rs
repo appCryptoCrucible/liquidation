@@ -16,7 +16,10 @@ use alloy_primitives::{uint, Address, U256};
 use alloy_sol_types::SolEvent;
 use common::*;
 use liq_adapters_euler_v2::events::{self as ev, evc, halt};
-use liq_adapters_euler_v2::{alloc_meter, math, CATALOG_MARKET, FIRST_DISCOVERED_MARKET};
+use liq_adapters_euler_v2::{
+    alloc_meter, math, Config, ConfigError, EulerV2, CATALOG_MARKET, FIRST_DISCOVERED_MARKET,
+    FOREIGN_MARKET_MIN,
+};
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
     BlockReason, CallbackShape, Constraints, DirtySet, FlashRoute, HealthState, LegChoice,
@@ -548,65 +551,70 @@ fn to_assets_up_matches_owed_lib() {
 
 use common::OwnedLog;
 
-fn intern_bound_adapter(d: &Deploy) -> liq_adapters_euler_v2::EulerV2 {
+fn workspace_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .unwrap()
+}
+
+fn intern_bound_adapter(d: &Deploy) -> EulerV2 {
     let mut cfg = d.config();
     cfg.catalog = CATALOG_MARKET;
     cfg.first_market = FIRST_DISCOVERED_MARKET;
     cfg.interned = vec![(d.debt_vault, MarketId(42)), (d.coll_vault, MarketId(99))];
-    liq_adapters_euler_v2::EulerV2::new(cfg).expect("intern-bound config")
+    EulerV2::new(cfg).expect("intern-bound config")
+}
+
+#[test]
+fn committed_toml_without_intern_bind_fails_closed() {
+    let raw =
+        std::fs::read_to_string(workspace_root().join("config/protocols/euler-v2.toml")).unwrap();
+    let cfg = Config::from_toml(&raw).expect("euler-v2.toml parses");
+    assert!(cfg.interned.is_empty());
+    assert_eq!(cfg.vaults.len(), 26);
+    assert_eq!(EulerV2::new(cfg).unwrap_err(), ConfigError::EmptyInterned);
 }
 
 #[test]
 fn intern_binds_all_euler_vaults_from_registry() {
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
-        .canonicalize()
-        .unwrap();
+    let root = workspace_root();
     let intern = liq_config::Intern::from_registry(
         &liq_config::Registry::from_path(&root.join("registry/registry.json")).unwrap(),
     )
     .unwrap();
     let proto = intern.protocol("euler-v2").expect("euler-v2 family");
     assert_eq!(proto, PROTOCOL);
-    let bound: Vec<(alloy_primitives::Address, MarketId)> = intern
+    let euler: Vec<&liq_config::MarketRec> = intern
         .markets()
         .iter()
         .filter(|m| m.protocol == proto)
-        .map(|m| match m.key {
-            liq_config::OnChainId::Addr(a) => (a, m.id),
-            liq_config::OnChainId::Slot(_) => panic!("euler-v2 market is an address"),
-        })
         .collect();
-    let admitted = intern
-        .markets()
-        .iter()
-        .filter(|m| m.protocol == proto && m.admitted)
-        .count();
+    let admitted = euler.iter().filter(|m| m.admitted).count();
     assert_eq!(admitted, 26, "admitted euler-v2 vaults");
-    assert_eq!(bound.len(), 884, "interned euler-v2 vaults");
-    for (_, id) in &bound {
-        assert!(
-            id.0 < 3481,
-            "interned MarketId {id:?} must be in intern 0..=3480"
-        );
-        assert_ne!(*id, CATALOG_MARKET);
-        assert!(id.0 < FIRST_DISCOVERED_MARKET.0);
-    }
+    assert_eq!(euler.len(), 884, "interned euler-v2 vaults");
+    let intern_min = euler.iter().map(|m| m.id.0).min().expect("euler ids");
+    let intern_max = euler.iter().map(|m| m.id.0).max().expect("euler ids");
 
     let raw = std::fs::read_to_string(root.join("config/protocols/euler-v2.toml")).unwrap();
-    let mut cfg = liq_adapters_euler_v2::Config::from_toml(&raw).expect("euler-v2.toml");
-    assert_eq!(cfg.catalog, CATALOG_MARKET);
-    assert_eq!(cfg.first_market, FIRST_DISCOVERED_MARKET);
-    assert_eq!(cfg.vaults.len(), 26);
-    cfg.bind_interned(bound.clone()).expect("bind interned");
-    assert_eq!(cfg.interned.len(), 884);
-    for v in &cfg.vaults {
-        let id = cfg
-            .interned
-            .iter()
-            .find(|(a, _)| a == v)
-            .map(|(_, id)| *id)
-            .expect("admitted vault is interned");
+    let parsed = Config::from_toml(&raw).expect("euler-v2.toml");
+    assert_eq!(parsed.catalog, CATALOG_MARKET);
+    assert_eq!(parsed.first_market, FIRST_DISCOVERED_MARKET);
+    assert_eq!(parsed.vaults.len(), 26);
+    assert!(parsed.interned.is_empty());
+    assert_eq!(
+        EulerV2::new(parsed.clone()).unwrap_err(),
+        ConfigError::EmptyInterned
+    );
+
+    let mut bound = parsed.clone();
+    bound.bind_from_intern(&intern).expect("bind_from_intern");
+    let loaded = Config::load(&root).expect("Config::load");
+    assert_eq!(bound.interned, loaded.interned);
+    assert_eq!(loaded.interned.len(), 884);
+    assert_eq!(loaded.interned.len(), euler.len());
+    for v in &loaded.vaults {
+        let id = loaded.interned_id(*v).expect("admitted vault is interned");
         let rec = intern
             .markets()
             .iter()
@@ -614,8 +622,29 @@ fn intern_binds_all_euler_vaults_from_registry() {
             .expect("registry row");
         assert_eq!(id, rec.id);
         assert!(rec.admitted);
+        assert!(
+            id.0 >= intern_min && id.0 <= intern_max,
+            "admitted vault MarketId {id:?} must be an intern euler-v2 id"
+        );
+        assert_ne!(id, CATALOG_MARKET);
+        assert!(id.0 < FIRST_DISCOVERED_MARKET.0);
+        assert!(
+            id.0 < FOREIGN_MARKET_MIN,
+            "interned MarketId {id:?} must be in intern 0..=3480"
+        );
     }
-    liq_adapters_euler_v2::EulerV2::new(cfg).unwrap();
+    for (addr, id) in &loaded.interned {
+        let rec = intern
+            .markets()
+            .iter()
+            .find(|m| m.protocol == proto && m.key == liq_config::OnChainId::Addr(*addr))
+            .expect("interned addr is an euler-v2 registry row");
+        assert_eq!(*id, rec.id);
+        assert_ne!(*id, CATALOG_MARKET);
+        assert!(id.0 < FIRST_DISCOVERED_MARKET.0);
+        assert!(id.0 >= intern_min && id.0 <= intern_max);
+    }
+    EulerV2::new(loaded).unwrap();
 }
 
 #[test]
@@ -780,6 +809,7 @@ fn quote_pairs_repay_to_preferred_collateral() {
     let mut cfg = d.config();
     let coll2 = Address::repeat_byte(0xc2);
     cfg.vaults.push(coll2);
+    cfg.interned.push((coll2, MarketId(2)));
     cfg.assets.push(liq_adapters_euler_v2::AssetConfig {
         underlying: coll2,
         asset: liq_types::AssetId(2),
