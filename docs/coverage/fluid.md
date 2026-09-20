@@ -52,6 +52,7 @@ Then `Err(ExecutorUnwired)`:
 - Tick tree / partials / `liquidatePerfect` share splits: fail-closed. 10R + dead-address quote is the live max path.
 - `health_probe` is `ProbeUnavailable` (no RAY hf view; `FluidLiquidateResult` is amounts).
 - FluidOracle 1e27 vs PriceVector composition: drift detector gap, not a $1 fallback.
+- T2/T3/T4 health/quote/operate/liquidate fail closed (`vault_type != T1` or `n_col|n_debt != 1`). Not T1-cloned.
 - Native `0xEeee…` is not in `registry.tokens`. Do not alias WETH.
 
 | DirtySet | when |
@@ -73,7 +74,7 @@ Then `Err(ExecutorUnwired)`:
 | factory.LogSetGlobalAuth | factory auth | 0x0a1c6cd77aa2e405e482adf6ee6cf190a27682b6dd1234403f7602e5203c83bb | None | |
 | factory.LogSetVaultAuth | factory auth | 0x7aee16d2c366535c2577e873699b458af55a0b0bd4c4fab5e930a780f05669d7 | None | |
 | factory.LogSetVaultDeploymentLogic | factory auth | 0x6e71f281df08e5962589123c1ca39a8c9df25c6c9cfa7b6d1525effed3dafd21 | None | |
-| vault.LogOperate | operate → LogOperate | 0xfef64760e30a41b9d5ba7dd65ff7236a61d89ed8b44c67a29e84db1a67513a1c | Positions | vault-level token deltas; tick if single NFT |
+| vault.LogOperate | operate → LogOperate | 0xfef64760e30a41b9d5ba7dd65ff7236a61d89ed8b44c67a29e84db1a67513a1c | Positions | token→raw at then-current ex; persist raw; tick if single NFT |
 | vault.LogUpdateExchangePrice | updateExchangePrices | 0xcde545703e0372175cadfff811d67c32910c3dcb33199679b3271c4106afdf9a | MarketAccrual | 1e12 |
 | vault.LogLiquidate | liquidate → LogLiquidate | 0x80fd9cc6b1821f4a510e45ffce6852ea3404807b5d3d833ffa85664408afcb66 | Positions | token amounts; tickStatus=2 |
 | vault.LogAbsorb | absorb → LogAbsorb | 0x115609402b8e0707cb9654c5da38e5c0790ccad443a92f71160fe645aa342d04 | Positions | extra absorbed raw |

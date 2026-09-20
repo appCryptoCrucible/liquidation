@@ -12,11 +12,12 @@
 
 mod common;
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{uint, Address, U256};
 use alloy_sol_types::{SolCall, SolEvent};
 use common::*;
 use liq_adapters_fluid::config::FactoryRpc;
 use liq_adapters_fluid::events::{admin, factory, halt, vault};
+use liq_adapters_fluid::layout::VaultExtra;
 use liq_adapters_fluid::{
     alloc_meter, liquidate_selector, math, Config, ConfigError, Fluid, VAULT_T1, VAULT_T2,
     VAULT_T3, VAULT_T4,
@@ -205,6 +206,67 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
 }
 
 #[test]
+fn raw_invariant_survives_exchange_price_update() {
+    // Pin: operate converts token→raw at then-current ex and writes raw into
+    // vaultVariables bits 82/146. updateExchangePrices changes only
+    // supplyExPrice/borrowExPrice. Tick is a raw ratio and must not move.
+    let d = Deploy::new();
+    let (p, mut st) = full_store(&d, ALICE_DEBT_OK);
+    let px = prices(ETH_USD, RAY_ONE);
+    let pos0 = st.view(T1_ID, T0).unwrap();
+    let extra0: &VaultExtra = pos0.extra.view().unwrap();
+    let top0 = extra0.top_tick;
+    assert_eq!(
+        U256::from(pos0.supply[0]),
+        ALICE_COLL,
+        "operate at 1e12 stores raw == token"
+    );
+    assert_eq!(U256::from(pos0.debt[1]), ALICE_DEBT_OK);
+
+    let supply_ex = uint!(1_100_000_000_000_U256);
+    let borrow_ex = uint!(1_200_000_000_000_U256);
+    assert_ne!(supply_ex, EX_PRICE);
+    assert_ne!(borrow_ex, EX_PRICE);
+    let l = log(
+        d.vault_t1,
+        &vault::LogUpdateExchangePrice {
+            supplyExPrice_: supply_ex,
+            borrowExPrice_: borrow_ex,
+        },
+        DEPLOY_BLOCK + 2,
+        T0,
+    );
+    p.apply_log(&mut st, &l.view()).expect("second ex update");
+
+    let pos1 = st.view(T1_ID, T0).unwrap();
+    let extra1: &VaultExtra = pos1.extra.view().unwrap();
+    assert_eq!(
+        U256::from(pos1.supply[0]),
+        ALICE_COLL,
+        "ex update must not rewrite stored raw"
+    );
+    assert_eq!(U256::from(pos1.debt[1]), ALICE_DEBT_OK);
+    let pin_top = math::tick_from_raw(ALICE_COLL, ALICE_DEBT_OK).unwrap();
+    assert_eq!(extra1.top_tick, top0);
+    assert_eq!(extra1.top_tick, pin_top);
+
+    let inverted_col = math::to_raw(ALICE_COLL, supply_ex).unwrap();
+    let inverted_debt = math::to_raw(ALICE_DEBT_OK, borrow_ex).unwrap();
+    let inverted_tick = math::tick_from_raw(inverted_col, inverted_debt).unwrap();
+    assert_ne!(
+        inverted_tick, pin_top,
+        "fixture is not the identity path (ex == 1e12)"
+    );
+
+    let oracle = math::oracle_debt_per_col_1e27(ETH_USD, RAY_ONE, 18, 6).unwrap();
+    let raw_dpc = math::raw_debt_per_col(oracle, supply_ex, borrow_ex).unwrap();
+    let liq = math::liquidation_tick(raw_dpc, THRESHOLD).unwrap();
+    let pin_hf = math::hf_from_ticks(pin_top, liq).unwrap();
+    let h = p.health(pos1, &px).unwrap();
+    assert_eq!(h.hf, pin_hf);
+}
+
+#[test]
 fn t1_healthy_and_liquidatable_by_tick() {
     let d = Deploy::new();
     let (p, st) = full_store(&d, ALICE_DEBT_OK);
@@ -219,23 +281,34 @@ fn t1_healthy_and_liquidatable_by_tick() {
 }
 
 #[test]
-fn t3_smart_debt_type_quotes_and_abi_differs() {
+fn t3_is_not_t1_cloned_and_selector_collides() {
     let d = Deploy::new();
     let p = d.adapter();
-    let mut logs = listing_logs(&d);
-    logs.extend(activity_logs(&d, d.vault_t3, ALICE_COLL, ALICE_DEBT_LIQ));
-    let st = store_after(&p, &logs);
+    let mut st = store_after(&p, &listing_logs(&d));
     let px = prices(ETH_USD, RAY_ONE);
     let pos = st.view(T3_ID, T0).unwrap();
     assert_eq!(pos.key.market, MARKET_T3);
-    let h = p.health(pos, &px).unwrap();
-    assert_eq!(h.state, HealthState::Liquidatable);
-    let q = p
-        .quote(pos, &px, &Constraints::UNBOUNDED)
-        .unwrap()
-        .expect("T3 liquidatable quotes");
-    assert_eq!(q.repay_options[0].asset, DEBT);
-    assert_eq!(q.seize_options[0].asset, COLL);
+    assert_eq!(pos.key.user, d.vault_t3);
+    // Pin T3 `_operate` takes DEX share debt; FluidOracle 1e27 is
+    // share-per-col. PriceVector cannot express that — fail closed, never
+    // T1 USDC token-pair Liquidatable.
+    assert_eq!(
+        p.health(pos, &px).unwrap_err(),
+        ProtocolError::OracleSourceMismatch
+    );
+    assert_eq!(
+        p.quote(pos, &px, &Constraints::UNBOUNDED).unwrap_err(),
+        ProtocolError::OracleSourceMismatch
+    );
+
+    let activity = activity_logs(&d, d.vault_t3, ALICE_COLL, ALICE_DEBT_LIQ);
+    p.apply_log(&mut st, &activity[0].view())
+        .expect("T3 NewPositionMinted folds");
+    assert_eq!(
+        p.apply_log(&mut st, &activity[1].view()).unwrap_err(),
+        ProtocolError::OracleSourceMismatch
+    );
+
     let t1 = liquidate_selector(VAULT_T1).unwrap();
     let t2 = liquidate_selector(VAULT_T2).unwrap();
     let t3 = liquidate_selector(VAULT_T3).unwrap();
@@ -252,7 +325,6 @@ fn t3_smart_debt_type_quotes_and_abi_differs() {
     assert_eq!(t2, t2abi::liquidateCall::SELECTOR);
     assert_eq!(t3, t3abi::liquidateCall::SELECTOR);
     assert_eq!(t4, t4abi::liquidateCall::SELECTOR);
-    assert_eq!(pos.key.user, d.vault_t3);
 }
 
 #[test]

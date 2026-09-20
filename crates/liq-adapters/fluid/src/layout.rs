@@ -70,6 +70,14 @@ impl VaultRow {
     pub fn debt_slot(self) -> u16 {
         u16::from(self.n_col)
     }
+
+    /// T1 single-token pair only. T2/T3/T4 tick-math is in the vault's
+    /// share unit; FluidOracle `getExchangeRateLiquidate` is 1e27
+    /// share-per-col, which `PriceVector` token USD cannot express.
+    #[inline]
+    pub fn is_t1_token_pair(self) -> bool {
+        self.vault_type == VAULT_T1 && self.n_col == 1 && self.n_debt == 1
+    }
 }
 
 /// Catalog slot: vault address → MarketId.

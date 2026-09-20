@@ -111,6 +111,34 @@ fn add_i256(cur: u128, delta: I256) -> Result<u128> {
     u128::try_from(n).map_err(|_| ProtocolError::Fixed(FixedError::Overflow))
 }
 
+/// Pin `amt * EXCHANGE_PRICES_PRECISION / exPrice` (floor) on the
+/// signed LogOperate token delta. Sign is preserved; I256::MIN fails closed.
+fn token_delta_to_raw(delta: I256, ex_price: u128) -> Result<I256> {
+    if delta.is_zero() {
+        return Ok(I256::ZERO);
+    }
+    let raw = to_raw(delta.unsigned_abs(), U256::from(ex_price))?;
+    let signed = I256::try_from(raw).map_err(|_| ProtocolError::Fixed(FixedError::Overflow))?;
+    if delta.is_negative() {
+        signed
+            .checked_neg()
+            .ok_or(ProtocolError::Fixed(FixedError::Underflow))
+    } else {
+        Ok(signed)
+    }
+}
+
+#[inline]
+fn require_t1_ex(v: &VaultRow) -> Result<()> {
+    if !v.is_t1_token_pair() {
+        return Err(ProtocolError::OracleSourceMismatch);
+    }
+    if v.flags & VaultRow::EX_KNOWN == 0 || v.supply_ex_price == 0 || v.borrow_ex_price == 0 {
+        return Err(ProtocolError::OracleSourceMismatch);
+    }
+    Ok(())
+}
+
 fn sub_u256(cur: u128, amt: U256) -> Result<u128> {
     let c = U256::from(cur);
     let n = c
@@ -315,9 +343,9 @@ fn refresh_top_tick(st: &mut dyn StateWriter, pos: PositionId, market: MarketId)
         e.flags &= !VaultExtra::TOP_KNOWN;
         return set_extra(st, pos, e);
     }
-    let col_raw = to_raw(U256::from(col), U256::from(v.supply_ex_price))?;
-    let debt_raw = to_raw(U256::from(debt), U256::from(v.borrow_ex_price))?;
-    e.top_tick = tick_from_raw(col_raw, debt_raw)?;
+    // Columns hold pin raw (`vaultVariables` bits 82/146). Tick is a raw
+    // ratio and does not move when only exchange prices update.
+    e.top_tick = tick_from_raw(U256::from(col), U256::from(debt))?;
     e.tick_status = TICK_STATUS_PERFECT;
     e.flags |= VaultExtra::TOP_KNOWN;
     set_extra(st, pos, e)
@@ -607,11 +635,21 @@ fn operate(
 ) -> Result<DirtySet> {
     let ev = decode::<vault::LogOperate>(log)?;
     let v = vault_row(st, market)?;
+    require_t1_ex(&v)?;
     let pos = intern_vault(cfg, st, market, addr_from(v.vault))?;
-    let col = add_i256(st.supply(pos, SLOT0)?, ev.colAmt_)?;
+    // Pin: token → raw at the *then-current* ex. Persist raw. A later
+    // `LogUpdateExchangePrice` must not invert stored amounts through the
+    // new ex (`updateExchangePrices` writes supplyExPrice/borrowExPrice only).
+    let col = add_i256(
+        st.supply(pos, SLOT0)?,
+        token_delta_to_raw(ev.colAmt_, v.supply_ex_price)?,
+    )?;
     st.set_supply(pos, SLOT0, col)?;
     let dslot = v.debt_slot();
-    let debt = add_i256(st.debt(pos, dslot)?, ev.debtAmt_)?;
+    let debt = add_i256(
+        st.debt(pos, dslot)?,
+        token_delta_to_raw(ev.debtAmt_, v.borrow_ex_price)?,
+    )?;
     st.set_debt(pos, dslot, debt)?;
     refresh_top_tick(st, pos, market)?;
     Ok(positions(&[pos]))
@@ -625,11 +663,19 @@ fn liquidate_log(
 ) -> Result<DirtySet> {
     let ev = decode::<vault::LogLiquidate>(log)?;
     let v = vault_row(st, market)?;
+    require_t1_ex(&v)?;
     let pos = intern_vault(cfg, st, market, addr_from(v.vault))?;
-    let col = sub_u256(st.supply(pos, SLOT0)?, ev.colAmt_)?;
+    // Event is token `actualAmt = rawLiq * ex / 1e12`. Subtract pin raw.
+    let col = sub_u256(
+        st.supply(pos, SLOT0)?,
+        to_raw(ev.colAmt_, U256::from(v.supply_ex_price))?,
+    )?;
     st.set_supply(pos, SLOT0, col)?;
     let dslot = v.debt_slot();
-    let debt = sub_u256(st.debt(pos, dslot)?, ev.debtAmt_)?;
+    let debt = sub_u256(
+        st.debt(pos, dslot)?,
+        to_raw(ev.debtAmt_, U256::from(v.borrow_ex_price))?,
+    )?;
     st.set_debt(pos, dslot, debt)?;
     let mut e = extra(st, pos)?;
     e.tick_status = TICK_STATUS_LIQUIDATED;

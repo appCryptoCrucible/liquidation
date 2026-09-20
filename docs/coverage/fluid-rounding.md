@@ -17,7 +17,7 @@ All `/` in the pin are Solidity floor (`Rounding.Down`). TickMath uses wrapping 
 | R-X | `((debt - refRatio*debt/ratio) * 1e27) / (1e27 - colPerDebt*refRatio/2^96)` | floor | single-segment `debtLiquidated_`; if `debtLiquidated_ == debt` then `− 1` wei |
 | R-COLX | `(debtLiquidated_ * colPerDebt) / 1e27` | floor | |
 | R-TOKENOUT | `(totalLiq * exPrice) / 1e12` | floor | then slip check `(actualCol * 1e18) / actualDebt < colPerUnitDebt_` **1e18** (not 1e27) |
-| R-T3SHARE | `payback` / `paybackPerfect` | DEX vault | T3/T4 share splits not quoted here; fail-closed unless one-sided debt (`borrow1 == 0`) |
+| R-T3SHARE | T3/T4 `getExchangeRateLiquidate` | 1e27 share-per-col | T2/T3/T4 fail closed at health/quote/operate/liquidate (`vault_type != T1` or `n_col\|n_debt != 1`). `PriceVector` is token USD; pin FluidOracle is share units. No `borrow1 == 0` T1-clone gate. |
 | H1 | `top_tick > liquidation_tick` | n/a | Liquidatable; equality is Healthy |
 | H2 | `BadDebt` | n/a | only zero seizable coll (incl. absorbed) with remaining debt |
 | H3 | `n_nfts > 1` without top tick | fail closed | do not use aggregate ratio as the tree top |

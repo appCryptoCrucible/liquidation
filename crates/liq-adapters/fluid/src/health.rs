@@ -12,7 +12,7 @@ use liq_types::{AssetId, PriceVector, Ray, Wad};
 
 use crate::layout::{VaultExtra, VaultRow, SLOT0};
 use crate::math::{
-    from_raw, hf_from_ticks, liquidation_tick, oracle_debt_per_col_1e27, raw_debt_per_col, to_raw,
+    from_raw, hf_from_ticks, liquidation_tick, oracle_debt_per_col_1e27, raw_debt_per_col,
     TICK_STATUS_PERFECT,
 };
 
@@ -71,6 +71,9 @@ fn viewed(row: &MarketRow) -> Result<&VaultRow> {
     if b.flags & VaultRow::EX_KNOWN == 0 || b.supply_ex_price == 0 || b.borrow_ex_price == 0 {
         return Err(ProtocolError::OracleSourceMismatch);
     }
+    if !b.is_t1_token_pair() {
+        return Err(ProtocolError::OracleSourceMismatch);
+    }
     Ok(b)
 }
 
@@ -82,18 +85,12 @@ pub(crate) fn terms(pos: PositionRef<'_>) -> Result<Terms<'_>> {
     let debt_slot = body.debt_slot();
     let debt_row = row_at(pos, debt_slot)?;
     let _ = viewed(debt_row)?;
-    let col_tokens = U256::from(cell(pos.supply, coll_slot));
-    let debt_tokens = U256::from(cell(pos.debt, debt_slot));
-    let col_raw = if col_tokens.is_zero() {
-        U256::ZERO
-    } else {
-        to_raw(col_tokens, U256::from(body.supply_ex_price))?
-    };
-    let debt_raw = if debt_tokens.is_zero() {
-        U256::ZERO
-    } else {
-        to_raw(debt_tokens, U256::from(body.borrow_ex_price))?
-    };
+    // Columns persist pin raw. Tokens = raw * ex / 1e12. Do not invert
+    // stored amounts through the current ex (that is the post-interest drift).
+    let col_raw = U256::from(cell(pos.supply, coll_slot));
+    let debt_raw = U256::from(cell(pos.debt, debt_slot));
+    let col_tokens = from_raw(col_raw, U256::from(body.supply_ex_price))?;
+    let debt_tokens = from_raw(debt_raw, U256::from(body.borrow_ex_price))?;
     Ok(Terms {
         body,
         extra,
