@@ -7,10 +7,19 @@ license.workspace = true
 [dependencies]
 liq-types = { path = "../liq-types" }
 liq-protocol = { path = "../liq-protocol" }
+liq-config = { path = "../liq-config" }
+liq-watch = { path = "../liq-watch" }
 liq-adapters-aave-v4 = { path = "../liq-adapters/aave-v4" }
 alloy-primitives = { workspace = true, features = ["std"] }
 alloy-sol-types = { workspace = true, features = ["std"] }
+alloy-provider = { workspace = true }
+alloy-rpc-types-eth = { workspace = true }
+arrayvec = { workspace = true }
+arrow = { workspace = true }
+parquet = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }
 
 [[bin]]
 name = "liq-diff-health"
