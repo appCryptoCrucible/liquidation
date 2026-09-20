@@ -1,0 +1,628 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.28;
+
+import {SafeTransfer} from "./lib/SafeTransfer.sol";
+import {Plan, FlashGroup, LiqLeg, SwapLeg, PlanDecoder} from "./lib/PlanDecoder.sol";
+import {
+    IERC20, IWETH, IAavePool, IAaveV4Spoke, IMorpho, MarketParams,
+    IUniV3Pool, IPoolManager, IDssFlash
+} from "./lib/Interfaces.sol";
+
+/*
+ * Executor.sol — flashloan-funded liquidation executor (GUIDE 10, WP 10A).
+ *
+ * Funds are in transit only: borrow → liquidate → swap → repay → (maybe) sweep.
+ *
+ * SECURITY MODEL
+ *  - OPERATOR is a hot key. It can only call execute(). It cannot move funds to
+ *    any address of its choosing, cannot change PROFIT_SINK, and cannot make an
+ *    arbitrary external call.
+ *  - PROFIT_SINK is immutable. Every token that leaves this contract, other than
+ *    a flashloan repayment or a liquidation repay, goes there. A compromised
+ *    OPERATOR key therefore cannot steal; the worst it can do is waste gas.
+ *  - sweep() is permissionless for exactly that reason: the destination is fixed,
+ *    so letting anyone push funds out is a backstop, not a risk.
+ *  - Callback authentication uses transient storage (EIP-1153). Every flashloan
+ *    callback verifies BOTH that msg.sender is the provider we just called AND
+ *    that we are inside our own execute(). This is the critical bug class for
+ *    this contract type: an unauthenticated callback is a free-money function.
+ *  - Immutable, no proxy, no allowlist setter (D55 = A). A new liquidation ABI
+ *    is a redeploy (D48, `10R-n`).
+ *
+ * NOT AUDITED. Fork-test every adapter × provider pair before mainnet (10C), and
+ * get an independent review of the callback auth and approval logic (H3).
+ */
+contract Executor {
+    using SafeTransfer for address;
+    using PlanDecoder for bytes;
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Immutables. No storage variables at all — every SLOAD avoided is gas
+    // saved on the hot path, and every absent setter is an attack surface
+    // that does not exist.
+    // ──────────────────────────────────────────────────────────────────────
+    address public immutable OPERATOR;
+    address public immutable PROFIT_SINK;
+    /// Uniswap V3 factory — used to verify swap callbacks by CREATE2 address.
+    address public immutable UNIV3_FACTORY;
+    bytes32 public immutable UNIV3_POOL_INIT_HASH;
+    /// Allowlisted routers for Curve / aggregator legs. Fixed at construction:
+    /// a mutable allowlist is an operator-reachable arbitrary call.
+    address public immutable ROUTER_A;
+    address public immutable ROUTER_B;
+    /// Canonical WETH. Profit is denominated in ETH, so every plan converges here.
+    address public immutable WETH;
+
+    // Transient storage slots (EIP-1153). ~100 gas vs 20k/5k for SSTORE.
+    uint256 private constant T_EXPECTED_CALLER = 0x00;
+    uint256 private constant T_ENTERED         = 0x01;
+    uint256 private constant T_SWAPPING        = 0x02;
+    /// Which flash group is executing, so a callback can find its own legs.
+    uint256 private constant T_GROUP           = 0x03;
+    /// Successful liquidation legs in the group currently executing, or
+    /// `NO_CALLBACK` if the provider returned without ever calling back.
+    uint256 private constant T_FILLED          = 0x04;
+    uint256 private constant NO_CALLBACK       = type(uint256).max;
+
+    // Swap leg venues. Uniswap V4 is deliberately absent: hooks make swap
+    // behaviour pool-specific, so it is excluded as a routing venue even though
+    // it remains the preferred flashloan source (D08, GUIDE 12 Step 3).
+    uint8 private constant S_UNIV3_POOL = 0;  // pool-direct, transfer-in-callback, no approval
+    uint8 private constant S_ROUTER     = 1;  // allowlisted router (Curve, …)
+
+    // Provider ids — `liq_types::FlashProvider` discriminants (D09).
+    uint8 private constant P_AAVE    = 0;
+    uint8 private constant P_UNIV3   = 1;
+    uint8 private constant P_UNIV4   = 2;
+    uint8 private constant P_MORPHO  = 3;
+    uint8 private constant P_SKY_DSS = 4;
+
+    // Flags
+    uint8 private constant F_SWEEP = 1 << 0; // sweep WETH after this plan
+    /// Swap-leg flag: ignore the encoded amount and take this contract's whole
+    /// balance of `tokenIn`. Set on the last leg for each collateral.
+    uint8 private constant L_TAKE_BALANCE = 1 << 0;
+    /// Swap-leg flag: `amount` is an exact OUTPUT target, not an input amount.
+    /// Used for the repay leg so no debt-token dust is left behind.
+    uint8 private constant L_EXACT_OUT    = 1 << 1;
+
+    uint256 private constant HF_THRESHOLD = 1e18;
+    /// Morpho `SharesMathLib` virtual shares/assets (pin 8e26ca6a).
+    uint256 private constant MORPHO_VIRTUAL_SHARES = 1e6;
+    uint256 private constant MORPHO_VIRTUAL_ASSETS = 1;
+
+    uint160 private constant TickMath_MIN_SQRT = 4295128739;
+    uint160 private constant TickMath_MAX_SQRT = 1461446703485210103287273052203988822378723970342;
+
+    error NotOperator();
+    error BadCallback();
+    error Reentrant();
+    error Unprofitable(uint256 gained, uint256 required);
+    error UnknownProvider(uint8 p);
+    error UnknownAdapter(uint8 a);
+    error UnknownVenue(uint8 v);
+    error RouterNotAllowed(address target);
+    error RouterCallFailed(address target);
+    error BadSwapCallback();
+    error NoLegs();
+    error BidFailed(uint256 amount);
+    /// Every leg of a flash group was taken by someone else between
+    /// simulation and inclusion. Reverting drops the bundle, which costs
+    /// nothing — see GUIDE 13. Per group, not per plan: a group that seized
+    /// nothing has nothing to pay its flash premium from.
+    error AllLegsFailed();
+    /// The provider returned from `_initiate` without invoking our callback.
+    error NoCallback(uint8 provider);
+    /// The provider's callback arguments disagree with the group we encoded.
+    error FlashMismatch();
+    /// A Morpho leg whose market `Id` does not resolve to the encoded
+    /// `(loanToken, collateralToken)`. Encoder bug, not a race: revert all.
+    error LegMismatch();
+    error FlashLoanRejected();
+
+    constructor(
+        address operator_, address profitSink_,
+        address univ3Factory_, bytes32 univ3InitHash_,
+        address routerA_, address routerB_, address weth_
+    ) {
+        OPERATOR             = operator_;
+        PROFIT_SINK          = profitSink_;
+        UNIV3_FACTORY        = univ3Factory_;
+        UNIV3_POOL_INIT_HASH = univ3InitHash_;
+        ROUTER_A             = routerA_;
+        ROUTER_B             = routerB_;
+        WETH                 = weth_;
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Entry point
+    // ──────────────────────────────────────────────────────────────────────
+    function execute(bytes calldata plan) external payable {
+        if (msg.sender != OPERATOR) revert NotOperator();
+        uint256 entered;
+        assembly { entered := tload(T_ENTERED) }
+        // Compiler-derived selector, not a hand-written literal: the previous
+        // draft carried a wrong constant here, which the unit suite caught.
+        if (entered != 0) revert Reentrant();
+        assembly { tstore(T_ENTERED, 1) }
+
+        // Decodes the header and bounds-checks the whole plan before any
+        // external call (unknown adapter, truncated blob → revert here).
+        Plan memory p = plan.header();
+
+        // Profit is denominated in ETH, always, whatever was borrowed or seized.
+        // Snapshot WETH before any borrowing, and measure after every group has
+        // repaid. Anything left is ours — including the case where some group's
+        // debt asset was WETH itself and repay and profit shared a balance.
+        uint256 wethBefore = IWETH(WETH).balanceOf(address(this));
+
+        // Sequential, not nested (D32). Each group borrows, liquidates, swaps
+        // enough to cover its own repay, and settles before the next one starts.
+        // Multi-source cascade = sibling groups with the same debtAsset and
+        // different providers (PLAN-ENCODING §1b′) — never nested callbacks.
+        uint256 cursor = PlanDecoder.HEADER_LEN + 1;
+        for (uint256 g; g < p.groupCount; ++g) {
+            (FlashGroup memory fg, uint256 next) = plan.group(cursor);
+            cursor = next;
+
+            assembly {
+                tstore(T_GROUP, g)
+                tstore(T_FILLED, not(0)) // NO_CALLBACK sentinel
+            }
+            _arm(fg.flashSource);
+            _initiate(fg, plan);     // returns only after the callback settled
+            _disarm();
+
+            uint256 f;
+            assembly { f := tload(T_FILLED) }
+            // A provider that returns without calling back has not lent, so
+            // nothing was liquidated; the plan's semantics are broken — fail.
+            if (f == NO_CALLBACK) revert NoCallback(fg.provider);
+        }
+
+        // Everything that is left, across every group, converges on WETH here.
+        _swap(p.profitSwapOffset + 1, uint8(plan[p.profitSwapOffset]), plan);
+
+        uint256 gross = IWETH(WETH).balanceOf(address(this)) - wethBefore;
+
+        // Underflow here is the correct failure: gross ETH did not cover gas, so
+        // the liquidation was never worth doing and the bundle should drop.
+        uint256 net = gross - p.gasCostWei;
+
+        // The bid is a fraction of REALIZED net, not of what we predicted. That
+        // is the whole reason to pay via coinbase rather than priority fee: if
+        // the quote was optimistic, the bid shrinks with it and what we keep
+        // survives. A priority fee is committed before the swap and cannot.
+        uint256 bid = (net * p.bidBps) / 10_000;
+        uint256 keep = net - bid;
+        if (keep < p.minProfit) revert Unprofitable(keep, p.minProfit);
+
+        if (bid != 0) {
+            // Wallet-funded bidding, off by default (D37). `msg.value` is a
+            // CEILING, never the bid itself — the bid is still computed from
+            // realized net so an optimistic quote shrinks it rather than
+            // overpaying. Anything unspent goes straight back to the operator.
+            uint256 fromWallet = msg.value;
+            if (fromWallet != 0) {
+                if (bid > fromWallet) bid = fromWallet;
+            } else {
+                IWETH(WETH).withdraw(bid);
+            }
+
+            // `call`, not `transfer`: a fee recipient that is a contract will
+            // fail on the 2300-gas stipend. EIP-3651 pre-warms COINBASE.
+            (bool ok, ) = block.coinbase.call{value: bid}("");
+            if (!ok) revert BidFailed(bid);
+
+            // Never read address(this).balance here — `receive()` is open, so a
+            // donation would be indistinguishable from the bid budget and would
+            // be bid away. Explicit accounting only (mutation #11).
+            if (fromWallet > bid) {
+                (bool r, ) = msg.sender.call{value: fromWallet - bid}("");
+                if (!r) revert BidFailed(fromWallet - bid);
+            }
+        } else if (msg.value != 0) {
+            (bool r, ) = msg.sender.call{value: msg.value}("");
+            if (!r) revert BidFailed(msg.value);
+        }
+
+        // Residual is WETH and only WETH (D29). The flag is decided off-chain
+        // (D12 risk budget); the contract does no storage read for it.
+        if (p.flags & F_SWEEP != 0) {
+            _sweep(WETH);
+        }
+
+        assembly { tstore(T_ENTERED, 0) }
+    }
+
+    /// Permissionless: destination is immutable, so anyone may push funds out.
+    /// Backstop against an operator that never sets F_SWEEP.
+    function sweep(address[] calldata assets) external {
+        for (uint256 i; i < assets.length; ++i) {
+            _sweep(assets[i]);
+        }
+    }
+
+    function _sweep(address asset) internal {
+        uint256 bal = IERC20(asset).balanceOf(address(this));
+        if (bal != 0) asset.safeTransfer(PROFIT_SINK, bal);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Flashloan initiation
+    // ──────────────────────────────────────────────────────────────────────
+    function _initiate(FlashGroup memory p, bytes calldata plan) internal {
+        uint8 provider = p.provider;
+
+        if (provider == P_UNIV4) {
+            // V4 hands us nothing up front; we take() inside unlockCallback.
+            IPoolManager(p.flashSource).unlock(plan);
+        } else if (provider == P_AAVE) {
+            IAavePool(p.flashSource).flashLoanSimple(
+                address(this), p.debtAsset, p.flashAmount, plan, 0
+            );
+        } else if (provider == P_UNIV3) {
+            bool zeroForOne = IUniV3Pool(p.flashSource).token0() == p.debtAsset;
+            IUniV3Pool(p.flashSource).flash(
+                address(this),
+                zeroForOne ? p.flashAmount : 0,
+                zeroForOne ? 0 : p.flashAmount,
+                plan
+            );
+        } else if (provider == P_MORPHO) {
+            IMorpho(p.flashSource).flashLoan(p.debtAsset, p.flashAmount, plan);
+        } else if (provider == P_SKY_DSS) {
+            // ERC-3156: Flash pulls repayment via transferFrom after onFlashLoan.
+            // debtAsset must be Flash.dai(); the off-chain encoder enforces that.
+            if (!IDssFlash(p.flashSource).flashLoan(address(this), p.debtAsset, p.flashAmount, plan)) {
+                revert FlashLoanRejected();
+            }
+        } else {
+            revert UnknownProvider(provider);
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Callback authentication — the critical security boundary.
+    // ──────────────────────────────────────────────────────────────────────
+    function _arm(address expected) internal {
+        assembly { tstore(T_EXPECTED_CALLER, expected) }
+    }
+
+    function _disarm() internal {
+        assembly { tstore(T_EXPECTED_CALLER, 0) }
+    }
+
+    /// Reverts unless msg.sender is the provider we just called, inside our own
+    /// execute(). Both conditions are required: the first stops an arbitrary
+    /// contract from calling our callback, the second stops a legitimate
+    /// provider's callback being triggered by someone else's flashloan.
+    function _checkCallback() internal view {
+        address expected;
+        uint256 entered;
+        assembly {
+            expected := tload(T_EXPECTED_CALLER)
+            entered  := tload(T_ENTERED)
+        }
+        if (msg.sender != expected || entered == 0) revert BadCallback();
+    }
+
+    /// The provider callbacks each need the group they belong to, and none of
+    /// their ABIs has room to carry it — so the index goes through transient
+    /// storage and the group is re-walked from calldata here.
+    function _currentGroup(bytes calldata plan) internal view returns (FlashGroup memory fg) {
+        uint256 g;
+        assembly { g := tload(T_GROUP) }
+        fg = plan.groupAt(g);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Provider callbacks — each settles in its provider's own idiom
+    // ──────────────────────────────────────────────────────────────────────
+
+    /// Aave. Pull-based: approve exactly what is owed. The pull consumes the
+    /// allowance to zero, so safeApprove's leading zeroing write is same-value
+    /// and cheap in the normal case — and is what keeps USDT working.
+    function executeOperation(
+        address asset, uint256 amount, uint256 premium, address initiator, bytes calldata params
+    ) external returns (bool) {
+        _checkCallback();
+        if (initiator != address(this)) revert BadCallback();
+        FlashGroup memory fg = _currentGroup(params);
+        if (asset != fg.debtAsset || amount != fg.flashAmount) revert FlashMismatch();
+        _core(fg, params);
+        asset.safeApprove(msg.sender, amount + premium);
+        return true;
+    }
+
+    /// Uniswap V3. Transfer-based: no approval anywhere in this path. Exactly
+    /// one side was borrowed, so the other side's fee is zero and the sum is
+    /// the fee owed without branching on direction.
+    function uniswapV3FlashCallback(uint256 fee0, uint256 fee1, bytes calldata data) external {
+        _checkCallback();
+        FlashGroup memory fg = _currentGroup(data);
+        _core(fg, data);
+        fg.debtAsset.safeTransfer(msg.sender, uint256(fg.flashAmount) + fee0 + fee1);
+    }
+
+    /// Uniswap V4. Zero fee. take() to borrow, sync/transfer/settle to return.
+    /// unlock() reverts unless every currency delta nets to zero before it
+    /// returns, so a missed settle fails closed rather than stealing.
+    function unlockCallback(bytes calldata data) external returns (bytes memory) {
+        _checkCallback();
+        FlashGroup memory fg = _currentGroup(data);
+
+        IPoolManager(msg.sender).take(fg.debtAsset, address(this), fg.flashAmount);
+        _core(fg, data);
+        IPoolManager(msg.sender).sync(fg.debtAsset);
+        fg.debtAsset.safeTransfer(msg.sender, fg.flashAmount);
+        IPoolManager(msg.sender).settle();
+
+        return "";
+    }
+
+    /// Morpho Blue. Zero fee, pull-based.
+    function onMorphoFlashLoan(uint256 assets, bytes calldata data) external {
+        _checkCallback();
+        FlashGroup memory fg = _currentGroup(data);
+        if (assets != fg.flashAmount) revert FlashMismatch();
+        _core(fg, data);
+        fg.debtAsset.safeApprove(msg.sender, assets);
+    }
+
+    /// Sky DSS Flash (ERC-3156). Pull-based repay: approve Flash for amount+fee.
+    /// Must return the ERC-3156 success magic or the mint reverts.
+    function onFlashLoan(
+        address initiator, address token, uint256 amount, uint256 fee, bytes calldata data
+    ) external returns (bytes32) {
+        _checkCallback();
+        if (initiator != address(this)) revert BadCallback();
+        FlashGroup memory fg = _currentGroup(data);
+        if (token != fg.debtAsset || amount != fg.flashAmount) revert FlashMismatch();
+        _core(fg, data);
+        token.safeApprove(msg.sender, amount + fee);
+        return keccak256("ERC3156FlashBorrower.onFlashLoan");
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Core: liquidate legs → repay swaps. Repayment is the caller's job.
+    // ──────────────────────────────────────────────────────────────────────
+    function _core(FlashGroup memory fg, bytes calldata plan) internal {
+        if (fg.liqCount == 0) revert NoLegs();
+
+        // Each leg stands or falls alone. A competitor taking one position
+        // between simulation and inclusion must not cost us the others — that
+        // is the whole risk batching introduces, and per-leg tolerance is the
+        // whole mitigation. The profit floor still judges the plan as a whole.
+        uint256 filled;
+        uint256 o = fg.liqOffset;
+        for (uint256 i; i < fg.liqCount; ++i) {
+            (LiqLeg memory l, uint256 next) = plan.liqLeg(o);
+            o = next;
+            if (_liquidateLeg(fg.debtAsset, l, plan)) ++filled;
+        }
+        // Nothing seized in this group means nothing to swap and no premium
+        // to pay from: the flash could not be settled anyway. Revert here,
+        // by name, before a repay swap fails with a misleading transfer error.
+        if (filled == 0) revert AllLegsFailed();
+        assembly { tstore(T_FILLED, filled) }
+
+        // Only this group's repay swaps run here — exact-output into its debt
+        // asset, sized to what it owes. Profit swaps run once, after every
+        // group has settled, so they see the whole batch's leftover collateral
+        // at once and can be solved jointly (GUIDE 12 §4c). The repay blob has
+        // NO count prefix — its count lives in the group head (PLAN-ENCODING §1c).
+        if (fg.repaySwapCount != 0) {
+            _swap(fg.repaySwapOffset, fg.repaySwapCount, plan);
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // On-chain adapters. Each: guard (protocol's own health view where one
+    // exists) → exact approval → try/catch the real liquidation call → zero
+    // the allowance unconditionally. Returns false — rather than reverting —
+    // when the position is gone or the protocol rejects, so the rest of the
+    // batch survives.
+    //
+    // No `seized` return anywhere. With several collaterals in flight, sizing
+    // swaps from per-leg deltas means a map; the swap blob takes whole balances
+    // instead (`L_TAKE_BALANCE`), which cannot disagree with what is held —
+    // that is also how "read back actual repaid/seized" (GUIDE 10 §4) is met:
+    // nothing downstream trusts the requested amount.
+    //
+    // The allowance is zeroed after EVERY call, success or failure: V3 clamps
+    // `debtToCover` to its close factor and V4 to its target-HF maximum, so a
+    // successful pull can consume less than approved. GUIDE 10 §5.
+    //
+    // `market` comes from the plan, so it is only ever a registry address the
+    // operator encoded. try/catch does not bound gas, and a market that burns
+    // the call's gas would take the batch down with it — acceptable only
+    // because that set is curated. Do not widen it to arbitrary input.
+    // ──────────────────────────────────────────────────────────────────────
+    function _liquidateLeg(address debtAsset, LiqLeg memory l, bytes calldata plan)
+        internal returns (bool)
+    {
+        if (l.adapter == PlanDecoder.A_AAVE_V3) return _liquidateAaveV3(debtAsset, l);
+        if (l.adapter == PlanDecoder.A_AAVE_V4) return _liquidateAaveV4(debtAsset, l, plan);
+        if (l.adapter == PlanDecoder.A_MORPHO)  return _liquidateMorpho(debtAsset, l, plan);
+        revert UnknownAdapter(l.adapter); // unreachable: the decoder rejected it
+    }
+
+    /// Aave V3 `Pool.liquidationCall(collateral, debt, user, debtToCover, false)`
+    /// pin 8305565ae. Guard: `getUserAccountData(user).healthFactor < 1e18`.
+    function _liquidateAaveV3(address debtAsset, LiqLeg memory l) internal returns (bool ok) {
+        (,,,,, uint256 hf) = IAavePool(l.market).getUserAccountData(l.borrower);
+        if (hf >= HF_THRESHOLD) return false;
+
+        debtAsset.safeApprove(l.market, l.repayAmount);
+        try IAavePool(l.market).liquidationCall(
+            l.collateralAsset, debtAsset, l.borrower, l.repayAmount,
+            false   // never receive aTokens: profit must converge on WETH
+        ) {
+            ok = true;
+        } catch {}
+        debtAsset.safeApprove(l.market, 0);
+    }
+
+    /// Aave V4 `Spoke.liquidationCall(collateralReserveId, debtReserveId, user,
+    /// debtToCover, false)` pin 40232a0a. Reserve ids come from the leg tail;
+    /// the encoder (`liq-plan::validate`) pins them to the leg's addresses via
+    /// the adapter config — the contract has no address→id view to check
+    /// against and the profit guard bounds any mismatch. Guard:
+    /// `getUserAccountData(user).healthFactor < 1e18`. The protocol clamps
+    /// `debtToCover` to its target-HF maximum; the unconditional zeroing below
+    /// and the balance-based swaps are what make that safe.
+    function _liquidateAaveV4(address debtAsset, LiqLeg memory l, bytes calldata plan)
+        internal returns (bool ok)
+    {
+        IAaveV4Spoke.UserAccountData memory d = IAaveV4Spoke(l.market).getUserAccountData(l.borrower);
+        if (d.healthFactor >= HF_THRESHOLD) return false;
+
+        (uint16 collId, uint16 debtId) = plan.tailV4(l.tailOffset);
+        debtAsset.safeApprove(l.market, l.repayAmount);
+        try IAaveV4Spoke(l.market).liquidationCall(
+            collId, debtId, l.borrower, l.repayAmount,
+            false   // never receive shares
+        ) {
+            ok = true;
+        } catch {}
+        debtAsset.safeApprove(l.market, 0);
+    }
+
+    /// Morpho Blue `liquidate(marketParams, borrower, 0, repaidShares, "")`
+    /// pin 8e26ca6a. Morpho has no health view; its own `_isHealthy` inside
+    /// `liquidate` is the guard (`HEALTHY_POSITION` → caught → leg skipped).
+    ///
+    /// `repayAmount` is loan assets; Morpho takes shares. Convert with the
+    /// post-accrual totals Morpho itself will use — `accrueInterest` is
+    /// idempotent within a block, so the totals read here are exactly the ones
+    /// `liquidate` sees. `toSharesDown(a)` then `toAssetsUp(shares) <= a`, so
+    /// the exact approval always covers the pull. Cap at the borrower's shares:
+    /// a full-close quote is `toAssetsUp(borrowShares)`, and converting that
+    /// back down can land one share above what is owed — which would revert
+    /// inside Morpho and skip a liquidatable position.
+    function _liquidateMorpho(address debtAsset, LiqLeg memory l, bytes calldata plan)
+        internal returns (bool ok)
+    {
+        bytes32 id = plan.tailMorpho(l.tailOffset);
+        IMorpho morpho = IMorpho(l.market);
+
+        MarketParams memory mp = morpho.idToMarketParams(id);
+        if (mp.loanToken != debtAsset || mp.collateralToken != l.collateralAsset) revert LegMismatch();
+
+        morpho.accrueInterest(mp);
+        IMorpho.Market memory m = morpho.market(id);
+        IMorpho.Position memory pos = morpho.position(id, l.borrower);
+        if (pos.borrowShares == 0) return false;
+
+        // SharesMathLib.toSharesDown: same expression, same operands as Morpho.
+        uint256 shares = (uint256(l.repayAmount) * (uint256(m.totalBorrowShares) + MORPHO_VIRTUAL_SHARES))
+            / (uint256(m.totalBorrowAssets) + MORPHO_VIRTUAL_ASSETS);
+        if (shares > pos.borrowShares) shares = pos.borrowShares;
+        if (shares == 0) return false;
+
+        debtAsset.safeApprove(l.market, l.repayAmount);
+        try morpho.liquidate(mp, l.borrower, 0, shares, "") returns (uint256, uint256) {
+            ok = true;
+        } catch {}
+        debtAsset.safeApprove(l.market, 0);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Swaps
+    // ──────────────────────────────────────────────────────────────────────
+
+    /// Split swap across N pools, over however many collaterals the batch
+    /// seized. The off-chain water-fill (GUIDE 12) decided the allocations;
+    /// this executes them and nothing more.
+    ///
+    /// `o` points at the first leg head; `legs` is the count (from the group
+    /// head for repay blobs, from the count byte for the profit blob).
+    ///
+    /// Each leg carries its own `tokenIn` and `tokenOut` (a batch spans several
+    /// collaterals and several debt assets). The last leg per collateral sets
+    /// `L_TAKE_BALANCE` and spends the whole balance — which cannot disagree
+    /// with what is held, however the solver rounded or a leg under-delivered.
+    ///
+    /// **Order is load-bearing.** `L_EXACT_OUT` legs come FIRST and buy exactly
+    /// the debt asset needed to repay the flash; every later leg converts what
+    /// is left to WETH. The encoder asserts the order (PLAN-ENCODING §2a).
+    ///
+    /// A leg whose `tokenIn` balance is zero is skipped silently — the normal
+    /// consequence of a liquidation leg being beaten, not an error. No per-leg
+    /// amountOutMin: `minProfit` in execute() is the real constraint and it is
+    /// checked against the net balance change, which covers every leg at once.
+    function _swap(uint256 o, uint8 legs, bytes calldata plan) internal {
+        assembly { tstore(T_SWAPPING, 1) }
+
+        for (uint256 i; i < legs; ++i) {
+            (SwapLeg memory s, uint256 next) = plan.swapLeg(o);
+            o = next;
+
+            uint256 legAmt = (s.flags & L_TAKE_BALANCE != 0)
+                ? IERC20(s.tokenIn).balanceOf(address(this))
+                : s.amount;
+            if (legAmt == 0) continue;
+
+            _swapLeg(s, legAmt, plan[s.dataOffset : s.dataOffset + s.dataLen]);
+        }
+
+        assembly { tstore(T_SWAPPING, 0) }
+    }
+
+    function _swapLeg(SwapLeg memory s, uint256 amount, bytes calldata data) internal {
+        if (s.venue == S_UNIV3_POOL) {
+            // Pool-direct: we transfer inside uniswapV3SwapCallback, so there is
+            // no approval on this path at all. Cheaper and a smaller surface.
+            address pool = address(bytes20(data[0:20]));
+            bool zeroForOne = s.tokenIn < s.tokenOut;
+            // V3 encodes direction in the sign: positive = exact input,
+            // negative = exact output. One call site, both modes.
+            int256 specified = (s.flags & L_EXACT_OUT != 0) ? -int256(amount) : int256(amount);
+            IUniV3Pool(pool).swap(
+                address(this), zeroForOne, specified,
+                zeroForOne ? TickMath_MIN_SQRT + 1 : TickMath_MAX_SQRT - 1,
+                abi.encode(s.tokenIn, s.tokenOut, IUniV3Pool(pool).fee())
+            );
+        } else if (s.venue == S_ROUTER) {
+            address target = address(bytes20(data[0:20]));
+            if (target != ROUTER_A && target != ROUTER_B) revert RouterNotAllowed(target);
+            // Exact approval, then zeroed unconditionally after the call. A
+            // router that does not consume the full amount would otherwise
+            // leave a standing allowance between transactions. For an
+            // exact-output router leg `amount` is the maximum input to approve;
+            // the router's own calldata carries the exact output.
+            s.tokenIn.safeApprove(target, amount);
+            (bool ok, ) = target.call(data[20:]);
+            if (!ok) revert RouterCallFailed(target);
+            s.tokenIn.safeApprove(target, 0);
+        } else {
+            revert UnknownVenue(s.venue);
+        }
+    }
+
+    /// Uniswap V3 swap callback. Distinct selector from the flash callback, and
+    /// it needs its own authentication: verify the caller IS the canonical pool
+    /// for (token0, token1, fee) by CREATE2, and that we are mid-swap. Storing
+    /// "the pool we called" does not generalize to N legs; derivation does.
+    function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external {
+        uint256 swapping;
+        assembly { swapping := tload(T_SWAPPING) }
+        if (swapping == 0) revert BadSwapCallback();
+
+        (address tokenIn, address tokenOut, uint24 fee) = abi.decode(data, (address, address, uint24));
+        (address t0, address t1) = tokenIn < tokenOut ? (tokenIn, tokenOut) : (tokenOut, tokenIn);
+        address expected = address(uint160(uint256(keccak256(abi.encodePacked(
+            hex"ff", UNIV3_FACTORY, keccak256(abi.encode(t0, t1, fee)), UNIV3_POOL_INIT_HASH
+        )))));
+        if (msg.sender != expected) revert BadSwapCallback();
+
+        // We called swap(zeroForOne = tokenIn < tokenOut), so the positive
+        // delta is always tokenIn's side.
+        uint256 owed = amount0Delta > 0 ? uint256(amount0Delta) : uint256(amount1Delta);
+        tokenIn.safeTransfer(msg.sender, owed);
+    }
+
+    /// Receives ETH from `IWETH.withdraw` when funding a coinbase bid.
+    receive() external payable {}
+}

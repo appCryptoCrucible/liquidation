@@ -3096,6 +3096,13 @@ version = "0.1.0"
 [[package]]
 name = "liq-exec"
 version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "liq-protocol",
+ "liq-types",
+ "thiserror",
+]
 
 [[package]]
 name = "liq-flash"

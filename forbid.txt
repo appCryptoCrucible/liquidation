@@ -23,3 +23,11 @@ liq-watch    liq-engine
 liq-books    liq-exec
 liq-books    liq-risk
 liq-books    liq-state
+liq-exec     liq-adapters
+liq-exec     liq-adapters-aave-v4
+liq-exec     liq-adapters-aave-v3
+liq-exec     liq-adapters-morpho-blue
+liq-exec     liq-engine
+liq-exec     liq-state
+liq-exec     liq-plan
+liq-exec     liq-node

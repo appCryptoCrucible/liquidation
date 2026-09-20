@@ -22,11 +22,45 @@ pub enum ExecutorAdapter {
     MorphoBlue = 2,
 }
 
-/// One liquidation leg — 77 wire bytes (PLAN-ENCODING §1b).
+impl ExecutorAdapter {
+    /// Inverse of the discriminant; `None` for a byte the Executor rejects
+    /// (`PlanDecoder.UnknownAdapter`).
+    #[inline]
+    #[must_use]
+    pub const fn from_wire(b: u8) -> Option<Self> {
+        match b {
+            0 => Some(Self::AaveV3),
+            1 => Some(Self::AaveV4),
+            2 => Some(Self::MorphoBlue),
+            _ => None,
+        }
+    }
+
+    /// Bytes of adapter-specific tail that follow the 77 fixed leg bytes
+    /// (PLAN-ENCODING §1b, `PlanDecoder.TAIL_*`). V3 addresses reserves by
+    /// underlying and needs none; V4 `liquidationCall` takes
+    /// `(collateralReserveId, debtReserveId)` as two `u16`; Morpho
+    /// `liquidate` takes `MarketParams`, recovered on-chain from the 32-byte
+    /// market `Id`. Neither fits the fixed bytes.
+    #[inline]
+    #[must_use]
+    pub const fn tail_len(self) -> usize {
+        match self {
+            Self::AaveV3 => 0,
+            Self::AaveV4 => 4,
+            Self::MorphoBlue => 32,
+        }
+    }
+}
+
+/// One liquidation leg — 77 fixed wire bytes (PLAN-ENCODING §1b) plus
+/// [`ExecutorAdapter::tail_len`] adapter bytes the encoder (`liq-plan`)
+/// appends: V4 reserve ids from the adapter config, Morpho's market `Id`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct LiquidationLeg {
     pub adapter: ExecutorAdapter,
-    /// Aave `Pool` · V4 `Spoke` · Morpho market.
+    /// Aave `Pool` · V4 `Spoke` · Morpho singleton (the market itself is the
+    /// `Id` in the leg tail; `liquidate` is called on the singleton).
     pub market: Address,
     pub borrower: Address,
     pub collateral_asset: Address,
@@ -77,5 +111,23 @@ mod tests {
         assert_eq!(ExecutorAdapter::AaveV3 as u8, 0);
         assert_eq!(ExecutorAdapter::AaveV4 as u8, 1);
         assert_eq!(ExecutorAdapter::MorphoBlue as u8, 2);
+    }
+
+    /// Oracle: `contracts/src/lib/PlanDecoder.sol` `TAIL_AAVE_V3 = 0`,
+    /// `TAIL_AAVE_V4 = 4`, `TAIL_MORPHO = 32`; `from_wire` inverts `as u8`.
+    #[test]
+    fn wire_inverse_and_tail_lengths_match_plan_decoder_sol() {
+        for a in [
+            ExecutorAdapter::AaveV3,
+            ExecutorAdapter::AaveV4,
+            ExecutorAdapter::MorphoBlue,
+        ] {
+            assert_eq!(ExecutorAdapter::from_wire(a as u8), Some(a));
+        }
+        assert_eq!(ExecutorAdapter::from_wire(3), None);
+        assert_eq!(ExecutorAdapter::from_wire(u8::MAX), None);
+        assert_eq!(ExecutorAdapter::AaveV3.tail_len(), 0);
+        assert_eq!(ExecutorAdapter::AaveV4.tail_len(), 4);
+        assert_eq!(ExecutorAdapter::MorphoBlue.tail_len(), 32);
     }
 }
