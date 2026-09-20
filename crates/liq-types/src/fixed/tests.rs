@@ -42,6 +42,9 @@ fn oracle_rounded(a: U256, b: U256, d: U256, rounding: Rounding) -> Option<U256>
         Rounding::Down => q,
         Rounding::Up if r.is_zero() => q,
         Rounding::Up => q + U512::ONE,
+        // Solidity `(a·b + d/2) / d` recomputed literally in 512 bits (the
+        // implementation compares `2r` against `d` instead — no shared step).
+        Rounding::HalfUp => (prod512(a, b) + U512::from(d >> 1)) / U512::from(d),
     };
     (q <= u512_max_u256()).then(|| U256::from(q))
 }
@@ -74,6 +77,18 @@ fn check_exact_rounding(
             if !v.is_zero() {
                 // v >= 1 so v·d >= d: the subtraction cannot underflow.
                 prop_assert!(p > vd - dd);
+            }
+        }
+        Rounding::HalfUp => {
+            // `v == round_half_up(p/d)` iff `2·(p − v·d) < d` when `v·d <= p`
+            // (below-or-at the value, less than half a step away) and
+            // `2·(v·d − p) <= d` when `v·d > p` (above, at most half a step
+            // away — the tie rounds up, so exactly half is admitted here).
+            let two = U512::from(2u8);
+            if vd <= p {
+                prop_assert!((p - vd).checked_mul(two).unwrap() < dd);
+            } else {
+                prop_assert!((vd - p).checked_mul(two).unwrap() <= dd);
             }
         }
     }
@@ -172,7 +187,11 @@ fn boundary_pair_wad() -> impl Strategy<Value = (U256, U256)> {
 }
 
 fn rounding() -> impl Strategy<Value = Rounding> {
-    prop_oneof![Just(Rounding::Down), Just(Rounding::Up)]
+    prop_oneof![
+        Just(Rounding::Down),
+        Just(Rounding::Up),
+        Just(Rounding::HalfUp)
+    ]
 }
 
 // ───────────────────────── shared property bodies ─────────────────────────
@@ -567,6 +586,52 @@ fn overflow_is_err_not_wrap() {
     );
     assert_eq!(
         Wad::from_raw(U256::MAX).to_ray_exact(),
+        Err(FixedError::Overflow)
+    );
+}
+
+/// `HalfUp` tie-break (04A carry-forward): `1·1/2` is exactly one half and
+/// rounds **up** to 1 — Solidity's `(1 + 2/2) / 2 = 1`. `Down` gives 0 so a
+/// `HalfUp → Down` mutation is red on the tie itself; `1·1/3` (below half)
+/// gives 0 and `2·1/3` (above half) gives 1, so a `HalfUp → Up` mutation is
+/// red on the first; odd denominators never tie. Oracle: arithmetic.
+#[test]
+fn half_up_tie_breaks_up() {
+    let two = U256::from(2u8);
+    let three = U256::from(3u8);
+    assert_eq!(
+        mul_div(U256::ONE, U256::ONE, two, Rounding::HalfUp),
+        Ok(U256::ONE)
+    );
+    assert_eq!(
+        mul_div(U256::ONE, U256::ONE, two, Rounding::Down),
+        Ok(U256::ZERO)
+    );
+    assert_eq!(
+        mul_div(U256::ONE, U256::ONE, three, Rounding::HalfUp),
+        Ok(U256::ZERO)
+    );
+    assert_eq!(
+        mul_div(two, U256::ONE, three, Rounding::HalfUp),
+        Ok(U256::ONE)
+    );
+    // Aave V3 `rayMul`: `(a·b + HALF_RAY) / RAY`, on a HF-band operand.
+    let half_ray = RAY / two;
+    assert_eq!(
+        mul_div(half_ray, U256::ONE, RAY, Rounding::HalfUp),
+        Ok(U256::ONE)
+    );
+    assert_eq!(
+        mul_div(half_ray - U256::ONE, U256::ONE, RAY, Rounding::HalfUp),
+        Ok(U256::ZERO)
+    );
+    // The carry past `U256::MAX` on a tie is an error, not a wrap.
+    assert_eq!(
+        mul_div(U256::MAX, two, two, Rounding::HalfUp),
+        Ok(U256::MAX)
+    );
+    assert_eq!(
+        mul_div(U256::MAX, U256::MAX, U256::ONE, Rounding::HalfUp),
         Err(FixedError::Overflow)
     );
 }

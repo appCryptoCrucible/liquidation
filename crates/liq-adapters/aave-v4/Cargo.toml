@@ -1,0 +1,24 @@
+[package]
+name = "liq-adapters-aave-v4"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+liq-types = { path = "../../liq-types" }
+liq-protocol = { path = "../../liq-protocol" }
+alloy-primitives = { workspace = true, features = ["std"] }
+alloy-sol-types = { workspace = true, features = ["std"] }
+bytemuck = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "health"
+harness = false
+
+[lints]
+workspace = true

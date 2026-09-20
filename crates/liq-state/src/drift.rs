@@ -261,10 +261,9 @@ mod tests {
     use crate::store::{StateStore, StoreConfig};
     use crate::undo::UndoCapacity;
     use alloy_primitives::Address;
-    use liq_protocol::{FeedId, MarketFlags, MarketRow, StateWriter};
+    use liq_protocol::{MarketRow, StateWriter};
     use liq_types::{
         AssetId, Band, HaltReason, HaltScope, HaltSink, MarketId, PositionKey, ProtocolId, Ray,
-        RayU128,
     };
     use std::sync::Mutex;
 
@@ -277,26 +276,7 @@ mod tests {
     }
 
     fn row() -> MarketRow {
-        MarketRow {
-            supply_index: RayU128::from_raw(1),
-            debt_index: RayU128::from_raw(1),
-            supply_rate: RayU128::from_raw(0),
-            debt_rate: RayU128::from_raw(0),
-            dust_floor: 0,
-            last_update: 0,
-            target_hf: 0,
-            hub_ref: u16::MAX,
-            liq_threshold: 0,
-            ltv: 0,
-            price_feed: FeedId(0),
-            asset: AssetId(0),
-            max_liq_bonus: 0,
-            hf_for_max_bonus: 0,
-            liq_bonus_factor: 0,
-            decimals: 18,
-            flags: MarketFlags::NONE,
-            _pad: [0; 22],
-        }
+        MarketRow::blank(AssetId(0), 18)
     }
 
     /// Oracle: definition of floor-bps against RAY. Negative: equal HFs → 0.

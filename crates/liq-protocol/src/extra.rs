@@ -24,7 +24,7 @@ use crate::error::{ProtocolError, Result};
 /// 64 opaque bytes, 16-byte aligned (so views containing `u128`/`RayU128`
 /// are placeable). `Pod`: memory-mappable by the snapshot, comparable
 /// byte-for-byte by the undo round-trip test.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Pod, Zeroable)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Pod, Zeroable)]
 #[repr(transparent)]
 pub struct PositionExtraRepr([u128; 4]);
 

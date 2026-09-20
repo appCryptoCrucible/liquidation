@@ -98,12 +98,20 @@ impl<'a> StateView<'a> {
                 supply: &p.supply,
                 debt: &p.debt,
                 extra: &p.extra,
+                slot_extra: &p.slot_extra,
                 markets,
                 timestamp: self.timestamp,
             });
         }
         let mut r = self.base.position_ref(id, self.timestamp)?;
         if let Some(rows) = ov.rows(r.key.market) {
+            // Asymmetry (STATE.md 04A carry-forward 7): when the overlay
+            // listed a reserve (`push_market`) this position's base columns
+            // are one cell shorter than `markets`. That is sound: a listing
+            // never sets a position bit, so `config` — the only index an
+            // adapter iterates — is bounded by the base column length, and
+            // `PositionRef::slot` refuses the extra slot with
+            // `SlotOutOfRange` rather than reading past the column.
             r.markets = rows;
         }
         Ok(r)
@@ -126,6 +134,7 @@ struct OvPos {
     extra: PositionExtraRepr,
     supply: Vec<u128>,
     debt: Vec<u128>,
+    slot_extra: Vec<PositionExtraRepr>,
 }
 
 impl OvPos {
@@ -140,7 +149,18 @@ impl OvPos {
             extra: PositionExtraRepr::ZERO,
             supply: Vec::new(),
             debt: Vec::new(),
+            slot_extra: Vec::new(),
         }
+    }
+
+    /// Reset every column to `n` blank cells.
+    fn blank(&mut self, n: usize) {
+        self.supply.clear();
+        self.supply.resize(n, 0);
+        self.debt.clear();
+        self.debt.resize(n, 0);
+        self.slot_extra.clear();
+        self.slot_extra.resize(n, PositionExtraRepr::ZERO);
     }
 }
 
@@ -292,6 +312,9 @@ impl OverlayWriter<'_> {
         p.debt.clear();
         p.debt.extend_from_slice(r.debt);
         p.debt.resize(n, 0);
+        p.slot_extra.clear();
+        p.slot_extra.extend_from_slice(r.slot_extra);
+        p.slot_extra.resize(n, PositionExtraRepr::ZERO);
         self.ov.pos_index.insert(pos, i);
         Ok(i)
     }
@@ -406,10 +429,7 @@ impl StateWriter for OverlayWriter<'_> {
         p.key = *key;
         p.config = AssetMask::EMPTY;
         p.extra = PositionExtraRepr::ZERO;
-        p.supply.clear();
-        p.supply.resize(n, 0);
-        p.debt.clear();
-        p.debt.resize(n, 0);
+        p.blank(n);
         self.ov.pos_index.insert(id, i);
         self.ov.new_keys.insert(*key, id);
         Ok(id)
@@ -510,8 +530,54 @@ impl StateWriter for OverlayWriter<'_> {
             if p.key.market == market {
                 p.supply.resize(n, 0);
                 p.debt.resize(n, 0);
+                p.slot_extra.resize(n, PositionExtraRepr::ZERO);
             }
         }
         Ok(at)
+    }
+
+    fn slot_extra(&self, pos: PositionId, slot: u16) -> Result<&PositionExtraRepr, ProtocolError> {
+        let Some(p) = self.ov.position(pos) else {
+            return self.base.slot_extra(pos, slot);
+        };
+        p.slot_extra
+            .get(usize::from(slot))
+            .ok_or(ProtocolError::SlotOutOfRange(MarketSlot {
+                market: p.key.market,
+                slot,
+            }))
+    }
+
+    fn set_slot_extra(
+        &mut self,
+        pos: PositionId,
+        slot: u16,
+        extra: PositionExtraRepr,
+    ) -> Result<(), ProtocolError> {
+        let i = self.materialise(pos)?;
+        let p = self
+            .ov
+            .pos
+            .get_mut(i)
+            .ok_or(ProtocolError::UnknownPosition(pos))?;
+        let at = MarketSlot {
+            market: p.key.market,
+            slot,
+        };
+        *p.slot_extra
+            .get_mut(usize::from(slot))
+            .ok_or(ProtocolError::SlotOutOfRange(at))? = extra;
+        Ok(())
+    }
+
+    fn positions_len(&self) -> u32 {
+        u32::try_from(self.ov.base_len.saturating_add(self.ov.new_keys.len())).unwrap_or(u32::MAX)
+    }
+
+    fn position_key(&self, pos: PositionId) -> Result<&PositionKey, ProtocolError> {
+        match self.ov.position(pos) {
+            Some(p) => Ok(&p.key),
+            None => self.base.position_key(pos),
+        }
     }
 }

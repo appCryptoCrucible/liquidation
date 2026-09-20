@@ -25,7 +25,7 @@ SignatureGateway and NativeTokenGateway declare no events; they call Spoke and t
 | hub.remove | Hub.remove → Remove | 0x535be2ff85ab4c5d0991e10dc057a4951ea2bac426ffb036eded23036a3942b2 | MarketAccrual | |
 | hub.draw | Hub.draw → Draw | 0xe2497bc41b1fa7c4ba996f24dc2affdffb2a5571584db6db0eed8fbbf1dc8517 | MarketAccrual | |
 | hub.restore | Hub.restore → Restore | 0x119e7f996dc987b3ae79eb3735f1620c4292f6a7761a1e0f834c445f7798b912 | MarketAccrual | PremiumDelta=(int256,int256,uint256) |
-| hub.refreshPremium | Hub.refreshPremium → RefreshPremium | 0x3fa96ecf17429fddfbb919a64196f4e43f71b57f0c5c38c49a21c8e1e763d18c | None | Spoke.RefreshPremiumDebt is the user fold |
+| hub.refreshPremium | Hub.refreshPremium → RefreshPremium | 0x3fa96ecf17429fddfbb919a64196f4e43f71b57f0c5c38c49a21c8e1e763d18c | MarketAccrual | hub `premiumShares`/`premiumOffsetRay` move → `totalAddedAssets` of every supplier of the asset (04A re-audit: was None); Spoke.RefreshPremiumDebt is the user fold |
 | hub.reportDeficit | Hub.reportDeficit → ReportDeficit | 0x4845ee5c72bde2b62defc8a1ca2f0fc3313b2d9e799997ce4f6776da9773bcbf | MarketAccrual | hub-side; user fold is spoke.reportDeficit |
 | hub.transferShares | Hub.transferShares / payFeeShares → TransferShares | 0x0d93b0e8579bc9db73c85a1fb79d785ffc47f8e20d346253f809cc98c48292a0 | MarketAccrual | liquidation fee shares |
 | hub.sweep | Hub.sweep → Sweep | 0x69bb3893073d7a893f3933f3871309fc25acfc72e365b71f554d439a85b20e8b | MarketAccrual | liquidity out to reinvestment controller |

@@ -41,6 +41,13 @@ pub enum Rounding {
     Down,
     /// Away from zero (ceil).
     Up,
+    /// Nearest, ties away from zero: Aave V3 `WadRayMath.rayMul`
+    /// (`(a·b + RAY/2) / RAY`) and `PercentageMath.percentMul`
+    /// (`(v·p + 5000) / 1e4`). Exactly `floor((a·b + denom/2) / denom)` for
+    /// even `denom`; for odd `denom` the tie cannot occur and the result is
+    /// the nearest integer. Never the direction of a V4 step (V4 is Down/Up
+    /// only — `docs/coverage/aave-v4-rounding.md`).
+    HalfUp,
 }
 
 /// Fixed-point failure. Fieldless: constructing one never allocates.
@@ -55,6 +62,10 @@ pub enum FixedError {
     /// Denominator was zero.
     #[error("fixed-point division by zero")]
     DivisionByZero,
+    /// An operation the caller required to be exact (a quantised curve
+    /// span, a price scale conversion) left a remainder.
+    #[error("fixed-point operation is not exact")]
+    Inexact,
 }
 
 /// `a · b / denom`, computed exactly in 512 bits and rounded in `rounding`.
@@ -72,6 +83,17 @@ pub fn mul_div(a: U256, b: U256, denom: U256, rounding: Rounding) -> Result<U256
         Rounding::Down => q,
         Rounding::Up if r.is_zero() => q,
         Rounding::Up => q.checked_add(U512::ONE).ok_or(FixedError::Overflow)?,
+        // `2r >= denom` ⇔ `r >= denom/2` with the tie (2r == denom) rounding
+        // up — Solidity's `(x + denom/2) / denom` for even `denom`. `r < denom
+        // <= U256::MAX`, so `2r` fits `U512`.
+        Rounding::HalfUp => {
+            let twice = r.checked_add(r).ok_or(FixedError::Overflow)?;
+            if twice >= U512::from(denom) {
+                q.checked_add(U512::ONE).ok_or(FixedError::Overflow)?
+            } else {
+                q
+            }
+        }
     };
     U256::checked_from_limbs_slice(q.as_limbs()).ok_or(FixedError::Overflow)
 }

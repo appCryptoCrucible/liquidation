@@ -1,17 +1,25 @@
 //! `MarketRow` — the per-`(protocol, market, slot)` table (GUIDE 02 §3).
 //!
-//! One flat row per reserve with the hub-level accounting denormalised into it
-//! (Aave V4 hub/spoke; `hub_ref` lets a hub accrual fan out to every row that
-//! points at it). Two cache lines, every row on a line boundary; line 0 holds
-//! what `health()` reads to project balances (indices and rates), line 1 the
-//! rest. Field widths mirror the chain's storage widths (`RayU128` for
-//! `uint128` RAY indices; bps-scaled `u16`/`u32` for governance parameters —
-//! GUIDE 04 confirms each width from source and may widen **only** with that
-//! evidence). The `const` asserts below are what stop the row silently growing
-//! to a third line (TESTING §4 mutation #16).
+//! One flat row per reserve. The row is a **protocol-neutral header** the
+//! store, the router and the conformance harness read, followed by an
+//! **opaque body** only the owning adapter interprets through a `Pod` view
+//! ([`MarketRow::body`] / [`MarketRow::body_mut`]). Shape fixed by WP 04A
+//! at the first real adapter: GUIDE 02's named accounting fields
+//! (`supply_index`, `addExRate`, …) do not exist on Aave V4 — collateral
+//! value there is a share conversion over eleven hub-asset accounting words
+//! (`AssetLogic.totalAddedAssets`), and no generic reader ever consumed them
+//! (`docs/coverage/aave-v4-rounding.md` §1, STATE.md 04A).
+//!
+//! Four cache lines, every row on a line boundary. The header is the first
+//! 16 bytes of line 0; an adapter puts what its `health()` reads for a
+//! debt-only reserve in the rest of line 0 so that side costs one line.
+//! Widening the row past 256 bytes fails the const asserts below (TESTING
+//! §4 mutation #16) and the WAL frame cap in `liq-state`.
 
 use bytemuck::{Pod, Zeroable};
-use liq_types::{AssetId, MarketId, RayU128};
+use liq_types::{AssetId, MarketId};
+
+use crate::error::ProtocolError;
 
 /// Price feed identity (GUIDE 06). Interned `u16`; the side table is
 /// `liq-oracle`'s (WP 06A-1).
@@ -19,9 +27,9 @@ use liq_types::{AssetId, MarketId, RayU128};
 #[repr(transparent)]
 pub struct FeedId(pub u16);
 
-/// Reserve flags (GUIDE 02 §3): `frozen | paused | siloed | isolated`.
-/// Hand-rolled: `bitflags` is not a workspace dependency and four bits do not
-/// justify one.
+/// Reserve flags (GUIDE 02 §3): `frozen | paused | siloed | isolated |
+/// unpriced`. Hand-rolled: `bitflags` is not a workspace dependency and five
+/// bits do not justify one.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Pod, Zeroable)]
 #[repr(transparent)]
 pub struct MarketFlags(pub u8);
@@ -37,6 +45,11 @@ impl MarketFlags {
     pub const SILOED: Self = Self(1 << 2);
     /// Isolation mode collateral (Aave V3) with a debt ceiling.
     pub const ISOLATED: Self = Self(1 << 3);
+    /// The reserve's price source is not the one the feed registry pins
+    /// (GUIDE 06 §2, 06A-1 carry-forward), or its underlying is not in the
+    /// registry at all. Fail closed: `health()` on a position holding the
+    /// slot is `Err(OracleSourceMismatch)`, never a number.
+    pub const UNPRICED: Self = Self(1 << 4);
 
     /// `true` when every bit of `other` is set in `self`.
     #[inline]
@@ -55,126 +68,162 @@ pub struct MarketSlot {
     pub slot: u16,
 }
 
-/// One reserve of one market with its hub accounting denormalised in.
+/// One reserve of one market: neutral header plus adapter-owned body.
 ///
-/// Layout is `#[repr(C, align(64))]`, 128 bytes, no implicit padding: the
-/// trailing `_pad` is explicit so every byte is a field. `Pod`/`Zeroable`
-/// (WP 02B) so the snapshot zero-copies the column via `bytemuck::from_bytes`
-/// after `fs::read` (D59; mmap evaluated and declined — FUTURE-OPTIMIZATIONS.md
-/// F6). Precondition held:
-/// explicit pad, 128 B, `align(64)` — confirmed by the const asserts below.
+/// Layout is `#[repr(C, align(64))]`, 256 bytes, no implicit padding.
+/// `Pod`/`Zeroable` (WP 02B) so the snapshot zero-copies the column via
+/// `bytemuck::from_bytes` after `fs::read` (D59).
 ///
 /// | line | bytes | fields |
 /// |---|---|---|
-/// | 0 | 0..64 | `supply_index`, `debt_index`, `supply_rate`, `debt_rate` |
-/// | 1 | 64..128 | `dust_floor`, `last_update`, `target_hf`, ids, thresholds, liquidation config, flags |
+/// | 0 | 0..16 | header: `asset`, `price_feed`, `decimals`, `flags`, `hub_slot`, `hub_market`, `last_update` |
+/// | 0 | 16..64 | `body[0..3]` |
+/// | 1–3 | 64..256 | `body[3..15]` |
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C, align(64))]
 pub struct MarketRow {
-    // ---- line 0: read by every health()/time_to_cross() projection ---------
-    /// V4 `addExRate`; V3 `liquidityIndex`. RAY, `uint128` on chain.
-    pub supply_index: RayU128,
-    /// V4 `drawnIndex`; V3 `variableBorrowIndex`. RAY, `uint128` on chain.
-    pub debt_index: RayU128,
-    /// Current supply rate, RAY per second (V3 `currentLiquidityRate`).
-    pub supply_rate: RayU128,
-    /// Current borrow rate, RAY per second (V3 `currentVariableBorrowRate`).
-    pub debt_rate: RayU128,
-
-    // ---- line 1 -------------------------------------------------------------
-    /// Minimum remaining debt after a liquidation (protocol dust rule), in the
-    /// reserve's raw underlying units. `0` when the protocol has no dust rule.
-    pub dust_floor: u128,
-    /// Unix seconds of the last index update (`lastUpdateTimestamp`).
-    pub last_update: u32,
-    /// V4 target health factor after liquidation, 1e4-scaled. `0` when the
-    /// protocol uses a fixed close factor instead.
-    pub target_hf: u32,
-    /// Hub asset this row denormalises; `u16::MAX` for protocols without a
-    /// hub. A hub accrual updates every row sharing this value.
-    pub hub_ref: u16,
-    /// Liquidation threshold, bps (V4 `collateralRisk`, V3 `liqThreshold`).
-    pub liq_threshold: u16,
-    /// Loan-to-value, bps.
-    pub ltv: u16,
-    /// Price feed of `asset` for this protocol (GUIDE 06 §2).
-    pub price_feed: FeedId,
-    /// **Global** asset id — the `PriceVector` index.
+    /// Global asset (GUIDE 00: one id per token across protocols).
     pub asset: AssetId,
-    /// Maximum liquidation bonus, bps.
-    pub max_liq_bonus: u16,
-    /// V4: health factor at and below which the bonus saturates, 1e4-scaled.
-    pub hf_for_max_bonus: u16,
-    /// V4: bonus slope/base parameter, 1e4-scaled (GUIDE 04 §4).
-    pub liq_bonus_factor: u16,
-    /// Underlying decimals.
+    /// Price feed the engine reads for `asset` (GUIDE 06).
+    pub price_feed: FeedId,
+    /// Token decimals, from the protocol's own listing event — never a
+    /// registry guess.
     pub decimals: u8,
-    /// Reserve flags.
+    /// Neutral flags every reader may consult (`PAUSED` blocks a quote).
+    /// The adapter recomputes them from its body whenever a source bit
+    /// changes, so they are derived, never the only copy.
     pub flags: MarketFlags,
-    /// Explicit tail padding to the 128-byte, two-line row. Always zero.
-    pub _pad: [u8; 22],
+    /// Slot of the row this one denormalises from (Aave V4: the hub asset
+    /// id) inside `hub_market`; meaningless when `hub_market == NO_HUB`.
+    pub hub_slot: u16,
+    /// `MarketId.0` of the upstream market whose accrual fans out into this
+    /// row, or [`MarketRow::NO_HUB`]. Raw `u32` (not `MarketId`) so the row
+    /// stays `Pod`.
+    pub hub_market: u32,
+    /// Chain time (seconds) of the last index write. `u32` is exact until
+    /// 2106; V4 stores `uint40` — the adapter errors past `u32::MAX`.
+    pub last_update: u32,
+    /// Adapter-owned bytes, read through [`MarketRow::body`].
+    pub body: [u128; MarketRow::BODY_CELLS],
 }
 
 impl MarketRow {
-    /// Bytes of real fields — `size_of::<MarketRow>()` minus `_pad`.
-    pub const PAYLOAD_BYTES: usize = 106;
+    /// Body length in `u128` cells: 256 − 16 header bytes.
+    pub const BODY_CELLS: usize = 15;
+    /// `hub_market` value of a row that is its own source of truth.
+    pub const NO_HUB: u32 = u32::MAX;
+
+    /// A row with only the neutral header set and a zero body. What every
+    /// non-adapter fixture needs; adapters fill the body afterwards.
+    #[must_use]
+    pub const fn blank(asset: AssetId, decimals: u8) -> Self {
+        Self {
+            asset,
+            price_feed: FeedId(0),
+            decimals,
+            flags: MarketFlags::NONE,
+            hub_slot: 0,
+            hub_market: Self::NO_HUB,
+            last_update: 0,
+            body: [0; Self::BODY_CELLS],
+        }
+    }
+
+    /// The body as the adapter's `Pod` struct. `T` must be at most 240 bytes
+    /// and at most 16-aligned; otherwise [`ProtocolError::BodyLayout`].
+    #[inline]
+    pub fn body<T: Pod>(&self) -> Result<&T, ProtocolError> {
+        let bytes = bytemuck::bytes_of(&self.body);
+        bytes
+            .get(..core::mem::size_of::<T>())
+            .and_then(|b| bytemuck::try_from_bytes(b).ok())
+            .ok_or(ProtocolError::BodyLayout)
+    }
+
+    /// Mutable typed view of the body; same bounds as [`MarketRow::body`].
+    #[inline]
+    pub fn body_mut<T: Pod>(&mut self) -> Result<&mut T, ProtocolError> {
+        let bytes = bytemuck::bytes_of_mut(&mut self.body);
+        bytes
+            .get_mut(..core::mem::size_of::<T>())
+            .and_then(|b| bytemuck::try_from_bytes_mut(b).ok())
+            .ok_or(ProtocolError::BodyLayout)
+    }
 }
 
-/// Row size and alignment are load-bearing (GUIDE 02 §3 acceptance;
-/// TESTING §4 mutation #16). Widening any field past these fails the build.
-const _: () = {
-    assert!(core::mem::size_of::<MarketRow>() == 128);
-    assert!(core::mem::align_of::<MarketRow>() == 64);
-    assert!(MarketRow::PAYLOAD_BYTES < 128);
-    // The explicit pad accounts for every byte not covered by a field, which
-    // is what makes the derived `Pod` sound (no implicit padding).
-    assert!(
-        MarketRow::PAYLOAD_BYTES + 22 == core::mem::size_of::<MarketRow>(),
-        "field bytes + explicit pad must equal the row size"
-    );
-};
+// Four cache lines, on a line boundary, no implicit padding.
+const _: () = assert!(core::mem::size_of::<MarketRow>() == 256);
+const _: () = assert!(core::mem::align_of::<MarketRow>() == 64);
+const _: () = assert!(core::mem::offset_of!(MarketRow, body) == 16);
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::{FeedId, MarketFlags, MarketRow};
-    use bytemuck::Zeroable;
-    use core::mem::{offset_of, size_of};
+    use bytemuck::{Pod, Zeroable};
+    use liq_types::AssetId;
 
-    /// Oracle: GUIDE 02 §3 — indices and rates on cache line 0, everything
-    /// else on line 1; the row is exactly two lines.
+    /// Oracle: GUIDE 02 §3's contract restated for the 04A shape — the row
+    /// is four whole lines, starts on a line boundary, and the header ends
+    /// exactly where the body starts (mutation #16: grow a field → fails).
     #[test]
-    fn hot_fields_share_line_zero() {
-        assert!(offset_of!(MarketRow, supply_index) < 64);
-        assert!(offset_of!(MarketRow, debt_index) < 64);
-        assert!(offset_of!(MarketRow, supply_rate) < 64);
-        assert!(offset_of!(MarketRow, debt_rate) < 64);
-        assert_eq!(offset_of!(MarketRow, dust_floor), 64);
-        assert_eq!(size_of::<MarketRow>(), 128);
+    fn row_is_four_lines_and_header_is_sixteen_bytes() {
+        assert_eq!(core::mem::size_of::<MarketRow>(), 256);
+        assert_eq!(core::mem::align_of::<MarketRow>(), 64);
+        assert_eq!(core::mem::offset_of!(MarketRow, asset), 0);
+        assert_eq!(core::mem::offset_of!(MarketRow, price_feed), 2);
+        assert_eq!(core::mem::offset_of!(MarketRow, decimals), 4);
+        assert_eq!(core::mem::offset_of!(MarketRow, flags), 5);
+        assert_eq!(core::mem::offset_of!(MarketRow, hub_slot), 6);
+        assert_eq!(core::mem::offset_of!(MarketRow, hub_market), 8);
+        assert_eq!(core::mem::offset_of!(MarketRow, last_update), 12);
+        assert_eq!(core::mem::offset_of!(MarketRow, body), 16);
+        assert_eq!(
+            core::mem::size_of::<[u128; MarketRow::BODY_CELLS]>(),
+            256 - 16
+        );
     }
 
-    /// Oracle: GUIDE 02 §3 field widths (sum = 106 bytes); the assertion is
-    /// on the *sum of declared widths*, independent of `size_of`.
-    #[test]
-    fn payload_bytes_match_declared_widths() {
-        // five u128 · two u32 · eight u16 · two u8
-        let declared = 16 * 5 + 4 * 2 + 2 * 8 + 2;
-        assert_eq!(declared, MarketRow::PAYLOAD_BYTES);
-        assert_eq!(size_of::<FeedId>(), 2);
-        assert_eq!(size_of::<MarketFlags>(), 1);
+    #[derive(Copy, Clone, Pod, Zeroable)]
+    #[repr(C)]
+    struct Body {
+        a: u128,
+        b: u64,
+        c: u32,
+        d: u32,
     }
 
-    /// Oracle: `repr(C, align(64))` + explicit `_pad` + field widths (the
-    /// const asserts). A `Pod` round-trip is identity on those bytes.
+    #[derive(Copy, Clone, Pod, Zeroable)]
+    #[repr(C)]
+    struct TooWide([u128; MarketRow::BODY_CELLS + 1]);
+
+    /// Oracle: `bytemuck` round trip — a write through the typed view is
+    /// visible in the raw cells, and a view wider than the body is refused
+    /// with the named variant rather than truncated.
     #[test]
-    fn market_row_pod_identity() {
-        let mut r = MarketRow::zeroed();
-        r.supply_index = liq_types::RayU128::from_raw(u128::MAX);
-        r.asset = liq_types::AssetId(7);
-        let bytes = bytemuck::bytes_of(&r);
-        assert_eq!(bytes.len(), 128);
-        let back: &MarketRow = bytemuck::from_bytes(bytes);
-        assert_eq!(*back, r);
+    fn body_view_round_trips_and_refuses_oversize() {
+        let mut r = MarketRow::blank(AssetId(7), 18);
+        assert_eq!(r.hub_market, MarketRow::NO_HUB);
+        assert_eq!(r.price_feed, FeedId(0));
+        assert_eq!(r.flags, MarketFlags::NONE);
+        {
+            let b: &mut Body = r.body_mut().unwrap();
+            b.a = u128::MAX - 1;
+            b.b = 5;
+            b.c = 6;
+            b.d = 7;
+        }
+        assert_eq!(r.body[0], u128::MAX - 1);
+        let b: &Body = r.body().unwrap();
+        assert_eq!((b.b, b.c, b.d), (5, 6, 7));
+        assert_eq!(
+            r.body::<TooWide>().err(),
+            Some(crate::ProtocolError::BodyLayout)
+        );
+        assert_eq!(
+            r.body_mut::<TooWide>().err(),
+            Some(crate::ProtocolError::BodyLayout)
+        );
     }
 
     /// Oracle: bit definitions. Negative: `PAUSED` is not implied by `FROZEN`.

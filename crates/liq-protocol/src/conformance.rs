@@ -14,7 +14,7 @@
 //! The harness never invents fixtures: every position, price vector, log and
 //! post-liquidation state comes from the caller, who is responsible for its
 //! provenance (a fork, an archive block range, or the protocol's published
-//! rule — see `tests/conformance_v4.rs`).
+//! rule — see `crates/liq-adapters/aave-v4/tests/common/mod.rs`).
 
 use alloy_primitives::{Address, U256};
 use liq_types::fixed::{mul_div, FixedError, Rounding, RAY};
@@ -788,6 +788,19 @@ fn check_9_encode_every_callback<P: Protocol>(
         ProtocolError::ZeroRecipient,
         "zero recipient",
     )?;
+    // A quote from another protocol is refused before any leg is read.
+    let foreign = Quote {
+        key: liq_types::PositionKey {
+            protocol: liq_types::ProtocolId(q.key.protocol.0.wrapping_add(1)),
+            ..q.key
+        },
+        ..q.clone()
+    };
+    expect(
+        p.encode(&foreign, LegChoice::PREFERRED, &base, fx.recipient),
+        ProtocolError::ProtocolMismatch,
+        "quote keyed to another protocol",
+    )?;
     let other_asset = if repay.asset.0 == u16::MAX {
         AssetId(u16::MAX.wrapping_sub(1))
     } else {
@@ -881,6 +894,7 @@ pub struct JournalStore {
     supply: Vec<Vec<u128>>,
     debt: Vec<Vec<u128>>,
     extra: Vec<PositionExtraRepr>,
+    slot_extra: Vec<Vec<PositionExtraRepr>>,
     markets: Vec<(MarketId, Vec<MarketRow>)>,
     journal: Vec<Undo>,
 }
@@ -888,6 +902,11 @@ pub struct JournalStore {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Undo {
     Created,
+    SlotExtra {
+        pos: PositionId,
+        slot: u16,
+        prev: PositionExtraRepr,
+    },
     Supply {
         pos: PositionId,
         slot: u16,
@@ -932,6 +951,7 @@ impl JournalStore {
             supply: Vec::new(),
             debt: Vec::new(),
             extra: Vec::new(),
+            slot_extra: Vec::new(),
             markets: Vec::new(),
             journal: Vec::new(),
         }
@@ -956,6 +976,16 @@ impl JournalStore {
                     self.supply.pop();
                     self.debt.pop();
                     self.extra.pop();
+                    self.slot_extra.pop();
+                }
+                Undo::SlotExtra { pos, slot, prev } => {
+                    if let Some(e) = self
+                        .slot_extra
+                        .get_mut(pidx(pos))
+                        .and_then(|r| r.get_mut(usize::from(slot)))
+                    {
+                        *e = prev;
+                    }
                 }
                 Undo::Supply {
                     pos,
@@ -1015,6 +1045,9 @@ impl JournalStore {
                             if let Some(r) = self.debt.get_mut(i) {
                                 r.pop();
                             }
+                            if let Some(r) = self.slot_extra.get_mut(i) {
+                                r.pop();
+                            }
                         }
                     }
                 }
@@ -1048,6 +1081,7 @@ impl JournalStore {
                 .extra
                 .get(i)
                 .ok_or(ProtocolError::UnknownPosition(pos))?,
+            slot_extra: self.slot_extra.get(i).map(Vec::as_slice).unwrap_or(&[]),
             markets,
             timestamp,
         })
@@ -1161,6 +1195,7 @@ impl StateWriter for JournalStore {
         self.supply.push(vec![0; n_rows]);
         self.debt.push(vec![0; n_rows]);
         self.extra.push(PositionExtraRepr::ZERO);
+        self.slot_extra.push(vec![PositionExtraRepr::ZERO; n_rows]);
         self.journal.push(Undo::Created);
         Ok(id)
     }
@@ -1203,6 +1238,46 @@ impl StateWriter for JournalStore {
         let prev = core::mem::replace(e, extra);
         self.journal.push(Undo::Extra { pos, prev });
         Ok(())
+    }
+
+    fn slot_extra(&self, pos: PositionId, slot: u16) -> Result<&PositionExtraRepr> {
+        let (market, _) = self.slots_of(pos)?;
+        self.slot_extra
+            .get(pidx(pos))
+            .ok_or(ProtocolError::UnknownPosition(pos))?
+            .get(usize::from(slot))
+            .ok_or(ProtocolError::SlotOutOfRange(MarketSlot { market, slot }))
+    }
+
+    fn set_slot_extra(
+        &mut self,
+        pos: PositionId,
+        slot: u16,
+        extra: PositionExtraRepr,
+    ) -> Result<()> {
+        let (market, n) = self.slots_of(pos)?;
+        if slot >= n || slot >= AssetMask::MAX_SLOTS {
+            return Err(ProtocolError::SlotOutOfRange(MarketSlot { market, slot }));
+        }
+        let e = self
+            .slot_extra
+            .get_mut(pidx(pos))
+            .ok_or(ProtocolError::UnknownPosition(pos))?
+            .get_mut(usize::from(slot))
+            .ok_or(ProtocolError::SlotOutOfRange(MarketSlot { market, slot }))?;
+        let prev = core::mem::replace(e, extra);
+        self.journal.push(Undo::SlotExtra { pos, slot, prev });
+        Ok(())
+    }
+
+    fn positions_len(&self) -> u32 {
+        u32::try_from(self.keys.len()).unwrap_or(u32::MAX)
+    }
+
+    fn position_key(&self, pos: PositionId) -> Result<&PositionKey> {
+        self.keys
+            .get(pidx(pos))
+            .ok_or(ProtocolError::UnknownPosition(pos))
     }
 
     fn market(&self, at: MarketSlot) -> Result<&MarketRow> {
@@ -1258,6 +1333,9 @@ impl StateWriter for JournalStore {
                 if let Some(r) = self.debt.get_mut(i) {
                     r.push(0);
                 }
+                if let Some(r) = self.slot_extra.get_mut(i) {
+                    r.push(PositionExtraRepr::ZERO);
+                }
             }
         }
         self.journal.push(Undo::Pushed { market });
@@ -1271,31 +1349,12 @@ mod tests {
     use super::{JournalStore, StateWriter};
     use crate::error::ProtocolError;
     use crate::extra::PositionExtraRepr;
-    use crate::market::{FeedId, MarketFlags, MarketRow, MarketSlot};
+    use crate::market::{MarketRow, MarketSlot};
     use alloy_primitives::Address;
-    use liq_types::{AssetId, MarketId, PositionKey, ProtocolId, RayU128};
+    use liq_types::{AssetId, MarketId, PositionKey, ProtocolId};
 
     fn row(asset: u16) -> MarketRow {
-        MarketRow {
-            supply_index: RayU128::from_raw(1),
-            debt_index: RayU128::from_raw(1),
-            supply_rate: RayU128::from_raw(0),
-            debt_rate: RayU128::from_raw(0),
-            dust_floor: 0,
-            last_update: 0,
-            target_hf: 0,
-            hub_ref: u16::MAX,
-            liq_threshold: 0,
-            ltv: 0,
-            price_feed: FeedId(0),
-            asset: AssetId(asset),
-            max_liq_bonus: 0,
-            hf_for_max_bonus: 0,
-            liq_bonus_factor: 0,
-            decimals: 18,
-            flags: MarketFlags::NONE,
-            _pad: [0; 22],
-        }
+        MarketRow::blank(AssetId(asset), 18)
     }
 
     /// Oracle: GUIDE 02 §5 — `undo(apply(x)) == x` over every setter kind,
@@ -1320,6 +1379,20 @@ mod tests {
         st.set_debt(p, 1, 9).unwrap();
         st.set_supply(p, 0, 0).unwrap();
         st.set_extra(p, PositionExtraRepr::ZERO).unwrap();
+        let mut se = PositionExtraRepr::ZERO;
+        *se.view_mut::<u128>().unwrap() = 77;
+        st.set_slot_extra(p, 1, se).unwrap();
+        assert_eq!(st.slot_extra(p, 1).unwrap(), &se);
+        assert_eq!(st.view(p, 0).unwrap().slot_extra.get(1), Some(&se));
+        assert_eq!(
+            st.set_slot_extra(p, 2, se),
+            Err(ProtocolError::SlotOutOfRange(MarketSlot {
+                market: m,
+                slot: 2
+            }))
+        );
+        assert_eq!(st.positions_len(), 1);
+        assert_eq!(st.position_key(p).unwrap(), &key);
         st.set_market(MarketSlot { market: m, slot: 0 }, row(2))
             .unwrap();
         let p2 = st

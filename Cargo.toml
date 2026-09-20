@@ -8,6 +8,7 @@ members = [
     "crates/liq-state",
     "crates/liq-node",
     "crates/liq-adapters",
+    "crates/liq-adapters/aave-v4",
     "crates/liq-oracle",
     "crates/liq-engine",
     "crates/liq-flash",

@@ -18,9 +18,9 @@
 
 use alloy_primitives::Address;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
-use liq_protocol::{FeedId, MarketFlags, MarketRow, MarketSlot, StateWriter};
+use liq_protocol::{FeedId, MarketRow, MarketSlot, StateWriter};
 use liq_state::{StateStore, StoreConfig, UndoCapacity};
-use liq_types::{AssetId, MarketId, PositionId, PositionKey, ProtocolId, RayU128};
+use liq_types::{AssetId, MarketId, PositionId, PositionKey, ProtocolId};
 use std::hint::black_box;
 
 const MARKET: MarketId = MarketId(0);
@@ -29,26 +29,14 @@ const POSITIONS: u32 = 1_000;
 const BASE: u64 = 20_000_000;
 
 fn row(asset: u16, tag: u32) -> MarketRow {
-    MarketRow {
-        supply_index: RayU128::from_raw(1_000_000_000_000_000_000_000_000_000 + u128::from(tag)),
-        debt_index: RayU128::from_raw(1_000_000_000_000_000_000_000_000_000 + u128::from(tag)),
-        supply_rate: RayU128::from_raw(u128::from(tag)),
-        debt_rate: RayU128::from_raw(u128::from(tag)),
-        dust_floor: 0,
-        last_update: tag,
-        target_hf: 10_500,
-        hub_ref: u16::MAX,
-        liq_threshold: 8_000,
-        ltv: 7_500,
+    let mut r = MarketRow {
         price_feed: FeedId(asset),
-        asset: AssetId(asset),
-        max_liq_bonus: 500,
-        hf_for_max_bonus: 9_500,
-        liq_bonus_factor: 10_000,
-        decimals: 18,
-        flags: MarketFlags::NONE,
-        _pad: [0; 22],
-    }
+        last_update: tag,
+        ..MarketRow::blank(AssetId(asset), 18)
+    };
+    r.body[0] = 1_000_000_000_000_000_000_000_000_000 + u128::from(tag);
+    r.body[1] = u128::from(tag);
+    r
 }
 
 fn key(user: u32) -> PositionKey {
@@ -126,9 +114,9 @@ fn sweep(st: &StateStore) -> u128 {
             acc = acc
                 .wrapping_add(r.supply[s])
                 .wrapping_add(r.debt[s])
-                .wrapping_add(m.supply_index.raw())
-                .wrapping_add(m.debt_rate.raw())
-                .wrapping_add(u128::from(m.liq_threshold))
+                .wrapping_add(m.body[0])
+                .wrapping_add(m.body[1])
+                .wrapping_add(u128::from(m.last_update))
                 .wrapping_add(u128::from(m.decimals));
         }
     }

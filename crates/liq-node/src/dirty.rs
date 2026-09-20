@@ -225,33 +225,12 @@ pub fn as_dirty_sets(c: &CollapsedDirty) -> impl Iterator<Item = DirtySet> {
 mod tests {
     use super::DirtyAccumulator;
     use alloy_primitives::Address;
-    use liq_protocol::{
-        DirtyPositions, DirtyRows, DirtySet, MarketFlags, MarketRow, MarketSlot, StateWriter,
-    };
+    use liq_protocol::{DirtyPositions, DirtyRows, DirtySet, MarketRow, MarketSlot, StateWriter};
     use liq_state::{StateStore, StoreConfig, UndoCapacity};
-    use liq_types::{AssetId, MarketId, PositionId, PositionKey, ProtocolId, RayU128};
+    use liq_types::{AssetId, MarketId, PositionId, PositionKey, ProtocolId};
 
     fn row() -> MarketRow {
-        MarketRow {
-            supply_index: RayU128::from_raw(1),
-            debt_index: RayU128::from_raw(1),
-            supply_rate: RayU128::from_raw(0),
-            debt_rate: RayU128::from_raw(0),
-            dust_floor: 0,
-            last_update: 0,
-            target_hf: 0,
-            hub_ref: u16::MAX,
-            liq_threshold: 0,
-            ltv: 0,
-            price_feed: liq_protocol::FeedId(0),
-            asset: AssetId(0),
-            max_liq_bonus: 0,
-            hf_for_max_bonus: 0,
-            liq_bonus_factor: 0,
-            decimals: 18,
-            flags: MarketFlags::NONE,
-            _pad: [0; 22],
-        }
+        MarketRow::blank(AssetId(0), 18)
     }
 
     fn store_with_pos(market: MarketId) -> (StateStore, PositionId) {

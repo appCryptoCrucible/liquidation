@@ -29,6 +29,12 @@ pub struct PositionRef<'a> {
     pub debt: &'a [u128],
     /// Fixed-size protocol-specific state; never boxed.
     pub extra: &'a PositionExtraRepr,
+    /// Fixed-size protocol-specific state **per slot** (Aave V4: premium
+    /// shares, premium offset, the dynamic-config snapshot of that
+    /// user-reserve pair), indexed by slot like `supply`/`debt`. Added by WP
+    /// 04A: V4's per-user-per-reserve `premiumOffsetRay` is history-dependent
+    /// and 25 bytes wide, so it cannot be derived or packed into `extra`.
+    pub slot_extra: &'a [PositionExtraRepr],
     /// The position's market's rows, indexed by slot.
     pub markets: &'a [MarketRow],
     /// Chain time the view is evaluated at. Index projection from

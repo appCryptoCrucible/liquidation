@@ -13,9 +13,10 @@
 //! the previous cell and the previous mask *bit* (a `set_supply`/`set_debt`
 //! changes at most that one bit, so the bit is the exact inverse of the whole
 //! mask — TESTING §4 mutation #8 is "drop `prev_set`"). The 64-byte
-//! `PositionExtraRepr` and 128-byte `MarketRow` inverses live in per-block
-//! side tables, pushed and popped in the same LIFO order as their marker op,
-//! so a block of balance updates does not pay 192 bytes per op.
+//! `PositionExtraRepr` (per position and per slot) and 256-byte `MarketRow`
+//! inverses live in per-block side tables, pushed and popped in the same
+//! LIFO order as their marker op, so a block of balance updates does not pay
+//! 320 bytes per op.
 
 use liq_protocol::{BlockNum, MarketRow, MarketSlot, PositionExtraRepr};
 use liq_types::{MarketId, PositionId};
@@ -45,6 +46,9 @@ pub enum UndoOp {
     },
     /// `set_extra`: the previous repr is the next pop of [`BlockUndo::extras`].
     Extra { pos: PositionId },
+    /// `set_slot_extra`: the previous repr is the next pop of
+    /// [`BlockUndo::extras`] (same side table, same LIFO discipline).
+    SlotExtra { pos: PositionId, slot: u16 },
     /// `set_market`: the previous row is the next pop of [`BlockUndo::rows`].
     Market { at: MarketSlot },
     /// `intern` assigned a new id: drop the position (it is the newest).
@@ -201,6 +205,19 @@ impl UndoRing {
         };
         let full = rec.ops.len() == rec.ops.capacity() || rec.extras.len() == rec.extras.capacity();
         rec.ops.push(UndoOp::Extra { pos });
+        rec.extras.push(prev);
+        if full {
+            self.overflows = self.overflows.saturating_add(1);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn push_slot_extra(&mut self, pos: PositionId, slot: u16, prev: PositionExtraRepr) {
+        let Some(rec) = self.current() else {
+            return;
+        };
+        let full = rec.ops.len() == rec.ops.capacity() || rec.extras.len() == rec.extras.capacity();
+        rec.ops.push(UndoOp::SlotExtra { pos, slot });
         rec.extras.push(prev);
         if full {
             self.overflows = self.overflows.saturating_add(1);

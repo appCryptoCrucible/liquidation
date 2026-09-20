@@ -34,8 +34,8 @@ const MAX_FRAME: usize = 512;
 const _: () = {
     // tag + MarketId + slot + row
     assert!(1 + 4 + 2 + core::mem::size_of::<MarketRow>() <= MAX_FRAME);
-    // tag + PositionId + extra
-    assert!(1 + 4 + core::mem::size_of::<PositionExtraRepr>() <= MAX_FRAME);
+    // tag + PositionId + slot + extra
+    assert!(1 + 4 + 2 + core::mem::size_of::<PositionExtraRepr>() <= MAX_FRAME);
 };
 
 /// One WAL frame. Replay applies these through [`StateWriter`] (plus
@@ -63,6 +63,11 @@ pub enum WalRecord {
         pos: PositionId,
         extra: PositionExtraRepr,
     },
+    SetSlotExtra {
+        pos: PositionId,
+        slot: u16,
+        extra: PositionExtraRepr,
+    },
     SetMarket {
         at: MarketSlot,
         row: MarketRow,
@@ -80,6 +85,11 @@ pub enum WalRecord {
     },
 }
 
+// `WalRecord::Market` carries a whole 256-byte `MarketRow` (04A layout).
+// Boxing it would add an allocation per record on the apply path, which is
+// the one thing the WAL sender must not do; the channel slot is the record's
+// natural home.
+#[allow(clippy::large_enum_variant)]
 enum WalCmd {
     Record(WalRecord),
     Shutdown,
@@ -234,6 +244,7 @@ const TAG_MARKET: u8 = 6;
 const TAG_PUSH: u8 = 7;
 const TAG_SNAP: u8 = 8;
 const TAG_UNWIND: u8 = 9;
+const TAG_SLOT_EXTRA: u8 = 10;
 
 fn encode(rec: &WalRecord) -> Vec<u8> {
     let mut b = Vec::with_capacity(160);
@@ -259,6 +270,12 @@ fn encode(rec: &WalRecord) -> Vec<u8> {
         WalRecord::SetExtra { pos, extra } => {
             b.push(TAG_EXTRA);
             b.extend_from_slice(&pos.0.to_le_bytes());
+            b.extend_from_slice(bytemuck::bytes_of(extra));
+        }
+        WalRecord::SetSlotExtra { pos, slot, extra } => {
+            b.push(TAG_SLOT_EXTRA);
+            b.extend_from_slice(&pos.0.to_le_bytes());
+            b.extend_from_slice(&slot.to_le_bytes());
             b.extend_from_slice(bytemuck::bytes_of(extra));
         }
         WalRecord::SetMarket { at, row } => {
@@ -376,6 +393,12 @@ fn decode(p: &[u8]) -> Result<WalRecord, WalError> {
             let extra = pod_at::<PositionExtraRepr>(rest, 4)?;
             Ok(WalRecord::SetExtra { pos, extra })
         }
+        TAG_SLOT_EXTRA => {
+            let pos = PositionId(u32_le(rest, 0)?);
+            let slot = u16_le(rest, 4)?;
+            let extra = pod_at::<PositionExtraRepr>(rest, 6)?;
+            Ok(WalRecord::SetSlotExtra { pos, slot, extra })
+        }
         TAG_MARKET => {
             let market = MarketId(u32_le(rest, 0)?);
             let slot = u16_le(rest, 4)?;
@@ -449,6 +472,9 @@ pub fn apply(store: &mut StateStore, rec: &WalRecord) -> Result<(), RecoverError
         WalRecord::SetSupply { pos, slot, shares } => store.set_supply(*pos, *slot, *shares)?,
         WalRecord::SetDebt { pos, slot, shares } => store.set_debt(*pos, *slot, *shares)?,
         WalRecord::SetExtra { pos, extra } => store.set_extra(*pos, *extra)?,
+        WalRecord::SetSlotExtra { pos, slot, extra } => {
+            store.set_slot_extra(*pos, *slot, *extra)?;
+        }
         WalRecord::SetMarket { at, row } => store.set_market(*at, *row)?,
         WalRecord::PushMarket { market, row } => {
             store.push_market(*market, *row)?;
@@ -523,8 +549,8 @@ mod tests {
     use crate::store::{StateStore, StoreConfig};
     use crate::undo::UndoCapacity;
     use alloy_primitives::Address;
-    use liq_protocol::{FeedId, MarketFlags, MarketRow, StateWriter};
-    use liq_types::{AssetId, MarketId, PositionKey, ProtocolId, RayU128};
+    use liq_protocol::{FeedId, MarketRow, StateWriter};
+    use liq_types::{AssetId, MarketId, PositionKey, ProtocolId};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static N: AtomicU64 = AtomicU64::new(0);
@@ -539,24 +565,8 @@ mod tests {
 
     fn row(asset: u16) -> MarketRow {
         MarketRow {
-            supply_index: RayU128::from_raw(1),
-            debt_index: RayU128::from_raw(1),
-            supply_rate: RayU128::from_raw(0),
-            debt_rate: RayU128::from_raw(0),
-            dust_floor: 0,
-            last_update: 0,
-            target_hf: 0,
-            hub_ref: u16::MAX,
-            liq_threshold: 0,
-            ltv: 0,
             price_feed: FeedId(asset),
-            asset: AssetId(asset),
-            max_liq_bonus: 0,
-            hf_for_max_bonus: 0,
-            liq_bonus_factor: 0,
-            decimals: 18,
-            flags: MarketFlags::NONE,
-            _pad: [0; 22],
+            ..MarketRow::blank(AssetId(asset), 18)
         }
     }
 

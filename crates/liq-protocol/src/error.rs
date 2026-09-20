@@ -35,6 +35,37 @@ pub enum ProtocolError {
     /// (size or alignment).
     #[error("position-extra view does not fit the fixed representation")]
     ExtraLayout,
+    /// A typed view of [`crate::MarketRow::body`] does not fit its bytes
+    /// (size or alignment).
+    #[error("market-row body view does not fit the fixed representation")]
+    BodyLayout,
+    /// `encode` was handed a quote another adapter built
+    /// (`q.key.protocol != self.id()`). Encoding it would put this adapter's
+    /// `ExecutorAdapter` byte in front of the other protocol's borrower.
+    #[error("quote belongs to another protocol")]
+    ProtocolMismatch,
+    /// The protocol re-pointed a reserve's price source at an address other
+    /// than the one the feed registry pins, or listed an underlying the
+    /// registry does not know (GUIDE 06 §2, 06A-1 carry-forward). Fail
+    /// closed: the reserve is unpriced (`MarketFlags::UNPRICED`) until the
+    /// registry is updated; a position holding it has no health.
+    #[error("reserve price source or underlying is not pinned by the registry")]
+    OracleSourceMismatch,
+    /// A halt-class log (proxy upgrade, authority change, oracle binding —
+    /// `docs/coverage/aave-v4.md` `halt` rows): the adapter's view of the
+    /// contract can no longer be trusted. The caller routes this to the halt
+    /// matrix; state was not modified.
+    #[error("halt-class log: adapter must stop")]
+    HaltSignal,
+    /// The evaluation time is earlier than a row's `last_update`: the view
+    /// is inconsistent (the chain itself reverts here —
+    /// `MathUtils.calculateLinearInterest`).
+    #[error("evaluation time precedes the row's last update")]
+    TimestampBeforeUpdate,
+    /// A listing log's slot is not the next free slot of its market: a log
+    /// was skipped or replayed out of order. The store is not patched.
+    #[error("listing slot {got} is not the next free slot {expected}")]
+    SlotMismatch { expected: u16, got: u16 },
     /// `apply_log` received a log this adapter never subscribed to.
     #[error("log not recognised by this adapter")]
     UnexpectedLog,

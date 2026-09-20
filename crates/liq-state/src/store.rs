@@ -59,16 +59,19 @@ pub struct StoreConfig {
     pub undo: UndoCapacity,
 }
 
-/// One market: its reserve rows and both balance columns.
+/// One market: its reserve rows, both balance columns and the per-slot
+/// extra column (WP 04A; same stride, 64-byte cells).
 pub(crate) struct Market {
     pub(crate) rows: Vec<MarketRow>,
-    /// Cells per position in `supply`/`debt`; `>= rows.len()`, multiple of
-    /// [`LINE_CELLS`]. Cells at or past `rows.len()` are always zero.
+    /// Cells per position in `supply`/`debt`/`slot_extra`; `>= rows.len()`,
+    /// multiple of [`LINE_CELLS`]. Cells at or past `rows.len()` are always
+    /// zero.
     pub(crate) stride: usize,
     /// Positions in this market (`PosEntry::local` space).
     pub(crate) n_pos: u32,
     pub(crate) supply: Vec<u128>,
     pub(crate) debt: Vec<u128>,
+    pub(crate) slot_extra: Vec<PositionExtraRepr>,
 }
 
 impl Market {
@@ -79,6 +82,7 @@ impl Market {
             n_pos: 0,
             supply: Vec::new(),
             debt: Vec::new(),
+            slot_extra: Vec::new(),
         }
     }
 
@@ -110,6 +114,7 @@ impl Market {
         let n = self.n_pos as usize;
         restride(&mut self.supply, n, self.stride, new)?;
         restride(&mut self.debt, n, self.stride, new)?;
+        restride(&mut self.slot_extra, n, self.stride, new)?;
         self.stride = new;
         Ok(())
     }
@@ -117,9 +122,14 @@ impl Market {
 
 /// Re-lay `col` from `old` to `new` cells per position, back to front so no
 /// unmoved row is overwritten; the cells opened up in each row are zeroed.
-fn restride(col: &mut Vec<u128>, n_pos: usize, old: usize, new: usize) -> Result<(), StateError> {
+fn restride<T: Copy + Default>(
+    col: &mut Vec<T>,
+    n_pos: usize,
+    old: usize,
+    new: usize,
+) -> Result<(), StateError> {
     let total = n_pos.checked_mul(new).ok_or(StateError::Inconsistent)?;
-    col.resize(total, 0);
+    col.resize(total, T::default());
     for l in (0..n_pos).rev() {
         let src = l.checked_mul(old).ok_or(StateError::Inconsistent)?;
         let src_end = src.checked_add(old).ok_or(StateError::Inconsistent)?;
@@ -131,7 +141,7 @@ fn restride(col: &mut Vec<u128>, n_pos: usize, old: usize, new: usize) -> Result
         }
         col.copy_within(src..src_end, dst);
         if let Some(tail) = col.get_mut(dst_mid..dst_end) {
-            tail.fill(0);
+            tail.fill(T::default());
         }
     }
     Ok(())
@@ -217,6 +227,7 @@ impl StateStore {
         let cells = n.checked_mul(m.stride).ok_or(StateError::Inconsistent)?;
         m.supply.reserve(cells);
         m.debt.reserve(cells);
+        m.slot_extra.reserve(cells);
         Ok(())
     }
 
@@ -375,7 +386,8 @@ impl StateStore {
             .supply
             .get(range.clone())
             .ok_or(StateError::Inconsistent)?;
-        let debt = m.debt.get(range).ok_or(StateError::Inconsistent)?;
+        let debt = m.debt.get(range.clone()).ok_or(StateError::Inconsistent)?;
+        let slot_extra = m.slot_extra.get(range).ok_or(StateError::Inconsistent)?;
         Ok(PositionRef {
             id,
             key: &entry.key,
@@ -383,6 +395,7 @@ impl StateStore {
             supply,
             debt,
             extra,
+            slot_extra,
             markets: &m.rows,
             timestamp,
         })
@@ -545,6 +558,18 @@ impl StateStore {
                     .ok_or(StateError::Inconsistent)? = prev;
                 Ok(())
             }
+            UndoOp::SlotExtra { pos, slot } => {
+                let prev = extras.pop().ok_or(StateError::Inconsistent)?;
+                let entry = self
+                    .positions
+                    .entry(pos.0 as usize)
+                    .ok_or(StateError::Inconsistent)?;
+                let (market, local) = (entry.key.market, entry.local);
+                let m = self.market_mut(market).ok_or(StateError::Inconsistent)?;
+                let ci = m.cell(local, slot).ok_or(StateError::Inconsistent)?;
+                *m.slot_extra.get_mut(ci).ok_or(StateError::Inconsistent)? = prev;
+                Ok(())
+            }
             UndoOp::Market { at } => {
                 let prev = rows.pop().ok_or(StateError::Inconsistent)?;
                 *row_mut(&mut self.markets, &self.market_index, at)
@@ -578,6 +603,7 @@ impl StateStore {
                     .ok_or(StateError::Inconsistent)?;
                 m.supply.truncate(len);
                 m.debt.truncate(len);
+                m.slot_extra.truncate(len);
                 Ok(())
             }
             UndoOp::Pushed { market, created } => {
@@ -631,6 +657,7 @@ impl StateWriter for StateStore {
         m.n_pos = n_pos;
         m.supply.resize(cells, 0);
         m.debt.resize(cells, 0);
+        m.slot_extra.resize(cells, PositionExtraRepr::ZERO);
         self.positions.push(*key, id, local);
         self.config.push(AssetMask::EMPTY);
         self.extra.push(PositionExtraRepr::ZERO);
@@ -710,6 +737,71 @@ impl StateWriter for StateStore {
         *e = extra;
         self.writes = self.writes.wrapping_add(1);
         Ok(())
+    }
+
+    fn slot_extra(&self, pos: PositionId, slot: u16) -> Result<&PositionExtraRepr, ProtocolError> {
+        let entry = self
+            .positions
+            .entry(pos.0 as usize)
+            .ok_or(ProtocolError::UnknownPosition(pos))?;
+        let market = entry.key.market;
+        let at = MarketSlot { market, slot };
+        let m = self
+            .market(market)
+            .ok_or(ProtocolError::UnknownMarket(market))?;
+        if usize::from(slot) >= m.rows.len() {
+            return Err(ProtocolError::SlotOutOfRange(at));
+        }
+        m.cell(entry.local, slot)
+            .and_then(|ci| m.slot_extra.get(ci))
+            .ok_or(ProtocolError::SlotOutOfRange(at))
+    }
+
+    fn set_slot_extra(
+        &mut self,
+        pos: PositionId,
+        slot: u16,
+        extra: PositionExtraRepr,
+    ) -> Result<(), ProtocolError> {
+        let entry = self
+            .positions
+            .entry(pos.0 as usize)
+            .ok_or(ProtocolError::UnknownPosition(pos))?;
+        let (market, local) = (entry.key.market, entry.local);
+        let at = MarketSlot { market, slot };
+        let mi =
+            market_idx(&self.market_index, market).ok_or(ProtocolError::UnknownMarket(market))?;
+        let m = self
+            .markets
+            .get_mut(mi)
+            .ok_or(ProtocolError::UnknownMarket(market))?;
+        if usize::from(slot) >= m.rows.len() {
+            return Err(ProtocolError::SlotOutOfRange(at));
+        }
+        let ci = m
+            .cell(local, slot)
+            .ok_or(ProtocolError::SlotOutOfRange(at))?;
+        let cell = m
+            .slot_extra
+            .get_mut(ci)
+            .ok_or(ProtocolError::SlotOutOfRange(at))?;
+        let prev = *cell;
+        // ---- journal, then write. Nothing below can fail. ----
+        self.undo.push_slot_extra(pos, slot, prev);
+        *cell = extra;
+        self.writes = self.writes.wrapping_add(1);
+        Ok(())
+    }
+
+    fn positions_len(&self) -> u32 {
+        u32::try_from(self.positions.len()).unwrap_or(u32::MAX)
+    }
+
+    fn position_key(&self, pos: PositionId) -> Result<&PositionKey, ProtocolError> {
+        self.positions
+            .entry(pos.0 as usize)
+            .map(|e| &e.key)
+            .ok_or(ProtocolError::UnknownPosition(pos))
     }
 
     fn market(&self, at: MarketSlot) -> Result<&MarketRow, ProtocolError> {
@@ -829,31 +921,12 @@ mod tests {
     use super::{StateStore, StoreConfig, LINE_CELLS};
     use crate::undo::UndoCapacity;
     use alloy_primitives::Address;
-    use liq_protocol::{FeedId, MarketFlags, MarketRow, StateWriter};
-    use liq_types::{AssetId, MarketId, PositionId, PositionKey, ProtocolId, RayU128};
+    use liq_protocol::{MarketRow, PositionExtraRepr, StateWriter};
+    use liq_types::{AssetId, MarketId, PositionId, PositionKey, ProtocolId};
     use std::collections::BTreeSet;
 
     fn row(asset: u16) -> MarketRow {
-        MarketRow {
-            supply_index: RayU128::from_raw(1),
-            debt_index: RayU128::from_raw(1),
-            supply_rate: RayU128::from_raw(0),
-            debt_rate: RayU128::from_raw(0),
-            dust_floor: 0,
-            last_update: 0,
-            target_hf: 0,
-            hub_ref: u16::MAX,
-            liq_threshold: 0,
-            ltv: 0,
-            price_feed: FeedId(0),
-            asset: AssetId(asset),
-            max_liq_bonus: 0,
-            hf_for_max_bonus: 0,
-            liq_bonus_factor: 0,
-            decimals: 18,
-            flags: MarketFlags::NONE,
-            _pad: [0; 22],
-        }
+        MarketRow::blank(AssetId(asset), 18)
     }
 
     fn key(market: MarketId, user: u8) -> PositionKey {
@@ -883,17 +956,25 @@ mod tests {
 
     /// Cache lines the store's read path touches for a three-slot position,
     /// **measured from the addresses `position_ref` dereferences** (not
-    /// estimated). Re-derived budget (carry-forward from the 01 review):
-    /// `health()` needs indices *and* rates, which fill `MarketRow` line 0
-    /// exactly, plus `dust_floor`/`liq_threshold`/`asset`/`decimals` on line 1
-    /// — two lines per market, so three markets are 6, not 3. Data lines:
-    /// mask 1 + key/local entry 1 + extra 1 + supply ≤ 3 + debt ≤ 3 + rows 6
-    /// = 15 worst case (slots on distinct lines), 11 best (adjacent slots),
-    /// plus the `PriceVector` (≤ 3, not this crate's) → 14–18. Header lines
-    /// (`market_index`, the `Market` struct) are L1-resident and reported
-    /// separately. Oracle: arithmetic on the layout; GUIDE 02 acceptance.
+    /// estimated). Budget re-derived for the 04A layout (carry-forward from
+    /// the 01 review; the "~15–18" there assumed a 128-byte row):
+    ///
+    /// * `MarketRow` is 256 bytes = 4 lines. A V4 **debt-only** slot reads
+    ///   the header and body cells 0–3 (index, rate, drawn and premium
+    ///   shares → lines 0–1) plus the flags word in line 3: 3 lines. A
+    ///   **collateral** slot needs `totalAddedAssets`, i.e. every hub
+    ///   accounting word: all 4 lines. Worst case 4 per slot.
+    /// * The per-slot extra (`UserReserve`: premium shares/offset, the
+    ///   user's collateral-factor snapshot) is one 64-byte cell per slot.
+    ///
+    /// Data lines: mask 1 + key/local entry 1 + extra 1 + supply ≤ 3 + debt
+    /// ≤ 3 + slot-extra 3 + rows 12 = **24 worst case** (slots on distinct
+    /// lines), 20 best (adjacent slots), plus the `PriceVector` (≤ 3, not
+    /// this crate's) → 23–27. Header lines (`market_index`, the `Market`
+    /// struct) are L1-resident and reported separately. Oracle: arithmetic on
+    /// the layout (`liq-adapters-aave-v4::layout`); GUIDE 02 acceptance.
     #[test]
-    fn three_slot_position_touches_at_most_fifteen_data_lines() {
+    fn three_slot_position_touches_at_most_twenty_four_data_lines() {
         let mut st = store(16, 64);
         let m = MarketId(3);
         for a in 0..40u16 {
@@ -919,9 +1000,14 @@ mod tests {
         for s in r.config.iter() {
             data.insert(line((&r.supply[usize::from(s)] as *const u128).cast()));
             data.insert(line((&r.debt[usize::from(s)] as *const u128).cast()));
+            let se = (&r.slot_extra[usize::from(s)] as *const PositionExtraRepr).cast::<u8>();
+            for off in (0..core::mem::size_of::<PositionExtraRepr>()).step_by(64) {
+                data.insert(line(se.wrapping_add(off)));
+            }
             let row0 = (&r.markets[usize::from(s)] as *const MarketRow).cast::<u8>();
-            data.insert(line(row0));
-            data.insert(line(row0.wrapping_add(64)));
+            for off in (0..core::mem::size_of::<MarketRow>()).step_by(64) {
+                data.insert(line(row0.wrapping_add(off)));
+            }
         }
         let mut headers = BTreeSet::new();
         headers.insert(line(st.market_index.as_ptr().wrapping_add(3).cast()));
@@ -931,20 +1017,22 @@ mod tests {
         }
         headers.insert(line((&st as *const StateStore).cast()));
         eprintln!(
-            "cache lines: data = {} (mask 1, entry 1, extra 1, supply/debt {}, rows 6), headers = {}, total = {}",
+            "cache lines: data = {} (mask 1, entry 1, extra 1, supply/debt/slot-extra {}, rows 12), headers = {}, total = {}",
             data.len(),
-            data.len() - 9,
+            data.len() - 15,
             headers.len(),
             data.len() + headers.len()
         );
-        assert!(data.len() <= 15, "data lines {}", data.len());
+        assert!(data.len() <= 24, "data lines {}", data.len());
         assert!(
-            data.len() + headers.len() <= 19,
+            data.len() + headers.len() <= 28,
             "total lines {}",
             data.len() + headers.len()
         );
-        // Each MarketRow contributes exactly its two lines and nothing else.
-        assert_eq!(core::mem::size_of::<MarketRow>(), 128);
+        // Each MarketRow contributes exactly its four lines and nothing
+        // else; each slot extra exactly one.
+        assert_eq!(core::mem::size_of::<MarketRow>(), 256);
+        assert_eq!(core::mem::size_of::<PositionExtraRepr>(), 64);
         // Strides are line-granular, so the slot → line map is the same for
         // every position (the base is `u128`-aligned, so the shared phase is
         // not necessarily zero; the count above is measured, not assumed).

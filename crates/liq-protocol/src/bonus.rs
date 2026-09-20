@@ -3,6 +3,7 @@
 //! the engine (GUIDE 12) **evaluates** it. Collapsing it to a scalar in an
 //! adapter throws away the Aave V4 edge (GUIDE 04 §4).
 
+use alloy_primitives::U256;
 use liq_types::fixed::{mul_div, FixedError, Rounding};
 use liq_types::{Ray, RayU128};
 
@@ -24,10 +25,21 @@ pub enum BonusCurve {
     /// cannot, because a `hf_for_max >= 1.0` curve is indistinguishable there
     /// from one already saturated, and it would answer `bonus_at_threshold`
     /// for every `hf` instead of failing.
+    ///
+    /// `quantum` is the smallest bonus step the protocol's integer
+    /// parameters can express — the interpolation floors in **that** unit,
+    /// exactly as the chain does. Aave V4 interpolates in bps
+    /// (`LiquidationLogic.calculateLiquidationBonus`: `mulDivDown` over
+    /// `uint256` bps), so `quantum = 1 bp = 1e23 RAY`; a bonus computed in
+    /// RAY and floored there would be up to one bp too generous and the
+    /// close factor built on it would overshoot the target. `Ray(1)` means
+    /// "continuous". Zero is refused (`DivisionByZero`); a `span` that is
+    /// not a whole number of quanta is refused (`Inexact`).
     HealthLinear {
         bonus_at_threshold: Ray,
         hf_for_max: Ray,
         max_bonus: Ray,
+        quantum: Ray,
     },
     /// Dutch auction: the price offered to the liquidator falls with time
     /// since `start`. Evaluation is auction machinery, deferred (D14).
@@ -70,6 +82,7 @@ impl BonusCurve {
                 bonus_at_threshold,
                 hf_for_max,
                 max_bonus,
+                quantum,
             } => {
                 if hf >= Ray::ONE {
                     return Ok(Some(bonus_at_threshold));
@@ -81,7 +94,17 @@ impl BonusCurve {
                 let span = max_bonus.checked_sub(bonus_at_threshold)?;
                 let deficit = Ray::ONE.checked_sub(hf)?;
                 let width = Ray::ONE.checked_sub(hf_for_max)?;
-                let rise = mul_div(span.raw(), deficit.raw(), width.raw(), Rounding::Down)?;
+                // `mul_div` refuses a zero quantum (`DivisionByZero`).
+                let span_q = mul_div(span.raw(), U256::ONE, quantum.raw(), Rounding::Down)?;
+                if span_q.checked_mul(quantum.raw()) != Some(span.raw()) {
+                    return Err(FixedError::Inexact);
+                }
+                // floor(span_q · deficit / width) in quanta, then back to RAY:
+                // the chain's `mulDivDown` over integer bps, step for step.
+                let rise_q = mul_div(span_q, deficit.raw(), width.raw(), Rounding::Down)?;
+                let rise = rise_q
+                    .checked_mul(quantum.raw())
+                    .ok_or(FixedError::Overflow)?;
                 bonus_at_threshold
                     .checked_add(Ray::from_raw(rise))
                     .map(Some)
@@ -114,7 +137,42 @@ mod tests {
             bonus_at_threshold: bps(100), // 1 %
             hf_for_max: bps(9_500),       // 0.95
             max_bonus: bps(1_000),        // 10 %
+            quantum: bps(1),
         }
+    }
+
+    /// Oracle: `LiquidationLogic.calculateLiquidationBonus` by hand in bps.
+    /// span 900 bp, deficit 0.0123, width 0.05 → 900·0.0123/0.05 = 221.4 →
+    /// floor **in bps** = 221 → 3.21 %. A continuous floor would give
+    /// 3.214 %, 0.4 bp more than the chain pays. Negative: `quantum` zero
+    /// and a span not on the grid are refused.
+    #[test]
+    fn health_linear_floors_in_the_protocol_quantum() {
+        let c = v4_like();
+        let hf = Ray::from_raw(RAY - RAY * U256::from(123u64) / U256::from(10_000u64));
+        assert_eq!(c.bonus_at_hf(hf).unwrap(), Some(bps(321)));
+        let continuous = BonusCurve::HealthLinear {
+            bonus_at_threshold: bps(100),
+            hf_for_max: bps(9_500),
+            max_bonus: bps(1_000),
+            quantum: Ray::from_raw(U256::ONE),
+        };
+        let b = continuous.bonus_at_hf(hf).unwrap().unwrap();
+        assert!(b > bps(321) && b < bps(322));
+        let zero = BonusCurve::HealthLinear {
+            bonus_at_threshold: bps(100),
+            hf_for_max: bps(9_500),
+            max_bonus: bps(1_000),
+            quantum: Ray::ZERO,
+        };
+        assert_eq!(zero.bonus_at_hf(hf), Err(FixedError::DivisionByZero));
+        let off_grid = BonusCurve::HealthLinear {
+            bonus_at_threshold: bps(100),
+            hf_for_max: bps(9_500),
+            max_bonus: Ray::from_raw(bps(1_000).raw() + U256::ONE),
+            quantum: bps(1),
+        };
+        assert_eq!(off_grid.bonus_at_hf(hf), Err(FixedError::Inexact));
     }
 
     /// GUIDE 01 acceptance: at `hf_for_max` equals `max_bonus`; at `1.0`
@@ -161,6 +219,7 @@ mod tests {
             bonus_at_threshold: bps(1_000),
             hf_for_max: bps(9_500),
             max_bonus: bps(100),
+            quantum: bps(1),
         };
         assert_eq!(c.bonus_at_hf(bps(9_750)), Err(FixedError::Underflow));
     }

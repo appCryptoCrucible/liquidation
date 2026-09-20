@@ -16,11 +16,10 @@
 
 use alloy_primitives::Address;
 use liq_protocol::{
-    AssetMask, FeedId, MarketFlags, MarketRow, MarketSlot, PositionExtraRepr, ProtocolError,
-    StateWriter,
+    AssetMask, FeedId, MarketRow, MarketSlot, PositionExtraRepr, ProtocolError, StateWriter,
 };
 use liq_state::{Overlay, StateError, StateStore, StoreConfig, UndoCapacity, UNDO_DEPTH};
-use liq_types::{AssetId, MarketId, PositionId, PositionKey, ProtocolId, RayU128};
+use liq_types::{AssetId, MarketId, PositionId, PositionKey, ProtocolId};
 use proptest::prelude::*;
 
 const BASE: u64 = 1_000;
@@ -29,26 +28,15 @@ const BASE: u64 = 1_000;
 const MARKETS: [MarketId; 3] = [MarketId(5), MarketId(9), MarketId(13)];
 
 fn row(asset: u16, tag: u32) -> MarketRow {
-    MarketRow {
-        supply_index: RayU128::from_raw(u128::from(tag) << 64),
-        debt_index: RayU128::from_raw(u128::from(tag)),
-        supply_rate: RayU128::from_raw(7),
-        debt_rate: RayU128::from_raw(11),
-        dust_floor: u128::from(tag),
-        last_update: tag,
-        target_hf: 10_500,
-        hub_ref: u16::MAX,
-        liq_threshold: 8_000,
-        ltv: 7_500,
+    let mut r = MarketRow {
         price_feed: FeedId(asset),
-        asset: AssetId(asset),
-        max_liq_bonus: 500,
-        hf_for_max_bonus: 9_500,
-        liq_bonus_factor: 10_000,
-        decimals: 18,
-        flags: MarketFlags::NONE,
-        _pad: [0; 22],
-    }
+        last_update: tag,
+        ..MarketRow::blank(AssetId(asset), 18)
+    };
+    r.body[0] = u128::from(tag) << 64;
+    r.body[1] = u128::from(tag);
+    r.body[14] = 7;
+    r
 }
 
 fn key(market: MarketId, user: u8) -> PositionKey {
@@ -414,7 +402,7 @@ fn extra_and_market_rows_round_trip_whole_value() {
     st.set_extra(p, extra(u128::MAX)).unwrap();
     st.set_extra(p, extra(3)).unwrap();
     let mut r = row(1, 99);
-    r._pad = [1; 22];
+    r.body = [1; MarketRow::BODY_CELLS];
     st.set_market(at, r).unwrap();
     st.set_market(at, row(1, 100)).unwrap();
     assert_eq!(st.market(at).unwrap().last_update, 100);

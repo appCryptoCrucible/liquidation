@@ -36,7 +36,9 @@ use crate::interner::{PosEntry, PositionTable};
 use crate::store::{market_idx, Market, StateStore, StoreConfig, LINE_CELLS};
 
 const MAGIC: [u8; 8] = *b"LIQSNAP1";
-const VERSION: u32 = 1;
+/// 2: 256-byte `MarketRow` and the per-slot `slot_extra` column (04A).
+/// A version-1 file is refused (`SnapshotError::Version`), never reinterpreted.
+const VERSION: u32 = 2;
 const HEADER: usize = 64;
 const ALIGN: usize = 64;
 
@@ -93,6 +95,8 @@ pub struct SnapMarket {
     pub rows: Arc<[MarketRow]>,
     pub supply: Arc<[u128]>,
     pub debt: Arc<[u128]>,
+    /// Per-slot adapter cells, same stride as `supply`/`debt`.
+    pub slot_extra: Arc<[PositionExtraRepr]>,
 }
 
 /// Immutable store view: cold-start artifact and the `ArcSwap` payload.
@@ -159,6 +163,10 @@ impl StoreSnapshot {
             .ok_or(StateError::Inconsistent)?;
         let supply = m.supply.get(start..end).ok_or(StateError::Inconsistent)?;
         let debt = m.debt.get(start..end).ok_or(StateError::Inconsistent)?;
+        let slot_extra = m
+            .slot_extra
+            .get(start..end)
+            .ok_or(StateError::Inconsistent)?;
         Ok(PositionRef {
             id,
             key: &key.key,
@@ -166,6 +174,7 @@ impl StoreSnapshot {
             supply,
             debt,
             extra,
+            slot_extra,
             markets: &m.rows,
             timestamp,
         })
@@ -191,6 +200,7 @@ impl StoreSnapshot {
                 rows: m.rows.clone().into(),
                 supply: m.supply.clone().into(),
                 debt: m.debt.clone().into(),
+                slot_extra: m.slot_extra.clone().into(),
             })
             .collect();
         Self {
@@ -230,7 +240,7 @@ impl StoreSnapshot {
             let cells = (m.n_pos as usize)
                 .checked_mul(m.stride)
                 .ok_or(SnapshotError::Layout)?;
-            if m.supply.len() != cells || m.debt.len() != cells {
+            if m.supply.len() != cells || m.debt.len() != cells || m.slot_extra.len() != cells {
                 return Err(SnapshotError::Layout);
             }
             markets.push(Market {
@@ -239,6 +249,7 @@ impl StoreSnapshot {
                 n_pos: m.n_pos,
                 supply: m.supply.as_ref().to_vec(),
                 debt: m.debt.as_ref().to_vec(),
+                slot_extra: m.slot_extra.as_ref().to_vec(),
             });
         }
         let cfg = StoreConfig {
@@ -391,6 +402,7 @@ fn encode(snap: &StoreSnapshot) -> Result<Vec<u8>, SnapshotError> {
         body.extend_from_slice(bytemuck::cast_slice(m.rows.as_ref()));
         body.extend_from_slice(bytemuck::cast_slice(m.supply.as_ref()));
         body.extend_from_slice(bytemuck::cast_slice(m.debt.as_ref()));
+        body.extend_from_slice(bytemuck::cast_slice(m.slot_extra.as_ref()));
         pad_to(&mut body, ALIGN);
     }
     let mut out = vec![0u8; HEADER];
@@ -481,6 +493,7 @@ fn decode(bytes: &[u8]) -> Result<StoreSnapshot, SnapshotError> {
             .ok_or(SnapshotError::Layout)?;
         let supply = copy_pod::<u128>(body, &mut off, cells)?;
         let debt = copy_pod::<u128>(body, &mut off, cells)?;
+        let slot_extra = copy_pod::<PositionExtraRepr>(body, &mut off, cells)?;
         align_off(&mut off, ALIGN);
         markets.push(SnapMarket {
             stride,
@@ -488,6 +501,7 @@ fn decode(bytes: &[u8]) -> Result<StoreSnapshot, SnapshotError> {
             rows: rows.into(),
             supply: supply.into(),
             debt: debt.into(),
+            slot_extra: slot_extra.into(),
         });
     }
     let keys: Result<Vec<SnapKey>, SnapshotError> = recs
@@ -560,8 +574,8 @@ mod tests {
     use crate::undo::UndoCapacity;
     use crate::view::Overlay;
     use alloy_primitives::Address;
-    use liq_protocol::{FeedId, MarketFlags, MarketRow, StateWriter};
-    use liq_types::{AssetId, MarketId, PositionId, PositionKey, ProtocolId, RayU128};
+    use liq_protocol::{FeedId, MarketRow, StateWriter};
+    use liq_types::{AssetId, MarketId, PositionId, PositionKey, ProtocolId};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Instant;
 
@@ -576,26 +590,15 @@ mod tests {
     }
 
     fn row(asset: u16, tag: u32) -> MarketRow {
-        MarketRow {
-            supply_index: RayU128::from_raw(u128::from(tag) << 64),
-            debt_index: RayU128::from_raw(u128::from(tag)),
-            supply_rate: RayU128::from_raw(7),
-            debt_rate: RayU128::from_raw(11),
-            dust_floor: u128::from(tag),
-            last_update: tag,
-            target_hf: 10_500,
-            hub_ref: u16::MAX,
-            liq_threshold: 8_000,
-            ltv: 7_500,
+        let mut r = MarketRow {
             price_feed: FeedId(asset),
-            asset: AssetId(asset),
-            max_liq_bonus: 500,
-            hf_for_max_bonus: 9_500,
-            liq_bonus_factor: 10_000,
-            decimals: 18,
-            flags: MarketFlags::NONE,
-            _pad: [0; 22],
-        }
+            last_update: tag,
+            ..MarketRow::blank(AssetId(asset), 18)
+        };
+        r.body[0] = u128::from(tag) << 64;
+        r.body[1] = u128::from(tag);
+        r.body[14] = 7;
+        r
     }
 
     fn cfg(positions: usize) -> StoreConfig {
