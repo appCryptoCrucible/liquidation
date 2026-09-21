@@ -76,6 +76,13 @@ impl LogRouter {
         self.unknown_topic.load(Ordering::Relaxed)
     }
 
+    /// Whether `address` is in the union filter built at startup.
+    #[inline]
+    #[must_use]
+    pub fn tracks(&self, address: Address) -> bool {
+        self.tracked.contains(&address)
+    }
+
     /// Route one log. Copies into `arena`. Does not error on unknown topic0
     /// at a tracked address.
     pub fn route<'a>(&'a self, arena: &'a DecodeArena, log: &OwnedLog) -> Result<Route<'a>> {

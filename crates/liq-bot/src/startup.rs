@@ -75,16 +75,21 @@ pub async fn boot_assert(config_dir: &Path) -> Result<Loaded, StartupError> {
 /// Step 3: leak Shared. `submit_enabled` from config (default false).
 pub fn leak_process_shared(cfg: &BotConfig, lease: SubmitLease) -> &'static Shared {
     let (_builder, routes) = warm_handles();
-    leak_shared(cfg, lease, routes)
+    leak_shared(cfg, lease, routes, 0)
 }
 
 /// Leak Shared with a caller-owned warm slot (the builder thread keeps the other handle).
-pub fn leak_shared(cfg: &BotConfig, lease: SubmitLease, routes: WarmRouteCache) -> &'static Shared {
+pub fn leak_shared(
+    cfg: &BotConfig,
+    lease: SubmitLease,
+    routes: WarmRouteCache,
+    flash_assets: usize,
+) -> &'static Shared {
     let flag = Arc::new(SubmitEnabled::new(cfg.submit_enabled));
     Shared::leak(
         leak_state_shared(),
         routes,
-        Arc::new(ArcSwap::from_pointee(FlashIndex::new(4))),
+        Arc::new(ArcSwap::from_pointee(FlashIndex::new(flash_assets))),
         flag,
         leak_risk(),
         leak_lease(lease),
@@ -114,25 +119,28 @@ pub struct Started {
 
 /// Step 5: split ExEx rings and spawn hot (pin asserted inside).
 /// `adapters` is the leaked load — same objects as drain.
+/// `index` is flash / book / feeds on the same router; protocol ids stay adapters.
 pub fn register_exex(
     store: liq_state::StateStore,
     sink: &'static dyn liq_types::HaltSink,
     adapters: &'static [bind::BoundProtocol],
+    index: &'static crate::index::BoundIndex,
     allow_unpinned: bool,
     after_block: Option<Box<dyn liq_node::AfterBlock>>,
 ) -> Result<(liq_node::ExExForwarder, liq_node::HotHandle), StartupError> {
     let inst = prepare();
     if adapters.is_empty() {
-        tracing::error!(
-            "empty protocol list — ExEx protocol ids empty; ingest subscribers empty"
-        );
+        tracing::error!("empty protocol list — ExEx protocol ids empty");
     }
-    let subs = bind::subscriber_refs(adapters);
+    if adapters.is_empty() && index.subscriber_empty() {
+        tracing::error!("empty protocol list — ingest subscribers empty");
+    }
+    let subs = bind::router_subscribers(adapters, index);
     let router = LogRouter::from_subscribers(&subs).map_err(StartupError::Ingest)?;
     let handle = install_hot(
         store,
         router,
-        bind::ingest_handlers(adapters),
+        bind::router_handlers(adapters, index, sink),
         inst.ingress,
         sink,
         bind::protocol_ids(adapters),
@@ -159,9 +167,20 @@ pub async fn run(
         }
     };
     let (warm_builder, routes) = warm_handles();
-    let shared = leak_shared(&loaded.config, lease, routes);
+    let shared = leak_shared(
+        &loaded.config,
+        lease,
+        routes,
+        loaded.intern.assets().len(),
+    );
+    let index = crate::index::leak_index(crate::index::load_index(
+        config_dir,
+        &loaded.intern,
+        &loaded.registry,
+    ));
     let stop_warm = Arc::new(AtomicBool::new(false));
-    if let Err(e) = spawn_warm_thread(warm_builder, Arc::clone(&stop_warm)) {
+    if let Err(e) = spawn_warm_thread(warm_builder, Arc::clone(&stop_warm), Arc::clone(&index.book))
+    {
         tracing::error!(
             ?e,
             "warm-builder thread not started — empty cache stays empty"
@@ -238,13 +257,15 @@ pub async fn run(
         select_bind,
         fee,
         oracle,
-    );
+    )
+    .with_index(index);
     let _map = pin_threads(cores_path, allow_unpinned)?;
     let sink: &'static dyn liq_types::HaltSink = shared.risk;
     let (forwarder, hot) = register_exex(
         store,
         sink,
         adapters,
+        index,
         allow_unpinned,
         Some(Box::new(hook)),
     )?;
@@ -365,9 +386,12 @@ mod tests {
             src.contains("leak_protocols"),
             "17F must leak the load once for ingest and drain"
         );
-        assert!(src.contains("subscriber_refs"));
-        assert!(src.contains("ingest_handlers"));
+        assert!(src.contains("router_subscribers"));
+        assert!(src.contains("router_handlers"));
         assert!(src.contains("protocol_ids"));
+        assert!(src.contains("load_index"));
+        assert!(src.contains("leak_index"));
+        assert!(src.contains("with_index"));
         let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
         assert!(
             !prod.contains(".store(true"),

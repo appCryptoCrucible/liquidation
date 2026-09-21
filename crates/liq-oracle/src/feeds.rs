@@ -435,6 +435,117 @@ impl FeedSet {
             deferred_subs,
         })
     }
+
+    /// Bind committed TOML rows that intern + registry accept. A row that
+    /// fails is omitted (caller logs); incomplete registry coverage is not
+    /// a start refusal. Empty result has no subscriptions.
+    #[must_use]
+    pub fn bind_available(
+        cfg: &FeedsConfig,
+        intern: &Intern,
+        reg: &Registry,
+    ) -> (Self, Vec<FeedFailure>) {
+        let mut specs = Vec::new();
+        let mut aggs = BTreeSet::new();
+        let mut failures = Vec::new();
+        for spec in &cfg.feeds {
+            match resolve_available_row(spec, intern, reg) {
+                Ok(row) => {
+                    for a in &row.watch {
+                        aggs.insert(*a);
+                    }
+                    specs.push(row);
+                }
+                Err(f) => failures.push(f),
+            }
+        }
+        let markets: HashSet<(&str, OnChainId)> = specs
+            .iter()
+            .map(|f| (f.spec.protocol.as_str(), f.spec.market))
+            .collect();
+        let (source_oracles, providers, deferred_subs) = match source_and_provider_subs(reg, &markets)
+        {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!(error = %e, "feed source/provider subs refused — AnswerUpdated only");
+                (Vec::new(), Vec::new(), vec![e.to_string()])
+            }
+        };
+        (
+            Self {
+                specs,
+                aggregators: aggs.into_iter().collect(),
+                source_oracles,
+                providers,
+                deferred_subs,
+            },
+            failures,
+        )
+    }
+}
+
+fn resolve_available_row(
+    spec: &FeedSpec,
+    intern: &Intern,
+    reg: &Registry,
+) -> Result<ResolvedFeed, FeedFailure> {
+    let fail = |reason: String| FeedFailure {
+        proxy: spec.proxy,
+        pair: spec.protocol.clone(),
+        reason,
+    };
+    if spec.heartbeat_secs == 0 {
+        return Err(fail("heartbeat_secs is 0".into()));
+    }
+    if spec.deviation_bps == 0 {
+        return Err(fail("deviation_bps is 0".into()));
+    }
+    let entry = reg.oracles.get(&spec.proxy).ok_or_else(|| {
+        fail("proxy not in registry".into())
+    })?;
+    let found = spec
+        .configured_aggregator()
+        .map_err(|e| fail(e.to_string()))?;
+    if found != entry.aggregator {
+        return Err(fail(format!(
+            "aggregator mismatch registry {:#x} config {found:#x}",
+            entry.aggregator
+        )));
+    }
+    if spec.decimals != entry.decimals {
+        return Err(fail(format!(
+            "decimals mismatch registry {} config {}",
+            entry.decimals, spec.decimals
+        )));
+    }
+    let svr = matches!(spec.mechanism, Mechanism::ChainlinkSvr);
+    if svr != entry.svr {
+        return Err(fail("mechanism/svr disagree".into()));
+    }
+    let watch = spec.watch().map_err(|e| fail(e.to_string()))?;
+    let asset = intern
+        .asset(spec.asset)
+        .ok_or_else(|| fail(format!("intern missing asset {:#x}", spec.asset)))?;
+    let protocol = intern
+        .protocol(&spec.protocol)
+        .ok_or_else(|| fail(format!("intern missing protocol {}", spec.protocol)))?;
+    let market = intern
+        .markets()
+        .iter()
+        .find(|m| m.protocol == protocol && m.key == spec.market)
+        .map(|m| m.id)
+        .ok_or_else(|| fail(format!("intern missing market {:?}", spec.market)))?;
+    let id = intern
+        .feed(spec.proxy)
+        .ok_or_else(|| fail(format!("intern missing feed {:#x}", spec.proxy)))?;
+    Ok(ResolvedFeed {
+        spec: spec.clone(),
+        id,
+        asset,
+        protocol,
+        market,
+        watch,
+    })
 }
 
 fn extra_address(proto: &liq_config::ProtocolEntry, key: &str) -> Result<Address> {

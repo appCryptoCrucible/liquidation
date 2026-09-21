@@ -20,6 +20,7 @@ pub mod drain;
 pub mod exec_bind;
 pub mod exec_worker;
 pub mod exex_install;
+pub mod index;
 pub mod lease;
 pub mod rebuild;
 pub mod reload;

@@ -21,6 +21,7 @@ use liq_protocol::{Constraints, DirtySet, Protocol};
 use liq_router::{
     assemble, bid, select, Bid, BidConfig, GasTerms, PoolBook, PositionInput, SelectCfg,
 };
+use parking_lot::RwLock;
 use liq_sim::{
     block_env_at, execute_calldata, verify, Bundle, MemoryFactory, SimError, SimOutcome, SimTx,
     Simulator, StateProviderFactory, Trigger, PLANNED_EXECUTOR,
@@ -29,6 +30,7 @@ use liq_types::{AssetId, FlashProvider, TriggerKind};
 
 use crate::assemble_view::{require_meta, require_token, ProcessAssembleView};
 use crate::bind::{BoundProtocol, SelectBind};
+use crate::index::{BoundIndex, FlashSources};
 
 /// Inputs `select` / `assemble` refuse to default. Missing → skip, log.
 #[derive(Clone, Debug)]
@@ -90,7 +92,9 @@ pub struct DrainJoin {
     flash: Arc<ArcSwap<FlashIndex>>,
     routes: liq_router::WarmRouteCache,
     pub assemble: ProcessAssembleView,
-    book: PoolBook,
+    book: Arc<RwLock<PoolBook>>,
+    flash_sources: Option<FlashSources>,
+    flash_scratch: FlashIndex,
     pub select: Option<SelectReady>,
     pub select_bind: Option<SelectBind>,
     pub inbox: Option<ExecInbox>,
@@ -124,7 +128,9 @@ impl DrainJoin {
             flash,
             routes,
             assemble,
-            book: PoolBook::new(HashMap::new(), None, 0),
+            book: Arc::new(RwLock::new(PoolBook::new(HashMap::new(), None, 0))),
+            flash_sources: None,
+            flash_scratch: FlashIndex::new(0),
             select: None,
             select_bind: None,
             inbox,
@@ -170,8 +176,27 @@ impl DrainJoin {
 
     #[must_use]
     pub fn with_book(mut self, book: PoolBook) -> Self {
-        self.book = book;
+        self.book = Arc::new(RwLock::new(book));
         self
+    }
+
+    /// Same leaked book / flash sources the ingest router subscribed.
+    #[must_use]
+    pub fn with_index(mut self, index: &'static BoundIndex) -> Self {
+        self.book = Arc::clone(&index.book);
+        self.flash_sources = Some(Arc::clone(&index.sources));
+        self.flash_scratch = FlashIndex::new(index.flash_assets);
+        self
+    }
+
+    /// End of block: re-read sources into the process [`FlashIndex`].
+    fn publish_flash(&mut self) {
+        let Some(srcs) = self.flash_sources.as_ref() else {
+            return;
+        };
+        let g = srcs.lock();
+        self.flash_scratch.refresh(&g);
+        self.flash_scratch.publish_if_material(&self.flash, 0);
     }
 
     #[must_use]
@@ -374,12 +399,13 @@ impl DrainJoin {
         } else {
             Some(warm.as_ref())
         };
+        let book = self.book.read();
         let plans = match select(
             &inputs,
             &ready.cfg,
             flash.as_ref(),
             ready.haircut,
-            &self.book,
+            &book,
             warm_ref,
             &self.assemble,
             &ready.gas,
@@ -408,7 +434,7 @@ impl DrainJoin {
             let assembled = match assemble(
                 std::slice::from_ref(plan),
                 &ready.cfg,
-                &self.book,
+                &book,
                 &self.assemble,
                 &ready.validate,
                 &ready.bid,
@@ -559,6 +585,7 @@ impl DrainJoin {
 
 impl AfterBlock for DrainJoin {
     fn after_block(&mut self, ctx: AfterBlockCtx<'_>) {
+        self.publish_flash();
         self.observe_parent_header(
             ctx.base_fee_per_gas,
             ctx.gas_used,

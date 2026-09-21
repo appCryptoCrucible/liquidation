@@ -20,7 +20,11 @@ use liq_protocol::{
     StateWriter,
 };
 use liq_router::{GasOracle, TailPins};
-use liq_types::{AssetId, FlashProvider, LogFilter, LogSubscriber, MarketId, ProtocolId};
+use liq_types::{
+    AssetId, FlashProvider, HaltSink, LogFilter, LogSubscriber, MarketId, ProtocolId,
+};
+
+use crate::index::BoundIndex;
 
 use crate::assemble_view::ProcessAssembleView;
 
@@ -133,6 +137,29 @@ pub fn ingest_handlers(protocols: &'static [BoundProtocol]) -> Vec<Box<dyn LogHa
         .iter()
         .map(|p| Box::new(AdapterHandler(p)) as Box<dyn LogHandler + Send>)
         .collect()
+}
+
+/// Protocol adapters, then flash, book, feeds, derived. Empty groups absent.
+#[must_use]
+pub fn router_subscribers<'a>(
+    protocols: &'a [BoundProtocol],
+    index: &'a BoundIndex,
+) -> Vec<&'a dyn LogSubscriber> {
+    let mut out = subscriber_refs(protocols);
+    out.extend(index.subscribers());
+    out
+}
+
+/// Handlers matching [`router_subscribers`] order. Protocol ids stay adapters.
+#[must_use]
+pub fn router_handlers(
+    protocols: &'static [BoundProtocol],
+    index: &'static BoundIndex,
+    sink: &'static dyn HaltSink,
+) -> Vec<Box<dyn LogHandler + Send>> {
+    let mut out = ingest_handlers(protocols);
+    out.extend(index.handlers(sink));
+    out
 }
 
 /// Result of walking `config/protocols/*.toml`.
@@ -933,6 +960,33 @@ mod tests {
         let ids = protocol_ids(leaked);
         assert!(ids.is_empty());
         assert!(ingest_handlers(leaked).is_empty());
+    }
+
+    #[test]
+    fn router_concat_keeps_protocol_ids_as_adapters() {
+        let intern =
+            Intern::from_registry(&Registry::from_path(&root().join("registry/registry.json")).unwrap())
+                .unwrap();
+        let load = load_protocols(&root().join("config"), &intern);
+        let leaked = leak_protocols(load);
+        let index = crate::index::leak_index(crate::index::load_index(
+            &root().join("config"),
+            &intern,
+            &Registry::from_path(&root().join("registry/registry.json")).unwrap(),
+        ));
+        let subs = router_subscribers(leaked, index);
+        assert!(
+            subs.len() > leaked.len(),
+            "flash/book/feeds must concat after adapters"
+        );
+        let ids = protocol_ids(leaked);
+        assert_eq!(ids.len(), leaked.len());
+        for (id, p) in ids.iter().zip(leaked.iter()) {
+            assert_eq!(*id, p.id());
+        }
+        let handlers = router_handlers(leaked, index, crate::shared::leak_risk());
+        assert_eq!(handlers.len(), subs.len());
+        liq_node::LogRouter::from_subscribers(&subs).unwrap();
     }
 
     #[test]

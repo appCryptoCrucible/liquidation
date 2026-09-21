@@ -181,6 +181,16 @@ impl Registry {
     pub fn from_slice(bytes: &[u8]) -> Result<Self> {
         serde_json::from_slice(bytes).map_err(|e| ConfigError::Load(e.to_string()))
     }
+
+    /// `flash_sources[addr].kind` (or a string value). Missing kind is `None`
+    /// — callers omit; they must not guess the arena.
+    #[must_use]
+    pub fn flash_source_kind(&self, addr: Address) -> Option<&str> {
+        let v = self.flash_sources.get(&addr)?;
+        v.get("kind")
+            .and_then(|x| x.as_str())
+            .or_else(|| v.as_str())
+    }
 }
 
 impl TokenEntry {

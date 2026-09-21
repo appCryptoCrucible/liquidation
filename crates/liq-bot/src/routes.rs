@@ -1,7 +1,6 @@
 //! 12A-1 wiring: [`WarmRouteCache`] is what eligibility sees (not 07B DepthOnly).
 //! Warm builder thread, V3 tick L check, Curve reseed off the hot path.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{Builder, JoinHandle};
@@ -14,6 +13,7 @@ use liq_router::{
     CurveState, Pool, PoolBook, PoolState, RouteError, V3State, WarmBuilder, WarmConfig,
     WarmInputs, WarmRouteCache,
 };
+use parking_lot::RwLock;
 use liq_types::AssetId;
 use thiserror::Error;
 
@@ -75,20 +75,24 @@ pub fn warm_handles() -> (WarmBuilder, WarmRouteCache) {
     (builder, cache)
 }
 
-/// Supervision thread. Empty `PoolBook` / [`AbsentWarmInputs`] publish empty.
+/// Supervision thread. Reads the shared book (empty publish until logs).
 pub fn spawn_warm_thread(
     mut builder: WarmBuilder,
     stop: Arc<AtomicBool>,
+    book: Arc<RwLock<PoolBook>>,
 ) -> Result<JoinHandle<()>, std::io::Error> {
     Builder::new().name("liq-bot-warm".into()).spawn(move || {
-        let book = PoolBook::new(HashMap::new(), None, 0);
         let inputs = AbsentWarmInputs;
-        rebuild_warm(&mut builder, &book, &inputs);
+        {
+            let book = book.read();
+            rebuild_warm(&mut builder, &book, &inputs);
+        }
         while !stop.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_secs(1));
             if stop.load(Ordering::Relaxed) {
                 break;
             }
+            let book = book.read();
             rebuild_warm(&mut builder, &book, &inputs);
         }
     })
