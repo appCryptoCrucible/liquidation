@@ -8,33 +8,14 @@ use parking_lot::RwLock;
 use tracing::{error, info, warn};
 
 use liq_types::{
-    AssetId, FlashProvider, HaltReason, HaltScope, HaltSink, MarketId, ProtocolId, TraceId,
-    TriggerKind,
+    AssetId, FlashProvider, HaltReason, HaltScope, HaltSink, MarketId, ProtocolId, RiskAllow,
+    TraceId, TriggerKind,
 };
 
 use crate::matrix::{class_of, HaltClass};
 
-/// What `allow` returns. 13A treats [`Allow::Denied`] as do-not-send.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Allow {
-    Yes,
-    Denied {
-        scope: HaltScope,
-        reason: HaltReason,
-    },
-}
-
-/// Candidate identity for a gated submission (13A fills this).
-#[derive(Copy, Clone, Debug)]
-pub struct AllowQuery {
-    pub protocol: ProtocolId,
-    pub market: MarketId,
-    pub collateral: AssetId,
-    pub debt: AssetId,
-    pub flash: FlashProvider,
-    pub trigger: TriggerKind,
-    pub operator_key: Address,
-}
+/// Re-export so existing `use crate::gate::{Allow, AllowQuery}` keeps compiling.
+pub use liq_types::{Allow, AllowQuery};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct HaltEntry {
@@ -140,7 +121,15 @@ impl RiskGate {
         }
         Allow::Yes
     }
+}
 
+impl RiskAllow for RiskGate {
+    fn allow(&self, trace: TraceId, q: &AllowQuery) -> Allow {
+        RiskGate::allow(self, trace, q)
+    }
+}
+
+impl RiskGate {
     /// Class A clear when the world condition ends.
     pub fn clear_auto(&self, scope: HaltScope, reason: HaltReason) {
         if class_of(reason) != HaltClass::A {

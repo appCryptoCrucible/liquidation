@@ -37,15 +37,36 @@ pub struct IntendedSubmission {
     pub trace: TraceId,
 }
 
-/// Immediate submit result. Live-ack variants are WP 13A; only [`Self::Shadow`]
-/// is named today (GUIDE 09 §4).
+/// Immediate submit result.
+///
+/// * [`Self::Shadow`] — 09A `ShadowRecorder` JSONL write (unchanged).
+/// * [`Self::Recorded`] — 13A path signed and recorded; HTTP not sent.
+/// * [`Self::Denied`] — `RiskAllow` refused; HTTP not sent.
+/// * [`Self::Accepted`] — live POST received a JSON-RPC `result`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SubmitReceipt {
     Shadow,
+    Recorded,
+    Denied,
+    Accepted,
 }
 
 /// Implemented by `liq-obs::ShadowRecorder` (09A) and `liq-exec` (13A).
 pub trait Submitter: Send + Sync {
     type Error;
     fn submit(&self, submission: &IntendedSubmission) -> Result<SubmitReceipt, Self::Error>;
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::SubmitReceipt;
+
+    #[test]
+    fn shadow_variant_still_exists() {
+        assert_eq!(SubmitReceipt::Shadow, SubmitReceipt::Shadow);
+        assert_ne!(SubmitReceipt::Shadow, SubmitReceipt::Recorded);
+        assert_ne!(SubmitReceipt::Shadow, SubmitReceipt::Denied);
+        assert_ne!(SubmitReceipt::Shadow, SubmitReceipt::Accepted);
+    }
 }

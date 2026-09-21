@@ -1,0 +1,39 @@
+# Curated builder endpoints for `eth_sendBundle` (GUIDE 13 §1).
+# These are builders, not mev-boost relays (`boost-relay.flashbots.net`,
+# ultrasound, agnostic, …). Searchers do not submit to those.
+#
+# Official published URLs only:
+#   beaverbuild  https://beaverbuild.org/docs.html
+#   rsync        https://rsync-builder.xyz/docs
+#   Titan        https://docs.titanbuilder.xyz/api/eth_sendbundle
+#   Flashbots    https://docs.flashbots.net/flashbots-auction/advanced/rpc-endpoint
+#                (`relay.flashbots.net` is Flashbots' builder; the name predates
+#                the builder/relay split.)
+#
+# No public-RPC submit URL. No `eth_sendRawTransaction`. No
+# `eth_sendPrivateTransaction`. Strings leak once at load to `&'static str` (00C).
+# H3 has not deployed; planned Executor is `liq_exec::builders::PLANNED_EXECUTOR`.
+
+[[builders]]
+id = 1
+name = "beaverbuild"
+endpoint = "https://rpc.beaverbuild.org/"
+
+[[builders]]
+id = 2
+name = "rsync"
+endpoint = "https://rsync-builder.xyz"
+
+[[builders]]
+id = 3
+name = "titan"
+endpoint = "https://rpc.titanbuilder.xyz"
+
+[[builders]]
+id = 4
+name = "flashbots"
+endpoint = "https://relay.flashbots.net"
+
+[mevshare]
+# `mev_sendBundle` (GUIDE 13 §2). Same Flashbots builder host; different method.
+relay = "https://relay.flashbots.net"

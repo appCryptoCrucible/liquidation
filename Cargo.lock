@@ -3585,7 +3585,114 @@ dependencies = [
 ]
 
 [[package]]
+name = "liq-adapters-compound-v2"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-rpc-types-eth 2.4.2",
+ "alloy-sol-types",
+ "bytemuck",
+ "liq-config",
+ "liq-protocol",
+ "liq-types",
+ "serde",
+ "smallvec",
+ "thiserror",
+ "tokio",
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
+name = "liq-adapters-euler-v2"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "bytemuck",
+ "criterion",
+ "liq-config",
+ "liq-protocol",
+ "liq-types",
+ "serde",
+ "smallvec",
+ "thiserror",
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
+name = "liq-adapters-fluid"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-rpc-types-eth 2.4.2",
+ "alloy-sol-types",
+ "bytemuck",
+ "liq-protocol",
+ "liq-types",
+ "serde",
+ "smallvec",
+ "thiserror",
+ "tokio",
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
+name = "liq-adapters-gearbox"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-rpc-types-eth 2.4.2",
+ "alloy-sol-types",
+ "bytemuck",
+ "liq-config",
+ "liq-protocol",
+ "liq-types",
+ "serde",
+ "smallvec",
+ "thiserror",
+ "tokio",
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
+name = "liq-adapters-liquity-v2"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-rpc-types-eth 2.4.2",
+ "alloy-sol-types",
+ "bytemuck",
+ "criterion",
+ "liq-config",
+ "liq-protocol",
+ "liq-types",
+ "serde",
+ "smallvec",
+ "thiserror",
+ "tokio",
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
 name = "liq-adapters-morpho-blue"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "bytemuck",
+ "criterion",
+ "liq-protocol",
+ "liq-types",
+ "smallvec",
+ "thiserror",
+]
+
+[[package]]
+name = "liq-adapters-silo-v2"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
@@ -3661,11 +3768,29 @@ dependencies = [
 name = "liq-exec"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus 1.8.3",
+ "alloy-eips 1.8.3",
+ "alloy-network 1.6.1",
  "alloy-primitives",
+ "alloy-signer 1.6.1",
+ "alloy-signer-local",
  "alloy-sol-types",
+ "crossbeam-channel",
+ "liq-obs",
+ "liq-oracle",
  "liq-protocol",
  "liq-types",
+ "liq-watch",
+ "metrics",
+ "parking_lot",
+ "reqwest 0.12.23",
+ "serde",
+ "serde_json",
+ "smallvec",
  "thiserror",
+ "tokio",
+ "toml 1.1.6+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]
