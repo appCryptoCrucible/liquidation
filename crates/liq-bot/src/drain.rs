@@ -86,7 +86,7 @@ pub struct DrainStats {
 /// live no-op — nothing is fabricated.
 pub struct DrainJoin {
     pub engine: Engine,
-    protocols: Vec<BoundProtocol>,
+    protocols: &'static [BoundProtocol],
     flash: Arc<ArcSwap<FlashIndex>>,
     routes: liq_router::WarmRouteCache,
     pub assemble: ProcessAssembleView,
@@ -99,6 +99,8 @@ pub struct DrainJoin {
     pub chain_id: u64,
     pub cons: Constraints,
     pub fee: Option<FeeQuote>,
+    /// Kept for the process. `observe_parent` only when header base fee ≠ 0.
+    pub oracle: Option<liq_router::GasOracle>,
 }
 
 impl DrainJoin {
@@ -118,7 +120,7 @@ impl DrainJoin {
                 positions: 1024,
                 queue: 1024,
             }),
-            protocols: Vec::new(),
+            protocols: &[],
             flash,
             routes,
             assemble,
@@ -131,12 +133,13 @@ impl DrainJoin {
             chain_id,
             cons: Constraints::UNBOUNDED,
             fee: None,
+            oracle: None,
         }
     }
 
-    /// Production join: observed adapters / intern / wrap bind. Sim stays
-    /// `None`. `select` stays `None` until [`Self::refresh_select`] sees a
-    /// nonzero header gas_limit (never a 30M default).
+    /// Production join: leaked adapters / intern / wrap bind / live oracle.
+    /// Sim stays `None`. `select` stays `None` until [`Self::refresh_select`]
+    /// sees a nonzero header gas_limit (never a 30M default).
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn live(
@@ -146,15 +149,23 @@ impl DrainJoin {
         inbox: Option<ExecInbox>,
         operator: Option<Address>,
         chain_id: u64,
-        protocols: Vec<BoundProtocol>,
+        protocols: &'static [BoundProtocol],
         select_bind: Option<SelectBind>,
         fee: Option<FeeQuote>,
+        oracle: Option<liq_router::GasOracle>,
     ) -> Self {
         let mut j = Self::live_noop(flash, routes, assemble, inbox, operator, chain_id);
         j.protocols = protocols;
         j.select_bind = select_bind;
         j.fee = fee;
+        j.oracle = oracle;
         j
+    }
+
+    /// Same leaked adapters the ingest router subscribed.
+    #[must_use]
+    pub fn bound_protocols(&self) -> &'static [BoundProtocol] {
+        self.protocols
     }
 
     #[must_use]
@@ -207,6 +218,36 @@ impl DrainJoin {
                 "header gas present but SelectReady still None (no committed bid / exact_k / failed-gas snapshot)"
             );
         }
+    }
+
+    /// Fold the parent header into the live oracle. `base_fee_per_gas == 0`
+    /// skips [`liq_router::GasOracle::observe_parent`]. Priority samples
+    /// are not fabricated — empty window keeps `fee` None.
+    pub fn observe_parent_header(
+        &mut self,
+        base_fee_per_gas: u64,
+        gas_used: u64,
+        gas_limit: u64,
+        parent_block: u64,
+    ) {
+        if base_fee_per_gas == 0 {
+            tracing::error!("header base_fee_per_gas absent — observe_parent skipped");
+            return;
+        }
+        let Some(oracle) = self.oracle.as_mut() else {
+            tracing::error!("gas oracle missing — observe_parent skipped");
+            return;
+        };
+        if let Err(e) = oracle.observe_parent(
+            u128::from(base_fee_per_gas),
+            gas_used,
+            gas_limit,
+            &[],
+        ) {
+            tracing::error!(error = %e, "observe_parent refused — fee stays None");
+            return;
+        }
+        self.fee = crate::bind::fee_from_oracle(oracle, parent_block);
     }
 
     fn world_haircut(&self) -> Haircut {
@@ -518,6 +559,12 @@ impl DrainJoin {
 
 impl AfterBlock for DrainJoin {
     fn after_block(&mut self, ctx: AfterBlockCtx<'_>) {
+        self.observe_parent_header(
+            ctx.base_fee_per_gas,
+            ctx.gas_used,
+            ctx.gas_limit,
+            ctx.block,
+        );
         self.refresh_select(ctx.gas_limit);
         let tip = ctx.store.tip();
         let ts = ctx.timestamp;
@@ -739,6 +786,7 @@ mod tests {
     use crate::assemble_view::ProcessAssembleView;
     use crate::exec_bind::{bind, ProcessSecrets};
     use crate::lease::SubmitLease;
+    use liq_node::CollapsedDirty;
     use alloy_primitives::{address, b256, Address, U256};
     use liq_engine::TriggerCause;
     use liq_exec::builders::{leak_str, BuilderEndpoint, BuilderSet};
@@ -1294,6 +1342,83 @@ mod tests {
             "production drain must not invent 30M header gas"
         );
         assert!(!prod.contains("MemoryFactory::empty"));
+        assert!(!prod.contains("BidConfig::new"));
+        assert!(!prod.contains("gas_failed: 50_000"));
+        assert!(
+            prod.contains("observe_parent"),
+            "after-block must keep the oracle and call observe_parent"
+        );
+    }
+
+    fn tiny_store() -> liq_state::StateStore {
+        liq_state::StateStore::new(liq_state::StoreConfig {
+            base: 0,
+            positions: 4,
+            markets: 2,
+            undo: liq_state::UndoCapacity {
+                ops: 8,
+                extras: 2,
+                rows: 2,
+            },
+        })
+    }
+
+    fn after_ctx<'a>(
+        store: &'a liq_state::StateStore,
+        dirty: &'a CollapsedDirty,
+        base_fee_per_gas: u64,
+        gas_used: u64,
+        gas_limit: u64,
+    ) -> AfterBlockCtx<'a> {
+        AfterBlockCtx {
+            store,
+            dirty,
+            block: 1,
+            timestamp: 1,
+            gas_limit,
+            gas_used,
+            base_fee_per_gas,
+        }
+    }
+
+    #[test]
+    fn absent_base_fee_skips_observe_fee_none() {
+        let store = tiny_store();
+        let dirty = CollapsedDirty::default();
+        let mut j = DrainJoin::live_noop(flash(), routes(), ProcessAssembleView::empty(), None, None, 1);
+        j.oracle = liq_router::GasOracle::with_priority_cap(4);
+        assert!(j.oracle.as_ref().and_then(|o| o.base_fee_wei()).is_none());
+        j.after_block(after_ctx(&store, &dirty, 0, 15_000_000, 45_000_000));
+        assert!(
+            j.oracle.as_ref().and_then(|o| o.base_fee_wei()).is_none(),
+            "base_fee_per_gas == 0 must not call observe_parent"
+        );
+        assert!(j.fee.is_none());
+    }
+
+    #[test]
+    fn observed_base_fee_records_parent_fee_stays_none() {
+        let store = tiny_store();
+        let dirty = CollapsedDirty::default();
+        let mut j = DrainJoin::live_noop(flash(), routes(), ProcessAssembleView::empty(), None, None, 1);
+        j.oracle = liq_router::GasOracle::with_priority_cap(4);
+        j.after_block(after_ctx(
+            &store,
+            &dirty,
+            1_000_000_000,
+            15_000_000,
+            45_000_000,
+        ));
+        let o = j.oracle.as_ref().expect("oracle lives");
+        assert!(
+            o.base_fee_wei().is_some(),
+            "observed base fee must leave a parent sample"
+        );
+        assert_eq!(o.block_gas_limit(), Some(45_000_000));
+        assert!(
+            j.fee.is_none(),
+            "empty priority window must keep fee None (no fabricated sample)"
+        );
     }
 
     #[test]

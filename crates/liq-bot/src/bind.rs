@@ -13,10 +13,14 @@ use liq_config::{AaveV3Toml, Intern};
 use liq_engine::Candidate;
 use liq_exec::fee::FeeQuote;
 use liq_flash::Haircut;
+use liq_node::LogHandler;
 use liq_plan::ValidateCtx;
-use liq_protocol::{ExecutorAdapter, FeedId, PositionExtraRepr, Protocol};
+use liq_protocol::{
+    DecodedLog, DirtySet, ExecutorAdapter, FeedId, PositionExtraRepr, Protocol, ProtocolError,
+    StateWriter,
+};
 use liq_router::{GasOracle, TailPins};
-use liq_types::{AssetId, FlashProvider, MarketId, ProtocolId};
+use liq_types::{AssetId, FlashProvider, LogFilter, LogSubscriber, MarketId, ProtocolId};
 
 use crate::assemble_view::ProcessAssembleView;
 
@@ -71,6 +75,64 @@ impl BoundProtocol {
             Self::SiloV2(p) => pins_silo(p.config(), c),
         }
     }
+}
+
+impl LogSubscriber for BoundProtocol {
+    fn subscriptions(&self) -> Vec<LogFilter> {
+        self.as_dyn().subscriptions()
+    }
+}
+
+/// Same leaked adapter the router indexed. Calls [`Protocol::apply_log`]
+/// (store + dirty already in apply).
+pub struct AdapterHandler(pub &'static BoundProtocol);
+
+impl LogSubscriber for AdapterHandler {
+    fn subscriptions(&self) -> Vec<LogFilter> {
+        self.0.subscriptions()
+    }
+}
+
+impl LogHandler for AdapterHandler {
+    fn apply_log(
+        &self,
+        st: &mut dyn StateWriter,
+        log: &DecodedLog<'_>,
+    ) -> core::result::Result<DirtySet, ProtocolError> {
+        Protocol::apply_log(self.0.as_dyn(), st, log)
+    }
+}
+
+/// Leak the load once. Ingest and drain share this slice (same intern).
+#[must_use]
+pub fn leak_protocols(load: ProtocolLoad) -> &'static [BoundProtocol] {
+    if load.protocols.is_empty() {
+        tracing::error!(
+            "empty protocol list after TOML load — ingest subscribers empty; protocol ids empty"
+        );
+    }
+    Box::leak(load.protocols.into_boxed_slice())
+}
+
+/// `HotSpawn.protocols` / `register_exex` ids. Empty load → empty box.
+#[must_use]
+pub fn protocol_ids(protocols: &[BoundProtocol]) -> Box<[ProtocolId]> {
+    protocols.iter().map(BoundProtocol::id).collect()
+}
+
+/// Router subscribers: the leaked adapters themselves, not a second copy.
+#[must_use]
+pub fn subscriber_refs(protocols: &[BoundProtocol]) -> Vec<&dyn LogSubscriber> {
+    protocols.iter().map(|p| p as &dyn LogSubscriber).collect()
+}
+
+/// Handlers in subscriber order. Matching index calls that adapter's apply.
+#[must_use]
+pub fn ingest_handlers(protocols: &'static [BoundProtocol]) -> Vec<Box<dyn LogHandler + Send>> {
+    protocols
+        .iter()
+        .map(|p| Box::new(AdapterHandler(p)) as Box<dyn LogHandler + Send>)
+        .collect()
 }
 
 /// Result of walking `config/protocols/*.toml`.
@@ -811,5 +873,74 @@ mod tests {
     #[test]
     fn zero_weth_select_bind_none() {
         assert!(select_bind([366_332, 355_632, 460_032, 370_435, 384_134], Address::ZERO).is_none());
+    }
+
+    #[test]
+    fn loaded_adapters_are_nonempty_subscribers_and_ids_match() {
+        let intern =
+            Intern::from_registry(&Registry::from_path(&root().join("registry/registry.json")).unwrap())
+                .unwrap();
+        let load = load_protocols(&root().join("config"), &intern);
+        assert!(
+            load.protocols.iter().any(|p| matches!(p, BoundProtocol::AaveV3(_))),
+            "spark must construct: omitted={:?}",
+            load.omitted
+        );
+        assert!(
+            load.protocols.iter().any(|p| matches!(p, BoundProtocol::EulerV2(_))),
+            "euler must construct: omitted={:?}",
+            load.omitted
+        );
+        assert!(
+            load.protocols.iter().any(|p| matches!(p, BoundProtocol::SiloV2(_))),
+            "silo must construct: omitted={:?}",
+            load.omitted
+        );
+        let leaked = leak_protocols(load);
+        let subs = subscriber_refs(leaked);
+        assert!(!subs.is_empty(), "from_subscribers must be nonempty");
+        assert!(
+            leaked.iter().all(|p| !p.subscriptions().is_empty()),
+            "bound adapters must advertise filters"
+        );
+        liq_node::LogRouter::from_subscribers(&subs).unwrap();
+        let ids = protocol_ids(leaked);
+        assert_eq!(ids.len(), leaked.len());
+        for (id, p) in ids.iter().zip(leaked.iter()) {
+            assert_eq!(*id, p.id());
+        }
+        let handlers = ingest_handlers(leaked);
+        assert_eq!(handlers.len(), leaked.len());
+    }
+
+    #[test]
+    fn empty_load_subscribers_and_ids_empty() {
+        let intern =
+            Intern::from_registry(&Registry::from_path(&root().join("registry/registry.json")).unwrap())
+                .unwrap();
+        let missing = root().join("config/protocols/.17f-empty-omitted");
+        let load = load_protocols(&missing, &intern);
+        assert!(
+            load.protocols.is_empty(),
+            "omitted dir must not invent adapters: {:?}",
+            load.protocols.iter().map(BoundProtocol::id).collect::<Vec<_>>()
+        );
+        let leaked = leak_protocols(load);
+        assert!(leaked.is_empty());
+        let subs = subscriber_refs(leaked);
+        assert!(subs.is_empty());
+        liq_node::LogRouter::from_subscribers(&subs).unwrap();
+        let ids = protocol_ids(leaked);
+        assert!(ids.is_empty());
+        assert!(ingest_handlers(leaked).is_empty());
+    }
+
+    #[test]
+    fn production_bind_source_has_no_invented_bid_or_30m() {
+        let src = include_str!("bind.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
+        assert!(!prod.contains("BidConfig::new"));
+        assert!(!prod.contains("30_000_000") && !prod.contains("30000000"));
+        assert!(!prod.contains("gas_failed: 50_000"));
     }
 }

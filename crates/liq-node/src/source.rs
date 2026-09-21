@@ -40,15 +40,36 @@ pub struct OwnedLog {
     pub log_index: u32,
 }
 
+/// Observed header fields. `0` means absent — never a compiled-in stand-in.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+struct HeaderObs {
+    timestamp: u64,
+    gas_limit: u64,
+    gas_used: u64,
+    base_fee_per_gas: u64,
+}
+
+impl HeaderObs {
+    const ABSENT: Self = Self {
+        timestamp: 0,
+        gas_limit: 0,
+        gas_used: 0,
+        base_fee_per_gas: 0,
+    };
+}
+
 /// One block of owned logs. Reused by [`LogSource::poll_block`].
 ///
-/// `gas_limit` is the header value (GUIDE 12 §4f). `0` means absent — never
-/// a compiled-in 30M stand-in.
+/// `gas_limit` / `gas_used` / `base_fee_per_gas` are header values
+/// (GUIDE 12 §4f / §4b). `0` means absent — never a compiled-in 30M
+/// stand-in or a fabricated base fee.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OwnedBlock {
     pub number: BlockNum,
     pub timestamp: Timestamp,
     pub gas_limit: u64,
+    pub gas_used: u64,
+    pub base_fee_per_gas: u64,
     pub logs: Vec<OwnedLog>,
 }
 
@@ -59,6 +80,8 @@ impl OwnedBlock {
             number: 0,
             timestamp: 0,
             gas_limit: 0,
+            gas_used: 0,
+            base_fee_per_gas: 0,
             logs: Vec::with_capacity(n),
         }
     }
@@ -68,6 +91,8 @@ impl OwnedBlock {
         self.number = 0;
         self.timestamp = 0;
         self.gas_limit = 0;
+        self.gas_used = 0;
+        self.base_fee_per_gas = 0;
         self.logs.clear();
     }
 }
@@ -256,26 +281,29 @@ impl<P: Provider> RpcPoll<P> {
                 l.log_index.unwrap_or(0),
             )
         });
-        let mut header_cache: HashMap<u64, (u64, u64)> = HashMap::new();
+        let mut header_cache: HashMap<u64, HeaderObs> = HashMap::new();
         let mut current: Option<OwnedBlock> = None;
         for rpc in logs {
             let Some(block) = rpc.block_number else {
                 return Err(IngestError::MalformedLog);
             };
-            let (ts, gas_limit) = if let Some(t) = rpc.block_timestamp {
-                let g = self.header_gas_or_zero(block, &mut header_cache).await;
-                (t, g)
+            let meta = if let Some(t) = rpc.block_timestamp {
+                let mut m = self.header_obs_or_zero(block, &mut header_cache).await;
+                m.timestamp = t;
+                m
             } else {
                 self.header_meta(block, &mut header_cache).await?
             };
-            let owned = rpc_to_owned(&rpc, ts)?;
+            let owned = rpc_to_owned(&rpc, meta.timestamp)?;
             match current.as_mut() {
                 Some(cur) if cur.number == block => cur.logs.push(owned),
                 Some(_) => {
                     if let Some(done) = current.replace(OwnedBlock {
                         number: block,
-                        timestamp: ts,
-                        gas_limit,
+                        timestamp: meta.timestamp,
+                        gas_limit: meta.gas_limit,
+                        gas_used: meta.gas_used,
+                        base_fee_per_gas: meta.base_fee_per_gas,
                         logs: vec![owned],
                     }) {
                         self.ready.push(done);
@@ -284,8 +312,10 @@ impl<P: Provider> RpcPoll<P> {
                 None => {
                     current = Some(OwnedBlock {
                         number: block,
-                        timestamp: ts,
-                        gas_limit,
+                        timestamp: meta.timestamp,
+                        gas_limit: meta.gas_limit,
+                        gas_used: meta.gas_used,
+                        base_fee_per_gas: meta.base_fee_per_gas,
                         logs: vec![owned],
                     });
                 }
@@ -297,13 +327,13 @@ impl<P: Provider> RpcPoll<P> {
         Ok(())
     }
 
-    /// Header timestamp and `gasLimit`. Missing header is unavailable, not a
-    /// defaulted 30M gas limit.
+    /// Header timestamp, gas, and base fee. Missing header is unavailable,
+    /// not a defaulted 30M gas limit or a fabricated base fee.
     async fn header_meta(
         &self,
         block: u64,
-        cache: &mut HashMap<u64, (u64, u64)>,
-    ) -> Result<(u64, u64)> {
+        cache: &mut HashMap<u64, HeaderObs>,
+    ) -> Result<HeaderObs> {
         if let Some(&v) = cache.get(&block) {
             return Ok(v);
         }
@@ -313,27 +343,32 @@ impl<P: Provider> RpcPoll<P> {
             .await
             .map_err(|_| IngestError::SourceUnavailable)?
             .ok_or(IngestError::SourceUnavailable)?;
-        let t = b.header.timestamp;
-        let gas_limit = b.header.gas_limit;
-        cache.insert(block, (t, gas_limit));
-        Ok((t, gas_limit))
+        let obs = HeaderObs {
+            timestamp: b.header.timestamp,
+            gas_limit: b.header.gas_limit,
+            gas_used: b.header.gas_used,
+            base_fee_per_gas: b.header.base_fee_per_gas.unwrap_or(0),
+        };
+        cache.insert(block, obs);
+        Ok(obs)
     }
 
-    /// Observed header gas, or `0` if the header is unavailable. Never a 30M
-    /// default. A missing gas limit does not drop logs we already have.
-    async fn header_gas_or_zero(
+    /// Observed header fields, or all-zero if the header is unavailable.
+    /// Never a 30M default or an invented base fee. Missing header does
+    /// not drop logs we already have.
+    async fn header_obs_or_zero(
         &self,
         block: u64,
-        cache: &mut HashMap<u64, (u64, u64)>,
-    ) -> u64 {
+        cache: &mut HashMap<u64, HeaderObs>,
+    ) -> HeaderObs {
         match self.header_meta(block, cache).await {
-            Ok((_, g)) => g,
+            Ok(m) => m,
             Err(_) => {
                 tracing::error!(
                     block,
-                    "header gas_limit unavailable — leaving 0 (no 30M default)"
+                    "header unavailable — gas_limit/gas_used/base_fee left 0 (no invented fee)"
                 );
-                0
+                HeaderObs::ABSENT
             }
         }
     }
@@ -388,6 +423,8 @@ impl<P> LogSource for RpcPoll<P> {
         out.number = block.number;
         out.timestamp = block.timestamp;
         out.gas_limit = block.gas_limit;
+        out.gas_used = block.gas_used;
+        out.base_fee_per_gas = block.base_fee_per_gas;
         out.logs.clear();
         out.logs.extend_from_slice(&block.logs);
         self.ready_at = self.ready_at.saturating_add(1);
@@ -484,21 +521,30 @@ mod tests {
     use crate::IngestError;
     use alloy_provider::ProviderBuilder;
 
-    /// Header gas_limit is observed or absent. `0` is not a 30M stand-in.
+    /// Header gas_limit / gas_used / base_fee are observed or absent.
+    /// `0` is not a 30M stand-in or a fabricated base fee.
     #[test]
-    fn owned_block_gas_limit_absent_is_zero() {
+    fn owned_block_header_fields_absent_are_zero() {
         let b = crate::source::OwnedBlock::default();
         assert_eq!(b.gas_limit, 0);
+        assert_eq!(b.gas_used, 0);
+        assert_eq!(b.base_fee_per_gas, 0);
         assert_ne!(b.gas_limit, 30_000_000);
         let mut c = crate::source::OwnedBlock {
             number: 1,
             timestamp: 1,
             gas_limit: 45_000_000,
+            gas_used: 15_000_000,
+            base_fee_per_gas: 1_000_000_000,
             logs: Vec::new(),
         };
         assert_eq!(c.gas_limit, 45_000_000);
+        assert_eq!(c.gas_used, 15_000_000);
+        assert_eq!(c.base_fee_per_gas, 1_000_000_000);
         c.clear();
         assert_eq!(c.gas_limit, 0);
+        assert_eq!(c.gas_used, 0);
+        assert_eq!(c.base_fee_per_gas, 0);
     }
 
     /// Oracle: integer halving. Negative: a one-block span does not split

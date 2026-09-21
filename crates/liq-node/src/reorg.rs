@@ -358,6 +358,8 @@ mod tests {
             number: n,
             timestamp: n,
             gas_limit: 0,
+            gas_used: 0,
+            base_fee_per_gas: 0,
             logs,
         }
     }

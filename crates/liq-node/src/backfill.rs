@@ -246,6 +246,8 @@ mod tests {
             number: 1,
             timestamp: 1,
             gas_limit: 0,
+            gas_used: 0,
+            base_fee_per_gas: 0,
             logs: vec![log],
         })
         .unwrap();

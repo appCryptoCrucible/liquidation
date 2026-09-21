@@ -196,6 +196,8 @@ pub(crate) fn process_segment(
             number: n,
             timestamp: ts,
             gas_limit: 0,
+            gas_used: 0,
+            base_fee_per_gas: 0,
             logs,
         };
         let tid = TraceId::from_raw(n);

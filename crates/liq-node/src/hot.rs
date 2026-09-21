@@ -33,6 +33,10 @@ pub struct AfterBlockCtx<'a> {
     pub timestamp: Timestamp,
     /// Header `gasLimit` of the committed tip. `0` = absent.
     pub gas_limit: u64,
+    /// Header `gasUsed` of the committed tip. `0` = absent (or an empty block).
+    pub gas_used: u64,
+    /// Header `baseFeePerGas`. `0` = absent — never a fabricated fee.
+    pub base_fee_per_gas: u64,
 }
 
 /// Called on the hot thread after apply + collapse. Existing apply / reorg
@@ -57,7 +61,14 @@ pub fn drain(
         n = n.saturating_add(1);
         let last_meta = match &notif {
             Notification::Committed { new } | Notification::Reorged { new, .. } => {
-                new.blocks.last().map(|b| (b.timestamp, b.gas_limit))
+                new.blocks.last().map(|b| {
+                    (
+                        b.timestamp,
+                        b.gas_limit,
+                        b.gas_used,
+                        b.base_fee_per_gas,
+                    )
+                })
             }
             Notification::Reverted { .. } => None,
         };
@@ -75,13 +86,17 @@ pub fn drain(
                     halt_reorg_too_deep(sink);
                     return Err(e);
                 }
-                if let (Some(hook), Some((ts, gas_limit))) = (after.as_deref_mut(), last_meta) {
+                if let (Some(hook), Some((ts, gas_limit, gas_used, base_fee_per_gas))) =
+                    (after.as_deref_mut(), last_meta)
+                {
                     hook.after_block(AfterBlockCtx {
                         store: ctx.store,
                         dirty: ctx.dirty.collapsed(),
                         block: done.num_hash.number,
                         timestamp: ts,
                         gas_limit,
+                        gas_used,
+                        base_fee_per_gas,
                     });
                 }
             }
@@ -305,6 +320,8 @@ mod tests {
                     number: n,
                     timestamp: n,
                     gas_limit: 0,
+                    gas_used: 0,
+                    base_fee_per_gas: 0,
                     logs: Vec::new(),
                 }],
                 tip: NumHash {
@@ -391,6 +408,8 @@ mod tests {
                     number: 1,
                     timestamp: 1,
                     gas_limit: 0,
+                    gas_used: 0,
+                    base_fee_per_gas: 0,
                     logs: Vec::new(),
                 }],
                 tip: NumHash {
@@ -447,6 +466,8 @@ mod tests {
                     number: 99,
                     timestamp: 99,
                     gas_limit: 0,
+                    gas_used: 0,
+                    base_fee_per_gas: 0,
                     logs: Vec::new(),
                 }],
                 tip: NumHash {
@@ -462,6 +483,8 @@ mod tests {
                     number: 1,
                     timestamp: 1,
                     gas_limit: 0,
+                    gas_used: 0,
+                    base_fee_per_gas: 0,
                     logs: Vec::new(),
                 }],
                 tip: NumHash {
@@ -587,6 +610,8 @@ mod tests {
         hits: AtomicU32,
         last_block: AtomicU32,
         last_gas: std::sync::atomic::AtomicU64,
+        last_used: std::sync::atomic::AtomicU64,
+        last_base: std::sync::atomic::AtomicU64,
     }
     impl crate::AfterBlock for CountHook {
         fn after_block(&mut self, ctx: crate::AfterBlockCtx<'_>) {
@@ -594,6 +619,8 @@ mod tests {
             let n = u32::try_from(ctx.block).unwrap_or(u32::MAX);
             self.last_block.store(n, Ordering::Relaxed);
             self.last_gas.store(ctx.gas_limit, Ordering::Relaxed);
+            self.last_used.store(ctx.gas_used, Ordering::Relaxed);
+            self.last_base.store(ctx.base_fee_per_gas, Ordering::Relaxed);
             let _ = ctx.dirty;
             let _ = ctx.store;
             let _ = ctx.timestamp;
@@ -623,6 +650,8 @@ mod tests {
                     number: 1,
                     timestamp: 11,
                     gas_limit: 45_000_000,
+                    gas_used: 15_000_000,
+                    base_fee_per_gas: 1_000_000_000,
                     logs: Vec::new(),
                 }],
                 tip: NumHash {
@@ -636,6 +665,8 @@ mod tests {
             hits: AtomicU32::new(0),
             last_block: AtomicU32::new(0),
             last_gas: std::sync::atomic::AtomicU64::new(u64::MAX),
+            last_used: std::sync::atomic::AtomicU64::new(u64::MAX),
+            last_base: std::sync::atomic::AtomicU64::new(u64::MAX),
         };
         {
             let mut ctx = ApplyCtx {
@@ -661,6 +692,16 @@ mod tests {
             hook.last_gas.load(Ordering::Relaxed),
             45_000_000,
             "AfterBlockCtx.gas_limit is the committed header, not a default"
+        );
+        assert_eq!(
+            hook.last_used.load(Ordering::Relaxed),
+            15_000_000,
+            "AfterBlockCtx.gas_used is the committed header"
+        );
+        assert_eq!(
+            hook.last_base.load(Ordering::Relaxed),
+            1_000_000_000,
+            "AfterBlockCtx.base_fee_per_gas is the committed header, not invented"
         );
         assert_eq!(height.load().num_hash.number, 1);
     }

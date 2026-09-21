@@ -113,22 +113,29 @@ pub struct Started {
 }
 
 /// Step 5: split ExEx rings and spawn hot (pin asserted inside).
+/// `adapters` is the leaked load — same objects as drain.
 pub fn register_exex(
     store: liq_state::StateStore,
     sink: &'static dyn liq_types::HaltSink,
-    protocols: Box<[liq_types::ProtocolId]>,
+    adapters: &'static [bind::BoundProtocol],
     allow_unpinned: bool,
     after_block: Option<Box<dyn liq_node::AfterBlock>>,
 ) -> Result<(liq_node::ExExForwarder, liq_node::HotHandle), StartupError> {
     let inst = prepare();
-    let router = LogRouter::from_subscribers(&[]).map_err(StartupError::Ingest)?;
+    if adapters.is_empty() {
+        tracing::error!(
+            "empty protocol list — ExEx protocol ids empty; ingest subscribers empty"
+        );
+    }
+    let subs = bind::subscriber_refs(adapters);
+    let router = LogRouter::from_subscribers(&subs).map_err(StartupError::Ingest)?;
     let handle = install_hot(
         store,
         router,
-        Vec::new(),
+        bind::ingest_handlers(adapters),
         inst.ingress,
         sink,
-        protocols,
+        bind::protocol_ids(adapters),
         Arc::clone(&inst.height),
         allow_unpinned,
         after_block,
@@ -186,7 +193,8 @@ pub async fn run(
     }
     let mut assemble = bind::intern_view(&loaded.intern);
     let loaded_proto = bind::load_protocols(config_dir, &loaded.intern);
-    bind::intern_adapter_tokens(&mut assemble, &loaded_proto.protocols);
+    let adapters = bind::leak_protocols(loaded_proto);
+    bind::intern_adapter_tokens(&mut assemble, adapters);
     let wrap = bind::load_wrap_gas(&config_dir.join("flash-gas.toml"));
     let weth = bind::registry_weth(&loaded.intern).unwrap_or_else(|| {
         tracing::error!("registry WETH missing — SelectReady stays None");
@@ -226,16 +234,17 @@ pub async fn run(
         inbox,
         operator,
         loaded.config.chain_id,
-        loaded_proto.protocols,
+        adapters,
         select_bind,
         fee,
+        oracle,
     );
     let _map = pin_threads(cores_path, allow_unpinned)?;
     let sink: &'static dyn liq_types::HaltSink = shared.risk;
     let (forwarder, hot) = register_exex(
         store,
         sink,
-        Box::new([]),
+        adapters,
         allow_unpinned,
         Some(Box::new(hook)),
     )?;
@@ -352,6 +361,13 @@ mod tests {
         assert!(src.contains("intern_view"));
         assert!(src.contains("fee_from_oracle"));
         assert!(src.contains("DrainJoin::live"));
+        assert!(
+            src.contains("leak_protocols"),
+            "17F must leak the load once for ingest and drain"
+        );
+        assert!(src.contains("subscriber_refs"));
+        assert!(src.contains("ingest_handlers"));
+        assert!(src.contains("protocol_ids"));
         let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
         assert!(
             !prod.contains(".store(true"),
@@ -365,6 +381,16 @@ mod tests {
             !prod.contains("MemoryFactory"),
             "run() must not attach MemoryFactory::empty"
         );
+        assert!(
+            !prod.contains("from_subscribers(&[])"),
+            "17F must bind loaded adapters, not empty subscribers"
+        );
+        assert!(
+            !prod.contains("Box::new([])"),
+            "17F must pass loaded protocol ids, not an empty box"
+        );
+        assert!(!prod.contains("BidConfig::new"));
+        assert!(!prod.contains("gas_failed: 50_000"));
     }
 
     #[test]
