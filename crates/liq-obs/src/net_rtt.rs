@@ -743,8 +743,9 @@ pub struct ThirteenAHttpPool {
 pub enum Claim {
     /// Proven by a test against **this** crate's pooled client + accept counter.
     ProvenOnMonitorClient,
-    /// 13A: one `reqwest::Client` cloned into JoinSet (default hyper pool).
-    /// No `tcp_keepalive`, no pre-warm, no handshake counter on the 13A object.
+    /// 13A: keepalive/prewarm may be present on the submit client; this
+    /// claim stays Absent until a handshake counter is measured on **that**
+    /// object (16D monitor proof is not 13A proof).
     Absent,
 }
 

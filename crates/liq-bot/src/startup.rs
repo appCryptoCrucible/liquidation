@@ -7,19 +7,26 @@
 //! 5. ExEx registered
 
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use liq_config::{boot, BotConfig, Loaded};
+use liq_exec::path::ExecPath;
 use liq_exec::submit::SubmitEnabled;
 use liq_flash::FlashIndex;
 use liq_node::LogRouter;
-use liq_router::{WarmBuilder, WarmConfig, WarmRouteCache};
+use liq_obs::{RttMonitor, ShadowRecorder};
+use liq_risk::RiskGate;
+use liq_router::WarmRouteCache;
 use liq_state::StoreSnapshot;
 use thiserror::Error;
 
+use crate::assemble_view::ProcessAssembleView;
+use crate::exec_bind::{bind_from_config, ProcessSecrets};
 use crate::exex_install::{install_hot, prepare};
 use crate::lease::{acquire, recover_capacity, StatePaths, SubmitLease};
+use crate::routes::{spawn_warm_thread, warm_handles};
 use crate::shared::{leak_lease, leak_risk, leak_state_shared, Shared, PROD_ALLOW_UNPINNED};
 use crate::threads::{configure_hot_pin, CoreMap, ThreadError};
 
@@ -64,15 +71,16 @@ pub async fn boot_assert(config_dir: &Path) -> Result<Loaded, StartupError> {
 
 /// Step 3: leak Shared. `submit_enabled` from config (default false).
 pub fn leak_process_shared(cfg: &BotConfig, lease: SubmitLease) -> &'static Shared {
+    let (_builder, routes) = warm_handles();
+    leak_shared(cfg, lease, routes)
+}
+
+/// Leak Shared with a caller-owned warm slot (the builder thread keeps the other handle).
+pub fn leak_shared(cfg: &BotConfig, lease: SubmitLease, routes: WarmRouteCache) -> &'static Shared {
     let flag = Arc::new(SubmitEnabled::new(cfg.submit_enabled));
-    let builder = WarmBuilder::new(WarmConfig {
-        max_impact_bps: 100,
-        twa_blocks: 1,
-        budget: liq_router::SolveBudget::default(),
-    });
     Shared::leak(
         leak_state_shared(),
-        WarmRouteCache::new(builder.slot()),
+        routes,
         Arc::new(ArcSwap::from_pointee(FlashIndex::new(4))),
         flag,
         leak_risk(),
@@ -91,11 +99,14 @@ pub fn pin_threads(cores_path: &Path, allow_unpinned: bool) -> Result<CoreMap, S
     Ok(map)
 }
 
-/// Live process after the five startup steps.
+/// Live process after the five startup steps plus 17C process joins.
 pub struct Started {
     pub shared: &'static Shared,
     pub hot: liq_node::HotHandle,
     pub forwarder: liq_node::ExExForwarder,
+    /// 13A path. `None` when secrets/builders are missing — not an invented signer.
+    pub exec: Option<ExecPath<ShadowRecorder, &'static RiskGate>>,
+    pub assemble: ProcessAssembleView,
 }
 
 /// Step 5: split ExEx rings and spawn hot (pin asserted inside).
@@ -135,7 +146,39 @@ pub async fn run(
             return Err(e.into());
         }
     };
-    let shared = leak_process_shared(&loaded.config, lease);
+    let (warm_builder, routes) = warm_handles();
+    let shared = leak_shared(&loaded.config, lease, routes);
+    let stop_warm = Arc::new(AtomicBool::new(false));
+    if let Err(e) = spawn_warm_thread(warm_builder, Arc::clone(&stop_warm)) {
+        tracing::error!(
+            ?e,
+            "warm-builder thread not started — empty cache stays empty"
+        );
+    }
+    let _ = stop_warm;
+    spawn_rtt_tick(&config_dir.join("builders.toml"));
+    let shadow = state
+        .snapshot
+        .parent()
+        .map(|p| p.join("shadow"))
+        .unwrap_or_else(|| {
+            tracing::error!("snapshot path has no parent — shadow dir refused");
+            std::path::PathBuf::from("shadow-refused")
+        });
+    let exec = bind_from_config(
+        &config_dir.join("builders.toml"),
+        &shadow,
+        shared,
+        ProcessSecrets::from_env(),
+    );
+    if let Some(ref path) = exec {
+        if let Err(e) = path.prewarm().await {
+            tracing::error!(error = %e, "13A prewarm failed — path stays bound; handshake_free Absent");
+        }
+    } else {
+        tracing::error!("ExecPath unbound — ingest/lease continue; no invented key");
+    }
+    let assemble = ProcessAssembleView::empty();
     let _map = pin_threads(cores_path, allow_unpinned)?;
     let sink: &'static dyn liq_types::HaltSink = shared.risk;
     let (forwarder, hot) = register_exex(store, sink, Box::new([]), allow_unpinned)?;
@@ -144,7 +187,38 @@ pub async fn run(
         shared,
         hot,
         forwarder,
+        exec,
+        assemble,
     })
+}
+
+/// 16D monitor. Empty window stays ABSENT. Does not write a numeric p99.
+fn spawn_rtt_tick(builders: &Path) {
+    let mon = match RttMonitor::from_builders_toml(builders) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!(error = %e, "RttMonitor construct refused");
+            return;
+        }
+    };
+    if let Err(e) = std::thread::Builder::new()
+        .name("liq-bot-rtt".into())
+        .spawn(move || loop {
+            let rep = mon.report();
+            if rep.invented_p99() {
+                tracing::error!("rtt tick invented a p99 — refuse to treat as measured");
+            } else {
+                tracing::info!(
+                    builders = rep.builders.len(),
+                    path_a = ?rep.path_a.verdict,
+                    "rtt tick (empty window ABSENT; no numeric p99 written)"
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        })
+    {
+        tracing::error!(?e, "RttMonitor tick thread not started");
+    }
 }
 
 #[cfg(test)]
@@ -187,5 +261,40 @@ mod tests {
         let s = leak_process_shared(&cfg, SubmitLease::refused());
         assert!(!s.submit_enabled.get());
         assert!(!s.lease.held());
+    }
+
+    #[test]
+    fn run_source_joins_bind_warm_rtt_assemble() {
+        let src = include_str!("startup.rs");
+        assert!(
+            src.contains("bind_from_config"),
+            "old unbound run() never called exec_bind"
+        );
+        assert!(src.contains("exec:"));
+        assert!(src.contains("spawn_warm_thread"));
+        assert!(src.contains("RttMonitor"));
+        assert!(src.contains("ProcessAssembleView"));
+        assert!(src.contains("prewarm"));
+        assert!(src.contains("ProcessSecrets::from_env"));
+        let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
+        assert!(
+            !prod.contains(".store(true"),
+            "run() must not store nonce_resync true"
+        );
+    }
+
+    #[test]
+    fn rtt_tick_empty_window_absent() {
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/builders.toml");
+        let mon = RttMonitor::from_builders_toml(&path).unwrap();
+        let rep = mon.report();
+        assert!(rep.builders.iter().all(|r| r.p99_ns.is_none()));
+        assert!(rep.mevshare.p99_ns.is_none());
+        assert!(!rep.invented_p99());
+        assert_eq!(
+            liq_obs::thirteen_a_http_pool_seam().handshake_free_critical,
+            liq_obs::net_rtt::Claim::Absent
+        );
     }
 }

@@ -260,6 +260,32 @@ async fn risk_deny_does_not_send() {
     assert_eq!(p.denied_count(), 1);
     assert_eq!(mock.hits.load(std::sync::atomic::Ordering::Relaxed), 0);
     assert_eq!(p.recorder.rows.lock().len(), 1);
+    let infl = p.nonces.in_flight(0).unwrap();
+    assert!(
+        infl.get(&0).unwrap().dropped,
+        "deny after allocate must mark_dropped (gap visible)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn send_fail_after_allocate_marks_dropped() {
+    let dead = leak_str("http://127.0.0.1:1/".to_owned());
+    let builders = set_from_urls(dead, dead);
+    let p = path(true, live_bits(true, true), builders, AllowAll);
+    let err = p
+        .submit_path(&job(TriggerKind::InterestDrift, None, None))
+        .await
+        .expect_err("dead builder must fail send");
+    assert!(matches!(
+        err,
+        liq_exec::error::ExecError::AllBuildersUnreachable | liq_exec::error::ExecError::Http(_)
+    ));
+    let infl = p.nonces.in_flight(0).unwrap();
+    assert!(
+        infl.get(&0).unwrap().dropped,
+        "send-fail after allocate must mark_dropped (gap visible)"
+    );
+    assert_eq!(p.nonces.next_of(0).unwrap(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

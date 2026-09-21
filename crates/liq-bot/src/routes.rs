@@ -1,13 +1,20 @@
 //! 12A-1 wiring: [`WarmRouteCache`] is what eligibility sees (not 07B DepthOnly).
 //! Warm builder thread, V3 tick L check, Curve reseed off the hot path.
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread::{Builder, JoinHandle};
+use std::time::Duration;
+
 use alloy_primitives::{Address, U256};
 use liq_flash::{is_eligible, FlashIndex, Haircut};
 use liq_protocol::{FlashRoute, LegChoice, Quote};
 use liq_router::{
-    CurveState, Pool, PoolBook, PoolState, RouteError, V3State, WarmBuilder, WarmInputs,
-    WarmRouteCache,
+    CurveState, Pool, PoolBook, PoolState, RouteError, V3State, WarmBuilder, WarmConfig,
+    WarmInputs, WarmRouteCache,
 };
+use liq_types::AssetId;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -36,6 +43,55 @@ pub fn evaluate_eligible(
 /// Off-hot-path warm rebuild. Never HTTP.
 pub fn rebuild_warm(builder: &mut WarmBuilder, book: &PoolBook, inputs: &dyn WarmInputs) {
     let _ = builder.rebuild(book, inputs);
+}
+
+/// Missing ladder / price → pair skipped (already). Empty book → empty table.
+pub struct AbsentWarmInputs;
+
+impl WarmInputs for AbsentWarmInputs {
+    fn bucket_sizes(&self, _: AssetId) -> Option<smallvec::SmallVec<[U256; 4]>> {
+        None
+    }
+    fn per_eth(&self, _: AssetId) -> Option<U256> {
+        None
+    }
+    fn next_base_fee(&self) -> u128 {
+        0
+    }
+    fn block(&self) -> u64 {
+        0
+    }
+}
+
+/// One builder + the slot eligibility reads. Wiring layer only (not 07B).
+#[must_use]
+pub fn warm_handles() -> (WarmBuilder, WarmRouteCache) {
+    let builder = WarmBuilder::new(WarmConfig {
+        max_impact_bps: 100,
+        twa_blocks: 1,
+        budget: liq_router::SolveBudget::default(),
+    });
+    let cache = WarmRouteCache::new(builder.slot());
+    (builder, cache)
+}
+
+/// Supervision thread. Empty `PoolBook` / [`AbsentWarmInputs`] publish empty.
+pub fn spawn_warm_thread(
+    mut builder: WarmBuilder,
+    stop: Arc<AtomicBool>,
+) -> Result<JoinHandle<()>, std::io::Error> {
+    Builder::new().name("liq-bot-warm".into()).spawn(move || {
+        let book = PoolBook::new(HashMap::new(), None, 0);
+        let inputs = AbsentWarmInputs;
+        rebuild_warm(&mut builder, &book, &inputs);
+        while !stop.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_secs(1));
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            rebuild_warm(&mut builder, &book, &inputs);
+        }
+    })
 }
 
 /// Uniswap V3: `L = sum(net)` over initialized ticks with `tick <= current`.
@@ -216,6 +272,21 @@ mod tests {
             "wired graph must see WarmRouteCache (no exit), not DepthOnly"
         );
         let _ = Arc::new(ArcSwap::from_pointee(idx));
+    }
+
+    #[test]
+    fn empty_book_and_absent_inputs_publish_empty() {
+        let (mut builder, cache) = warm_handles();
+        let book = PoolBook::new(std::collections::HashMap::new(), None, 0);
+        rebuild_warm(&mut builder, &book, &AbsentWarmInputs);
+        assert!(
+            cache.table().is_empty(),
+            "empty PoolBook must not invent pools"
+        );
+        assert!(
+            !cache.has_exit(AssetId(0), e18(1)),
+            "empty publish is no exit, not a guessed route"
+        );
     }
 
     struct MissingCurve;

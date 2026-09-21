@@ -54,12 +54,14 @@ async fn entry() -> Result<(), startup::StartupError> {
     tracing::info!(
         submit_enabled = started.shared.submit_enabled.get(),
         lease_held = started.shared.lease.held(),
+        exec_bound = started.exec.is_some(),
+        nonce_resync = started.shared.lease.nonce_resync(),
         live_permitted = started
             .shared
             .lease
             .live_send_permitted(started.shared.submit_enabled.get()),
         cold_restart_p99 = ?liq_bot::shared::COLD_RESTART_P99,
-        "liq-bot running (H4 not flipped; nonce resync ABSENT)"
+        "liq-bot running (H4 not flipped; nonce resync ABSENT; same path as shadow)"
     );
     let _ = started.forwarder;
     started

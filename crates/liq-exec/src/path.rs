@@ -22,6 +22,14 @@ use liq_types::{
 };
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Mirror `liq_obs::net_rtt::build_pooled_client` (16D). Same numbers; this
+/// client is async `reqwest::Client` (13A submit path).
+const HTTP_TIMEOUT: Duration = Duration::from_secs(3);
+const HTTP_POOL_IDLE: Duration = Duration::from_secs(90);
+const HTTP_TCP_KEEPALIVE: Duration = Duration::from_secs(10);
+const HTTP_POOL_MAX_IDLE_PER_HOST: usize = 8;
 
 /// Job built off the hot path (or moved onto the exec task). All fee and
 /// bid fields are required inputs — nothing is defaulted.
@@ -144,10 +152,7 @@ where
                 return Err(ExecError::Signer("slot signer/key mismatch".into()));
             }
         }
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(3))
-            .build()
-            .map_err(|e| ExecError::Http(e.to_string()))?;
+        let http = build_submit_http()?;
         let relay = builders.mevshare_relay;
         Ok(Self {
             recorder,
@@ -262,6 +267,7 @@ where
                     ?reason,
                     "risk deny; HTTP not sent"
                 );
+                self.mark_nonce_dropped(&allocated);
                 return Ok(SubmitReceipt::Denied);
             }
             Allow::Yes => {}
@@ -277,11 +283,58 @@ where
             return Ok(SubmitReceipt::Recorded);
         }
 
-        self.send_signed(job, &routed.venue, &signed, &routed.policy)
-            .await?;
+        if let Err(e) = self
+            .send_signed(job, &routed.venue, &signed, &routed.policy)
+            .await
+        {
+            self.mark_nonce_dropped(&allocated);
+            return Err(e);
+        }
         stage(job.trace, Stage::VenueAck);
         self.track(&allocated, &signed, job);
         Ok(SubmitReceipt::Accepted)
+    }
+
+    /// POST to establish the idle socket. **Not** a live bundle. Name is
+    /// `warm_http` so 16D `thirteen_a_http_pool_seam` can see the prewarm.
+    pub async fn warm_http(&self, url: &str) -> Result<()> {
+        crate::builders::reject_public_rpc(url)?;
+        let resp = self
+            .http
+            .post(url)
+            .header("content-type", "application/json")
+            .body("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]}")
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, url, "13A warm_http / prewarm failed");
+                ExecError::Http(e.to_string())
+            })?;
+        resp.bytes().await.map_err(|e| {
+            tracing::error!(error = %e, url, "13A warm_http body read failed");
+            ExecError::Http(e.to_string())
+        })?;
+        Ok(())
+    }
+
+    /// Prewarm every curated builder plus the MEV-Share relay. Failures are
+    /// logged; the caller decides whether the path stays bound.
+    pub async fn prewarm(&self) -> Result<()> {
+        let mut last_err: Option<ExecError> = None;
+        for b in &self.builders.set.builders {
+            if let Err(e) = self.warm_http(b.endpoint).await {
+                tracing::error!(endpoint = b.endpoint, err = %e, "prewarm builder failed");
+                last_err = Some(e);
+            }
+        }
+        if let Err(e) = self.warm_http(self.mevshare.relay).await {
+            tracing::error!(err = %e, "prewarm mevshare failed");
+            last_err = Some(e);
+        }
+        match last_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     async fn send_signed(
@@ -334,10 +387,50 @@ where
         }
     }
 
+    /// Allocate-mode only. Logs [`crate::nonce::GapFill`]; does not POST it (H4).
+    fn mark_nonce_dropped(&self, allocated: &AllocatedNonce) {
+        if self.nonce_mode != NonceMode::Allocate {
+            return;
+        }
+        match self.nonces.mark_dropped(allocated.slot, allocated.nonce) {
+            Ok(fill) => {
+                tracing::error!(
+                    slot = fill.slot,
+                    nonce = fill.nonce,
+                    from = ?fill.from,
+                    to = ?fill.to,
+                    value = %fill.value,
+                    "gap-fill prepared after deny/send-fail; not POSTed (H4)"
+                );
+                metrics::counter!("nonce_gap_fill").increment(1);
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    slot = allocated.slot,
+                    nonce = allocated.nonce,
+                    "mark_dropped failed — nonce hole"
+                );
+            }
+        }
+    }
+
     #[must_use]
     pub fn denied_count(&self) -> u64 {
         self.denied.load(Ordering::Relaxed)
     }
+}
+
+fn build_submit_http() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .pool_idle_timeout(HTTP_POOL_IDLE)
+        .pool_max_idle_per_host(HTTP_POOL_MAX_IDLE_PER_HOST)
+        .tcp_keepalive(HTTP_TCP_KEEPALIVE)
+        .tcp_nodelay(true)
+        .no_proxy()
+        .build()
+        .map_err(|e| ExecError::Http(e.to_string()))
 }
 
 /// Venue-required fields. Runs before the recorder and the submit toggle.
@@ -573,6 +666,17 @@ mod tests {
         let routed = crate::submit::route(job.trigger, &builders, 9_000, 10, 2).unwrap();
         let err = require_venue_inputs(&job, &routed.venue).unwrap_err();
         assert!(matches!(err, ExecError::MissingBackrunTx));
+    }
+
+    #[test]
+    fn submit_http_source_declares_keepalive_and_prewarm() {
+        let src = include_str!("path.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
+        assert!(prod.contains("tcp_keepalive"));
+        assert!(prod.contains("pool_idle_timeout"));
+        assert!(prod.contains("tcp_nodelay"));
+        assert!(prod.contains("fn warm_http"));
+        assert!(prod.contains("fn prewarm"));
     }
 
     fn dummy_job(kind: TriggerKind) -> ExecJob {

@@ -233,18 +233,22 @@ relay = "http://127.0.0.1:3/"
 }
 
 #[test]
-fn thirteen_a_shared_client_no_keepalive_is_a_seam() {
+fn thirteen_a_keepalive_prewarm_present_handshake_still_absent() {
     let s = thirteen_a_http_pool_seam();
     assert!(s.shared_client, "ExecPath stores one reqwest::Client");
     assert!(s.cloned_for_joinset, "JoinSet clones the same client");
     assert!(
-        !s.explicit_tcp_keepalive,
-        "13A does not set tcp_keepalive — 16D must not pretend it does"
+        s.explicit_tcp_keepalive,
+        "13A ExecPath client must set tcp_keepalive (17C)"
     );
-    assert!(!s.explicit_pool_idle);
-    assert!(!s.explicit_pool_max_idle);
-    assert!(!s.prewarm);
-    assert_eq!(s.handshake_free_critical, Claim::Absent);
+    assert!(s.explicit_pool_idle);
+    assert!(s.explicit_pool_max_idle);
+    assert!(s.prewarm, "13A must name warm_http / prewarm in source");
+    assert_eq!(
+        s.handshake_free_critical,
+        Claim::Absent,
+        "keepalive/prewarm is not a measured handshake-free proof"
+    );
 }
 
 #[test]

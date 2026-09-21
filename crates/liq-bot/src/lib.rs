@@ -13,6 +13,7 @@
 #![cfg_attr(not(feature = "alloc-assert"), forbid(unsafe_code))]
 
 pub mod alloc;
+pub mod assemble_view;
 pub mod crossing;
 pub mod exec_bind;
 pub mod exex_install;
