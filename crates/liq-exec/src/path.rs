@@ -1,6 +1,7 @@
 //! The one submit path: sign → [`IntendedSubmission`] → record → optional POST.
 //!
-//! Live HTTP is [`SubmitEnabled`] (default false). Hot thread hands off with
+//! Live HTTP is held ∧ [`SubmitEnabled`] ∧ nonce resync, loaded at send
+//! time (held/resync default false). Hot thread hands off with
 //! [`ExecInbox::try_send`] — never blocks, never `block_on`.
 
 use crate::builders::{BuilderSet, PLANNED_EXECUTOR};
@@ -8,7 +9,9 @@ use crate::error::{ExecError, Result};
 use crate::fee::FeeQuote;
 use crate::inclusion::{spawn_watch, Tracked, WatchCmd};
 use crate::nonce::{AllocatedNonce, NonceAllocator, NonceMode};
-use crate::submit::{bid_policy, refund_percent, route, BuilderBundle, MevShare, SubmitEnabled};
+use crate::submit::{
+    bid_policy, refund_percent, route, BuilderBundle, LiveSendBits, MevShare, SubmitEnabled,
+};
 use crate::template::{sign_call, CallSpec, PrecomputedSigner, SignedTx};
 use alloy_primitives::{Address, Bytes, B256, U256};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
@@ -17,7 +20,7 @@ use liq_types::{
     stage, Allow, AllowQuery, AssetId, FlashProvider, IntendedSubmission, MarketId, PositionKey,
     ProtocolId, RiskAllow, Stage, SubmitReceipt, Submitter, TraceId, TriggerKind, Venue,
 };
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Job built off the hot path (or moved onto the exec task). All fee and
@@ -91,6 +94,10 @@ pub struct ExecPath<R, G> {
     pub recorder: R,
     pub gate: G,
     pub submit_enabled: Arc<SubmitEnabled>,
+    /// Process lease held bit. Default false (unbound path cannot POST).
+    pub lease_held: Arc<AtomicBool>,
+    /// Chain-nonce resync bit (H4). Default false; 17A never stores true.
+    pub nonce_resync: Arc<AtomicBool>,
     pub nonce_mode: NonceMode,
     pub nonces: NonceAllocator,
     pub signers: Box<[Arc<PrecomputedSigner>]>,
@@ -118,6 +125,7 @@ where
         signers: Vec<Arc<PrecomputedSigner>>,
         builders: BuilderSet,
         identity: SearcherKey,
+        live: LiveSendBits,
     ) -> Result<Self> {
         if signers.len() != nonces.len() {
             return Err(ExecError::Config(
@@ -145,6 +153,8 @@ where
             recorder,
             gate,
             submit_enabled,
+            lease_held: live.held,
+            nonce_resync: live.nonce_resync,
             nonce_mode,
             nonces,
             signers: signers.into_boxed_slice(),
@@ -257,7 +267,12 @@ where
             Allow::Yes => {}
         }
 
-        if !self.submit_enabled.get() {
+        // D49: gate sits on the consumption point. Acquire loads — not a
+        // snapshot from bind. Unbound defaults (both false) cannot POST.
+        if !self.submit_enabled.get()
+            || !self.lease_held.load(Ordering::Acquire)
+            || !self.nonce_resync.load(Ordering::Acquire)
+        {
             self.track(&allocated, &signed, job);
             return Ok(SubmitReceipt::Recorded);
         }
@@ -518,6 +533,7 @@ mod tests {
             vec![signer],
             builders,
             identity,
+            LiveSendBits::closed(),
         ) {
             Err(e) => e,
             Ok(_) => panic!("expected signer error"),

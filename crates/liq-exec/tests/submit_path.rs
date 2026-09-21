@@ -16,7 +16,7 @@ use liq_exec::builders::{leak_str, BuilderEndpoint, BuilderSet};
 use liq_exec::fee::FeeQuote;
 use liq_exec::nonce::{NonceAllocator, NonceMode};
 use liq_exec::path::{AllowAll, CaptureRecorder, DenyAll, ExecPath};
-use liq_exec::submit::SubmitEnabled;
+use liq_exec::submit::{LiveSendBits, SubmitEnabled};
 use liq_exec::template::PrecomputedSigner;
 use liq_obs::ShadowRecorder;
 use liq_oracle::mevshare::SearcherKey;
@@ -24,6 +24,7 @@ use liq_types::{
     AssetId, BuilderId, FlashProvider, HaltReason, MarketId, PositionKey, ProtocolId,
     SubmitReceipt, Submitter, TraceId, TriggerKind,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -74,8 +75,16 @@ fn job(kind: TriggerKind, hint: Option<B256>, backrun: Option<Bytes>) -> liq_exe
     }
 }
 
+fn live_bits(held: bool, nonce_resync: bool) -> LiveSendBits {
+    LiveSendBits {
+        held: Arc::new(AtomicBool::new(held)),
+        nonce_resync: Arc::new(AtomicBool::new(nonce_resync)),
+    }
+}
+
 fn path(
     enabled: bool,
+    live: LiveSendBits,
     builders: BuilderSet,
     gate: impl liq_types::RiskAllow,
 ) -> ExecPath<CaptureRecorder, impl liq_types::RiskAllow> {
@@ -92,6 +101,7 @@ fn path(
         vec![signer],
         builders,
         identity,
+        live,
     )
     .unwrap()
 }
@@ -120,7 +130,7 @@ async fn submit_enabled_false_zero_http() {
     let mock = spawn_mock(Duration::ZERO).await;
     let relay = leak_str(mock.url.clone());
     let builders = set_from_urls(relay, relay);
-    let p = path(false, builders, AllowAll);
+    let p = path(false, LiveSendBits::closed(), builders, AllowAll);
     let rec = p
         .submit_path(&job(
             TriggerKind::SvrAuction,
@@ -132,7 +142,7 @@ async fn submit_enabled_false_zero_http() {
         .await
         .unwrap();
     assert_eq!(rec, SubmitReceipt::Recorded);
-    assert_eq!(mock.hits.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert_eq!(mock.hits.load(Ordering::Relaxed), 0);
     assert_eq!(p.recorder.rows.lock().len(), 1);
     assert_eq!(
         p.nonces.next_of(0).unwrap(),
@@ -146,7 +156,8 @@ async fn submit_enabled_true_mock_receives_signed_body_and_header() {
     let mock = spawn_mock(Duration::ZERO).await;
     let relay = leak_str(mock.url.clone());
     let builders = set_from_urls(relay, relay);
-    let p = path(true, builders, AllowAll);
+    // Test-only force of held+resync. Production has no such force.
+    let p = path(true, live_bits(true, true), builders, AllowAll);
     let rec = p
         .submit_path(&job(
             TriggerKind::SvrAuction,
@@ -173,6 +184,61 @@ async fn submit_enabled_true_mock_receives_signed_body_and_header() {
     assert_eq!(v["params"][0]["body"][1]["canRevert"], false);
 }
 
+fn svr_job() -> liq_exec::path::ExecJob {
+    job(
+        TriggerKind::SvrAuction,
+        Some(b256!(
+            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        )),
+        None,
+    )
+}
+
+/// Old path POSTed when only `submit_enabled` was true (unbound bits false).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn enabled_held_resync_false_zero_http() {
+    let mock = spawn_mock(Duration::ZERO).await;
+    let relay = leak_str(mock.url.clone());
+    let builders = set_from_urls(relay, relay);
+    let p = path(true, live_bits(true, false), builders, AllowAll);
+    let rec = p.submit_path(&svr_job()).await.unwrap();
+    assert_eq!(rec, SubmitReceipt::Recorded);
+    assert_eq!(mock.hits.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn enabled_unheld_resync_true_zero_http() {
+    let mock = spawn_mock(Duration::ZERO).await;
+    let relay = leak_str(mock.url.clone());
+    let builders = set_from_urls(relay, relay);
+    let p = path(true, live_bits(false, true), builders, AllowAll);
+    let rec = p.submit_path(&svr_job()).await.unwrap();
+    assert_eq!(rec, SubmitReceipt::Recorded);
+    assert_eq!(mock.hits.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disabled_held_resync_true_zero_http() {
+    let mock = spawn_mock(Duration::ZERO).await;
+    let relay = leak_str(mock.url.clone());
+    let builders = set_from_urls(relay, relay);
+    let p = path(false, live_bits(true, true), builders, AllowAll);
+    let rec = p.submit_path(&svr_job()).await.unwrap();
+    assert_eq!(rec, SubmitReceipt::Recorded);
+    assert_eq!(mock.hits.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unbound_exec_path_cannot_post() {
+    let mock = spawn_mock(Duration::ZERO).await;
+    let relay = leak_str(mock.url.clone());
+    let builders = set_from_urls(relay, relay);
+    let p = path(true, LiveSendBits::closed(), builders, AllowAll);
+    let rec = p.submit_path(&svr_job()).await.unwrap();
+    assert_eq!(rec, SubmitReceipt::Recorded);
+    assert_eq!(mock.hits.load(Ordering::Relaxed), 0);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn risk_deny_does_not_send() {
     let mock = spawn_mock(Duration::ZERO).await;
@@ -180,6 +246,7 @@ async fn risk_deny_does_not_send() {
     let builders = set_from_urls(relay, relay);
     let p = path(
         true,
+        live_bits(true, true),
         builders,
         DenyAll {
             reason: HaltReason::NodeLag,
@@ -200,7 +267,7 @@ async fn interest_drift_intended_bid_is_not_auction() {
     let mock = spawn_mock(Duration::ZERO).await;
     let ep = leak_str(mock.url.clone());
     let builders = set_from_urls(ep, ep);
-    let p = path(false, builders, AllowAll);
+    let p = path(false, LiveSendBits::closed(), builders, AllowAll);
     let rec = p
         .submit_path(&job(TriggerKind::InterestDrift, None, None))
         .await
@@ -237,7 +304,7 @@ async fn joinset_fans_out_two_builders() {
         ua,
     )
     .unwrap();
-    let p = path(true, set, AllowAll);
+    let p = path(true, live_bits(true, true), set, AllowAll);
     let t0 = Instant::now();
     let rec = p
         .submit_path(&job(TriggerKind::InterestDrift, None, None))
@@ -273,6 +340,7 @@ async fn dry_run_nonce_does_not_consume() {
         vec![signer],
         set_from_urls(ep, ep),
         identity,
+        LiveSendBits::closed(),
     )
     .unwrap();
     p.submit_path(&job(TriggerKind::InterestDrift, None, None))

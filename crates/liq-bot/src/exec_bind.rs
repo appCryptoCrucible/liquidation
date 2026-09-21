@@ -1,13 +1,13 @@
 //! Bind 13A [`ExecPath`]: [`RiskGate`] as [`RiskAllow`], [`ShadowRecorder`]
 //! as the recorder. `submit_enabled` stays default false. Live HTTP also
-//! requires the lease (resync ABSENT).
+//! requires the lease atomics (resync ABSENT — 17A never stores true).
 
 use std::sync::Arc;
 
 use liq_exec::builders::BuilderSet;
 use liq_exec::nonce::{NonceAllocator, NonceMode};
 use liq_exec::path::ExecPath;
-use liq_exec::submit::SubmitEnabled;
+use liq_exec::submit::{LiveSendBits, SubmitEnabled};
 use liq_exec::template::PrecomputedSigner;
 use liq_obs::ShadowRecorder;
 use liq_oracle::mevshare::SearcherKey;
@@ -16,6 +16,8 @@ use liq_risk::RiskGate;
 use crate::lease::SubmitLease;
 
 /// Production bind. Signer↔nonce check lives in [`ExecPath::new`].
+/// Attaches the process lease atomics — an unused helper is not a gate.
+#[allow(clippy::too_many_arguments)]
 pub fn bind(
     recorder: ShadowRecorder,
     gate: &'static RiskGate,
@@ -24,6 +26,7 @@ pub fn bind(
     signers: Vec<Arc<PrecomputedSigner>>,
     builders: BuilderSet,
     identity: SearcherKey,
+    lease: &SubmitLease,
 ) -> liq_exec::error::Result<ExecPath<ShadowRecorder, &'static RiskGate>> {
     ExecPath::new(
         recorder,
@@ -34,13 +37,11 @@ pub fn bind(
         signers,
         builders,
         identity,
+        LiveSendBits {
+            held: lease.held_flag(),
+            nonce_resync: lease.nonce_resync_flag(),
+        },
     )
-}
-
-/// Live POST gate at the wiring layer. Resync ABSENT → always false in prod.
-#[must_use]
-pub fn live_http_allowed(lease: &SubmitLease, flag: &SubmitEnabled) -> bool {
-    lease.live_send_permitted(flag.get())
 }
 
 #[cfg(test)]
@@ -49,7 +50,7 @@ mod tests {
     use alloy_primitives::{address, b256, Address, Bytes, B256};
     use liq_exec::builders::{leak_str, BuilderEndpoint};
     use liq_exec::fee::FeeQuote;
-    use liq_exec::path::{AllowAll, CaptureRecorder, ExecJob};
+    use liq_exec::path::ExecJob;
     use liq_types::{
         AssetId, BuilderId, FlashProvider, MarketId, PositionKey, ProtocolId, SubmitReceipt,
         TraceId, TriggerKind,
@@ -62,6 +63,8 @@ mod tests {
     const SECRET: B256 =
         b256!("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
     const OPERATOR: Address = address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+
+    static DIRS: AtomicU64 = AtomicU64::new(0);
 
     fn job() -> ExecJob {
         ExecJob {
@@ -98,6 +101,50 @@ mod tests {
             chain_id: 1,
             slot: 0,
         }
+    }
+
+    fn shadow_dir() -> std::path::PathBuf {
+        let n = DIRS.fetch_add(1, Ordering::Relaxed);
+        let p = std::env::temp_dir().join(format!("liq-17a-bind-{}-{}", std::process::id(), n));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn bind_path(
+        flag: Arc<SubmitEnabled>,
+        lease: &SubmitLease,
+        builders: BuilderSet,
+    ) -> ExecPath<ShadowRecorder, &'static RiskGate> {
+        let recorder = ShadowRecorder::open(shadow_dir()).unwrap();
+        let gate: &'static RiskGate = Box::leak(Box::new(RiskGate::new()));
+        let signer = Arc::new(PrecomputedSigner::from_secret(SECRET).unwrap());
+        let nonces = NonceAllocator::from_addresses(vec![signer.address()]).unwrap();
+        let identity = SearcherKey::from_secret(SECRET).unwrap();
+        bind(
+            recorder,
+            gate,
+            flag,
+            nonces,
+            vec![signer],
+            builders,
+            identity,
+            lease,
+        )
+        .unwrap()
+    }
+
+    fn builders_for(url: &str) -> BuilderSet {
+        let relay = leak_str(url.to_owned());
+        BuilderSet::from_parts(
+            vec![BuilderEndpoint {
+                id: BuilderId(1),
+                name: "mock",
+                endpoint: relay,
+            }],
+            relay,
+        )
+        .unwrap()
     }
 
     async fn spawn_mock() -> (String, Arc<AtomicU64>) {
@@ -141,37 +188,70 @@ mod tests {
         (format!("http://{addr}/"), hits)
     }
 
-    /// Toggle false→true→false without restarting; 13A POSTs only while true.
+    /// Old path POSTed on `submit_enabled` alone. Must be Recorded + 0 HTTP.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn hot_reload_toggle_posts_only_while_true() {
+    async fn enabled_held_resync_false_zero_http() {
         let (url, hits) = spawn_mock().await;
-        let relay = leak_str(url);
-        let builders = BuilderSet::from_parts(
-            vec![BuilderEndpoint {
-                id: BuilderId(1),
-                name: "mock",
-                endpoint: relay,
-            }],
-            relay,
-        )
-        .unwrap();
-        let signer = Arc::new(PrecomputedSigner::from_secret(SECRET).unwrap());
-        let nonces = NonceAllocator::from_addresses(vec![signer.address()]).unwrap();
-        let identity = SearcherKey::from_secret(SECRET).unwrap();
-        let flag = Arc::new(SubmitEnabled::new(false));
-        let path = ExecPath::new(
-            CaptureRecorder::default(),
-            AllowAll,
-            Arc::clone(&flag),
-            NonceMode::Allocate,
-            nonces,
-            vec![signer],
-            builders,
-            identity,
-        )
-        .unwrap();
+        let flag = Arc::new(SubmitEnabled::new(true));
         let lease = SubmitLease::granted_shadow();
-        assert!(!live_http_allowed(&lease, &flag));
+        assert!(lease.held());
+        assert!(!lease.nonce_resync());
+        let path = bind_path(flag, &lease, builders_for(&url));
+        let rec = path.submit_path(&job()).await.unwrap();
+        assert_eq!(rec, SubmitReceipt::Recorded);
+        assert_eq!(hits.load(Ordering::Relaxed), 0);
+    }
+
+    /// Test-only resync true; held false. Old path POSTed. Must be 0 HTTP.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn enabled_unheld_resync_true_zero_http() {
+        let (url, hits) = spawn_mock().await;
+        let flag = Arc::new(SubmitEnabled::new(true));
+        let lease = SubmitLease::refused();
+        lease.nonce_resync_flag().store(true, Ordering::Release);
+        assert!(!lease.held());
+        assert!(lease.nonce_resync());
+        let path = bind_path(flag, &lease, builders_for(&url));
+        let rec = path.submit_path(&job()).await.unwrap();
+        assert_eq!(rec, SubmitReceipt::Recorded);
+        assert_eq!(hits.load(Ordering::Relaxed), 0);
+    }
+
+    /// `submit_enabled` false; test-only held+resync true. Must be 0 HTTP.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn disabled_held_resync_true_zero_http() {
+        let (url, hits) = spawn_mock().await;
+        let flag = Arc::new(SubmitEnabled::new(false));
+        let lease = SubmitLease::granted_shadow();
+        lease.nonce_resync_flag().store(true, Ordering::Release);
+        let path = bind_path(flag, &lease, builders_for(&url));
+        let rec = path.submit_path(&job()).await.unwrap();
+        assert_eq!(rec, SubmitReceipt::Recorded);
+        assert_eq!(hits.load(Ordering::Relaxed), 0);
+    }
+
+    /// Test-only force of all three. Production has no such force.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn all_three_true_posts_accepted() {
+        let (url, hits) = spawn_mock().await;
+        let flag = Arc::new(SubmitEnabled::new(true));
+        let lease = SubmitLease::granted_shadow();
+        lease.nonce_resync_flag().store(true, Ordering::Release);
+        let path = bind_path(flag, &lease, builders_for(&url));
+        let rec = path.submit_path(&job()).await.unwrap();
+        assert_eq!(rec, SubmitReceipt::Accepted);
+        assert!(hits.load(Ordering::Relaxed) >= 1);
+    }
+
+    /// Hot-reload `submit_enabled` is not enough. Conjunction is read at send
+    /// (lease atomics, not a bind-time bool). The f313737 drill that POSTed
+    /// while a helper said closed is gone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hot_reload_toggle_posts_only_when_conjunction_true() {
+        let (url, hits) = spawn_mock().await;
+        let flag = Arc::new(SubmitEnabled::new(false));
+        let lease = SubmitLease::granted_shadow();
+        let path = bind_path(Arc::clone(&flag), &lease, builders_for(&url));
 
         let rec = path.submit_path(&job()).await.unwrap();
         assert_eq!(rec, SubmitReceipt::Recorded);
@@ -180,13 +260,23 @@ mod tests {
         flag.set(true);
         tokio::time::sleep(Duration::from_millis(20)).await;
         let rec = path.submit_path(&job()).await.unwrap();
+        assert_eq!(rec, SubmitReceipt::Recorded);
+        assert_eq!(hits.load(Ordering::Relaxed), 0);
+
+        lease.nonce_resync_flag().store(true, Ordering::Release);
+        let rec = path.submit_path(&job()).await.unwrap();
         assert_eq!(rec, SubmitReceipt::Accepted);
         assert!(hits.load(Ordering::Relaxed) >= 1);
-        // lease still blocks production live send (resync ABSENT)
-        assert!(!live_http_allowed(&lease, &flag));
 
-        flag.set(false);
+        lease.held_flag().store(false, Ordering::Release);
         let before = hits.load(Ordering::Relaxed);
+        let rec = path.submit_path(&job()).await.unwrap();
+        assert_eq!(rec, SubmitReceipt::Recorded);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(hits.load(Ordering::Relaxed), before);
+
+        lease.held_flag().store(true, Ordering::Release);
+        flag.set(false);
         let rec = path.submit_path(&job()).await.unwrap();
         assert_eq!(rec, SubmitReceipt::Recorded);
         tokio::time::sleep(Duration::from_millis(20)).await;

@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use liq_state::{
     recover, RecoverError, SnapshotError, StateStore, StoreConfig, UndoCapacity, WalError,
@@ -20,26 +21,30 @@ pub struct StatePaths {
 }
 
 /// Lease state after the drift / integrity check.
+///
+/// `held` / `nonce_resync` are `Arc` so [`crate::exec_bind::bind`] can attach
+/// the same atomics to [`liq_exec::path::ExecPath`]. 17A never stores
+/// `nonce_resync` true (`run` / `acquire` included).
 pub struct SubmitLease {
-    held: AtomicBool,
-    nonce_resync: AtomicBool,
+    held: Arc<AtomicBool>,
+    nonce_resync: Arc<AtomicBool>,
 }
 
 impl SubmitLease {
     #[must_use]
     pub fn refused() -> Self {
         Self {
-            held: AtomicBool::new(false),
-            nonce_resync: AtomicBool::new(false),
+            held: Arc::new(AtomicBool::new(false)),
+            nonce_resync: Arc::new(AtomicBool::new(false)),
         }
     }
 
     #[must_use]
     pub fn granted_shadow() -> Self {
         Self {
-            held: AtomicBool::new(true),
+            held: Arc::new(AtomicBool::new(true)),
             // H4: chain-nonce resync hook ABSENT. Live POST stays closed.
-            nonce_resync: AtomicBool::new(false),
+            nonce_resync: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -54,7 +59,20 @@ impl SubmitLease {
         self.nonce_resync.load(Ordering::Acquire)
     }
 
+    /// Same atomic [`crate::exec_bind::bind`] attaches. Default false.
+    #[must_use]
+    pub fn held_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.held)
+    }
+
+    /// Same atomic [`crate::exec_bind::bind`] attaches. Default false; H4 stores.
+    #[must_use]
+    pub fn nonce_resync_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.nonce_resync)
+    }
+
     /// Live HTTP = held ∧ `submit_enabled` ∧ nonce resync. Resync is ABSENT.
+    /// Process-log query only — the POST reads the atomics on `ExecPath`.
     #[must_use]
     pub fn live_send_permitted(&self, submit_enabled: bool) -> bool {
         self.held() && submit_enabled && self.nonce_resync()
@@ -187,6 +205,11 @@ mod tests {
             "true toggle still blocked without resync"
         );
         assert!(!SubmitLease::refused().held());
+        let flag = l.nonce_resync_flag();
+        flag.store(true, Ordering::Release);
+        assert!(l.nonce_resync(), "flag Arc is the lease atomic");
+        flag.store(false, Ordering::Release);
+        assert!(!l.nonce_resync());
     }
 
     #[test]

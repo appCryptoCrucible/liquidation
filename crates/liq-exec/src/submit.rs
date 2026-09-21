@@ -1,8 +1,9 @@
 //! Venue submitters: [`MevShare`] (06B wrap) and [`BuilderBundle`] (`JoinSet`).
 //!
-//! Live HTTP is gated by [`SubmitEnabled`] (default **false**). The 06B
+//! Live HTTP is gated at send time by [`SubmitEnabled`] ∧ lease held ∧
+//! nonce resync (held/resync default **false**). The 06B
 //! `MevShareSubmitter::submit` still returns `LiveSendIs13A`; this module
-//! is the type that POSTs when the toggle is on.
+//! is the type that POSTs when the three-way conjunction is true.
 
 use crate::builders::BuilderSet;
 use crate::error::{ExecError, Result};
@@ -46,6 +47,31 @@ impl Default for SubmitEnabled {
     }
 }
 
+/// Lease bits read at POST (Acquire). Both default false so an unbound
+/// [`crate::path::ExecPath`] cannot live-send. `liq-bot` `bind` attaches the
+/// process lease atomics; this crate does not depend on `liq-bot`.
+#[derive(Clone, Debug)]
+pub struct LiveSendBits {
+    pub held: Arc<AtomicBool>,
+    pub nonce_resync: Arc<AtomicBool>,
+}
+
+impl LiveSendBits {
+    #[must_use]
+    pub fn closed() -> Self {
+        Self {
+            held: Arc::new(AtomicBool::new(false)),
+            nonce_resync: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl Default for LiveSendBits {
+    fn default() -> Self {
+        Self::closed()
+    }
+}
+
 fn searcher_key_addr(key: &SearcherKey) -> Address {
     key.address()
 }
@@ -72,7 +98,7 @@ impl MevShare {
             .map_err(|e| ExecError::Identity(e.to_string()))
     }
 
-    /// POST an already-signed request. Caller gates with [`SubmitEnabled`].
+    /// POST an already-signed request. Caller gates at [`crate::path::ExecPath::submit_path`].
     pub async fn send(
         &self,
         client: &reqwest::Client,
@@ -415,6 +441,16 @@ mod tests {
         assert!(f.get());
         f.set(false);
         assert!(!f.get());
+    }
+
+    #[test]
+    fn live_send_bits_default_closed() {
+        let b = LiveSendBits::default();
+        assert!(!b.held.load(Ordering::Acquire));
+        assert!(!b.nonce_resync.load(Ordering::Acquire));
+        let c = LiveSendBits::closed();
+        assert!(!c.held.load(Ordering::Acquire));
+        assert!(!c.nonce_resync.load(Ordering::Acquire));
     }
 
     #[test]

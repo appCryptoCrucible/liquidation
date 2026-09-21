@@ -10,8 +10,8 @@
 //!   or fork harness needs.
 //!
 //! Submitters (WP 13A): MevShare + BuilderBundle, nonce, inclusion watch,
-//! templates, fee fields. Live HTTP is `submit_enabled` (default false).
-//! `wire` / `executor` stay 10A/10E-owned.
+//! templates, fee fields. Live HTTP is held ∧ `submit_enabled` ∧ nonce
+//! resync (held/resync default false). `wire` / `executor` stay 10A/10E-owned.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::todo, clippy::unimplemented)]
