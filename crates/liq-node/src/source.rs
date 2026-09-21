@@ -41,10 +41,14 @@ pub struct OwnedLog {
 }
 
 /// One block of owned logs. Reused by [`LogSource::poll_block`].
+///
+/// `gas_limit` is the header value (GUIDE 12 §4f). `0` means absent — never
+/// a compiled-in 30M stand-in.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OwnedBlock {
     pub number: BlockNum,
     pub timestamp: Timestamp,
+    pub gas_limit: u64,
     pub logs: Vec<OwnedLog>,
 }
 
@@ -54,6 +58,7 @@ impl OwnedBlock {
         Self {
             number: 0,
             timestamp: 0,
+            gas_limit: 0,
             logs: Vec::with_capacity(n),
         }
     }
@@ -62,6 +67,7 @@ impl OwnedBlock {
     pub fn clear(&mut self) {
         self.number = 0;
         self.timestamp = 0;
+        self.gas_limit = 0;
         self.logs.clear();
     }
 }
@@ -250,15 +256,17 @@ impl<P: Provider> RpcPoll<P> {
                 l.log_index.unwrap_or(0),
             )
         });
-        let mut ts_cache: HashMap<u64, u64> = HashMap::new();
+        let mut header_cache: HashMap<u64, (u64, u64)> = HashMap::new();
         let mut current: Option<OwnedBlock> = None;
         for rpc in logs {
             let Some(block) = rpc.block_number else {
                 return Err(IngestError::MalformedLog);
             };
-            let ts = match rpc.block_timestamp {
-                Some(t) => t,
-                None => self.header_ts(block, &mut ts_cache).await?,
+            let (ts, gas_limit) = if let Some(t) = rpc.block_timestamp {
+                let g = self.header_gas_or_zero(block, &mut header_cache).await;
+                (t, g)
+            } else {
+                self.header_meta(block, &mut header_cache).await?
             };
             let owned = rpc_to_owned(&rpc, ts)?;
             match current.as_mut() {
@@ -267,6 +275,7 @@ impl<P: Provider> RpcPoll<P> {
                     if let Some(done) = current.replace(OwnedBlock {
                         number: block,
                         timestamp: ts,
+                        gas_limit,
                         logs: vec![owned],
                     }) {
                         self.ready.push(done);
@@ -276,6 +285,7 @@ impl<P: Provider> RpcPoll<P> {
                     current = Some(OwnedBlock {
                         number: block,
                         timestamp: ts,
+                        gas_limit,
                         logs: vec![owned],
                     });
                 }
@@ -287,9 +297,15 @@ impl<P: Provider> RpcPoll<P> {
         Ok(())
     }
 
-    async fn header_ts(&self, block: u64, cache: &mut HashMap<u64, u64>) -> Result<u64> {
-        if let Some(&t) = cache.get(&block) {
-            return Ok(t);
+    /// Header timestamp and `gasLimit`. Missing header is unavailable, not a
+    /// defaulted 30M gas limit.
+    async fn header_meta(
+        &self,
+        block: u64,
+        cache: &mut HashMap<u64, (u64, u64)>,
+    ) -> Result<(u64, u64)> {
+        if let Some(&v) = cache.get(&block) {
+            return Ok(v);
         }
         let b = self
             .provider
@@ -298,8 +314,28 @@ impl<P: Provider> RpcPoll<P> {
             .map_err(|_| IngestError::SourceUnavailable)?
             .ok_or(IngestError::SourceUnavailable)?;
         let t = b.header.timestamp;
-        cache.insert(block, t);
-        Ok(t)
+        let gas_limit = b.header.gas_limit;
+        cache.insert(block, (t, gas_limit));
+        Ok((t, gas_limit))
+    }
+
+    /// Observed header gas, or `0` if the header is unavailable. Never a 30M
+    /// default. A missing gas limit does not drop logs we already have.
+    async fn header_gas_or_zero(
+        &self,
+        block: u64,
+        cache: &mut HashMap<u64, (u64, u64)>,
+    ) -> u64 {
+        match self.header_meta(block, cache).await {
+            Ok((_, g)) => g,
+            Err(_) => {
+                tracing::error!(
+                    block,
+                    "header gas_limit unavailable — leaving 0 (no 30M default)"
+                );
+                0
+            }
+        }
     }
 
     /// Fetch `[from, to]` completely (Archive / backfill). Errors rather than
@@ -351,6 +387,7 @@ impl<P> LogSource for RpcPoll<P> {
         };
         out.number = block.number;
         out.timestamp = block.timestamp;
+        out.gas_limit = block.gas_limit;
         out.logs.clear();
         out.logs.extend_from_slice(&block.logs);
         self.ready_at = self.ready_at.saturating_add(1);
@@ -446,6 +483,23 @@ mod tests {
     use super::{split_span, RpcPoll};
     use crate::IngestError;
     use alloy_provider::ProviderBuilder;
+
+    /// Header gas_limit is observed or absent. `0` is not a 30M stand-in.
+    #[test]
+    fn owned_block_gas_limit_absent_is_zero() {
+        let b = crate::source::OwnedBlock::default();
+        assert_eq!(b.gas_limit, 0);
+        assert_ne!(b.gas_limit, 30_000_000);
+        let mut c = crate::source::OwnedBlock {
+            number: 1,
+            timestamp: 1,
+            gas_limit: 45_000_000,
+            logs: Vec::new(),
+        };
+        assert_eq!(c.gas_limit, 45_000_000);
+        c.clear();
+        assert_eq!(c.gas_limit, 0);
+    }
 
     /// Oracle: integer halving. Negative: a one-block span does not split
     /// (that is Truncated, not an infinite loop).

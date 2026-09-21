@@ -191,6 +191,7 @@ mod tests {
         let block = OwnedBlock {
             number: 1,
             timestamp: 10,
+            gas_limit: 0,
             logs: vec![supply, unknown],
         };
         let mut ctx = ApplyCtx {
@@ -237,6 +238,7 @@ mod tests {
         let block = OwnedBlock {
             number: 1,
             timestamp: 1,
+            gas_limit: 0,
             logs: vec![supply],
         };
         let mut ctx = ApplyCtx {
@@ -281,6 +283,7 @@ mod tests {
         let b1 = OwnedBlock {
             number: 1,
             timestamp: 1,
+            gas_limit: 0,
             logs: vec![mk(1), mk(1)],
         };
         let mut ctx = ApplyCtx {
@@ -295,6 +298,7 @@ mod tests {
         let b2 = OwnedBlock {
             number: 2,
             timestamp: 2,
+            gas_limit: 0,
             logs: vec![mk(2), mk(2), mk(2)],
         };
         let meter = || 0u64;

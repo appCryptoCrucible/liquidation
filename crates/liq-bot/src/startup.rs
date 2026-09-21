@@ -23,6 +23,7 @@ use liq_state::StoreSnapshot;
 use thiserror::Error;
 
 use crate::assemble_view::ProcessAssembleView;
+use crate::bind;
 use crate::drain::DrainJoin;
 use crate::exec_bind::{bind_from_config, ProcessSecrets};
 use crate::exec_worker::spawn_exec_worker;
@@ -183,7 +184,26 @@ pub async fn run(
     } else {
         tracing::error!("ExecPath unbound — ingest/lease continue; no invented key");
     }
-    let assemble = ProcessAssembleView::empty();
+    let mut assemble = bind::intern_view(&loaded.intern);
+    let loaded_proto = bind::load_protocols(config_dir, &loaded.intern);
+    bind::intern_adapter_tokens(&mut assemble, &loaded_proto.protocols);
+    let wrap = bind::load_wrap_gas(&config_dir.join("flash-gas.toml"));
+    let weth = bind::registry_weth(&loaded.intern).unwrap_or_else(|| {
+        tracing::error!("registry WETH missing — SelectReady stays None");
+        alloy_primitives::Address::ZERO
+    });
+    let select_bind = bind::select_bind(wrap, weth);
+    let oracle = liq_router::GasOracle::with_priority_cap(liq_router::gas::DEFAULT_PRIORITY_CAP);
+    let fee = match oracle.as_ref() {
+        Some(o) => bind::fee_from_oracle(o, 0),
+        None => {
+            tracing::error!("gas oracle cap refused — fee stays None");
+            None
+        }
+    };
+    if fee.is_none() {
+        tracing::error!("fee window empty — fee stays None (no invented base/priority)");
+    }
     let operator = exec
         .as_ref()
         .and_then(|p| p.signers.first().map(|s| s.address()));
@@ -199,13 +219,16 @@ pub async fn run(
             tracing::error!(?e, "exec worker not started — inbox will count full");
         }
     }
-    let hook = DrainJoin::live_noop(
+    let hook = DrainJoin::live(
         Arc::clone(&shared.flash),
         shared.routes.clone(),
         assemble.clone(),
         inbox,
         operator,
         loaded.config.chain_id,
+        loaded_proto.protocols,
+        select_bind,
+        fee,
     );
     let _map = pin_threads(cores_path, allow_unpinned)?;
     let sink: &'static dyn liq_types::HaltSink = shared.risk;
@@ -322,10 +345,25 @@ mod tests {
             src.contains("ExecInbox"),
             "old unbound run() never constructed the inbox"
         );
+        assert!(
+            src.contains("load_protocols"),
+            "17E run() must load protocol TOML"
+        );
+        assert!(src.contains("intern_view"));
+        assert!(src.contains("fee_from_oracle"));
+        assert!(src.contains("DrainJoin::live"));
         let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
         assert!(
             !prod.contains(".store(true"),
             "run() must not store nonce_resync true"
+        );
+        assert!(
+            !prod.contains("30_000_000") && !prod.contains("30000000"),
+            "run() must not invent header gas 30M"
+        );
+        assert!(
+            !prod.contains("MemoryFactory"),
+            "run() must not attach MemoryFactory::empty"
         );
     }
 

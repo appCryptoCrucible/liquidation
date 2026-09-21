@@ -14,6 +14,7 @@
 
 pub mod alloc;
 pub mod assemble_view;
+pub mod bind;
 pub mod crossing;
 pub mod drain;
 pub mod exec_bind;

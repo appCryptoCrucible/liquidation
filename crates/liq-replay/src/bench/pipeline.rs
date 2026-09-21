@@ -195,6 +195,7 @@ pub(crate) fn process_segment(
         let block = OwnedBlock {
             number: n,
             timestamp: ts,
+            gas_limit: 0,
             logs,
         };
         let tid = TraceId::from_raw(n);

@@ -15,6 +15,13 @@ alloy-primitives = { workspace = true }
 arc-swap = { workspace = true }
 core_affinity = { workspace = true }
 crossbeam-channel = { workspace = true }
+liq-adapters-aave-v3 = { path = "../liq-adapters/aave-v3" }
+liq-adapters-compound-v2 = { path = "../liq-adapters/compound-v2" }
+liq-adapters-euler-v2 = { path = "../liq-adapters/euler-v2" }
+liq-adapters-fluid = { path = "../liq-adapters/fluid" }
+liq-adapters-gearbox = { path = "../liq-adapters/gearbox" }
+liq-adapters-liquity-v2 = { path = "../liq-adapters/liquity-v2" }
+liq-adapters-silo-v2 = { path = "../liq-adapters/silo-v2" }
 liq-config = { path = "../liq-config" }
 liq-engine = { path = "../liq-engine" }
 liq-exec = { path = "../liq-exec" }

@@ -48,6 +48,11 @@ impl ProcessAssembleView {
         self.pins.insert(pos, pins);
     }
 
+    #[must_use]
+    pub fn has_pins(&self, pos: PositionId) -> bool {
+        self.pins.contains_key(&pos)
+    }
+
     pub fn insert_per_eth(&mut self, asset: AssetId, units: U256) {
         if units.is_zero() {
             tracing::error!(?asset, "per_eth zero refused");

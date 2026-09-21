@@ -245,6 +245,7 @@ mod tests {
         prod.push(OwnedBlock {
             number: 1,
             timestamp: 1,
+            gas_limit: 0,
             logs: vec![log],
         })
         .unwrap();

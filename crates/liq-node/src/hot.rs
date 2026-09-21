@@ -31,6 +31,8 @@ pub struct AfterBlockCtx<'a> {
     pub dirty: &'a CollapsedDirty,
     pub block: BlockNum,
     pub timestamp: Timestamp,
+    /// Header `gasLimit` of the committed tip. `0` = absent.
+    pub gas_limit: u64,
 }
 
 /// Called on the hot thread after apply + collapse. Existing apply / reorg
@@ -53,9 +55,9 @@ pub fn drain(
     let mut n = 0u32;
     while let Some(notif) = ingress.pop() {
         n = n.saturating_add(1);
-        let last_ts = match &notif {
+        let last_meta = match &notif {
             Notification::Committed { new } | Notification::Reorged { new, .. } => {
-                new.blocks.last().map(|b| b.timestamp)
+                new.blocks.last().map(|b| (b.timestamp, b.gas_limit))
             }
             Notification::Reverted { .. } => None,
         };
@@ -73,12 +75,13 @@ pub fn drain(
                     halt_reorg_too_deep(sink);
                     return Err(e);
                 }
-                if let (Some(hook), Some(ts)) = (after.as_deref_mut(), last_ts) {
+                if let (Some(hook), Some((ts, gas_limit))) = (after.as_deref_mut(), last_meta) {
                     hook.after_block(AfterBlockCtx {
                         store: ctx.store,
                         dirty: ctx.dirty.collapsed(),
                         block: done.num_hash.number,
                         timestamp: ts,
+                        gas_limit,
                     });
                 }
             }
@@ -301,6 +304,7 @@ mod tests {
                 blocks: vec![OwnedBlock {
                     number: n,
                     timestamp: n,
+                    gas_limit: 0,
                     logs: Vec::new(),
                 }],
                 tip: NumHash {
@@ -386,6 +390,7 @@ mod tests {
                 blocks: vec![OwnedBlock {
                     number: 1,
                     timestamp: 1,
+                    gas_limit: 0,
                     logs: Vec::new(),
                 }],
                 tip: NumHash {
@@ -441,6 +446,7 @@ mod tests {
                 blocks: vec![OwnedBlock {
                     number: 99,
                     timestamp: 99,
+                    gas_limit: 0,
                     logs: Vec::new(),
                 }],
                 tip: NumHash {
@@ -455,6 +461,7 @@ mod tests {
                 blocks: vec![OwnedBlock {
                     number: 1,
                     timestamp: 1,
+                    gas_limit: 0,
                     logs: Vec::new(),
                 }],
                 tip: NumHash {
@@ -579,12 +586,14 @@ mod tests {
     struct CountHook {
         hits: AtomicU32,
         last_block: AtomicU32,
+        last_gas: std::sync::atomic::AtomicU64,
     }
     impl crate::AfterBlock for CountHook {
         fn after_block(&mut self, ctx: crate::AfterBlockCtx<'_>) {
             self.hits.fetch_add(1, Ordering::Relaxed);
             let n = u32::try_from(ctx.block).unwrap_or(u32::MAX);
             self.last_block.store(n, Ordering::Relaxed);
+            self.last_gas.store(ctx.gas_limit, Ordering::Relaxed);
             let _ = ctx.dirty;
             let _ = ctx.store;
             let _ = ctx.timestamp;
@@ -613,6 +622,7 @@ mod tests {
                 blocks: vec![OwnedBlock {
                     number: 1,
                     timestamp: 11,
+                    gas_limit: 45_000_000,
                     logs: Vec::new(),
                 }],
                 tip: NumHash {
@@ -625,6 +635,7 @@ mod tests {
         let mut hook = CountHook {
             hits: AtomicU32::new(0),
             last_block: AtomicU32::new(0),
+            last_gas: std::sync::atomic::AtomicU64::new(u64::MAX),
         };
         {
             let mut ctx = ApplyCtx {
@@ -646,6 +657,11 @@ mod tests {
         }
         assert_eq!(hook.hits.load(Ordering::Relaxed), 1);
         assert_eq!(hook.last_block.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            hook.last_gas.load(Ordering::Relaxed),
+            45_000_000,
+            "AfterBlockCtx.gas_limit is the committed header, not a default"
+        );
         assert_eq!(height.load().num_hash.number, 1);
     }
 }

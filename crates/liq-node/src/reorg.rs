@@ -357,6 +357,7 @@ mod tests {
         OwnedBlock {
             number: n,
             timestamp: n,
+            gas_limit: 0,
             logs,
         }
     }

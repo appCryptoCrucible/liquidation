@@ -192,6 +192,7 @@ mod tests {
             blocks: vec![OwnedBlock {
                 number: n,
                 timestamp: n,
+                gas_limit: 0,
                 logs: Vec::new(),
             }],
             tip: tip(n),

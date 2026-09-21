@@ -28,6 +28,7 @@ use liq_sim::{
 use liq_types::{AssetId, FlashProvider, TriggerKind};
 
 use crate::assemble_view::{require_meta, require_token, ProcessAssembleView};
+use crate::bind::{BoundProtocol, SelectBind};
 
 /// Inputs `select` / `assemble` refuse to default. Missing → skip, log.
 #[derive(Clone, Debug)]
@@ -85,12 +86,13 @@ pub struct DrainStats {
 /// live no-op — nothing is fabricated.
 pub struct DrainJoin {
     pub engine: Engine,
-    protocols: Vec<Box<dyn Protocol>>,
+    protocols: Vec<BoundProtocol>,
     flash: Arc<ArcSwap<FlashIndex>>,
     routes: liq_router::WarmRouteCache,
     pub assemble: ProcessAssembleView,
     book: PoolBook,
     pub select: Option<SelectReady>,
+    pub select_bind: Option<SelectBind>,
     pub inbox: Option<ExecInbox>,
     pub sim: Option<Box<dyn DrainSim>>,
     pub operator: Option<Address>,
@@ -122,6 +124,7 @@ impl DrainJoin {
             assemble,
             book: PoolBook::new(HashMap::new(), None, 0),
             select: None,
+            select_bind: None,
             inbox,
             sim: None,
             operator,
@@ -129,6 +132,29 @@ impl DrainJoin {
             cons: Constraints::UNBOUNDED,
             fee: None,
         }
+    }
+
+    /// Production join: observed adapters / intern / wrap bind. Sim stays
+    /// `None`. `select` stays `None` until [`Self::refresh_select`] sees a
+    /// nonzero header gas_limit (never a 30M default).
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn live(
+        flash: Arc<ArcSwap<FlashIndex>>,
+        routes: liq_router::WarmRouteCache,
+        assemble: ProcessAssembleView,
+        inbox: Option<ExecInbox>,
+        operator: Option<Address>,
+        chain_id: u64,
+        protocols: Vec<BoundProtocol>,
+        select_bind: Option<SelectBind>,
+        fee: Option<FeeQuote>,
+    ) -> Self {
+        let mut j = Self::live_noop(flash, routes, assemble, inbox, operator, chain_id);
+        j.protocols = protocols;
+        j.select_bind = select_bind;
+        j.fee = fee;
+        j
     }
 
     #[must_use]
@@ -155,6 +181,34 @@ impl DrainJoin {
         self
     }
 
+    #[must_use]
+    pub fn with_select_bind(mut self, bind: SelectBind) -> Self {
+        self.select_bind = Some(bind);
+        self
+    }
+
+    /// Header `gas_limit == 0` → `select` stays `None` (no 30M default).
+    /// Nonzero updates an existing [`SelectReady`] header only — never
+    /// invents wrap / bid / failed gas.
+    pub fn refresh_select(&mut self, header_gas_limit: u64) {
+        if header_gas_limit == 0 {
+            tracing::error!("header gas_limit missing — SelectReady stays None (no 30M default)");
+            self.select = None;
+            return;
+        }
+        if let Some(ready) = self.select.as_mut() {
+            ready.cfg.header_gas_limit = header_gas_limit;
+            return;
+        }
+        if self.select_bind.is_none() {
+            tracing::error!("select bind absent — SelectReady stays None");
+        } else {
+            tracing::error!(
+                "header gas present but SelectReady still None (no committed bid / exact_k / failed-gas snapshot)"
+            );
+        }
+    }
+
     fn world_haircut(&self) -> Haircut {
         self.select
             .as_ref()
@@ -163,7 +217,7 @@ impl DrainJoin {
     }
 
     fn feed_engine(&mut self, ctx: AfterBlockCtx<'_>) {
-        let proto_refs: Vec<&dyn Protocol> = self.protocols.iter().map(|p| p.as_ref() as _).collect();
+        let proto_refs: Vec<&dyn Protocol> = self.protocols.iter().map(|p| p.as_dyn()).collect();
         let flash = self.flash.load();
         let world = World {
             view: ctx.store.view(ctx.timestamp),
@@ -207,16 +261,19 @@ impl DrainJoin {
             );
             return stats;
         }
-        let Some(ready) = self.select.as_ref() else {
-            tracing::error!("select inputs absent — skip (no invented header gas / wrap / failed gas)");
-            stats.skipped_select = stats.skipped_select.saturating_add(1);
-            return stats;
+        let gas_failed = match self.select.as_ref() {
+            None => {
+                tracing::error!("select inputs absent — skip (no invented header gas / wrap / failed gas)");
+                stats.skipped_select = stats.skipped_select.saturating_add(1);
+                return stats;
+            }
+            Some(ready) if ready.gas_failed == 0 => {
+                tracing::error!("gas_failed is zero — skip (never defaulted)");
+                stats.skipped_select = stats.skipped_select.saturating_add(1);
+                return stats;
+            }
+            Some(ready) => ready.gas_failed,
         };
-        if ready.gas_failed == 0 {
-            tracing::error!("gas_failed is zero — skip (never defaulted)");
-            stats.skipped_select = stats.skipped_select.saturating_add(1);
-            return stats;
-        }
         let mut kept: Vec<&Candidate> = Vec::new();
         for c in cands {
             if !c.fireable() || c.cause.kind() == TriggerKind::OraclePredicted {
@@ -226,6 +283,10 @@ impl DrainJoin {
                     "OraclePredicted / !fireable never becomes an ExecJob"
                 );
                 stats.skipped_predicted = stats.skipped_predicted.saturating_add(1);
+                continue;
+            }
+            if !self.ensure_pins(c) {
+                stats.skipped_pins = stats.skipped_pins.saturating_add(1);
                 continue;
             }
             if let Err(e) = self.assemble.apply_quote_for(
@@ -247,6 +308,11 @@ impl DrainJoin {
         if kept.is_empty() {
             return stats;
         }
+        let Some(ready) = self.select.as_ref() else {
+            tracing::error!("select inputs dropped — skip");
+            stats.skipped_select = stats.skipped_select.saturating_add(1);
+            return stats;
+        };
         let inputs: Vec<PositionInput<'_>> = kept
             .iter()
             .map(|c| PositionInput {
@@ -257,7 +323,7 @@ impl DrainJoin {
                 cause: c.cause.kind(),
                 p: liq_router::select::learning_p(),
                 gas_success: None,
-                gas_failed: ready.gas_failed,
+                gas_failed,
             })
             .collect();
         let flash = self.flash.load();
@@ -333,6 +399,32 @@ impl DrainJoin {
             }
         }
         stats
+    }
+
+    fn ensure_pins(&mut self, c: &Candidate) -> bool {
+        if self.assemble.has_pins(c.position) {
+            return true;
+        }
+        let Some(p) = self.protocols.iter().find(|p| p.id() == c.protocol) else {
+            tracing::error!(
+                proto = c.protocol.0,
+                "no bound adapter for TailPins — skip (no invented pin)"
+            );
+            return false;
+        };
+        match p.pins_from_candidate(c, None) {
+            Some(pins) => {
+                self.assemble.insert_pins(c.position, pins);
+                true
+            }
+            None => {
+                tracing::error!(
+                    pos = c.position.0,
+                    "pins_from_candidate refused — no zero tail"
+                );
+                false
+            }
+        }
     }
 
     fn finish_job(
@@ -426,6 +518,7 @@ impl DrainJoin {
 
 impl AfterBlock for DrainJoin {
     fn after_block(&mut self, ctx: AfterBlockCtx<'_>) {
+        self.refresh_select(ctx.gas_limit);
         let tip = ctx.store.tip();
         let ts = ctx.timestamp;
         self.feed_engine(ctx);
@@ -1156,6 +1249,51 @@ mod tests {
         assert_eq!(hits.load(Ordering::Relaxed), 0, "submit_enabled false");
         drop(j);
         let _ = worker.join();
+    }
+
+    #[test]
+    fn missing_header_gas_limit_select_none_zero_jobs() {
+        let (inbox, rx) = ExecInbox::pair(4);
+        let mut j = join_base(Some(inbox), true);
+        assert!(j.select.is_some());
+        j.refresh_select(0);
+        assert!(j.select.is_none(), "gas_limit 0 must not default 30M");
+        let st = j.enqueue_candidates(&[fireable(1)], 0, 1);
+        assert_eq!(st.jobs_sent, 0);
+        assert!(st.skipped_select >= 1);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn empty_fee_window_fee_none_zero_jobs() {
+        let (inbox, rx) = ExecInbox::pair(4);
+        let mut j = DrainJoin::live_noop(
+            flash(),
+            routes(),
+            filled_view(addr(0xB1)),
+            Some(inbox),
+            Some(OPERATOR),
+            1,
+        )
+        .with_book(book())
+        .with_select(select_ready(tok(1)));
+        assert!(j.fee.is_none());
+        let oracle = liq_router::GasOracle::with_priority_cap(4).unwrap();
+        assert!(crate::bind::fee_from_oracle(&oracle, 0).is_none());
+        let st = j.enqueue_candidates(&[fireable(1)], 0, 1);
+        assert_eq!(st.jobs_sent, 0);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn production_drain_source_has_no_invented_30m() {
+        let src = include_str!("drain.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
+        assert!(
+            !prod.contains("30_000_000") && !prod.contains("30000000"),
+            "production drain must not invent 30M header gas"
+        );
+        assert!(!prod.contains("MemoryFactory::empty"));
     }
 
     #[test]
