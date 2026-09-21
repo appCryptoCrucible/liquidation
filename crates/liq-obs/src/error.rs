@@ -26,6 +26,20 @@ pub enum ObsError {
     ShadowDir(String),
     #[error("pre-flight input absent: {0}")]
     PreflightAbsent(&'static str),
+    #[error("builder roster is empty; fail closed (16D)")]
+    EmptyBuilderRoster,
+    #[error("mevshare relay missing from builders.toml")]
+    EmptyMevShareRelay,
+    #[error("duplicate builder id {0}")]
+    DuplicateBuilderId(u16),
+    #[error("public-RPC / mempool URL refused")]
+    PublicRpcForbidden,
+    #[error("builders.toml: {0}")]
+    BuildersToml(String),
+    #[error("http client: {0}")]
+    HttpClient(String),
+    #[error("unknown RTT target {0}")]
+    UnknownTarget(String),
 }
 
 impl From<std::io::Error> for ObsError {
