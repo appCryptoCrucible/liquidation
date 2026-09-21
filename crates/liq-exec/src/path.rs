@@ -124,6 +124,18 @@ where
                 "signer pool must match nonce slots".into(),
             ));
         }
+        for (i, signer) in signers.iter().enumerate() {
+            let key = nonces.address(i)?;
+            if signer.address() != key {
+                tracing::error!(
+                    slot = i,
+                    signer = ?signer.address(),
+                    nonce_key = ?key,
+                    "ExecPath::new: signer address does not match nonce key"
+                );
+                return Err(ExecError::Signer("slot signer/key mismatch".into()));
+            }
+        }
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(3))
             .build()
@@ -176,6 +188,9 @@ where
                 return Err(ExecError::BadMevShareSpan(span));
             }
         }
+        // Before record / toggle: a job live would reject must not be
+        // Shadow-Recorded (13A residual; 17A wiring).
+        require_venue_inputs(job, &routed.venue)?;
 
         let allocated = match self.nonce_mode {
             NonceMode::Allocate => self.nonces.allocate(job.slot)?,
@@ -310,6 +325,36 @@ where
     }
 }
 
+/// Venue-required fields. Runs before the recorder and the submit toggle.
+pub fn require_venue_inputs(job: &ExecJob, venue: &Venue) -> Result<()> {
+    match job.trigger {
+        TriggerKind::SvrAuction => {
+            if job.hint_hash.is_none() {
+                tracing::error!(trace = job.trace.raw(), "MissingHintHash before toggle");
+                return Err(ExecError::MissingHintHash);
+            }
+        }
+        TriggerKind::InterestDrift | TriggerKind::Stale | TriggerKind::ParamChange => {}
+        TriggerKind::OraclePredicted => return Err(ExecError::PredictedNotSubmittable),
+        TriggerKind::OraclePublic
+        | TriggerKind::OraclePullHeld
+        | TriggerKind::PoolStateChange
+        | TriggerKind::UserAction
+        | TriggerKind::DerivedRate => {
+            if matches!(venue, Venue::BuilderBundle { .. }) {
+                match &job.backrun_tx {
+                    Some(b) if !b.is_empty() => {}
+                    _ => {
+                        tracing::error!(trace = job.trace.raw(), "MissingBackrunTx before toggle");
+                        return Err(ExecError::MissingBackrunTx);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn bundle_txs(job: &ExecJob, signed: &SignedTx) -> Result<Vec<Bytes>> {
     match job.trigger {
         TriggerKind::InterestDrift | TriggerKind::Stale | TriggerKind::ParamChange => {
@@ -415,7 +460,12 @@ fn _policy_check(k: TriggerKind) -> Result<U256> {
 mod tests {
     use super::*;
     use crate::fee::FeeQuote;
-    use alloy_primitives::address;
+    use crate::nonce::{NonceAllocator, NonceMode};
+    use crate::submit::SubmitEnabled;
+    use crate::template::PrecomputedSigner;
+    use alloy_primitives::{address, b256};
+    use liq_oracle::mevshare::SearcherKey;
+    use std::sync::Arc;
 
     fn quote(parent: u64) -> FeeQuote {
         FeeQuote {
@@ -434,6 +484,79 @@ mod tests {
         assert!(!inbox.try_send(job));
         assert_eq!(inbox.full_count(), 1);
         drop(rx);
+    }
+
+    #[test]
+    fn new_refuses_signer_nonce_key_mismatch() {
+        let signer = Arc::new(
+            PrecomputedSigner::from_secret(b256!(
+                "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+            ))
+            .unwrap(),
+        );
+        let other = address!("0x1111111111111111111111111111111111111111");
+        let nonces = NonceAllocator::from_addresses(vec![other]).unwrap();
+        let identity = SearcherKey::from_secret(b256!(
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+        ))
+        .unwrap();
+        let builders = crate::builders::BuilderSet::from_parts(
+            vec![crate::builders::BuilderEndpoint {
+                id: liq_types::BuilderId(1),
+                name: "t",
+                endpoint: crate::builders::leak_str("http://127.0.0.1:1/".into()),
+            }],
+            crate::builders::leak_str("http://127.0.0.1:2/".into()),
+        )
+        .unwrap();
+        let err = match ExecPath::new(
+            CaptureRecorder::default(),
+            AllowAll,
+            Arc::new(SubmitEnabled::new(false)),
+            NonceMode::Allocate,
+            nonces,
+            vec![signer],
+            builders,
+            identity,
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("expected signer error"),
+        };
+        assert!(matches!(err, ExecError::Signer(_)));
+    }
+
+    #[test]
+    fn svr_without_hint_fails_before_record() {
+        let job = dummy_job(TriggerKind::SvrAuction);
+        let builders = crate::builders::BuilderSet::from_parts(
+            vec![crate::builders::BuilderEndpoint {
+                id: liq_types::BuilderId(1),
+                name: "t",
+                endpoint: crate::builders::leak_str("http://127.0.0.1:1/".into()),
+            }],
+            crate::builders::leak_str("http://127.0.0.1:2/".into()),
+        )
+        .unwrap();
+        let routed = crate::submit::route(job.trigger, &builders, 9_000, 10, 2).unwrap();
+        let err = require_venue_inputs(&job, &routed.venue).unwrap_err();
+        assert!(matches!(err, ExecError::MissingHintHash));
+    }
+
+    #[test]
+    fn oracle_public_without_backrun_fails_before_record() {
+        let job = dummy_job(TriggerKind::OraclePublic);
+        let builders = crate::builders::BuilderSet::from_parts(
+            vec![crate::builders::BuilderEndpoint {
+                id: liq_types::BuilderId(1),
+                name: "t",
+                endpoint: crate::builders::leak_str("http://127.0.0.1:1/".into()),
+            }],
+            crate::builders::leak_str("http://127.0.0.1:2/".into()),
+        )
+        .unwrap();
+        let routed = crate::submit::route(job.trigger, &builders, 9_000, 10, 2).unwrap();
+        let err = require_venue_inputs(&job, &routed.venue).unwrap_err();
+        assert!(matches!(err, ExecError::MissingBackrunTx));
     }
 
     fn dummy_job(kind: TriggerKind) -> ExecJob {

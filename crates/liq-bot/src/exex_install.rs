@@ -5,14 +5,17 @@
 //! [`crate::threads::pin_to_core`] is wired with `allow_unpinned: false`
 //! (fail-closed). 17A binds the forwarder to `ExExContext`.
 
+use std::sync::atomic::Ordering;
 use std::thread::{Builder, JoinHandle};
 
 use liq_node::{
     pin_deferred, spawn_hot, split_exex, split_mempool, ConsistentHeight, ExExForwarder, HotHandle,
-    HotIngress, HotSpawn, MempoolProducer, HOT_THREAD_NAME,
+    HotIngress, HotSpawn, IngestError, MempoolProducer, HOT_THREAD_NAME,
 };
 use liq_types::PendingTx;
 use rtrb::Consumer;
+
+use crate::threads::HOT_PIN_CORE;
 
 /// Rings the Reth ExEx future (17A) and the hot thread share.
 pub struct ExExInstall {
@@ -41,8 +44,24 @@ pub fn prepare() -> ExExInstall {
     }
 }
 
-/// Named `liq-node-hot`. Pin is [`pin_deferred`] plus `allow_unpinned: true`
-/// until 16A wires [`crate::threads::pin_to_core`] with fail-closed pinning.
+/// Pin `liq-node-hot` to [`HOT_PIN_CORE`]. `HotSpawn::pin` is `fn()`, not a
+/// closure — the core is leaked into the atomic at startup.
+pub fn pin_hot_configured() -> core::result::Result<(), IngestError> {
+    let core = HOT_PIN_CORE.load(Ordering::Acquire);
+    if core == usize::MAX {
+        tracing::error!("liq-node-hot pin core not configured");
+        return Err(IngestError::PinFailed);
+    }
+    crate::threads::pin_to_core(core).map_err(|e| {
+        tracing::error!(?e, core, "liq-node-hot pin_to_core failed");
+        IngestError::PinFailed
+    })
+}
+
+/// Named `liq-node-hot`. Production: [`pin_hot_configured`] +
+/// `allow_unpinned: false`. Tests may pass [`pin_deferred`] via
+/// `allow_unpinned: true`.
+#[allow(clippy::too_many_arguments)]
 pub fn install_hot(
     store: liq_state::StateStore,
     router: liq_node::LogRouter,
@@ -51,7 +70,13 @@ pub fn install_hot(
     sink: &'static dyn liq_types::HaltSink,
     protocols: Box<[liq_types::ProtocolId]>,
     height: std::sync::Arc<ConsistentHeight>,
+    allow_unpinned: bool,
 ) -> liq_node::Result<HotHandle> {
+    let pin = if allow_unpinned {
+        pin_deferred
+    } else {
+        pin_hot_configured
+    };
     spawn_hot(HotSpawn {
         store,
         router,
@@ -60,8 +85,8 @@ pub fn install_hot(
         sink,
         protocols,
         height,
-        pin: pin_deferred,
-        allow_unpinned: true,
+        pin,
+        allow_unpinned,
     })
 }
 

@@ -6,8 +6,14 @@ use core_affinity::CoreId;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::atomic::AtomicUsize;
 use std::thread::{Builder, JoinHandle};
 use thiserror::Error;
+
+/// Core for `liq-node-hot`. Written once at startup, read by
+/// [`crate::exex_install::pin_hot_configured`] (`fn()`, not a closure).
+/// `usize::MAX` means unset — pin then fails closed.
+pub static HOT_PIN_CORE: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 /// Linux `shared_cpu_list` / `Cpus_allowed_list` grammar (ranges and commas).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -274,6 +280,11 @@ impl CoreMap {
             .find(|t| t.name == name)
             .ok_or_else(|| ThreadError::UnknownThread(name.to_owned()))
     }
+}
+
+/// Record the hot-thread core before spawn. Not a skip of the pin itself.
+pub fn configure_hot_pin(core: u16) {
+    HOT_PIN_CORE.store(usize::from(core), std::sync::atomic::Ordering::Release);
 }
 
 /// `liq-<crate>-<role>` with crate a single kebab-free token.

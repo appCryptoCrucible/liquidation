@@ -12,16 +12,34 @@ alloc-assert = []
 
 [dependencies]
 alloy-primitives = { workspace = true }
+arc-swap = { workspace = true }
 core_affinity = { workspace = true }
+crossbeam-channel = { workspace = true }
+liq-config = { path = "../liq-config" }
+liq-engine = { path = "../liq-engine" }
+liq-exec = { path = "../liq-exec" }
+liq-flash = { path = "../liq-flash" }
 liq-node = { path = "../liq-node" }
+liq-obs = { path = "../liq-obs" }
+liq-oracle = { path = "../liq-oracle" }
+liq-protocol = { path = "../liq-protocol" }
+liq-risk = { path = "../liq-risk" }
+liq-router = { path = "../liq-router" }
 liq-state = { path = "../liq-state" }
 liq-types = { path = "../liq-types" }
 mimalloc = { workspace = true }
+notify = { workspace = true }
+parking_lot = { workspace = true }
 rtrb = { workspace = true }
 serde = { workspace = true }
+smallvec = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net", "io-util"] }
 toml = { workspace = true }
 tracing = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+signal-hook = { workspace = true }
 
 # Cannot inherit workspace lints: workspace `unsafe_code = "forbid"` is not
 # overridable, and Cargo rejects mixing `lints.workspace = true` with overrides.

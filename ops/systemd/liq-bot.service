@@ -1,0 +1,18 @@
+[Unit]
+Description=liq-bot (ExEx / supervisor)
+Documentation=file:liquidator-guides/GUIDE-17-operations.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=5
+# Live send stays off. Do not set this true here — H4 only, via config reload.
+Environment=LIQ_SUBMIT_ENABLED=false
+WorkingDirectory=/opt/liq
+ExecStart=/opt/liq/target/release/liq-bot
+# Operator keys are 17B. This unit does not generate them.
+
+[Install]
+WantedBy=multi-user.target

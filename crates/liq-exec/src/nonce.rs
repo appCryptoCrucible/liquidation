@@ -93,6 +93,11 @@ impl NonceAllocator {
         self.keys.get(slot).ok_or(ExecError::BadSlot(slot))
     }
 
+    /// Address the nonce key for `slot` is bound to. Used at [`crate::path::ExecPath::new`].
+    pub fn address(&self, slot: usize) -> Result<Address> {
+        Ok(self.slot(slot)?.address)
+    }
+
     /// Consume the next nonce. Guard drops at the end of this function.
     pub fn allocate(&self, slot: usize) -> Result<AllocatedNonce> {
         let key = self.slot(slot)?;
@@ -188,6 +193,7 @@ mod tests {
     #[test]
     fn allocate_and_dry_run() {
         let pool = NonceAllocator::from_addresses(vec![addr(1)]).unwrap();
+        assert_eq!(pool.address(0).unwrap(), addr(1));
         let a = pool.allocate(0).unwrap();
         assert_eq!(a.nonce, 0);
         assert_eq!(pool.next_of(0).unwrap(), 1);

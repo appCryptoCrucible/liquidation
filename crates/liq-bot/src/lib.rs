@@ -13,5 +13,13 @@
 #![cfg_attr(not(feature = "alloc-assert"), forbid(unsafe_code))]
 
 pub mod alloc;
+pub mod crossing;
+pub mod exec_bind;
 pub mod exex_install;
+pub mod lease;
+pub mod rebuild;
+pub mod reload;
+pub mod routes;
+pub mod shared;
+pub mod startup;
 pub mod threads;

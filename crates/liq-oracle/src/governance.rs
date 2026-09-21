@@ -66,6 +66,9 @@ sol! {
             bytes data
         );
     }
+    interface IPoolConfigurator {
+        function configureReserveAsCollateral(address asset, uint256 ltv, uint256 liquidationThreshold, uint256 liquidationBonus) external;
+    }
 }
 
 /// Classified timelock discovered from a registry protocol row.
@@ -206,37 +209,27 @@ impl GovernancePoller {
         let mut out = Vec::new();
         let mut high = 0u64;
         for lock in &self.locks {
-            let TimelockKind::PayloadsController { controller } = lock.kind else {
-                continue;
-            };
-            let count = self.payloads_count(controller, block).await?;
-            let start = count.saturating_sub(self.cfg.payload_lookback);
-            let cursor = {
-                let g = self
-                    .cursor
-                    .lock()
-                    .map_err(|_| OracleError::Governance("poller cursor poisoned".into()))?;
-                *g
-            };
-            let mut i = cursor.max(start);
-            while i < count {
-                let p = self.payload(controller, i, block).await?;
-                i = i.saturating_add(1);
-                if p.queued_at == 0 || p.executed_at != 0 || p.cancelled_at != 0 {
-                    continue;
+            match lock.kind {
+                TimelockKind::PayloadsController { controller } => {
+                    poll_controller(self, lock, controller, block, block_ts, &mut out, &mut high)
+                        .await?;
                 }
-                if !execution_due(p.queued_at, p.delay, block_ts)? {
-                    continue;
+                TimelockKind::AccessManager => {
+                    tracing::warn!(
+                        protocol = ?lock.protocol,
+                        market = ?lock.market,
+                        executor = ?lock.executor,
+                        "08B residual: AccessManager skip — no invented crossings"
+                    );
                 }
-                out.push(ScheduledParamChange {
-                    protocol: lock.protocol,
-                    market: lock.market,
-                    execution_block: block,
-                    crossing: Vec::new(),
-                    trace: TraceId::from_raw(p.id),
-                });
+                TimelockKind::Unclassified => {
+                    tracing::warn!(
+                        protocol = ?lock.protocol,
+                        executor = ?lock.executor,
+                        "08B residual: unclassified timelock skip — no invented crossings"
+                    );
+                }
             }
-            high = high.max(count);
         }
         if high > 0 {
             let mut g = self
@@ -249,7 +242,49 @@ impl GovernancePoller {
         }
         Ok(out)
     }
+}
 
+async fn poll_controller(
+    poller: &GovernancePoller,
+    lock: &Timelock,
+    controller: Address,
+    block: u64,
+    block_ts: u64,
+    out: &mut Vec<ScheduledParamChange>,
+    high: &mut u64,
+) -> Result<()> {
+    let count = poller.payloads_count(controller, block).await?;
+    let start = count.saturating_sub(poller.cfg.payload_lookback);
+    let cursor = {
+        let g = poller
+            .cursor
+            .lock()
+            .map_err(|_| OracleError::Governance("poller cursor poisoned".into()))?;
+        *g
+    };
+    let mut i = cursor.max(start);
+    while i < count {
+        let p = poller.payload(controller, i, block).await?;
+        i = i.saturating_add(1);
+        if p.queued_at == 0 || p.executed_at != 0 || p.cancelled_at != 0 {
+            continue;
+        }
+        if !execution_due(p.queued_at, p.delay, block_ts)? {
+            continue;
+        }
+        out.push(ScheduledParamChange {
+            protocol: lock.protocol,
+            market: lock.market,
+            execution_block: block,
+            crossing: Vec::new(),
+            trace: TraceId::from_raw(p.id),
+        });
+    }
+    *high = (*high).max(count);
+    Ok(())
+}
+
+impl GovernancePoller {
     /// AccessManager `minSetback` at `block` (seconds, from chain).
     pub async fn min_setback(&self, manager: Address, block: u64) -> Result<u32> {
         let raw = call(
@@ -461,6 +496,149 @@ fn u40(id: u64) -> Result<alloy_primitives::aliases::U40> {
         .map_err(|_| OracleError::Governance(format!("payload id {id} > u40")))
 }
 
+/// One decoded `ExecutorAction` from a PayloadsController payload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PayloadAction {
+    pub target: Address,
+    pub calldata: Bytes,
+}
+
+/// Action we can attach a crossing for. LT/LTV in bps is **not** a RAY pair.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClassifiedAction {
+    /// Aave `configureReserveAsCollateral` — new values only, bps. Wiring
+    /// uses `registered_set`, never invented old/new RAY.
+    ConfigureCollateral {
+        asset: Address,
+        ltv: U256,
+        liquidation_threshold: U256,
+        liquidation_bonus: U256,
+    },
+}
+
+/// Decode the actions array from `getPayloadById` ABI return data.
+/// Layout: offset word + creator, access, extra, created, queued, executed,
+/// cancelled, expiration, delay, grace, actions (same as [`decode_payload`]).
+pub fn decode_payload_actions(id: u64, raw: &[u8]) -> Result<Vec<PayloadAction>> {
+    let tuple_off = word_usize(raw, id, 0)?;
+    let actions_rel = word_at(raw, id, tuple_off, 10)?;
+    let actions_abs = tuple_off
+        .checked_add(actions_rel)
+        .ok_or_else(|| OracleError::Governance(format!("payload {id} actions offset overflow")))?;
+    let n = word_at(raw, id, actions_abs, 0)?;
+    if n > 64 {
+        return Err(OracleError::Governance(format!(
+            "payload {id} action count {n} > 64"
+        )));
+    }
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let elem_rel = word_at(raw, id, actions_abs, i.saturating_add(1))?;
+        let elem_abs = actions_abs
+            .checked_add(32)
+            .and_then(|b| b.checked_add(elem_rel))
+            .ok_or_else(|| OracleError::Governance(format!("payload {id} action {i} offset")))?;
+        let target = address_at(raw, id, elem_abs, 0)?;
+        let cd_rel = word_at(raw, id, elem_abs, 5)?;
+        let cd_abs = elem_abs
+            .checked_add(cd_rel)
+            .ok_or_else(|| OracleError::Governance(format!("payload {id} action {i} data")))?;
+        let cd_len = word_at(raw, id, cd_abs, 0)?;
+        if cd_len > 16_384 {
+            return Err(OracleError::Governance(format!(
+                "payload {id} action {i} calldata {cd_len} > 16k"
+            )));
+        }
+        let data_start = cd_abs.checked_add(32).ok_or_else(|| {
+            OracleError::Governance(format!("payload {id} action {i} data start"))
+        })?;
+        let data = raw
+            .get(data_start..data_start.saturating_add(cd_len))
+            .ok_or(OracleError::PayloadTruncated { id, len: raw.len() })?;
+        out.push(PayloadAction {
+            target,
+            calldata: Bytes::copy_from_slice(data),
+        });
+    }
+    Ok(out)
+}
+
+/// Classify one action. Unknown selector → refuse (do not invent a crossing).
+pub fn classify_action(action: &PayloadAction) -> Result<ClassifiedAction> {
+    let sel = action.calldata.get(..4).ok_or_else(|| {
+        OracleError::Governance("payload action calldata shorter than selector".into())
+    })?;
+    if sel == IPoolConfigurator::configureReserveAsCollateralCall::SELECTOR {
+        let decoded =
+            IPoolConfigurator::configureReserveAsCollateralCall::abi_decode(&action.calldata)
+                .map_err(|e| OracleError::Governance(e.to_string()))?;
+        if decoded.asset.is_zero() {
+            return Err(OracleError::Governance(
+                "configureReserveAsCollateral zero asset".into(),
+            ));
+        }
+        return Ok(ClassifiedAction::ConfigureCollateral {
+            asset: decoded.asset,
+            ltv: decoded.ltv,
+            liquidation_threshold: decoded.liquidationThreshold,
+            liquidation_bonus: decoded.liquidationBonus,
+        });
+    }
+    Err(OracleError::Governance(format!(
+        "undecodable payload action selector 0x{}",
+        hex_sel(sel)
+    )))
+}
+
+fn hex_sel(sel: &[u8]) -> String {
+    sel.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn word_usize(raw: &[u8], id: u64, i: usize) -> Result<usize> {
+    let v = word_u256(raw, id, i.saturating_mul(32))?;
+    usize::try_from(v)
+        .map_err(|_| OracleError::Governance(format!("word {i} of payload {id} > usize")))
+}
+
+fn word_at(raw: &[u8], id: u64, base: usize, i: usize) -> Result<usize> {
+    let off = i
+        .checked_mul(32)
+        .and_then(|x| base.checked_add(x))
+        .ok_or_else(|| OracleError::Governance(format!("payload {id} word offset")))?;
+    let v = word_u256(raw, id, off)?;
+    usize::try_from(v).map_err(|_| OracleError::Governance(format!("payload {id} word > usize")))
+}
+
+fn word_u256(raw: &[u8], id: u64, off: usize) -> Result<U256> {
+    let end = off
+        .checked_add(32)
+        .ok_or(OracleError::PayloadTruncated { id, len: raw.len() })?;
+    let w = raw
+        .get(off..end)
+        .ok_or(OracleError::PayloadTruncated { id, len: raw.len() })?;
+    Ok(U256::from_be_slice(w))
+}
+
+fn address_at(raw: &[u8], id: u64, base: usize, i: usize) -> Result<Address> {
+    let off = i
+        .checked_mul(32)
+        .and_then(|x| base.checked_add(x))
+        .ok_or_else(|| OracleError::Governance(format!("payload {id} address offset")))?;
+    let end = off
+        .checked_add(32)
+        .ok_or(OracleError::PayloadTruncated { id, len: raw.len() })?;
+    let w = raw
+        .get(off..end)
+        .ok_or(OracleError::PayloadTruncated { id, len: raw.len() })?;
+    let tail = w
+        .get(12..32)
+        .ok_or(OracleError::PayloadTruncated { id, len: raw.len() })?;
+    let arr: [u8; 20] = tail
+        .try_into()
+        .map_err(|_| OracleError::Governance("address width".into()))?;
+    Ok(Address::from(arr))
+}
+
 fn decode_payload(id: u64, raw: &[u8]) -> Result<PayloadView> {
     // ABI: offset word + creator, access, extra, created, queued, executed,
     // cancelled, expiration, delay, grace, actions…
@@ -541,6 +719,39 @@ mod tests {
             GovernanceConfig::new(0),
             Err(OracleError::ZeroPayloadLookback)
         ));
+    }
+
+    /// Synthetic ABI: classify configureReserveAsCollateral. Unknown
+    /// selector refuses — never an invented crossing.
+    #[test]
+    fn classify_configure_collateral_and_unknown_selector() {
+        let asset = Address::repeat_byte(0xA1);
+        let data = IPoolConfigurator::configureReserveAsCollateralCall {
+            asset,
+            ltv: U256::from(7500u64),
+            liquidationThreshold: U256::from(8000u64),
+            liquidationBonus: U256::from(10500u64),
+        }
+        .abi_encode();
+        let act = PayloadAction {
+            target: Address::repeat_byte(0xC0),
+            calldata: Bytes::from(data),
+        };
+        match classify_action(&act).unwrap() {
+            ClassifiedAction::ConfigureCollateral {
+                asset: a,
+                liquidation_threshold,
+                ..
+            } => {
+                assert_eq!(a, asset);
+                assert_eq!(liquidation_threshold, U256::from(8000u64));
+            }
+        }
+        let bad = PayloadAction {
+            target: Address::repeat_byte(0xC0),
+            calldata: Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]),
+        };
+        assert!(classify_action(&bad).is_err());
     }
 
     /// Oracle: registry-derived ACL admin + PayloadsController at PIN_BLOCK.

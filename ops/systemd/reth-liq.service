@@ -1,0 +1,16 @@
+[Unit]
+Description=Reth (liq-bot ExEx host)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=5
+WorkingDirectory=/opt/liq
+# Binary path is operator-local. Do not invent a public-mempool flag.
+ExecStart=/opt/liq/reth --chain mainnet
+# submit_enabled is liq-bot config, not a Reth switch.
+
+[Install]
+WantedBy=multi-user.target

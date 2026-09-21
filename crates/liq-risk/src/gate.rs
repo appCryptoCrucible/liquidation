@@ -129,6 +129,12 @@ impl RiskAllow for RiskGate {
     }
 }
 
+impl RiskAllow for &RiskGate {
+    fn allow(&self, trace: TraceId, q: &AllowQuery) -> Allow {
+        RiskGate::allow(self, trace, q)
+    }
+}
+
 impl RiskGate {
     /// Class A clear when the world condition ends.
     pub fn clear_auto(&self, scope: HaltScope, reason: HaltReason) {

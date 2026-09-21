@@ -30,6 +30,10 @@ pub struct BotConfig {
     /// Executor / builder surface. Executor address filled at H3.
     #[serde(default)]
     pub venues: VenuesConfig,
+    /// Live HTTP send (H4 flip). Hot-reloadable. Default **false**.
+    /// Not a compiled constant. Must never default true.
+    #[serde(default)]
+    pub submit_enabled: bool,
 }
 
 const fn mainnet() -> u64 {

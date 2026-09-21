@@ -76,6 +76,8 @@ revm = { version = "=43.0.2", default-features = false, features = ["std"] }
 arrow = { version = "=55.2.0", default-features = false }
 parquet = { version = "=55.2.0", features = ["zstd"] }
 rusqlite = { version = "=0.37.0", features = ["bundled"] }
+notify = { version = "=6.1.1" }
+signal-hook = { version = "=0.3.18", default-features = false, features = ["iterator"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

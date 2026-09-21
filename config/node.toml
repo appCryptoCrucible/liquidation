@@ -3,3 +3,5 @@
 chain_id = 1
 registry_path = "registry/registry.json"
 rpc_url = ""
+# H4 flip only. 17A hot-reloads this; default stays false.
+submit_enabled = false
