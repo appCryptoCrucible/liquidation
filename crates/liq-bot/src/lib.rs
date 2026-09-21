@@ -15,7 +15,9 @@
 pub mod alloc;
 pub mod assemble_view;
 pub mod crossing;
+pub mod drain;
 pub mod exec_bind;
+pub mod exec_worker;
 pub mod exex_install;
 pub mod lease;
 pub mod rebuild;

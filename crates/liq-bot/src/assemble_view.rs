@@ -10,10 +10,10 @@ use alloy_primitives::{Address, U256};
 use liq_protocol::{ExecutorAdapter, Quote};
 use liq_router::{
     euler_min_yield_from_quote, fluid_col_per_unit_debt_from_quote, gearbox_min_seized_from_quote,
-    leg_meta_from_pins, AssembleError, AssembleView, LegMeta, TailPins,
+    leg_meta_from_pins, AssembleError, AssembleView, LegMeta, MarketView, PairTerms, TailPins,
 };
 use liq_state::AssetInterner;
-use liq_types::{AssetId, PositionId};
+use liq_types::{AssetId, PositionId, ProtocolId};
 
 /// Process-owned assembly lookups. Starts empty (fail closed).
 #[derive(Clone, Debug, Default)]
@@ -22,6 +22,8 @@ pub struct ProcessAssembleView {
     pins: HashMap<PositionId, TailPins>,
     per_eth: HashMap<AssetId, U256>,
     routers: HashMap<Address, (Address, Vec<u8>)>,
+    pair_terms: HashMap<(ProtocolId, AssetId, AssetId), PairTerms>,
+    notional_cap: HashMap<AssetId, U256>,
 }
 
 impl ProcessAssembleView {
@@ -60,6 +62,39 @@ impl ProcessAssembleView {
             return;
         }
         self.routers.insert(pool, (target, calldata));
+    }
+
+    pub fn insert_pair_terms(
+        &mut self,
+        protocol: ProtocolId,
+        coll: AssetId,
+        debt: AssetId,
+        terms: PairTerms,
+    ) {
+        self.pair_terms.insert((protocol, coll, debt), terms);
+    }
+
+    pub fn insert_notional_cap(&mut self, asset: AssetId, cap: U256) {
+        if cap.is_zero() {
+            tracing::error!(?asset, "notional cap zero refused");
+            return;
+        }
+        self.notional_cap.insert(asset, cap);
+    }
+
+    /// Quote-derived tail fill on a pinned position. Missing pin → Missing.
+    pub fn apply_quote_for(
+        &mut self,
+        pos: PositionId,
+        quote: &Quote,
+        repay: usize,
+        seize: usize,
+    ) -> Result<(), AssembleError> {
+        let pins = self
+            .pins
+            .get_mut(&pos)
+            .ok_or(AssembleError::Missing("pins"))?;
+        Self::apply_quote_derived(pins, quote, repay, seize)
     }
 
     /// Fill quote-derived tail fields only. Does not invent `fluid_t1`,
@@ -114,6 +149,20 @@ impl AssembleView for ProcessAssembleView {
 
     fn router_leg(&self, pool: Address) -> Option<(Address, Vec<u8>)> {
         self.routers.get(&pool).cloned()
+    }
+}
+
+impl MarketView for ProcessAssembleView {
+    fn pair_terms(&self, protocol: ProtocolId, coll: AssetId, debt: AssetId) -> Option<PairTerms> {
+        self.pair_terms.get(&(protocol, coll, debt)).copied()
+    }
+
+    fn per_eth(&self, asset: AssetId) -> Option<U256> {
+        AssembleView::per_eth(self, asset)
+    }
+
+    fn notional_cap_raw(&self, debt: AssetId) -> Option<U256> {
+        self.notional_cap.get(&debt).copied()
     }
 }
 

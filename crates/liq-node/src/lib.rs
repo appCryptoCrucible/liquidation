@@ -28,7 +28,10 @@ pub use exex::{
     split_exex, ConsistentHeight, ExExForwarder, FinishedUpTo, HotIngress, Notification, NumHash,
     OwnedChain, NOTIF_CAP,
 };
-pub use hot::{pin_deferred, spawn as spawn_hot, HotHandle, HotSpawn, HOT_THREAD_NAME};
+pub use hot::{
+    pin_deferred, spawn as spawn_hot, AfterBlock, AfterBlockCtx, HotHandle, HotSpawn,
+    HOT_THREAD_NAME,
+};
 pub use liq_protocol::conformance::AllocMeter;
 pub use mempool::{split_mempool, MempoolProducer};
 pub use reorg::{apply_contained, handle_notification, unwind_to};

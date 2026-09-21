@@ -23,8 +23,10 @@ liq-node = { path = "../liq-node" }
 liq-obs = { path = "../liq-obs" }
 liq-oracle = { path = "../liq-oracle" }
 liq-protocol = { path = "../liq-protocol" }
+liq-plan = { path = "../liq-plan" }
 liq-risk = { path = "../liq-risk" }
 liq-router = { path = "../liq-router" }
+liq-sim = { path = "../liq-sim" }
 liq-state = { path = "../liq-state" }
 liq-types = { path = "../liq-types" }
 mimalloc = { workspace = true }

@@ -24,8 +24,8 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 pub use verify::{
-    execute_calldata, verify, verify_historical, verify_variants, Bundle, HealthProbe, SimTx,
-    Trigger,
+    block_env_at, execute_calldata, verify, verify_historical, verify_variants, Bundle, HealthProbe,
+    SimTx, Trigger,
 };
 pub use warm::{
     clear_except, insert_executor, load_executor_creation_bytecode, ExecutorSpec, Simulator,
@@ -122,6 +122,14 @@ impl MemoryFactory {
         Self {
             inner: Arc::new(db),
         }
+    }
+
+    /// Empty CacheDB. No invented balances or code.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::from_cache(revm::database::CacheDB::new(
+            revm::database::EmptyDB::default(),
+        ))
     }
 }
 

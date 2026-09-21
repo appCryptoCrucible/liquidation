@@ -302,3 +302,13 @@ fn verify_variants_split<P: DatabaseRef<Error = SimError> + Send + Sync>(
 pub fn verify_historical(_archive_dir: &std::path::Path) -> Result<(), SimError> {
     Err(SimError::ArchiveUnavailable)
 }
+
+/// `BlockEnv` at a known height/time. Does not invent base fee or gas limit.
+#[must_use]
+pub fn block_env_at(number: u64, timestamp: u64) -> BlockEnv {
+    BlockEnv {
+        number: U256::from(number),
+        timestamp: U256::from(timestamp),
+        ..BlockEnv::default()
+    }
+}

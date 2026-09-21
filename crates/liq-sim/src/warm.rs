@@ -300,6 +300,24 @@ impl<P: DatabaseRef<Error = SimError> + Send + Sync> Simulator<P> {
         Self::boot(factory.latest()?, warm, executor, spec, deployer)
     }
 
+    /// Overlay on an existing provider. Does not insert Executor bytecode
+    /// (H3 undeployed / artifact absent). Does not invent account state.
+    pub fn from_provider(
+        provider: Arc<P>,
+        executor: Address,
+        weth: Address,
+        profit_account: Address,
+    ) -> Self {
+        Self {
+            db: CacheDB::new(provider),
+            warm: WarmSet::new(),
+            snapshot: CacheDB::new(EmptyDB::default()),
+            executor,
+            weth,
+            profit_account,
+        }
+    }
+
     #[inline]
     pub fn reset(&mut self) {
         clear_except(&mut self.db, &self.warm, &self.snapshot);

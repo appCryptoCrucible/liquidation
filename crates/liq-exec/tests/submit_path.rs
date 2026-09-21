@@ -267,6 +267,53 @@ async fn risk_deny_does_not_send() {
     );
 }
 
+struct FailRecorder;
+
+impl Submitter for FailRecorder {
+    type Error = liq_exec::error::ExecError;
+
+    fn submit(
+        &self,
+        _submission: &liq_types::IntendedSubmission,
+    ) -> Result<SubmitReceipt, liq_exec::error::ExecError> {
+        Err(liq_exec::error::ExecError::Record("test record fail".into()))
+    }
+}
+
+/// 17C residual: sign/record errors after allocate must mark_dropped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn record_fail_after_allocate_marks_dropped() {
+    let mock = spawn_mock(Duration::ZERO).await;
+    let relay = leak_str(mock.url.clone());
+    let builders = set_from_urls(relay, relay);
+    let signer = Arc::new(PrecomputedSigner::from_secret(SECRET).unwrap());
+    let nonces = NonceAllocator::from_addresses(vec![signer.address()]).unwrap();
+    let identity = SearcherKey::from_secret(SECRET).unwrap();
+    let p = ExecPath::new(
+        FailRecorder,
+        AllowAll,
+        Arc::new(SubmitEnabled::new(false)),
+        NonceMode::Allocate,
+        nonces,
+        vec![signer],
+        builders,
+        identity,
+        LiveSendBits::closed(),
+    )
+    .unwrap();
+    let err = p
+        .submit_path(&job(TriggerKind::InterestDrift, None, None))
+        .await
+        .expect_err("record fail");
+    assert!(matches!(err, liq_exec::error::ExecError::Record(_)));
+    let infl = p.nonces.in_flight(0).unwrap();
+    assert!(
+        infl.get(&0).unwrap().dropped,
+        "record error after allocate must mark_dropped"
+    );
+    assert_eq!(mock.hits.load(Ordering::Relaxed), 0);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_fail_after_allocate_marks_dropped() {
     let dead = leak_str("http://127.0.0.1:1/".to_owned());

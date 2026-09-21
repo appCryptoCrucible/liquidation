@@ -211,19 +211,23 @@ where
             NonceMode::Allocate => self.nonces.allocate(job.slot)?,
             NonceMode::DryRun => self.nonces.dry_run(job.slot)?,
         };
-        let signer = self
-            .signers
-            .get(job.slot)
-            .ok_or(ExecError::BadSlot(job.slot))?;
+        let signer = match self.signers.get(job.slot) {
+            Some(s) => s,
+            None => {
+                self.mark_nonce_dropped(&allocated);
+                return Err(ExecError::BadSlot(job.slot));
+            }
+        };
         if signer.address() != allocated.address && self.nonce_mode == NonceMode::Allocate {
             tracing::error!(
                 slot = job.slot,
                 "signer address does not match nonce key; fail closed"
             );
+            self.mark_nonce_dropped(&allocated);
             return Err(ExecError::Signer("slot signer/key mismatch".into()));
         }
 
-        let signed = sign_call(
+        let signed = match sign_call(
             signer,
             CallSpec {
                 chain_id: job.chain_id,
@@ -234,7 +238,13 @@ where
                 fees: &bound,
                 priority: routed.policy.priority_wei,
             },
-        )?;
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                self.mark_nonce_dropped(&allocated);
+                return Err(e);
+            }
+        };
         stage(job.trace, Stage::Signed);
 
         let intended = IntendedSubmission {
@@ -244,9 +254,14 @@ where
             deadline: job.max_block,
             trace: job.trace,
         };
-        self.recorder
+        if let Err(e) = self
+            .recorder
             .submit(&intended)
-            .map_err(|e| ExecError::Record(e.to_string()))?;
+            .map_err(|e| ExecError::Record(e.to_string()))
+        {
+            self.mark_nonce_dropped(&allocated);
+            return Err(e);
+        }
 
         let q = AllowQuery {
             protocol: job.protocol,

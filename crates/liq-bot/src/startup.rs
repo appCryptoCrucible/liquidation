@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use liq_config::{boot, BotConfig, Loaded};
-use liq_exec::path::ExecPath;
+use liq_exec::path::{ExecInbox, ExecPath};
 use liq_exec::submit::SubmitEnabled;
 use liq_flash::FlashIndex;
 use liq_node::LogRouter;
@@ -23,7 +23,9 @@ use liq_state::StoreSnapshot;
 use thiserror::Error;
 
 use crate::assemble_view::ProcessAssembleView;
+use crate::drain::DrainJoin;
 use crate::exec_bind::{bind_from_config, ProcessSecrets};
+use crate::exec_worker::spawn_exec_worker;
 use crate::exex_install::{install_hot, prepare};
 use crate::lease::{acquire, recover_capacity, StatePaths, SubmitLease};
 use crate::routes::{spawn_warm_thread, warm_handles};
@@ -105,7 +107,7 @@ pub struct Started {
     pub hot: liq_node::HotHandle,
     pub forwarder: liq_node::ExExForwarder,
     /// 13A path. `None` when secrets/builders are missing — not an invented signer.
-    pub exec: Option<ExecPath<ShadowRecorder, &'static RiskGate>>,
+    pub exec: Option<Arc<ExecPath<ShadowRecorder, &'static RiskGate>>>,
     pub assemble: ProcessAssembleView,
 }
 
@@ -115,6 +117,7 @@ pub fn register_exex(
     sink: &'static dyn liq_types::HaltSink,
     protocols: Box<[liq_types::ProtocolId]>,
     allow_unpinned: bool,
+    after_block: Option<Box<dyn liq_node::AfterBlock>>,
 ) -> Result<(liq_node::ExExForwarder, liq_node::HotHandle), StartupError> {
     let inst = prepare();
     let router = LogRouter::from_subscribers(&[]).map_err(StartupError::Ingest)?;
@@ -127,6 +130,7 @@ pub fn register_exex(
         protocols,
         Arc::clone(&inst.height),
         allow_unpinned,
+        after_block,
     )?;
     Ok((inst.forwarder, handle))
 }
@@ -170,7 +174,8 @@ pub async fn run(
         &shadow,
         shared,
         ProcessSecrets::from_env(),
-    );
+    )
+    .map(Arc::new);
     if let Some(ref path) = exec {
         if let Err(e) = path.prewarm().await {
             tracing::error!(error = %e, "13A prewarm failed — path stays bound; handshake_free Absent");
@@ -179,9 +184,38 @@ pub async fn run(
         tracing::error!("ExecPath unbound — ingest/lease continue; no invented key");
     }
     let assemble = ProcessAssembleView::empty();
+    let operator = exec
+        .as_ref()
+        .and_then(|p| p.signers.first().map(|s| s.address()));
+    let (inbox, rx) = if exec.is_some() {
+        let (tx, rx) = ExecInbox::pair(1024);
+        (Some(tx), Some(rx))
+    } else {
+        tracing::error!("ExecPath unbound — drain try_send fails closed; no exec worker");
+        (None, None)
+    };
+    if let (Some(path), Some(rx)) = (exec.clone(), rx) {
+        if let Err(e) = spawn_exec_worker(rx, path) {
+            tracing::error!(?e, "exec worker not started — inbox will count full");
+        }
+    }
+    let hook = DrainJoin::live_noop(
+        Arc::clone(&shared.flash),
+        shared.routes.clone(),
+        assemble.clone(),
+        inbox,
+        operator,
+        loaded.config.chain_id,
+    );
     let _map = pin_threads(cores_path, allow_unpinned)?;
     let sink: &'static dyn liq_types::HaltSink = shared.risk;
-    let (forwarder, hot) = register_exex(store, sink, Box::new([]), allow_unpinned)?;
+    let (forwarder, hot) = register_exex(
+        store,
+        sink,
+        Box::new([]),
+        allow_unpinned,
+        Some(Box::new(hook)),
+    )?;
     let _ = StoreSnapshot::empty();
     Ok(Started {
         shared,
@@ -276,6 +310,18 @@ mod tests {
         assert!(src.contains("ProcessAssembleView"));
         assert!(src.contains("prewarm"));
         assert!(src.contains("ProcessSecrets::from_env"));
+        assert!(
+            src.contains("DrainJoin"),
+            "old unbound run() never joined drain"
+        );
+        assert!(
+            src.contains("spawn_exec_worker"),
+            "old unbound run() never spawned exec worker"
+        );
+        assert!(
+            src.contains("ExecInbox"),
+            "old unbound run() never constructed the inbox"
+        );
         let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
         assert!(
             !prod.contains(".store(true"),
