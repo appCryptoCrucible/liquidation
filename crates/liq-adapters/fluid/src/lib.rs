@@ -38,6 +38,8 @@ pub use events::liquidate_selector;
 pub use layout::{
     CATALOG_MARKET, FIRST_VAULT_MARKET, LAST_VAULT_MARKET, VAULT_T1, VAULT_T2, VAULT_T3, VAULT_T4,
 };
+pub use math::col_per_unit_debt_1e18;
+pub use quote::col_per_unit_debt_1e18_from_quote;
 
 use crate::events::{admin, factory, halt, vault};
 

@@ -1,6 +1,6 @@
 //! `BatchPlan` — the off-chain value the encoder packs (PLAN-ENCODING §2).
 
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, U256};
 use liq_exec::wire::LegTail;
 use liq_protocol::ExecutorAdapter;
 use liq_types::FlashProvider;
@@ -92,6 +92,14 @@ pub struct ValidateCtx {
     pub v4_underlying: Vec<V4ReservePin>,
     /// Morpho markets whose `Id` is `keccak256(abi.encode(MarketParams))`.
     pub morpho: Vec<MorphoMarketPin>,
+    /// Compound V2: debt cToken + seize cToken + CEther flag from config
+    /// (`underlying == 0` ⇒ CEther). A random cToken or flipped flag
+    /// must not encode.
+    pub compound: Vec<CompoundMarketPin>,
+    /// Liquity V2: TroveManager + full trove id + borrower from
+    /// `TroveExtra` / branch. A trove id that is not the quoted position
+    /// must not encode.
+    pub liquity: Vec<LiquityTrovePin>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -110,7 +118,25 @@ pub struct MorphoMarketPin {
     pub collateral_token: Address,
     pub oracle: Address,
     pub irm: Address,
-    pub lltv: alloy_primitives::U256,
+    pub lltv: U256,
+}
+
+/// Compound V2 liquidation pair. `is_cether == 1` iff the **debt** cToken
+/// has `underlying == 0` in config (CEther). Never guessed via `underlying()`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct CompoundMarketPin {
+    pub debt_ctoken: Address,
+    pub ctoken_collateral: Address,
+    pub is_cether: u8,
+}
+
+/// Liquity V2 quoted trove. `trove_id` is the full uint256 NFT id from
+/// `TroveExtra` (intern `PositionKey.user` is only the low 160 bits).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct LiquityTrovePin {
+    pub trove_manager: Address,
+    pub trove_id: U256,
+    pub borrower: Address,
 }
 
 impl ValidateCtx {
@@ -125,5 +151,21 @@ impl ValidateCtx {
     #[must_use]
     pub fn morpho_pin(&self, id: B256) -> Option<&MorphoMarketPin> {
         self.morpho.iter().find(|p| p.id == id)
+    }
+
+    #[must_use]
+    pub fn compound_pin(
+        &self,
+        debt_ctoken: Address,
+        ctoken_collateral: Address,
+    ) -> Option<&CompoundMarketPin> {
+        self.compound
+            .iter()
+            .find(|p| p.debt_ctoken == debt_ctoken && p.ctoken_collateral == ctoken_collateral)
+    }
+
+    #[must_use]
+    pub fn liquity_pin(&self, trove_id: U256) -> Option<&LiquityTrovePin> {
+        self.liquity.iter().find(|p| p.trove_id == trove_id)
     }
 }

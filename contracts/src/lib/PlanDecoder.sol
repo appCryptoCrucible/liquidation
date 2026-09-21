@@ -88,7 +88,7 @@ library PlanDecoder {
     uint256 internal constant TAIL_EULER    = 32;  // uint256 minYieldBalance
     uint256 internal constant TAIL_SILO     = 0;   // receiveSToken=false hardcoded
     uint256 internal constant TAIL_LIQUITY  = 32;  // uint256 troveId
-    uint256 internal constant TAIL_FLUID    = 32;  // uint256 colPerUnitDebt (absorb_=true)
+    uint256 internal constant TAIL_FLUID    = 32;  // uint256 colPerUnitDebt 1e18 (absorb_=true)
     uint256 internal constant TAIL_GEARBOX  = 32;  // uint256 minSeizedAmount
     uint256 internal constant TAIL_COMPOUND = 21;  // address cTokenCollateral | uint8 isCEther
 

@@ -142,7 +142,7 @@ then: adapter tail (`PlanDecoder.tailLen` / `ExecutorAdapter::tail_len`)
 | 3 | EulerV2 | debt EVault | 32 | `uint256` minYieldBalance (quoted yield shares) |
 | 4 | SiloV2 | hook receiver | 0 | `receiveSToken = false` hardcoded; never the Silo ERC-4626 |
 | 5 | LiquityV2 | TroveManager | 32 | `uint256` troveId (full id; `PositionKey.user` is low 160 bits) |
-| 6 | Fluid | T1 vault | 32 | `uint256` colPerUnitDebt (quoted 1e27); `absorb_ = true` hardcoded. T2/T3/T4 are not this ABI |
+| 6 | Fluid | T1 vault | 32 | `uint256` colPerUnitDebt (quoted **1e18** min coll/debt; pin slip). Not internal `colPerDebt` 1e27. `absorb_ = true` hardcoded. T2/T3/T4 are not this ABI |
 | 7 | Gearbox | CreditFacadeV3 | 32 | `uint256` minSeizedAmount (partial only; full MultiCall is unwired) |
 | 8 | CompoundV2 | debt cToken | 21 | `address` cTokenCollateral ‖ `uint8` isCEther (from config, not `underlying()`) |
 
@@ -155,12 +155,19 @@ The 20-byte `market` field cannot carry V4 reserve ids, a Morpho `Id`, an Euler
 (the contract has no address→id view) and checks that the Morpho Id's
 `(loanToken, collateralToken)` equals `(group.debtAsset, leg.collateralAsset)` —
 on-chain a mismatch is `LegMismatch` and reverts the whole plan. 10E tails that
-are quoted amounts (Euler / Fluid / Gearbox / Liquity trove id / Compound cToken)
-are assembled from adapter config + the quote, never guessed.
+are quoted amounts (Euler / Fluid 1e18 / Gearbox) stay quote-derived.
+Liquity trove id and Compound cToken + CEther flag are pinned in `ValidateCtx`
+from adapter config + `TroveExtra`, never guessed.
 
-`liq-plan::validate` pins V4 ids and Morpho tokens as before. The 10E tails are
-shape-checked only (quoted `uint256` / config address+flag); the profit guard
-bounds a wrong quoted amount the same way it bounds a wrong V4 id.
+`liq-plan::validate` pins V4 ids and Morpho tokens as before. Compound
+`(debt cToken, cTokenCollateral, isCEther)` and Liquity
+`(TroveManager, troveId, borrower)` are pinned the same way — a random
+cToken, flipped CEther bit, or a trove id that is not the quoted position
+is `EncodeError`. Euler `minYield` / Gearbox `minSeized` / Fluid 1e18
+`colPerUnitDebt` stay shape + nonzero (cannot re-derive without the quote).
+Fluid rejects a 1e27-scale tail (`>= 10^27`): that is the internal
+`colPerDebt` unit, not the wire argument. 17A must use
+`col_per_unit_debt_1e18` from the quote seize/repay pair.
 
 `adapter` is per-leg, so one group may span protocols — Alice on Aave V3 and Bob
 on Aave V4, both owing USDC, is one group.

@@ -98,7 +98,8 @@ pub enum LegTail {
     Euler { min_yield: U256 },
     /// Liquity V2 `batchLiquidateTroves` — full uint256 trove id.
     Liquity { trove_id: U256 },
-    /// Fluid T1 `liquidate(…, colPerUnitDebt_, …)` — quoted 1e27 ratio.
+    /// Fluid T1 `liquidate(…, colPerUnitDebt_, …)` — quoted **1e18** min
+    /// collateral per debt (pin `9496626f` slip). Not internal `colPerDebt` (1e27).
     /// `absorb_` is hardcoded `true` on-chain (matches the absorb-inclusive quote).
     Fluid { col_per_unit_debt: U256 },
     /// Gearbox V3 `partiallyLiquidateCreditAccount` — quoted min seized.

@@ -620,17 +620,19 @@ contract Executor {
 
         uint256[] memory ids = new uint256[](1);
         ids[0] = id;
+        uint256 ethBefore = address(this).balance;
         try ITroveManager(l.market).batchLiquidateTroves(ids) {
             ok = true;
-            uint256 ethBal = address(this).balance;
-            if (ethBal != 0) IWETH(WETH).deposit{value: ethBal}();
+            uint256 ethNow = address(this).balance;
+            if (ethNow > ethBefore) IWETH(WETH).deposit{value: ethNow - ethBefore}();
         } catch {}
     }
 
     /// Fluid T1 `liquidate(debtAmt_, colPerUnitDebt_, to_, absorb_)` pin
-    /// `9496626f`. `to_` = this Executor. `absorb_ = true` (quote includes
-    /// absorbed). T2/T3/T4 must not reach this path. No HF view — the call
-    /// is the guard (Morpho-style).
+    /// `9496626f`. Tail is **1e18** min coll/debt (slip check); passed
+    /// through with no conversion. `to_` = this Executor. `absorb_ = true`
+    /// (quote includes absorbed). T2/T3/T4 must not reach this path. No HF
+    /// view — the call is the guard (Morpho-style).
     function _liquidateFluid(address debtAsset, LiqLeg memory l, bytes calldata plan)
         internal returns (bool ok)
     {
@@ -666,7 +668,9 @@ contract Executor {
     /// cToken. Tail = cTokenCollateral ‖ isCEther. Guard:
     /// `getAccountLiquidity` shortfall or `isDeprecated`. Never receive
     /// cTokens as a flag — seize lands as cTokens by protocol and swaps
-    /// take the balance. CEther: unwrap WETH, payable call, wrap leftover.
+    /// take the balance. CEther: unwrap WETH, official 2-arg payable
+    /// `liquidateBorrow`, wrap only ETH gained by this leg. Wrong
+    /// `isCEther` / repay > WETH / withdraw-or-liq revert skips the **leg**.
     function _liquidateCompoundV2(address debtAsset, LiqLeg memory l, bytes calldata plan)
         internal returns (bool ok)
     {
@@ -693,12 +697,18 @@ contract Executor {
         }
 
         if (isCEther != 0) {
-            IWETH(WETH).withdraw(l.repayAmount);
-            try ICEther(l.market).liquidateBorrow{value: l.repayAmount}(l.borrower, cTokenColl) {
+            if (debtAsset != WETH) return false;
+            uint256 need = l.repayAmount;
+            if (IERC20(WETH).balanceOf(address(this)) < need) return false;
+            uint256 ethBefore = address(this).balance;
+            try IWETH(WETH).withdraw(need) {} catch {
+                return false;
+            }
+            try ICEther(l.market).liquidateBorrow{value: need}(l.borrower, cTokenColl) {
                 ok = true;
             } catch {}
-            uint256 left = address(this).balance;
-            if (left != 0) IWETH(WETH).deposit{value: left}();
+            uint256 ethNow = address(this).balance;
+            if (ethNow > ethBefore) IWETH(WETH).deposit{value: ethNow - ethBefore}();
         } else {
             debtAsset.safeApprove(l.market, l.repayAmount);
             try ICErc20(l.market).liquidateBorrow(l.borrower, l.repayAmount, cTokenColl)

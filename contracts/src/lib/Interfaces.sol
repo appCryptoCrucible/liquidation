@@ -156,7 +156,8 @@ interface ITroveManager {
 
 // ───────────────────────────── Fluid T1 ─────────────────────────────────
 /// T1 `liquidate` pin `9496626f`. T2/T3/T4 are different ABIs — do not call this
-/// on a non-T1 vault. `colPerUnitDebt_` is 1e27, quoted, never guessed.
+/// on a non-T1 vault. `colPerUnitDebt_` is **1e18** min coll per debt (slip
+/// `(actualCol * 1e18) / actualDebt`). Not internal `colPerDebt` (1e27).
 interface IFluidT1 {
     function liquidate(uint256 debtAmt_, uint256 colPerUnitDebt_, address to_, bool absorb_)
         external payable returns (uint256 actualDebtAmt_, uint256 actualColAmt_);

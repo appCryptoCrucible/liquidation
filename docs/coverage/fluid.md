@@ -13,7 +13,7 @@ topic0 = keccak256(canonical ABI signature).
 
 `to_ == 0x…dEaD` reverts `FluidLiquidateResult` (try/catch quote). 10R must use that path or the pin tick walk. This adapter quotes the **single-segment perfect-tick** formula (top tick → liquidation tick) when `n_nfts == 1` and `tickStatus == 1`. Multi-NFT top-tick / partials are fail-closed (`OracleSourceMismatch`). W has no Fluid decoder — leave W alone.
 
-T1 `encode` emits `ExecutorAdapter::Fluid` (id 6, tail 32 = quoted `colPerUnitDebt`; `absorb_ = true` hardcoded). T2/T3/T4 stay `ProtocolError::ExecutorUnwired` — never call the T1 ABI on them. Check 9 is live for T1 after 10E. Do not starve checks 5/9/10 with healthy-only fixtures.
+T1 `encode` emits `ExecutorAdapter::Fluid` (id 6, tail 32 = quoted `colPerUnitDebt` **1e18** pin slip, not internal `colPerDebt` 1e27; `absorb_ = true` hardcoded). T2/T3/T4 stay `ProtocolError::ExecutorUnwired` — never call the T1 ABI on them. Check 9 is live for T1 after 10E. Do not starve checks 5/9/10 with healthy-only fixtures. Use `col_per_unit_debt_1e18` / `col_per_unit_debt_1e18_from_quote` so 17A cannot copy the oracle 1e27.
 
 `absorb_ = true` consumes absorbed liquidity first (pin). Native token uses `msg.value` — native vaults are UNPRICED (not WETH).
 

@@ -1,7 +1,7 @@
 //! Encode / validate failures. Every variant is fail-closed: the plan is
 //! not emitted.
 
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, U256};
 use liq_types::FlashProvider;
 use thiserror::Error;
 
@@ -71,6 +71,10 @@ pub enum EncodeError {
     FluidTailShape,
     #[error("Fluid T1 colPerUnitDebt is zero")]
     FluidZeroColPer,
+    #[error("Fluid T1 colPerUnitDebt is 1e27-scale; wire unit is 1e18")]
+    FluidColPerNot1e18,
+    #[error("Fluid T1 colPerUnitDebt 1e18 conversion failed")]
+    FluidColPerConvert,
     #[error("Gearbox leg tail is not a uint256 minSeizedAmount")]
     GearboxTailShape,
     #[error("Gearbox minSeizedAmount is zero")]
@@ -81,6 +85,25 @@ pub enum EncodeError {
     CompoundZeroCToken,
     #[error("Compound V2 isCEther flag is not 0 or 1")]
     CompoundBadFlag,
+    #[error("Compound V2 pair debt={market} coll={ctoken_collateral} is not pinned")]
+    CompoundUnpinned {
+        market: Address,
+        ctoken_collateral: Address,
+    },
+    #[error("Compound V2 market pins {pinned}, leg has {got}")]
+    CompoundMarketMismatch { pinned: Address, got: Address },
+    #[error("Compound V2 cTokenCollateral pins {pinned}, leg has {got}")]
+    CompoundCTokenMismatch { pinned: Address, got: Address },
+    #[error("Compound V2 isCEther pins {pinned}, leg has {got}")]
+    CompoundCEtherMismatch { pinned: u8, got: u8 },
+    #[error("Liquity V2 troveId {trove_id} is not pinned")]
+    LiquityUnpinned { trove_id: U256 },
+    #[error("Liquity V2 TroveManager pins {pinned}, leg has {got}")]
+    LiquityMarketMismatch { pinned: Address, got: Address },
+    #[error("Liquity V2 troveId pins {pinned}, leg has {got}")]
+    LiquityTroveMismatch { pinned: U256, got: U256 },
+    #[error("Liquity V2 borrower pins {pinned}, leg has {got}")]
+    LiquityBorrowerMismatch { pinned: Address, got: Address },
     #[error("unknown swap venue {0}")]
     UnknownVenue(u8),
     #[error("UniV3 pool-direct data must be 20 bytes, got {0}")]

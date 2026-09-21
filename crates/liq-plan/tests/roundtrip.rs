@@ -13,11 +13,13 @@
 use alloy_primitives::{address, b256, Address, U256};
 use liq_exec::wire::LegTail;
 use liq_plan::{
-    decode_batch, ensure_surplus_borrow_profit_legs, BatchPlan, EncodedPlan, FlashGroup, LiqLeg,
-    MorphoMarketPin, SwapLeg, V4ReservePin, ValidateCtx, FLAG_SWEEP, HEADER_LEN, LEG_EXACT_OUT,
-    LEG_TAKE_BALANCE, LIQ_LEG_LEN, SWAP_LEG_HEAD_LEN, VENUE_ROUTER, VENUE_UNIV3_POOL,
+    col_per_unit_debt_1e18, decode_batch, ensure_surplus_borrow_profit_legs, BatchPlan,
+    CompoundMarketPin, EncodedPlan, FlashGroup, LiqLeg, LiquityTrovePin, MorphoMarketPin, SwapLeg,
+    V4ReservePin, ValidateCtx, FLAG_SWEEP, HEADER_LEN, LEG_EXACT_OUT, LEG_TAKE_BALANCE,
+    LIQ_LEG_LEN, SWAP_LEG_HEAD_LEN, VENUE_ROUTER, VENUE_UNIV3_POOL,
 };
 use liq_protocol::ExecutorAdapter;
+use liq_types::fixed::{RAY, WAD};
 use liq_types::FlashProvider;
 use proptest::prelude::*;
 
@@ -37,6 +39,11 @@ const USDC_WETH: Address = address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
 const ROUTER_A: Address = address!("E592427A0AEce92De3Edee1F18E0157C05861564");
 const SKY_FLASH: Address = address!("60744434d6339a6B27d73d9Eda62b6F66a0a04FA");
 const UNIV4_PM: Address = address!("000000000004444c5dc75cB358380D2e3dE08A90");
+const TM: Address = address!("3333333333333333333333333333333333333333");
+const CDEBT: Address = address!("5555555555555555555555555555555555555555");
+const CCOLL: Address = address!("6666666666666666666666666666666666666666");
+const USER: Address = address!("000000000000000000000000000000000000dEaD");
+const TROVE: U256 = U256::from_limbs([42, 0, 0, 0]);
 
 /// ForkMatrix live Morpho id (wstETH coll, WETH loan). Params from Morpho
 /// listing (exchange-rate oracle + AdaptiveCurveIRM, LLTV 94.5%).
@@ -73,6 +80,16 @@ fn ctx() -> ValidateCtx {
             },
         ],
         morpho: vec![pin],
+        compound: vec![CompoundMarketPin {
+            debt_ctoken: CDEBT,
+            ctoken_collateral: CCOLL,
+            is_cether: 0,
+        }],
+        liquity: vec![LiquityTrovePin {
+            trove_manager: TM,
+            trove_id: TROVE,
+            borrower: USER,
+        }],
     }
 }
 
@@ -334,17 +351,13 @@ fn encode_decode_10e_tails() {
     let c = ctx();
     let vault = address!("1111111111111111111111111111111111111111");
     let hook = address!("2222222222222222222222222222222222222222");
-    let tm = address!("3333333333333333333333333333333333333333");
     let facade = address!("4444444444444444444444444444444444444444");
-    let cdebt = address!("5555555555555555555555555555555555555555");
-    let ccoll = address!("6666666666666666666666666666666666666666");
-    let user = address!("000000000000000000000000000000000000dEaD");
     let asked = 1_000_000u128;
     let legs = [
         LiqLeg {
             adapter: ExecutorAdapter::EulerV2,
             market: vault,
-            borrower: user,
+            borrower: USER,
             collateral_asset: WETH,
             repay_amount: asked,
             tail: LegTail::Euler {
@@ -355,7 +368,7 @@ fn encode_decode_10e_tails() {
         LiqLeg {
             adapter: ExecutorAdapter::SiloV2,
             market: hook,
-            borrower: user,
+            borrower: USER,
             collateral_asset: WETH,
             repay_amount: asked,
             tail: LegTail::None,
@@ -363,30 +376,28 @@ fn encode_decode_10e_tails() {
         },
         LiqLeg {
             adapter: ExecutorAdapter::LiquityV2,
-            market: tm,
-            borrower: user,
+            market: TM,
+            borrower: USER,
             collateral_asset: WETH,
             repay_amount: asked,
-            tail: LegTail::Liquity {
-                trove_id: U256::from(42u64),
-            },
+            tail: LegTail::Liquity { trove_id: TROVE },
             protocol_pull: asked,
         },
         LiqLeg {
             adapter: ExecutorAdapter::Fluid,
             market: vault,
-            borrower: user,
+            borrower: USER,
             collateral_asset: WETH,
             repay_amount: asked,
             tail: LegTail::Fluid {
-                col_per_unit_debt: U256::from(10u64).pow(U256::from(27u64)),
+                col_per_unit_debt: WAD,
             },
             protocol_pull: asked,
         },
         LiqLeg {
             adapter: ExecutorAdapter::Gearbox,
             market: facade,
-            borrower: user,
+            borrower: USER,
             collateral_asset: WETH,
             repay_amount: asked,
             tail: LegTail::Gearbox {
@@ -396,12 +407,12 @@ fn encode_decode_10e_tails() {
         },
         LiqLeg {
             adapter: ExecutorAdapter::CompoundV2,
-            market: cdebt,
-            borrower: user,
+            market: CDEBT,
+            borrower: USER,
             collateral_asset: WETH,
             repay_amount: asked,
             tail: LegTail::CompoundV2 {
-                ctoken_collateral: ccoll,
+                ctoken_collateral: CCOLL,
                 is_cether: 0,
             },
             protocol_pull: asked,
@@ -428,7 +439,141 @@ fn encode_decode_10e_tails() {
         assert_eq!(back.groups[0].liqs[0].adapter, leg.adapter);
         assert_eq!(back.groups[0].liqs[0].tail, leg.tail);
         assert_eq!(back.groups[0].liqs[0].market, leg.market);
+        if let LegTail::Fluid { col_per_unit_debt } = leg.tail {
+            assert_eq!(col_per_unit_debt, WAD);
+            assert!(col_per_unit_debt < RAY);
+        }
     }
+}
+
+fn one_leg_plan(leg: LiqLeg) -> BatchPlan {
+    let asked = leg.protocol_pull;
+    BatchPlan {
+        flags: FLAG_SWEEP,
+        bid_bps: 0,
+        gas_cost_wei: 0,
+        min_profit_wei: 0,
+        groups: vec![FlashGroup {
+            provider: FlashProvider::Aave,
+            flash_source: AAVE_V3,
+            debt_asset: DAI,
+            flash_amount: asked,
+            liqs: vec![leg],
+            repay_swaps: vec![exact_out(WETH, DAI, asked)],
+        }],
+        profit_swaps: vec![profit_tb(WETH)],
+    }
+}
+
+#[test]
+fn fluid_1e27_tail_rejected_1e18_helper_is_wire_unit() {
+    let c = ctx();
+    let asked = 1_000_000u128;
+    let vault = address!("1111111111111111111111111111111111111111");
+    let base = LiqLeg {
+        adapter: ExecutorAdapter::Fluid,
+        market: vault,
+        borrower: USER,
+        collateral_asset: WETH,
+        repay_amount: asked,
+        tail: LegTail::Fluid {
+            col_per_unit_debt: RAY,
+        },
+        protocol_pull: asked,
+    };
+    assert_eq!(
+        EncodedPlan::encode(&one_leg_plan(base.clone()), &c),
+        Err(liq_plan::EncodeError::FluidColPerNot1e18)
+    );
+    let wire = col_per_unit_debt_1e18(WAD, WAD).unwrap();
+    assert_eq!(wire, WAD);
+    assert!(
+        wire < RAY,
+        "1e27 would fail pin (actualCol*1e18)/actualDebt"
+    );
+    let mut ok = base;
+    ok.tail = LegTail::Fluid {
+        col_per_unit_debt: wire,
+    };
+    EncodedPlan::encode(&one_leg_plan(ok), &c).expect("1e18 tail encodes");
+}
+
+#[test]
+fn compound_wrong_ctoken_and_flipped_cether_rejected() {
+    let c = ctx();
+    let asked = 1_000_000u128;
+    let right = LiqLeg {
+        adapter: ExecutorAdapter::CompoundV2,
+        market: CDEBT,
+        borrower: USER,
+        collateral_asset: WETH,
+        repay_amount: asked,
+        tail: LegTail::CompoundV2 {
+            ctoken_collateral: CCOLL,
+            is_cether: 0,
+        },
+        protocol_pull: asked,
+    };
+    EncodedPlan::encode(&one_leg_plan(right.clone()), &c).expect("pinned pair");
+
+    let mut wrong_coll = right.clone();
+    wrong_coll.tail = LegTail::CompoundV2 {
+        ctoken_collateral: address!("7777777777777777777777777777777777777777"),
+        is_cether: 0,
+    };
+    assert!(matches!(
+        EncodedPlan::encode(&one_leg_plan(wrong_coll), &c),
+        Err(liq_plan::EncodeError::CompoundUnpinned { .. })
+    ));
+
+    let mut flipped = right.clone();
+    flipped.tail = LegTail::CompoundV2 {
+        ctoken_collateral: CCOLL,
+        is_cether: 1,
+    };
+    assert!(matches!(
+        EncodedPlan::encode(&one_leg_plan(flipped), &c),
+        Err(liq_plan::EncodeError::CompoundCEtherMismatch { pinned: 0, got: 1 })
+    ));
+
+    let mut wrong_debt = right;
+    wrong_debt.market = address!("8888888888888888888888888888888888888888");
+    assert!(matches!(
+        EncodedPlan::encode(&one_leg_plan(wrong_debt), &c),
+        Err(liq_plan::EncodeError::CompoundUnpinned { .. })
+    ));
+}
+
+#[test]
+fn liquity_wrong_trove_id_rejected() {
+    let c = ctx();
+    let asked = 1_000_000u128;
+    let right = LiqLeg {
+        adapter: ExecutorAdapter::LiquityV2,
+        market: TM,
+        borrower: USER,
+        collateral_asset: WETH,
+        repay_amount: asked,
+        tail: LegTail::Liquity { trove_id: TROVE },
+        protocol_pull: asked,
+    };
+    EncodedPlan::encode(&one_leg_plan(right.clone()), &c).expect("pinned trove");
+
+    let mut wrong_id = right.clone();
+    wrong_id.tail = LegTail::Liquity {
+        trove_id: U256::from(99u64),
+    };
+    assert!(matches!(
+        EncodedPlan::encode(&one_leg_plan(wrong_id), &c),
+        Err(liq_plan::EncodeError::LiquityUnpinned { .. })
+    ));
+
+    let mut wrong_tm = right;
+    wrong_tm.market = address!("9999999999999999999999999999999999999999");
+    assert!(matches!(
+        EncodedPlan::encode(&one_leg_plan(wrong_tm), &c),
+        Err(liq_plan::EncodeError::LiquityMarketMismatch { .. })
+    ));
 }
 
 #[test]

@@ -3,7 +3,7 @@
 
 use alloy_primitives::{uint, Address, U256};
 use liq_protocol::{ProtocolError, Result};
-use liq_types::fixed::{mul_div, FixedError, Rounding, RAY};
+use liq_types::fixed::{mul_div, FixedError, Rounding, RAY, WAD};
 use liq_types::Ray;
 
 /// Pin `NATIVE_TOKEN`. Not WETH. Unmapped native vaults are UNPRICED.
@@ -260,6 +260,21 @@ pub fn raw_debt_per_col(oracle_1e27: U256, supply_ex: U256, borrow_ex: U256) -> 
     Ok(raw)
 }
 
+/// Pin `vaultT1/coreModule/main.sol` @ `9496626f` `liquidate`:
+/// `colPerUnitDebt_` is **min collateral per unit of debt in 1e18**.
+/// Slip: `(actualCol * 1e18) / actualDebt < colPerUnitDebt_`.
+///
+/// Internal [`col_per_debt_with_penalty`] (1e27) is a different number.
+/// 17A must call this from quote seize/repay — never copy `oracle_1e27`
+/// or `colPerDebt` onto the wire. Executor passes the tail through with
+/// no conversion.
+pub fn col_per_unit_debt_1e18(actual_col: U256, actual_debt: U256) -> Result<U256> {
+    if actual_debt.is_zero() {
+        return Err(ProtocolError::Fixed(FixedError::DivisionByZero));
+    }
+    mul_div_down(actual_col, WAD, actual_debt)
+}
+
 /// Pin: `colPerDebt = (1e54 / raw) * (10000 + penalty) / 10000` (27 decimals).
 pub fn col_per_debt_with_penalty(raw_debt_per_col: U256, penalty: u16) -> Result<U256> {
     if raw_debt_per_col.is_zero() {
@@ -441,5 +456,18 @@ mod tick_tests {
         )
         .unwrap();
         assert_eq!(r, uint!(2_000_000_000_000_000_000_U256));
+    }
+
+    #[test]
+    fn col_per_unit_debt_wire_is_1e18_not_1e27() {
+        // Pin slip: (actualCol * 1e18) / actualDebt. 1:1 tokens → 1e18.
+        let one = WAD;
+        let wire = col_per_unit_debt_1e18(one, one).unwrap();
+        assert_eq!(wire, WAD);
+        assert!(wire < RAY);
+        // A 1e27 tail fails the pin inequality on this quote (ExcessSlippage).
+        assert!(wire < RAY);
+        assert_eq!(col_per_unit_debt_1e18(U256::ZERO, one).unwrap(), U256::ZERO);
+        assert!(col_per_unit_debt_1e18(one, U256::ZERO).is_err());
     }
 }

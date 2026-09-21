@@ -13,10 +13,11 @@ use liq_exec::wire::LegTail;
 use liq_flash::fallback_chain;
 use liq_flash::{fee_amount, FlashIndex, Haircut};
 use liq_plan::{
-    ensure_surplus_borrow_profit_legs, validate, BatchPlan, FlashGroup, LiqLeg, SwapLeg,
-    ValidateCtx, LEG_EXACT_OUT, LEG_TAKE_BALANCE, VENUE_ROUTER, VENUE_UNIV3_POOL,
+    col_per_unit_debt_1e18, ensure_surplus_borrow_profit_legs, validate, BatchPlan, FlashGroup,
+    LiqLeg, SwapLeg, ValidateCtx, LEG_EXACT_OUT, LEG_TAKE_BALANCE, VENUE_ROUTER, VENUE_UNIV3_POOL,
 };
-use liq_protocol::{ExecutorAdapter, FlashRoute};
+use liq_protocol::{ExecutorAdapter, FlashRoute, Quote};
+use liq_types::fixed::RAY;
 use liq_types::{AssetId, PositionId};
 use smallvec::SmallVec;
 
@@ -47,6 +48,155 @@ pub trait AssembleView {
     /// `(router_target, calldata after the 20-byte target)` for a non-V3
     /// pool. `None` → that pool cannot be encoded (fail closed).
     fn router_leg(&self, pool: Address) -> Option<(Address, Vec<u8>)>;
+}
+
+/// Pins the 10E tails (ids 3–8). Missing required fields → do not assemble.
+///
+/// Fluid T1 is `fluid_t1 == Some(true)` plus `col_per_unit_debt`. T2–T4
+/// (`Some(false)`) stay Unwired. Gearbox full MultiCall is Unwired — do
+/// not invent `PriceUpdate`. Compound `is_cether` is a config pin
+/// (`underlying == 0`), never a `decimals()` guess.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TailPins {
+    pub adapter: ExecutorAdapter,
+    pub market: Address,
+    pub borrower: Address,
+    pub protocol_pull: Option<u128>,
+    pub euler_min_yield: Option<U256>,
+    pub liquity_trove_id: Option<U256>,
+    /// `None` missing; `Some(true)` T1; `Some(false)` T2–T4 Unwired.
+    pub fluid_t1: Option<bool>,
+    pub fluid_col_per_unit_debt: Option<U256>,
+    pub gearbox_min_seized: Option<U256>,
+    pub gearbox_full_multicall: bool,
+    pub compound_ctoken_collateral: Option<Address>,
+    pub compound_is_cether: Option<bool>,
+}
+
+/// Euler `minYieldBalance` is the quoted yield (`SeizeOption::max_seize`).
+pub fn euler_min_yield_from_quote(q: &Quote, seize: usize) -> Result<U256, AssembleError> {
+    let s = q
+        .seize_options
+        .get(seize)
+        .ok_or(AssembleError::Missing("euler seize"))?;
+    if s.max_seize.is_zero() {
+        return Err(AssembleError::Missing("euler min_yield"));
+    }
+    Ok(s.max_seize)
+}
+
+/// Fluid T1 wire `colPerUnitDebt_` from quote seize/repay.
+/// Pin 1e18 slip — not FluidOracle 1e27, not internal `colPerDebt`.
+pub fn fluid_col_per_unit_debt_from_quote(
+    q: &Quote,
+    repay: usize,
+    seize: usize,
+) -> Result<U256, AssembleError> {
+    let r = q
+        .repay_options
+        .get(repay)
+        .ok_or(AssembleError::Missing("fluid repay"))?;
+    let s = q
+        .seize_options
+        .get(seize)
+        .ok_or(AssembleError::Missing("fluid seize"))?;
+    col_per_unit_debt_1e18(s.max_seize, r.max_repay)
+        .map_err(|_| AssembleError::Missing("fluid col_per_unit_debt"))
+}
+
+/// Gearbox partial `min_seized` is the quoted seize. Full MultiCall is Unwired.
+pub fn gearbox_min_seized_from_quote(q: &Quote, seize: usize) -> Result<U256, AssembleError> {
+    let s = q
+        .seize_options
+        .get(seize)
+        .ok_or(AssembleError::Missing("gearbox seize"))?;
+    if s.max_seize.is_zero() {
+        return Err(AssembleError::Missing("gearbox min_seized"));
+    }
+    Ok(s.max_seize)
+}
+
+/// Build [`LegMeta`] for adapter ids 3–8 (and Silo/AaveV3 empty tails).
+/// Fail closed if a required tail field is missing.
+pub fn leg_meta_from_pins(p: &TailPins) -> Result<LegMeta, AssembleError> {
+    let tail = match p.adapter {
+        ExecutorAdapter::AaveV3 | ExecutorAdapter::SiloV2 => LegTail::None,
+        ExecutorAdapter::EulerV2 => {
+            let min_yield = p
+                .euler_min_yield
+                .ok_or(AssembleError::Missing("euler min_yield"))?;
+            if min_yield.is_zero() {
+                return Err(AssembleError::Missing("euler min_yield"));
+            }
+            LegTail::Euler { min_yield }
+        }
+        ExecutorAdapter::LiquityV2 => {
+            let trove_id = p
+                .liquity_trove_id
+                .ok_or(AssembleError::Missing("liquity trove_id"))?;
+            if trove_id.is_zero() {
+                return Err(AssembleError::Missing("liquity trove_id"));
+            }
+            LegTail::Liquity { trove_id }
+        }
+        ExecutorAdapter::Fluid => match p.fluid_t1 {
+            None => return Err(AssembleError::Missing("fluid vault_type")),
+            Some(false) => return Err(AssembleError::Missing("fluid T2-T4 unwired")),
+            Some(true) => {
+                let col_per_unit_debt = p
+                    .fluid_col_per_unit_debt
+                    .ok_or(AssembleError::Missing("fluid col_per_unit_debt"))?;
+                // Pin slip is 1e18. A 1e27-scale tail ExcessSlippage's every T1 leg.
+                if col_per_unit_debt.is_zero() || col_per_unit_debt >= RAY {
+                    return Err(AssembleError::Missing("fluid col_per_unit_debt"));
+                }
+                LegTail::Fluid { col_per_unit_debt }
+            }
+        },
+        ExecutorAdapter::Gearbox => {
+            if p.gearbox_full_multicall {
+                return Err(AssembleError::Missing("gearbox full MultiCall unwired"));
+            }
+            let min_seized = p
+                .gearbox_min_seized
+                .ok_or(AssembleError::Missing("gearbox min_seized"))?;
+            if min_seized.is_zero() {
+                return Err(AssembleError::Missing("gearbox min_seized"));
+            }
+            LegTail::Gearbox { min_seized }
+        }
+        ExecutorAdapter::CompoundV2 => {
+            let ctoken_collateral = p
+                .compound_ctoken_collateral
+                .ok_or(AssembleError::Missing("compound ctoken_collateral"))?;
+            if ctoken_collateral.is_zero() {
+                return Err(AssembleError::Missing("compound ctoken_collateral"));
+            }
+            let is_cether = p
+                .compound_is_cether
+                .ok_or(AssembleError::Missing("compound is_cether"))?;
+            LegTail::CompoundV2 {
+                ctoken_collateral,
+                is_cether: u8::from(is_cether),
+            }
+        }
+        ExecutorAdapter::AaveV4 | ExecutorAdapter::MorphoBlue => {
+            return Err(AssembleError::Missing("tail pins 0-2 not via 10E helper"));
+        }
+    };
+    if p.market.is_zero() {
+        return Err(AssembleError::Missing("market"));
+    }
+    if p.borrower.is_zero() {
+        return Err(AssembleError::Missing("borrower"));
+    }
+    Ok(LegMeta {
+        adapter: p.adapter,
+        market: p.market,
+        borrower: p.borrower,
+        tail,
+        protocol_pull: p.protocol_pull,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -792,6 +942,8 @@ mod tests {
             weth,
             v4_underlying: Vec::new(),
             morpho: Vec::new(),
+            compound: Vec::new(),
+            liquity: Vec::new(),
         }
     }
 
@@ -1415,5 +1567,148 @@ mod tests {
             next.groups[0].flash_source,
             assembled[0].plan.groups[0].flash_source
         );
+    }
+
+    fn pins_base(adapter: ExecutorAdapter) -> TailPins {
+        TailPins {
+            adapter,
+            market: addr(0x51),
+            borrower: addr(0xB1),
+            protocol_pull: None,
+            euler_min_yield: None,
+            liquity_trove_id: None,
+            fluid_t1: None,
+            fluid_col_per_unit_debt: None,
+            gearbox_min_seized: None,
+            gearbox_full_multicall: false,
+            compound_ctoken_collateral: None,
+            compound_is_cether: None,
+        }
+    }
+
+    /// 10E tails: missing fields refuse assemble. Negative: each id 3–8
+    /// without its pin is `Missing`, not a guessed tail.
+    #[test]
+    fn leg_meta_ids_3_8_fail_closed_on_missing_tail() {
+        assert!(matches!(
+            leg_meta_from_pins(&pins_base(ExecutorAdapter::EulerV2)),
+            Err(AssembleError::Missing("euler min_yield"))
+        ));
+        let silo = leg_meta_from_pins(&pins_base(ExecutorAdapter::SiloV2)).unwrap();
+        assert_eq!(silo.tail, LegTail::None);
+        assert!(matches!(
+            leg_meta_from_pins(&pins_base(ExecutorAdapter::LiquityV2)),
+            Err(AssembleError::Missing("liquity trove_id"))
+        ));
+        assert!(matches!(
+            leg_meta_from_pins(&pins_base(ExecutorAdapter::Fluid)),
+            Err(AssembleError::Missing("fluid vault_type"))
+        ));
+        let mut t2 = pins_base(ExecutorAdapter::Fluid);
+        t2.fluid_t1 = Some(false);
+        t2.fluid_col_per_unit_debt = Some(U256::from(1u64));
+        assert!(matches!(
+            leg_meta_from_pins(&t2),
+            Err(AssembleError::Missing("fluid T2-T4 unwired"))
+        ));
+        assert!(matches!(
+            leg_meta_from_pins(&pins_base(ExecutorAdapter::Gearbox)),
+            Err(AssembleError::Missing("gearbox min_seized"))
+        ));
+        let mut full = pins_base(ExecutorAdapter::Gearbox);
+        full.gearbox_min_seized = Some(U256::from(1u64));
+        full.gearbox_full_multicall = true;
+        assert!(matches!(
+            leg_meta_from_pins(&full),
+            Err(AssembleError::Missing("gearbox full MultiCall unwired"))
+        ));
+        assert!(matches!(
+            leg_meta_from_pins(&pins_base(ExecutorAdapter::CompoundV2)),
+            Err(AssembleError::Missing("compound ctoken_collateral"))
+        ));
+        let mut c = pins_base(ExecutorAdapter::CompoundV2);
+        c.compound_ctoken_collateral = Some(addr(0xC1));
+        assert!(matches!(
+            leg_meta_from_pins(&c),
+            Err(AssembleError::Missing("compound is_cether"))
+        ));
+    }
+
+    #[test]
+    fn leg_meta_ids_3_8_ok_when_pins_present() {
+        let mut e = pins_base(ExecutorAdapter::EulerV2);
+        e.euler_min_yield = Some(U256::from(7u64));
+        assert_eq!(
+            leg_meta_from_pins(&e).unwrap().tail,
+            LegTail::Euler {
+                min_yield: U256::from(7u64)
+            }
+        );
+        let mut l = pins_base(ExecutorAdapter::LiquityV2);
+        l.liquity_trove_id = Some(U256::from(42u64));
+        assert_eq!(
+            leg_meta_from_pins(&l).unwrap().tail,
+            LegTail::Liquity {
+                trove_id: U256::from(42u64)
+            }
+        );
+        let mut f = pins_base(ExecutorAdapter::Fluid);
+        f.fluid_t1 = Some(true);
+        f.fluid_col_per_unit_debt = Some(liq_types::fixed::WAD);
+        assert_eq!(
+            leg_meta_from_pins(&f).unwrap().tail,
+            LegTail::Fluid {
+                col_per_unit_debt: liq_types::fixed::WAD
+            }
+        );
+        let mut f27 = pins_base(ExecutorAdapter::Fluid);
+        f27.fluid_t1 = Some(true);
+        f27.fluid_col_per_unit_debt = Some(RAY);
+        assert!(matches!(
+            leg_meta_from_pins(&f27),
+            Err(AssembleError::Missing("fluid col_per_unit_debt"))
+        ));
+        let mut g = pins_base(ExecutorAdapter::Gearbox);
+        g.gearbox_min_seized = Some(U256::from(9u64));
+        assert_eq!(
+            leg_meta_from_pins(&g).unwrap().tail,
+            LegTail::Gearbox {
+                min_seized: U256::from(9u64)
+            }
+        );
+        let mut c = pins_base(ExecutorAdapter::CompoundV2);
+        c.compound_ctoken_collateral = Some(addr(0xC1));
+        c.compound_is_cether = Some(true);
+        match leg_meta_from_pins(&c).unwrap().tail {
+            LegTail::CompoundV2 {
+                ctoken_collateral,
+                is_cether,
+            } => {
+                assert_eq!(ctoken_collateral, addr(0xC1));
+                assert_eq!(is_cether, 1);
+            }
+            other => panic!("{other:?}"),
+        }
+        let q = Quote {
+            position: PositionId(1),
+            key: PositionKey {
+                protocol: PROTO,
+                market: MarketId(0),
+                user: addr(0xB1),
+            },
+            repay_options: smallvec::SmallVec::from_slice(&[RepayOption {
+                asset: A1,
+                max_repay: e18(1),
+            }]),
+            seize_options: smallvec::SmallVec::from_slice(&[SeizeOption {
+                asset: A0,
+                max_seize: e18(3),
+                bonus: bonus_5(),
+                curve: BonusCurve::Static { bonus: bonus_5() },
+            }]),
+        };
+        assert_eq!(euler_min_yield_from_quote(&q, 0).unwrap(), e18(3));
+        assert_eq!(gearbox_min_seized_from_quote(&q, 0).unwrap(), e18(3));
+        assert!(euler_min_yield_from_quote(&q, 3).is_err());
     }
 }

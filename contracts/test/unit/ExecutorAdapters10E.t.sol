@@ -7,7 +7,7 @@ import {PlanBuilder as PB} from "./PlanBuilder.sol";
 import {ExecutorTestBase} from "./Base.sol";
 import {
     MockEulerVault, MockSiloHook, MockTroveManager, MockFluidT1,
-    MockCreditFacade, MockComptroller, MockCErc20
+    MockCreditFacade, MockComptroller, MockCErc20, MockCEther
 } from "./Mocks.sol";
 
 /// 10E dispatch / approve / zero-allowance / unknown-adapter. V3/V4/Morpho
@@ -21,6 +21,7 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
     MockCreditFacade gearbox;
     MockComptroller comptroller;
     MockCErc20 cDebt;
+    MockCEther cEther;
 
     function setUp() public override {
         super.setUp();
@@ -31,6 +32,7 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
         gearbox = new MockCreditFacade();
         comptroller = new MockComptroller();
         cDebt = new MockCErc20(comptroller);
+        cEther = new MockCEther(comptroller);
 
         euler.setDebtToken(address(debt));
         silo.setDebtToken(address(debt));
@@ -38,6 +40,7 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
         fluid.setCollToken(address(coll));
         gearbox.setDebtToken(address(debt));
         cDebt.setDebtToken(address(debt));
+        cEther.setCollToken(address(coll));
         liquity.setCollToken(address(coll));
 
         debt.mint(address(euler), 1e15);
@@ -51,6 +54,8 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
         coll.mint(address(fluid), 1e12);
         coll.mint(address(gearbox), 1e12);
         coll.mint(address(cDebt), 1e12);
+        coll.mint(address(cEther), 1e12);
+        weth.mint(address(pool), 1e24);
 
         euler.setPosition(borrower, REPAY, COLL_OUT);
         silo.setPosition(borrower, REPAY, COLL_OUT);
@@ -58,6 +63,7 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
         fluid.setPosition(address(fluid), REPAY, COLL_OUT);
         gearbox.setPosition(borrower, REPAY, COLL_OUT);
         cDebt.setPosition(borrower, REPAY, COLL_OUT);
+        cEther.setPosition(borrower, 1e18, COLL_OUT);
         comptroller.setShortfall(borrower, 1);
     }
 
@@ -132,16 +138,16 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
     }
 
     function test_fluid_dispatch_approve_zero() public {
-        _execLeg(PB.legFluid(address(fluid), address(fluid), address(coll), REPAY, 1e27));
+        _execLeg(PB.legFluid(address(fluid), address(fluid), address(coll), REPAY, 1e18));
         assertEq(fluid.lastAbsorb(), true);
         assertEq(fluid.lastTo(), address(ex));
-        assertEq(fluid.lastColPer(), 1e27);
+        assertEq(fluid.lastColPer(), 1e18);
     }
 
     function test_fluid_reject_zeros_allowance() public {
         fluid.setRevertOnLiquidate(true);
         vm.expectRevert(Executor.AllLegsFailed.selector);
-        _exec(_plan(PB.F_SWEEP, 0, GAS_COST, 0, 1, PB.legFluid(address(fluid), address(fluid), address(coll), REPAY, 1e27)));
+        _exec(_plan(PB.F_SWEEP, 0, GAS_COST, 0, 1, PB.legFluid(address(fluid), address(fluid), address(coll), REPAY, 1e18)));
         assertEq(debt.allowance(address(ex), address(fluid)), 0);
     }
 
@@ -181,5 +187,107 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
             PB.legCompound(address(cDebt), borrower, address(coll), REPAY, address(coll), 0)
         ));
         assertEq(debt.allowance(address(ex), address(cDebt)), 0);
+    }
+
+    uint128 constant WETH_REPAY = 1e18;
+    uint128 constant WETH_OWED = 1e18 + 5e14; // Aave mock 5 bps
+
+    function _cetherPlan(uint16 bidBps, uint128 gasCost, uint128 minProfit, uint8 liqCount, bytes memory legs)
+        internal view returns (bytes memory)
+    {
+        return bytes.concat(
+            PB.header(PB.F_SWEEP, bidBps, gasCost, minProfit, 1),
+            PB.groupHead(PB.P_AAVE, address(pool), address(weth), WETH_REPAY, liqCount, 1),
+            legs,
+            PB.poolSwap(address(pCollWeth), address(coll), address(weth), PB.L_EXACT_OUT, WETH_OWED),
+            PB.profit(1, PB.poolSwap(address(pCollWeth), address(coll), address(weth), PB.L_TAKE_BALANCE, 0))
+        );
+    }
+
+    function test_cether_success_two_arg_payable() public {
+        _exec(_cetherPlan(0, GAS_COST, 0.9e18, 1, PB.legCompound(
+            address(cEther), borrower, address(coll), WETH_REPAY, address(coll), 1
+        )));
+        assertEq(cEther.lastBorrower(), borrower);
+        assertEq(cEther.lastCColl(), address(coll));
+        assertEq(cEther.lastValue(), WETH_REPAY);
+        assertEq(address(ex).balance, 0);
+        _assertClean();
+    }
+
+    function test_cether_liquidate_revert_sole_leg_all_failed() public {
+        cEther.setRevertOnLiquidate(true);
+        vm.expectRevert(Executor.AllLegsFailed.selector);
+        _exec(_cetherPlan(0, 0, 0, 1, PB.legCompound(
+            address(cEther), borrower, address(coll), WETH_REPAY, address(coll), 1
+        )));
+        assertEq(address(ex).balance, 0);
+        assertEq(weth.balanceOf(address(ex)), 0);
+    }
+
+    function test_cether_liquidate_revert_other_leg_fills() public {
+        address live = makeAddr("v3weth");
+        pool.setPosition(live, 0.95e18, WETH_REPAY, COLL_OUT);
+        cEther.setRevertOnLiquidate(true);
+        _exec(_cetherPlan(
+            0, GAS_COST, 0.9e18, 2,
+            bytes.concat(
+                PB.legCompound(address(cEther), borrower, address(coll), WETH_REPAY, address(coll), 1),
+                PB.legV3(address(pool), live, address(coll), WETH_REPAY)
+            )
+        ));
+        assertEq(cEther.lastBorrower(), address(0));
+        assertEq(pool.lastDebtToCover(), WETH_REPAY);
+        _assertClean();
+    }
+
+    function test_cether_leftover_wrapped_bid_eth_not_wrapped() public {
+        cEther.setLeftoverRefund(0.1e18);
+        uint256 bidValue = 1e18;
+        vm.deal(operator, bidValue);
+        bytes memory plan = _cetherPlan(
+            1000, 0, 0, 1,
+            PB.legCompound(address(cEther), borrower, address(coll), WETH_REPAY, address(coll), 1)
+        );
+        uint256 coinbaseBefore = address(coinbase).balance;
+        vm.prank(operator);
+        ex.execute{value: bidValue}(plan);
+        assertEq(cEther.lastBorrower(), borrower);
+        assertEq(address(ex).balance, 0, "leg leftover wrapped; bid ETH not left on executor");
+        assertGt(address(coinbase).balance, coinbaseBefore, "bid paid from msg.value");
+        assertLt(operator.balance, bidValue, "unused bid returned; bid itself spent");
+        _assertClean();
+    }
+
+    function test_cether_flag_on_non_weth_debt_skips_not_plan_revert() public {
+        vm.expectRevert(Executor.AllLegsFailed.selector);
+        _exec(_plan(
+            PB.F_SWEEP, 0, GAS_COST, 0, 1,
+            PB.legCompound(address(cDebt), borrower, address(coll), REPAY, address(coll), 1)
+        ));
+        assertEq(cDebt.lastBorrower(), address(0));
+        assertEq(weth.balanceOf(address(ex)), 0);
+    }
+
+    function test_cether_flag_on_non_weth_other_leg_fills() public {
+        _exec(_plan(
+            PB.F_SWEEP, 0, GAS_COST, 0.9e18, 2,
+            bytes.concat(
+                PB.legCompound(address(cDebt), borrower, address(coll), REPAY, address(coll), 1),
+                PB.legV3(address(pool), borrower, address(coll), REPAY)
+            )
+        ));
+        assertEq(cDebt.lastBorrower(), address(0));
+        assertEq(pool.lastDebtToCover(), REPAY);
+        _assertClean();
+    }
+
+    function test_cether_repay_gt_weth_skips_not_plan_revert() public {
+        vm.expectRevert(Executor.AllLegsFailed.selector);
+        _exec(_cetherPlan(0, 0, 0, 1, PB.legCompound(
+            address(cEther), borrower, address(coll), 10e18, address(coll), 1
+        )));
+        assertEq(cEther.lastBorrower(), address(0));
+        assertEq(address(ex).balance, 0);
     }
 }

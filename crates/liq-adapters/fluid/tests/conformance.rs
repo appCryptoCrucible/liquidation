@@ -19,14 +19,15 @@ use liq_adapters_fluid::config::FactoryRpc;
 use liq_adapters_fluid::events::{admin, factory, halt, vault};
 use liq_adapters_fluid::layout::VaultExtra;
 use liq_adapters_fluid::{
-    alloc_meter, liquidate_selector, math, Config, ConfigError, Fluid, VAULT_T1, VAULT_T2,
-    VAULT_T3, VAULT_T4,
+    alloc_meter, col_per_unit_debt_1e18_from_quote, liquidate_selector, math, Config, ConfigError,
+    Fluid, VAULT_T1, VAULT_T2, VAULT_T3, VAULT_T4,
 };
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
     CallbackShape, Constraints, ExecutorAdapter, FlashRoute, HealthState, LegChoice, Protocol,
     ProtocolError,
 };
+use liq_types::fixed::RAY;
 use liq_types::{LogSubscriber, Ray};
 
 fn full_store(d: &Deploy, debt: U256) -> (Fluid, liq_protocol::conformance::JournalStore) {
@@ -202,7 +203,10 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
         alloc_meter().map(|m| m as &dyn Fn() -> u64),
     )
     .unwrap_or_else(|f| panic!("{f}"));
-    assert!(rep.assertions[8] > 0, "check 9 must fire after 10E T1 encode");
+    assert!(
+        rep.assertions[8] > 0,
+        "check 9 must fire after 10E T1 encode"
+    );
 }
 
 #[test]
@@ -355,6 +359,13 @@ fn quote_static_bonus_and_encode_ok() {
     let plan = p
         .encode(&q, LegChoice::PREFERRED, &route, rec)
         .expect("10E Fluid T1 encode");
+    let wire = col_per_unit_debt_1e18_from_quote(&q, LegChoice::PREFERRED).unwrap();
+    assert_eq!(
+        wire,
+        math::col_per_unit_debt_1e18(q.seize_options[0].max_seize, q.repay_options[0].max_repay)
+            .unwrap()
+    );
+    assert!(wire < RAY, "quote→tail is 1e18 slip, not oracle 1e27");
     assert_eq!(plan.leg.adapter, ExecutorAdapter::Fluid);
     assert_eq!(plan.leg.market, d.vault_t1);
     assert_eq!(plan.leg.borrower, q.key.user);

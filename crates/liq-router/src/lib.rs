@@ -73,7 +73,11 @@ pub mod warm;
 #[cfg(test)]
 pub(crate) mod fixtures;
 
-pub use assemble::{assemble, reencode_with, AssembleError, AssembleView, Assembled, LegMeta};
+pub use assemble::{
+    assemble, euler_min_yield_from_quote, fluid_col_per_unit_debt_from_quote,
+    gearbox_min_seized_from_quote, leg_meta_from_pins, reencode_with, AssembleError, AssembleView,
+    Assembled, LegMeta, TailPins,
+};
 pub use band::{
     build_table, compute_band, next_base_fee, BandCtx, BandInputs, BandTable, PairTerms,
     ViabilityBand,

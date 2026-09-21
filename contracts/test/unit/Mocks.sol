@@ -735,6 +735,48 @@ contract MockCErc20 {
     }
 }
 
+/// Official CEther pin `a3214f67`: 2-arg payable `liquidateBorrow`.
+/// `leftoverRefund` is a mock control for wrap-delta tests, not live state.
+contract MockCEther {
+    MockComptroller public unitroller;
+    mapping(address => uint256) public maxRepay;
+    mapping(address => uint256) public collOut;
+    bool public revertOnLiquidate;
+    uint256 public leftoverRefund;
+    address public lastBorrower;
+    uint256 public lastValue;
+    address public lastCColl;
+    address public collToken;
+
+    constructor(MockComptroller u) { unitroller = u; }
+    function setCollToken(address t) external { collToken = t; }
+    function setPosition(address u, uint256 maxRepay_, uint256 collOut_) external {
+        maxRepay[u] = maxRepay_;
+        collOut[u] = collOut_;
+    }
+    function setRevertOnLiquidate(bool v) external { revertOnLiquidate = v; }
+    function setLeftoverRefund(uint256 v) external { leftoverRefund = v; }
+    function comptroller() external view returns (address) { return address(unitroller); }
+
+    function liquidateBorrow(address borrower, address cTokenCollateral) external payable {
+        require(!revertOnLiquidate, "cether: revert");
+        uint256 maxR = maxRepay[borrower];
+        require(maxR != 0, "cether: solvent");
+        uint256 actual = msg.value < maxR ? msg.value : maxR;
+        lastBorrower = borrower;
+        lastValue = msg.value;
+        lastCColl = cTokenCollateral;
+        Tok.push(collToken, msg.sender, collOut[borrower] * actual / maxR);
+        maxRepay[borrower] = 0;
+        uint256 refund = leftoverRefund;
+        leftoverRefund = 0;
+        if (refund != 0 && refund <= address(this).balance) {
+            (bool ok, ) = msg.sender.call{value: refund}("");
+            require(ok, "cether: refund");
+        }
+    }
+}
+
 /// A fee recipient that needs more than the 2300-gas stipend.
 contract ExpensiveCoinbase {
     uint256 public received;

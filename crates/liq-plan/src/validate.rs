@@ -4,6 +4,7 @@ use alloy_primitives::{keccak256, Address, B256, U256};
 use alloy_sol_types::sol;
 use liq_exec::wire::{LegTail, LEG_EXACT_OUT, LEG_TAKE_BALANCE, VENUE_ROUTER, VENUE_UNIV3_POOL};
 use liq_protocol::ExecutorAdapter;
+use liq_types::fixed::{mul_div, Rounding, RAY, WAD};
 
 use crate::error::{EncodeError, Result};
 use crate::types::{BatchPlan, FlashGroup, MorphoMarketPin, SwapLeg, ValidateCtx};
@@ -64,11 +65,16 @@ pub fn validate(p: &BatchPlan, ctx: &ValidateCtx) -> Result<()> {
                     if trove_id.is_zero() {
                         return Err(EncodeError::LiquityZeroTrove);
                     }
+                    check_liquity(ctx, l.market, *trove_id, l.borrower)?;
                 }
                 (ExecutorAdapter::LiquityV2, _) => return Err(EncodeError::LiquityTailShape),
                 (ExecutorAdapter::Fluid, LegTail::Fluid { col_per_unit_debt }) => {
                     if col_per_unit_debt.is_zero() {
                         return Err(EncodeError::FluidZeroColPer);
+                    }
+                    // Pin slip is 1e18. A 1e27-scale tail ExcessSlippage's every T1 leg.
+                    if *col_per_unit_debt >= RAY {
+                        return Err(EncodeError::FluidColPerNot1e18);
                     }
                 }
                 (ExecutorAdapter::Fluid, _) => return Err(EncodeError::FluidTailShape),
@@ -91,6 +97,7 @@ pub fn validate(p: &BatchPlan, ctx: &ValidateCtx) -> Result<()> {
                     if *is_cether > 1 {
                         return Err(EncodeError::CompoundBadFlag);
                     }
+                    check_compound(ctx, l.market, *ctoken_collateral, *is_cether)?;
                 }
                 (ExecutorAdapter::CompoundV2, _) => return Err(EncodeError::CompoundTailShape),
                 (ExecutorAdapter::AaveV3, _) => return Err(EncodeError::V3TailShape),
@@ -168,6 +175,81 @@ fn check_morpho(
         });
     }
     Ok(())
+}
+
+fn check_compound(
+    ctx: &ValidateCtx,
+    market: Address,
+    ctoken_collateral: Address,
+    is_cether: u8,
+) -> Result<()> {
+    let pin = ctx
+        .compound_pin(market, ctoken_collateral)
+        .ok_or(EncodeError::CompoundUnpinned {
+            market,
+            ctoken_collateral,
+        })?;
+    if pin.debt_ctoken != market {
+        return Err(EncodeError::CompoundMarketMismatch {
+            pinned: pin.debt_ctoken,
+            got: market,
+        });
+    }
+    if pin.ctoken_collateral != ctoken_collateral {
+        return Err(EncodeError::CompoundCTokenMismatch {
+            pinned: pin.ctoken_collateral,
+            got: ctoken_collateral,
+        });
+    }
+    if pin.is_cether != is_cether {
+        return Err(EncodeError::CompoundCEtherMismatch {
+            pinned: pin.is_cether,
+            got: is_cether,
+        });
+    }
+    Ok(())
+}
+
+fn check_liquity(
+    ctx: &ValidateCtx,
+    market: Address,
+    trove_id: U256,
+    borrower: Address,
+) -> Result<()> {
+    let pin = ctx
+        .liquity_pin(trove_id)
+        .ok_or(EncodeError::LiquityUnpinned { trove_id })?;
+    if pin.trove_manager != market {
+        return Err(EncodeError::LiquityMarketMismatch {
+            pinned: pin.trove_manager,
+            got: market,
+        });
+    }
+    if pin.trove_id != trove_id {
+        return Err(EncodeError::LiquityTroveMismatch {
+            pinned: pin.trove_id,
+            got: trove_id,
+        });
+    }
+    if !pin.borrower.is_zero() && pin.borrower != borrower {
+        return Err(EncodeError::LiquityBorrowerMismatch {
+            pinned: pin.borrower,
+            got: borrower,
+        });
+    }
+    Ok(())
+}
+
+/// Pin `vaultT1/coreModule/main.sol` @ `9496626f`:
+/// `colPerUnitDebt_` = min collateral per debt in **1e18**.
+/// `(actualCol * 1e18) / actualDebt`. Internal `colPerDebt` (1e27) is a
+/// different number — 17A must not copy the oracle 1e27 onto the wire.
+pub fn col_per_unit_debt_1e18(actual_col: U256, actual_debt: U256) -> Result<U256> {
+    if actual_debt.is_zero() {
+        return Err(EncodeError::FluidColPerConvert);
+    }
+    mul_div(actual_col, WAD, actual_debt, Rounding::Down)
+        .map_err(|_| EncodeError::FluidColPerConvert)
 }
 
 /// `Id = keccak256(abi.encode(MarketParams))` — Morpho Blue `8e26ca6a`.

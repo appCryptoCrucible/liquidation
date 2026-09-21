@@ -3,8 +3,8 @@
 
 use alloy_primitives::U256;
 use liq_protocol::{
-    BonusCurve, Constraints, HealthState, PositionRef, ProtocolError, Quote, RepayOption, Result,
-    SeizeOption,
+    BonusCurve, Constraints, HealthState, LegChoice, PositionRef, ProtocolError, Quote,
+    RepayOption, Result, SeizeOption,
 };
 use liq_types::fixed::{mul_div, FixedError, Rounding, WAD_RAY_RATIO};
 use liq_types::PriceVector;
@@ -14,8 +14,23 @@ use crate::health::{finish, terms};
 use crate::layout::VaultExtra;
 use crate::math::{
     asset_unit, bonus_ray, col_liquidated_from_debt, col_per_debt_with_penalty,
-    debt_liquidated_to_ref, from_raw, get_ratio_at_tick, TICK_STATUS_PERFECT,
+    col_per_unit_debt_1e18, debt_liquidated_to_ref, from_raw, get_ratio_at_tick,
+    TICK_STATUS_PERFECT,
 };
+
+/// Wire `colPerUnitDebt_` from the quoted seize/repay pair.
+/// Pin 1e18 slip — not FluidOracle 1e27, not internal `colPerDebt`.
+pub fn col_per_unit_debt_1e18_from_quote(q: &Quote, legs: LegChoice) -> Result<U256> {
+    let repay = q
+        .repay_options
+        .get(usize::from(legs.repay))
+        .ok_or(ProtocolError::LegOutOfRange)?;
+    let seize = q
+        .seize_options
+        .get(usize::from(legs.seize))
+        .ok_or(ProtocolError::LegOutOfRange)?;
+    col_per_unit_debt_1e18(seize.max_seize, repay.max_repay)
+}
 
 pub(crate) fn quote(
     pos: PositionRef<'_>,
