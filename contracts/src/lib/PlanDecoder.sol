@@ -68,18 +68,29 @@ library PlanDecoder {
     uint256 internal constant LIQ_LEG_LEN       = 77;   // fixed part; + tailLen(adapter)
     uint256 internal constant SWAP_LEG_HEAD_LEN = 60;
 
-    // Adapter ids — `liq_protocol::plan::ExecutorAdapter` discriminants (D48).
-    uint8 internal constant A_AAVE_V3 = 0;
-    uint8 internal constant A_AAVE_V4 = 1;
-    uint8 internal constant A_MORPHO  = 2;
+    // Adapter ids — `liq_protocol::plan::ExecutorAdapter` discriminants (10E / D63).
+    // Do not reorder. After H3, a new ABI is 10R-n + D55-A.
+    uint8 internal constant A_AAVE_V3   = 0;
+    uint8 internal constant A_AAVE_V4   = 1;
+    uint8 internal constant A_MORPHO    = 2;
+    uint8 internal constant A_EULER     = 3;
+    uint8 internal constant A_SILO      = 4;
+    uint8 internal constant A_LIQUITY   = 5;
+    uint8 internal constant A_FLUID     = 6;
+    uint8 internal constant A_GEARBOX   = 7;
+    uint8 internal constant A_COMPOUND  = 8;
 
-    /// Adapter tails. V3 addresses reserves by underlying — nothing extra.
-    /// V4 `liquidationCall` takes `(collateralReserveId, debtReserveId)`;
-    /// Morpho `liquidate` takes `MarketParams`, recovered on-chain from the
-    /// 32-byte market `Id`. Neither fits the 77 fixed bytes.
-    uint256 internal constant TAIL_AAVE_V3 = 0;
-    uint256 internal constant TAIL_AAVE_V4 = 4;   // u16 collateralReserveId | u16 debtReserveId
-    uint256 internal constant TAIL_MORPHO  = 32;  // bytes32 market Id
+    /// Adapter tails. Length is a constant per adapter so the walk has no
+    /// length prefix. See PLAN-ENCODING.md §1b.
+    uint256 internal constant TAIL_AAVE_V3  = 0;   // reserves by underlying
+    uint256 internal constant TAIL_AAVE_V4  = 4;   // u16 collateralReserveId | u16 debtReserveId
+    uint256 internal constant TAIL_MORPHO   = 32;  // bytes32 market Id
+    uint256 internal constant TAIL_EULER    = 32;  // uint256 minYieldBalance
+    uint256 internal constant TAIL_SILO     = 0;   // receiveSToken=false hardcoded
+    uint256 internal constant TAIL_LIQUITY  = 32;  // uint256 troveId
+    uint256 internal constant TAIL_FLUID    = 32;  // uint256 colPerUnitDebt (absorb_=true)
+    uint256 internal constant TAIL_GEARBOX  = 32;  // uint256 minSeizedAmount
+    uint256 internal constant TAIL_COMPOUND = 21;  // address cTokenCollateral | uint8 isCEther
 
     error UnknownAdapter(uint8 a);
     error NoGroups();
@@ -139,9 +150,15 @@ library PlanDecoder {
     // ───────────────────────────── liquidation legs ───────────────────────
 
     function tailLen(uint8 adapter) internal pure returns (uint256) {
-        if (adapter == A_AAVE_V3) return TAIL_AAVE_V3;
-        if (adapter == A_AAVE_V4) return TAIL_AAVE_V4;
-        if (adapter == A_MORPHO)  return TAIL_MORPHO;
+        if (adapter == A_AAVE_V3)  return TAIL_AAVE_V3;
+        if (adapter == A_AAVE_V4)  return TAIL_AAVE_V4;
+        if (adapter == A_MORPHO)   return TAIL_MORPHO;
+        if (adapter == A_EULER)    return TAIL_EULER;
+        if (adapter == A_SILO)     return TAIL_SILO;
+        if (adapter == A_LIQUITY)  return TAIL_LIQUITY;
+        if (adapter == A_FLUID)    return TAIL_FLUID;
+        if (adapter == A_GEARBOX)  return TAIL_GEARBOX;
+        if (adapter == A_COMPOUND) return TAIL_COMPOUND;
         revert UnknownAdapter(adapter);
     }
 
@@ -180,6 +197,17 @@ library PlanDecoder {
 
     function tailMorpho(bytes calldata plan, uint256 o) internal pure returns (bytes32 id) {
         id = bytes32(plan[o : o + 32]);
+    }
+
+    function tailU256(bytes calldata plan, uint256 o) internal pure returns (uint256) {
+        return uint256(bytes32(plan[o : o + 32]));
+    }
+
+    function tailCompound(bytes calldata plan, uint256 o)
+        internal pure returns (address cTokenCollateral, uint8 isCEther)
+    {
+        cTokenCollateral = address(bytes20(plan[o : o + 20]));
+        isCEther = uint8(plan[o + 20]);
     }
 
     // ───────────────────────────────── swap legs ─────────────────────────

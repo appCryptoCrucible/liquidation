@@ -1,5 +1,5 @@
 //! Single-segment perfect-tick quote (top tick → liquidation tick).
-//! Partials / tick-walk are fail-closed. `encode` is Unwired until 10R.
+//! Partials / tick-walk are fail-closed. T1 `encode` is 10E; T2/T3/T4 stay Unwired.
 
 use alloy_primitives::U256;
 use liq_protocol::{

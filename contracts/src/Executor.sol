@@ -5,7 +5,9 @@ import {SafeTransfer} from "./lib/SafeTransfer.sol";
 import {Plan, FlashGroup, LiqLeg, SwapLeg, PlanDecoder} from "./lib/PlanDecoder.sol";
 import {
     IERC20, IWETH, IAavePool, IAaveV4Spoke, IMorpho, MarketParams,
-    IUniV3Pool, IPoolManager, IDssFlash
+    IUniV3Pool, IPoolManager, IDssFlash,
+    IEVault, ISiloHook, ITroveManager, IFluidT1, ICreditFacadeV3, PriceUpdate,
+    ICToken, IComptroller, ICErc20, ICEther
 } from "./lib/Interfaces.sol";
 
 /*
@@ -453,9 +455,15 @@ contract Executor {
     function _liquidateLeg(address debtAsset, LiqLeg memory l, bytes calldata plan)
         internal returns (bool)
     {
-        if (l.adapter == PlanDecoder.A_AAVE_V3) return _liquidateAaveV3(debtAsset, l);
-        if (l.adapter == PlanDecoder.A_AAVE_V4) return _liquidateAaveV4(debtAsset, l, plan);
-        if (l.adapter == PlanDecoder.A_MORPHO)  return _liquidateMorpho(debtAsset, l, plan);
+        if (l.adapter == PlanDecoder.A_AAVE_V3)  return _liquidateAaveV3(debtAsset, l);
+        if (l.adapter == PlanDecoder.A_AAVE_V4)  return _liquidateAaveV4(debtAsset, l, plan);
+        if (l.adapter == PlanDecoder.A_MORPHO)   return _liquidateMorpho(debtAsset, l, plan);
+        if (l.adapter == PlanDecoder.A_EULER)    return _liquidateEulerV2(debtAsset, l, plan);
+        if (l.adapter == PlanDecoder.A_SILO)     return _liquidateSiloV2(debtAsset, l);
+        if (l.adapter == PlanDecoder.A_LIQUITY)  return _liquidateLiquityV2(l, plan);
+        if (l.adapter == PlanDecoder.A_FLUID)    return _liquidateFluid(debtAsset, l, plan);
+        if (l.adapter == PlanDecoder.A_GEARBOX)  return _liquidateGearbox(debtAsset, l, plan);
+        if (l.adapter == PlanDecoder.A_COMPOUND) return _liquidateCompoundV2(debtAsset, l, plan);
         revert UnknownAdapter(l.adapter); // unreachable: the decoder rejected it
     }
 
@@ -550,6 +558,156 @@ contract Executor {
             ok = true;
         } catch {}
         debtAsset.safeApprove(l.market, 0);
+    }
+
+    /// Euler V2 `IEVault.liquidate(violator, collateral, repayAssets, minYieldBalance)`
+    /// pin `bfb325a6`. Target = debt vault (`market`). `collateralAsset` is
+    /// the collateral vault. Guard: `checkLiquidation` returns `(0,0)` when
+    /// healthy; HF==1 is liquidatable. Seized assets are vault shares — the
+    /// ABI has no receive-underlying flag.
+    function _liquidateEulerV2(address debtAsset, LiqLeg memory l, bytes calldata plan)
+        internal returns (bool ok)
+    {
+        uint256 minYield = plan.tailU256(l.tailOffset);
+        try IEVault(l.market).checkLiquidation(address(this), l.borrower, l.collateralAsset)
+            returns (uint256 maxRepay, uint256)
+        {
+            if (maxRepay == 0) return false;
+        } catch {
+            return false;
+        }
+
+        debtAsset.safeApprove(l.market, l.repayAmount);
+        try IEVault(l.market).liquidate(l.borrower, l.collateralAsset, l.repayAmount, minYield) {
+            ok = true;
+        } catch {}
+        debtAsset.safeApprove(l.market, 0);
+    }
+
+    /// Silo V2 `IPartialLiquidation.liquidationCall` pin `570a668a` topic0
+    /// `0x3a84f644…`. Target = hook receiver. `_receiveSToken = false`.
+    /// Guard: `maxLiquidation` `debtToRepay == 0`.
+    function _liquidateSiloV2(address debtAsset, LiqLeg memory l) internal returns (bool ok) {
+        try ISiloHook(l.market).maxLiquidation(l.borrower)
+            returns (uint256, uint256 debtToRepay, bool)
+        {
+            if (debtToRepay == 0) return false;
+        } catch {
+            return false;
+        }
+
+        debtAsset.safeApprove(l.market, l.repayAmount);
+        try ISiloHook(l.market).liquidationCall(
+            l.collateralAsset, debtAsset, l.borrower, l.repayAmount, false
+        ) returns (uint256, uint256) {
+            ok = true;
+        } catch {}
+        debtAsset.safeApprove(l.market, 0);
+    }
+
+    /// Liquity V2 `batchLiquidateTroves(uint256[])` selector `0xef49a6b4`
+    /// pin `c8a5a4ee`. No token repay (Stability Pool is the counterparty).
+    /// Guard: `getTroveStatus` ∈ {active=1, zombie=4}. `NothingToLiquidate`
+    /// / `EmptyData` → catch → skip. ETH gas-comp is wrapped to WETH.
+    function _liquidateLiquityV2(LiqLeg memory l, bytes calldata plan) internal returns (bool ok) {
+        uint256 id = plan.tailU256(l.tailOffset);
+        if (id == 0) return false;
+        try ITroveManager(l.market).getTroveStatus(id) returns (uint8 status) {
+            if (status != 1 && status != 4) return false;
+        } catch {
+            return false;
+        }
+
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = id;
+        try ITroveManager(l.market).batchLiquidateTroves(ids) {
+            ok = true;
+            uint256 ethBal = address(this).balance;
+            if (ethBal != 0) IWETH(WETH).deposit{value: ethBal}();
+        } catch {}
+    }
+
+    /// Fluid T1 `liquidate(debtAmt_, colPerUnitDebt_, to_, absorb_)` pin
+    /// `9496626f`. `to_` = this Executor. `absorb_ = true` (quote includes
+    /// absorbed). T2/T3/T4 must not reach this path. No HF view — the call
+    /// is the guard (Morpho-style).
+    function _liquidateFluid(address debtAsset, LiqLeg memory l, bytes calldata plan)
+        internal returns (bool ok)
+    {
+        uint256 colPer = plan.tailU256(l.tailOffset);
+        debtAsset.safeApprove(l.market, l.repayAmount);
+        try IFluidT1(l.market).liquidate(l.repayAmount, colPer, address(this), true)
+            returns (uint256, uint256)
+        {
+            ok = true;
+        } catch {}
+        debtAsset.safeApprove(l.market, 0);
+    }
+
+    /// Gearbox V3 `partiallyLiquidateCreditAccount` pin `510fc654`. Target =
+    /// CreditFacadeV3. `priceUpdates` empty — do not invent PriceUpdate
+    /// payloads. Full MultiCall close is unwired off-chain. No facade health
+    /// view used here; the call is the guard.
+    function _liquidateGearbox(address debtAsset, LiqLeg memory l, bytes calldata plan)
+        internal returns (bool ok)
+    {
+        uint256 minSeized = plan.tailU256(l.tailOffset);
+        PriceUpdate[] memory none;
+        debtAsset.safeApprove(l.market, l.repayAmount);
+        try ICreditFacadeV3(l.market).partiallyLiquidateCreditAccount(
+            l.borrower, l.collateralAsset, l.repayAmount, minSeized, address(this), none
+        ) returns (uint256) {
+            ok = true;
+        } catch {}
+        debtAsset.safeApprove(l.market, 0);
+    }
+
+    /// Compound V2 official Unitroller pin `a3214f67`. `market` = debt
+    /// cToken. Tail = cTokenCollateral ‖ isCEther. Guard:
+    /// `getAccountLiquidity` shortfall or `isDeprecated`. Never receive
+    /// cTokens as a flag — seize lands as cTokens by protocol and swaps
+    /// take the balance. CEther: unwrap WETH, payable call, wrap leftover.
+    function _liquidateCompoundV2(address debtAsset, LiqLeg memory l, bytes calldata plan)
+        internal returns (bool ok)
+    {
+        (address cTokenColl, uint8 isCEther) = plan.tailCompound(l.tailOffset);
+        if (isCEther > 1) return false;
+
+        address unitroller;
+        try ICToken(l.market).comptroller() returns (address c) {
+            unitroller = c;
+        } catch {
+            return false;
+        }
+        try IComptroller(unitroller).getAccountLiquidity(l.borrower)
+            returns (uint256 err, uint256, uint256 shortfall)
+        {
+            if (err != 0) return false;
+            bool deprecated;
+            try IComptroller(unitroller).isDeprecated(l.market) returns (bool d) {
+                deprecated = d;
+            } catch {}
+            if (shortfall == 0 && !deprecated) return false;
+        } catch {
+            return false;
+        }
+
+        if (isCEther != 0) {
+            IWETH(WETH).withdraw(l.repayAmount);
+            try ICEther(l.market).liquidateBorrow{value: l.repayAmount}(l.borrower, cTokenColl) {
+                ok = true;
+            } catch {}
+            uint256 left = address(this).balance;
+            if (left != 0) IWETH(WETH).deposit{value: left}();
+        } else {
+            debtAsset.safeApprove(l.market, l.repayAmount);
+            try ICErc20(l.market).liquidateBorrow(l.borrower, l.repayAmount, cTokenColl)
+                returns (uint256 errCode)
+            {
+                ok = errCode == 0;
+            } catch {}
+            debtAsset.safeApprove(l.market, 0);
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────────

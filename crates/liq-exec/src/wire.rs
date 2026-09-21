@@ -10,7 +10,7 @@
 //! Every read is bounds-checked and returns [`WireError::Truncated`] rather
 //! than panicking; the contract reverts on the same byte.
 
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, U256};
 use liq_protocol::ExecutorAdapter;
 use liq_types::FlashProvider;
 
@@ -84,7 +84,8 @@ pub struct GroupHead {
 /// Adapter-specific bytes after the 77 fixed leg bytes.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum LegTail {
-    /// Aave V3: reserves addressed by underlying.
+    /// Aave V3 / Silo V2: nothing beyond the 77 fixed bytes.
+    /// Silo `receiveSToken` is hardcoded `false` on-chain.
     None,
     /// Aave V4 `liquidationCall(collateralReserveId, debtReserveId, …)`.
     AaveV4 {
@@ -93,6 +94,22 @@ pub enum LegTail {
     },
     /// Morpho Blue market `Id`; `idToMarketParams` on-chain.
     Morpho { market_id: B256 },
+    /// Euler V2 `liquidate(…, minYieldBalance)` — quoted yield shares.
+    Euler { min_yield: U256 },
+    /// Liquity V2 `batchLiquidateTroves` — full uint256 trove id.
+    Liquity { trove_id: U256 },
+    /// Fluid T1 `liquidate(…, colPerUnitDebt_, …)` — quoted 1e27 ratio.
+    /// `absorb_` is hardcoded `true` on-chain (matches the absorb-inclusive quote).
+    Fluid { col_per_unit_debt: U256 },
+    /// Gearbox V3 `partiallyLiquidateCreditAccount` — quoted min seized.
+    Gearbox { min_seized: U256 },
+    /// Compound V2: debt cToken is `market`; tail is the seize cToken + CEther flag.
+    CompoundV2 {
+        ctoken_collateral: Address,
+        /// 1 = debt cToken is CEther (`liquidateBorrow` payable). From config,
+        /// never guessed via `underlying()`.
+        is_cether: u8,
+    },
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -159,6 +176,11 @@ fn b256_at(b: &[u8], o: usize) -> Result<B256> {
 }
 
 #[inline]
+fn u256_at(b: &[u8], o: usize) -> Result<U256> {
+    Ok(U256::from_be_slice(take(b, o, 32)?))
+}
+
+#[inline]
 fn add(a: usize, b: usize) -> Result<usize> {
     a.checked_add(b).ok_or(WireError::Overflow)
 }
@@ -217,13 +239,29 @@ pub fn decode_liq_leg(b: &[u8], o: usize) -> Result<(LiqLeg, usize)> {
         ExecutorAdapter::from_wire(adapter_byte).ok_or(WireError::UnknownAdapter(adapter_byte))?;
     let tail_offset = add(o, LIQ_LEG_LEN)?;
     let tail = match adapter {
-        ExecutorAdapter::AaveV3 => LegTail::None,
+        ExecutorAdapter::AaveV3 | ExecutorAdapter::SiloV2 => LegTail::None,
         ExecutorAdapter::AaveV4 => LegTail::AaveV4 {
             collateral_reserve_id: u16_at(b, tail_offset)?,
             debt_reserve_id: u16_at(b, add(tail_offset, 2)?)?,
         },
         ExecutorAdapter::MorphoBlue => LegTail::Morpho {
             market_id: b256_at(b, tail_offset)?,
+        },
+        ExecutorAdapter::EulerV2 => LegTail::Euler {
+            min_yield: u256_at(b, tail_offset)?,
+        },
+        ExecutorAdapter::LiquityV2 => LegTail::Liquity {
+            trove_id: u256_at(b, tail_offset)?,
+        },
+        ExecutorAdapter::Fluid => LegTail::Fluid {
+            col_per_unit_debt: u256_at(b, tail_offset)?,
+        },
+        ExecutorAdapter::Gearbox => LegTail::Gearbox {
+            min_seized: u256_at(b, tail_offset)?,
+        },
+        ExecutorAdapter::CompoundV2 => LegTail::CompoundV2 {
+            ctoken_collateral: addr_at(b, tail_offset)?,
+            is_cether: u8_at(b, add(tail_offset, 20)?)?,
         },
     };
     let next = add(tail_offset, adapter.tail_len())?;
@@ -520,7 +558,48 @@ mod tests {
         assert_eq!(tail_len(0).unwrap(), 0);
         assert_eq!(tail_len(1).unwrap(), 4);
         assert_eq!(tail_len(2).unwrap(), 32);
-        assert_eq!(tail_len(3), Err(WireError::UnknownAdapter(3)));
+        assert_eq!(tail_len(3).unwrap(), 32);
+        assert_eq!(tail_len(4).unwrap(), 0);
+        assert_eq!(tail_len(5).unwrap(), 32);
+        assert_eq!(tail_len(6).unwrap(), 32);
+        assert_eq!(tail_len(7).unwrap(), 32);
+        assert_eq!(tail_len(8).unwrap(), 21);
+        assert_eq!(tail_len(9), Err(WireError::UnknownAdapter(9)));
+    }
+
+    #[test]
+    fn decode_10e_tails() {
+        let mut b = vec![0u8; LIQ_LEG_LEN + 32];
+        b[0] = 3; // Euler
+        b[LIQ_LEG_LEN + 31] = 7;
+        let (leg, next) = decode_liq_leg(&b, 0).unwrap();
+        assert_eq!(leg.adapter, ExecutorAdapter::EulerV2);
+        assert_eq!(
+            leg.tail,
+            LegTail::Euler {
+                min_yield: U256::from(7u64)
+            }
+        );
+        assert_eq!(next, LIQ_LEG_LEN + 32);
+
+        let mut c = vec![0u8; LIQ_LEG_LEN + 21];
+        c[0] = 8; // Compound
+        c[LIQ_LEG_LEN + 19] = 0xAB;
+        c[LIQ_LEG_LEN + 20] = 1;
+        let (leg, next) = decode_liq_leg(&c, 0).unwrap();
+        assert_eq!(leg.adapter, ExecutorAdapter::CompoundV2);
+        match leg.tail {
+            LegTail::CompoundV2 {
+                ctoken_collateral,
+                is_cether,
+            } => {
+                assert_eq!(is_cether, 1);
+                assert_eq!(ctoken_collateral.as_slice()[19], 0xAB);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(next, LIQ_LEG_LEN + 21);
+        assert_eq!(decode_liq_leg(&[9u8], 0), Err(WireError::UnknownAdapter(9)));
     }
 
     #[test]

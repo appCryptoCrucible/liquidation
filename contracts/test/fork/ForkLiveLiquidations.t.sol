@@ -159,6 +159,28 @@ contract ForkLiveLiquidationsTest is Test {
         _runOne(PB.A_MORPHO, PB.P_AAVE, WETH, false);
     }
 
+    /// 10E families: cannot open a real liquidatable position on this pin
+    /// block without invented oracle/LTV/tick state. Honest skip — never
+    /// fabricate a liquidatable account.
+    function test_fork_euler_v2_cannot_open_without_invented_state() public onFork {
+        vm.skip(true); // EVK factory+LTV+oracle wiring not reproducible at 26019284
+    }
+    function test_fork_silo_v2_cannot_open_without_invented_state() public onFork {
+        vm.skip(true); // hook+SiloConfig isolated pair not opened from this fork
+    }
+    function test_fork_liquity_v2_cannot_open_without_invented_state() public onFork {
+        vm.skip(true); // would require inventing a BOLD price / ICR
+    }
+    function test_fork_fluid_t1_cannot_open_without_invented_state() public onFork {
+        vm.skip(true); // FluidOracle 1e27 / tick tree not opened from this fork
+    }
+    function test_fork_gearbox_cannot_open_without_invented_state() public onFork {
+        vm.skip(true); // CreditFacade open+borrow not wired without invented fills
+    }
+    function test_fork_compound_v2_cannot_open_without_invented_state() public onFork {
+        vm.skip(true); // official mint+borrow at 26019284 would invent a liquidatable account
+    }
+
     function _allowed(uint8 adapter, uint8 provider, address debt) internal pure returns (bool) {
         if (provider == PB.P_SKY && debt != DAI) return false;
         if (adapter == PB.A_V4 && debt != WETH) return false;

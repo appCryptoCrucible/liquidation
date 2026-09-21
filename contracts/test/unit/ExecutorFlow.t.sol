@@ -328,8 +328,8 @@ contract ExecutorFlowTest is ExecutorTestBase {
 
     function test_unknown_adapter_rejected_at_decode() public {
         bytes memory bad = PB.legV3(address(pool), borrower, address(coll), REPAY);
-        bad[0] = bytes1(uint8(7));
-        vm.expectRevert(abi.encodeWithSelector(PlanDecoder.UnknownAdapter.selector, uint8(7)));
+        bad[0] = bytes1(uint8(9));
+        vm.expectRevert(abi.encodeWithSelector(PlanDecoder.UnknownAdapter.selector, uint8(9)));
         _exec(_plan(PB.F_SWEEP, 0, GAS_COST, 0, 1, bad));
     }
 

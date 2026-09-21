@@ -19,6 +19,7 @@ interface IERC20 {
 
 interface IWETH {
     function balanceOf(address) external view returns (uint256);
+    function deposit() external payable;
     function withdraw(uint256) external;
 }
 
@@ -120,4 +121,80 @@ interface IDssFlash {
     function flashLoan(
         address receiver, address token, uint256 amount, bytes calldata data
     ) external returns (bool);
+}
+
+// ───────────────────────────── Euler V2 (EVK) ───────────────────────────
+/// `IEVault` liquidation module pin `bfb325a6`. Call the **debt** vault.
+/// `collateral` is the collateral vault (shares), not the underlying.
+interface IEVault {
+    function checkLiquidation(address liquidator, address violator, address collateral)
+        external view returns (uint256 maxRepay, uint256 maxYield);
+    function liquidate(address violator, address collateral, uint256 repayAssets, uint256 minYieldBalance)
+        external;
+}
+
+// ───────────────────────────── Silo V2 ──────────────────────────────────
+/// `IPartialLiquidation` pin `570a668a`. Call the **hook receiver**, never the
+/// Silo ERC-4626. Pin topic0 `LiquidationCall` `0x3a84f644…`.
+interface ISiloHook {
+    function maxLiquidation(address borrower)
+        external view returns (uint256 collateralToLiquidate, uint256 debtToRepay, bool sTokenRequired);
+    function liquidationCall(
+        address collateralAsset, address debtAsset, address borrower,
+        uint256 maxDebtToCover, bool receiveSToken
+    ) external returns (uint256 withdrawCollateral, uint256 repayDebtAssets);
+}
+
+// ───────────────────────────── Liquity V2 ───────────────────────────────
+/// `ITroveManager.batchLiquidateTroves` selector `0xef49a6b4` pin `c8a5a4ee`.
+/// Status: 1 = active, 4 = zombie. Empty array → `EmptyData`; none
+/// liquidatable → `NothingToLiquidate`.
+interface ITroveManager {
+    function getTroveStatus(uint256 troveId) external view returns (uint8);
+    function batchLiquidateTroves(uint256[] calldata troveArray) external;
+}
+
+// ───────────────────────────── Fluid T1 ─────────────────────────────────
+/// T1 `liquidate` pin `9496626f`. T2/T3/T4 are different ABIs — do not call this
+/// on a non-T1 vault. `colPerUnitDebt_` is 1e27, quoted, never guessed.
+interface IFluidT1 {
+    function liquidate(uint256 debtAmt_, uint256 colPerUnitDebt_, address to_, bool absorb_)
+        external payable returns (uint256 actualDebtAmt_, uint256 actualColAmt_);
+}
+
+// ───────────────────────────── Gearbox V3 ───────────────────────────────
+/// `ICreditFacadeV3` pin `510fc654`. Call the **facade**, never the manager.
+/// Partial only; full `liquidateCreditAccount` + MultiCall is unwired.
+struct PriceUpdate {
+    address priceFeed;
+    bytes data;
+}
+
+interface ICreditFacadeV3 {
+    function partiallyLiquidateCreditAccount(
+        address creditAccount, address token, uint256 repaidAmount,
+        uint256 minSeizedAmount, address to, PriceUpdate[] calldata priceUpdates
+    ) external returns (uint256 seizedAmount);
+}
+
+// ───────────────────────────── Compound V2 ──────────────────────────────
+/// Official Unitroller pin `a3214f67`. CEther vs CErc20 is a config flag,
+/// never `underlying()` on-chain.
+interface ICToken {
+    function comptroller() external view returns (address);
+}
+
+interface IComptroller {
+    function getAccountLiquidity(address account)
+        external view returns (uint256 err, uint256 liquidity, uint256 shortfall);
+    function isDeprecated(address cToken) external view returns (bool);
+}
+
+interface ICErc20 {
+    function liquidateBorrow(address borrower, uint256 repayAmount, address cTokenCollateral)
+        external returns (uint256);
+}
+
+interface ICEther {
+    function liquidateBorrow(address borrower, address cTokenCollateral) external payable;
 }

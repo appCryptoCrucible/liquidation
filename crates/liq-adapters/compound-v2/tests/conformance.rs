@@ -26,8 +26,8 @@ use liq_adapters_compound_v2::{alloc_meter, CompoundV2};
 use liq_config::{Intern, OnChainId, Registry};
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
-    CallbackShape, Constraints, DirtySet, FlashRoute, HealthState, LegChoice, Protocol,
-    ProtocolError, StateWriter,
+    CallbackShape, Constraints, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice,
+    Protocol, ProtocolError, StateWriter,
 };
 use liq_types::{LogSubscriber, ProtocolId, Ray};
 
@@ -226,15 +226,14 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
         recipient: Address::repeat_byte(0x99),
     };
     let mut log_store_u = store_after(&p_u, &listing_logs(&d));
-    let err = run(
+    let rep = run(
         &p_u,
         &mut log_store_u,
         &fx_u,
         alloc_meter().map(|m| m as &dyn Fn() -> u64),
     )
-    .expect_err("check 9 cannot Ok: encode is ExecutorUnwired until 10R");
-    assert_eq!(err.check, 9);
-    assert_eq!(err.detail, "ExecutorUnwired");
+    .unwrap_or_else(|f| panic!("{f}"));
+    assert!(rep.assertions[8] > 0, "check 9 must fire after 10E encode");
 }
 
 #[test]
@@ -252,7 +251,7 @@ fn health_from_shortfall_not_aave_hf() {
 }
 
 #[test]
-fn quote_close_factor_capped_and_encode_unwired() {
+fn quote_close_factor_capped_and_encode_ok() {
     let d = Deploy::new();
     let (p, st) = full_store(&d, ALICE_DEBT_LIQ);
     let px = prices(RAY_ONE, RAY_ONE);
@@ -281,10 +280,12 @@ fn quote_close_factor_capped_and_encode_unwired() {
         fee_bps: 0,
         callback: CallbackShape::ALL[0],
     };
-    assert_eq!(
-        p.encode(&q, LegChoice::PREFERRED, &route, rec),
-        Err(ProtocolError::ExecutorUnwired)
-    );
+    let plan = p
+        .encode(&q, LegChoice::PREFERRED, &route, rec)
+        .expect("10E Compound encode");
+    assert_eq!(plan.leg.adapter, ExecutorAdapter::CompoundV2);
+    assert_eq!(plan.leg.market, d.cusdc);
+    assert_eq!(plan.leg.borrower, q.key.user);
     let mut q2 = q.clone();
     q2.key.protocol = ProtocolId(99);
     assert_eq!(

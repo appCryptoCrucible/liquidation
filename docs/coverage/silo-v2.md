@@ -9,9 +9,9 @@ topic0 = keccak256(canonical ABI signature).
 
 **Hook receiver vs Silo.** `liquidationCall` / `maxLiquidation` / pin `LiquidationCall` are on the hook receiver (`IPartialLiquidation`). The Silo ERC-4626 is the collateral share token (`collateralShareToken == silo`) and exposes `isSolvent` / `repay` / deposit-borrow. Do not call `liquidationCall` on the Silo.
 
-Pin `LiquidationCall(address,address,address,uint256,uint256,bool)` topic0 `0x3a84f644…` ≠ `liq-watch` `silo::LiquidationCall(address,address,uint256,uint256)` topic0 `0xaefcad93…`. Adapter decodes the pin ABI. **Do not change W** (carry-forward). 10R must use the pin ABI on `hook_receiver`.
+Pin `LiquidationCall(address,address,address,uint256,uint256,bool)` topic0 `0x3a84f644…` ≠ `liq-watch` `silo::LiquidationCall(address,address,uint256,uint256)` topic0 `0xaefcad93…`. Adapter decodes the pin ABI. **Do not change W** (carry-forward). 10E calls the pin ABI on `hook_receiver`.
 
-`encode` validates then `ProtocolError::ExecutorUnwired` until 10R wires the hook ABI. No `ExecutorAdapter` discriminant. Happy-path Unwired is 10R. Check 9 cannot Ok — inapplicable, not starved with healthy-only fixtures.
+`encode` emits `ExecutorAdapter::SiloV2` (id 4, tail 0). `receiveSToken = false` is hardcoded on-chain. Check 9 is live after 10E. Do not starve checks 5/9/10 with healthy-only fixtures.
 
 ## Health state
 

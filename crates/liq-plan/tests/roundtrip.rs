@@ -321,6 +321,114 @@ fn constants_match_plan_decoder() {
     assert_eq!(ExecutorAdapter::AaveV3.tail_len(), 0);
     assert_eq!(ExecutorAdapter::AaveV4.tail_len(), 4);
     assert_eq!(ExecutorAdapter::MorphoBlue.tail_len(), 32);
+    assert_eq!(ExecutorAdapter::EulerV2.tail_len(), 32);
+    assert_eq!(ExecutorAdapter::SiloV2.tail_len(), 0);
+    assert_eq!(ExecutorAdapter::LiquityV2.tail_len(), 32);
+    assert_eq!(ExecutorAdapter::Fluid.tail_len(), 32);
+    assert_eq!(ExecutorAdapter::Gearbox.tail_len(), 32);
+    assert_eq!(ExecutorAdapter::CompoundV2.tail_len(), 21);
+}
+
+#[test]
+fn encode_decode_10e_tails() {
+    let c = ctx();
+    let vault = address!("1111111111111111111111111111111111111111");
+    let hook = address!("2222222222222222222222222222222222222222");
+    let tm = address!("3333333333333333333333333333333333333333");
+    let facade = address!("4444444444444444444444444444444444444444");
+    let cdebt = address!("5555555555555555555555555555555555555555");
+    let ccoll = address!("6666666666666666666666666666666666666666");
+    let user = address!("000000000000000000000000000000000000dEaD");
+    let asked = 1_000_000u128;
+    let legs = [
+        LiqLeg {
+            adapter: ExecutorAdapter::EulerV2,
+            market: vault,
+            borrower: user,
+            collateral_asset: WETH,
+            repay_amount: asked,
+            tail: LegTail::Euler {
+                min_yield: U256::from(7u64),
+            },
+            protocol_pull: asked,
+        },
+        LiqLeg {
+            adapter: ExecutorAdapter::SiloV2,
+            market: hook,
+            borrower: user,
+            collateral_asset: WETH,
+            repay_amount: asked,
+            tail: LegTail::None,
+            protocol_pull: asked,
+        },
+        LiqLeg {
+            adapter: ExecutorAdapter::LiquityV2,
+            market: tm,
+            borrower: user,
+            collateral_asset: WETH,
+            repay_amount: asked,
+            tail: LegTail::Liquity {
+                trove_id: U256::from(42u64),
+            },
+            protocol_pull: asked,
+        },
+        LiqLeg {
+            adapter: ExecutorAdapter::Fluid,
+            market: vault,
+            borrower: user,
+            collateral_asset: WETH,
+            repay_amount: asked,
+            tail: LegTail::Fluid {
+                col_per_unit_debt: U256::from(10u64).pow(U256::from(27u64)),
+            },
+            protocol_pull: asked,
+        },
+        LiqLeg {
+            adapter: ExecutorAdapter::Gearbox,
+            market: facade,
+            borrower: user,
+            collateral_asset: WETH,
+            repay_amount: asked,
+            tail: LegTail::Gearbox {
+                min_seized: U256::from(9u64),
+            },
+            protocol_pull: asked,
+        },
+        LiqLeg {
+            adapter: ExecutorAdapter::CompoundV2,
+            market: cdebt,
+            borrower: user,
+            collateral_asset: WETH,
+            repay_amount: asked,
+            tail: LegTail::CompoundV2 {
+                ctoken_collateral: ccoll,
+                is_cether: 0,
+            },
+            protocol_pull: asked,
+        },
+    ];
+    for leg in legs {
+        let p = BatchPlan {
+            flags: FLAG_SWEEP,
+            bid_bps: 0,
+            gas_cost_wei: 0,
+            min_profit_wei: 0,
+            groups: vec![FlashGroup {
+                provider: FlashProvider::Aave,
+                flash_source: AAVE_V3,
+                debt_asset: DAI,
+                flash_amount: asked,
+                liqs: vec![leg.clone()],
+                repay_swaps: vec![exact_out(WETH, DAI, asked)],
+            }],
+            profit_swaps: vec![profit_tb(WETH)],
+        };
+        let bytes = EncodedPlan::encode(&p, &c).unwrap().into_bytes();
+        let back = decode_batch(&bytes).unwrap();
+        assert_eq!(back.groups[0].liqs[0].adapter, leg.adapter);
+        assert_eq!(back.groups[0].liqs[0].tail, leg.tail);
+        assert_eq!(back.groups[0].liqs[0].market, leg.market);
+    }
 }
 
 #[test]
@@ -509,6 +617,7 @@ fn arb_plan() -> impl Strategy<Value = BatchPlan> {
                         ExecutorAdapter::MorphoBlue => {
                             (WETH, MORPHO, FlashProvider::Morpho, WSTETH)
                         }
+                        _ => unreachable!("proptest kinds are V3/V4/Morpho only"),
                     };
                     for li in 0..n_liq {
                         let pull = 1u128.saturating_add(u128::from(li as u8));
@@ -522,6 +631,7 @@ fn arb_plan() -> impl Strategy<Value = BatchPlan> {
                             ExecutorAdapter::AaveV3 => v3_leg(coll, asked, pull),
                             ExecutorAdapter::AaveV4 => v4_leg(WETH, 0, 1, asked, pull),
                             ExecutorAdapter::MorphoBlue => morpho_leg(asked, pull, &c),
+                            _ => unreachable!("proptest kinds are V3/V4/Morpho only"),
                         });
                     }
                     let mut repay = Vec::new();

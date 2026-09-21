@@ -59,6 +59,28 @@ pub enum EncodeError {
     MorphoTailShape,
     #[error("V3 leg must have empty tail")]
     V3TailShape,
+    #[error("Euler V2 leg tail is not a uint256 minYieldBalance")]
+    EulerTailShape,
+    #[error("Silo V2 leg must have empty tail (receiveSToken is hardcoded)")]
+    SiloTailShape,
+    #[error("Liquity V2 leg tail is not a uint256 troveId")]
+    LiquityTailShape,
+    #[error("Liquity V2 troveId is zero (EmptyData on-chain)")]
+    LiquityZeroTrove,
+    #[error("Fluid T1 leg tail is not a uint256 colPerUnitDebt")]
+    FluidTailShape,
+    #[error("Fluid T1 colPerUnitDebt is zero")]
+    FluidZeroColPer,
+    #[error("Gearbox leg tail is not a uint256 minSeizedAmount")]
+    GearboxTailShape,
+    #[error("Gearbox minSeizedAmount is zero")]
+    GearboxZeroMinSeized,
+    #[error("Compound V2 leg tail is not cTokenCollateral ‖ isCEther")]
+    CompoundTailShape,
+    #[error("Compound V2 cTokenCollateral is zero")]
+    CompoundZeroCToken,
+    #[error("Compound V2 isCEther flag is not 0 or 1")]
+    CompoundBadFlag,
     #[error("unknown swap venue {0}")]
     UnknownVenue(u8),
     #[error("UniV3 pool-direct data must be 20 bytes, got {0}")]

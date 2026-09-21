@@ -162,7 +162,6 @@ impl Config {
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn pair_by_market(&self, market: MarketId) -> Option<(usize, &PairConfig)> {
         self.pairs
             .iter()

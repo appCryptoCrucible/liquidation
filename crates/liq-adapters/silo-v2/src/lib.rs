@@ -18,7 +18,7 @@
 //! bool receiveSToken)`.
 //!
 //! `liq-watch` `silo::LiquidationCall(liquidator, borrower, repay, withdraw)` is
-//! a different topic0. This adapter decodes the pin ABI. 10R must call the hook.
+//! a different topic0. This adapter decodes the pin ABI. 10E calls the hook.
 //!
 //! # Isolated pair
 //!
@@ -40,12 +40,13 @@
 //! `_BAD_DEBT = 1e18` only widens `liquidationPreview` cover (any amount).
 //! `maxLiquidation` still returns amounts when `ltv > lt`.
 //!
-//! # 10R wire ABI (not encoded here)
+//! # 10E wire ABI
 //!
-//! `encode` validates then returns [`ProtocolError::ExecutorUnwired`] — no
-//! `ExecutorAdapter` discriminant yet (D48). Order: ProtocolMismatch,
-//! LegOutOfRange, CallbackProviderMismatch, ZeroRecipient,
-//! FundingAssetMismatch, FundingShort, AmountTooLarge, Unwired.
+//! `encode` emits [`ExecutorAdapter::SiloV2`] (id 4). `market` = hook
+//! receiver. Tail is empty; `receiveSToken = false` is hardcoded on-chain.
+//! Order: ProtocolMismatch, LegOutOfRange, CallbackProviderMismatch,
+//! ZeroRecipient, FundingAssetMismatch, FundingShort, AmountTooLarge, then
+//! the plan.
 //! Calldata for the later WP:
 //!
 //! ```text
@@ -68,11 +69,12 @@ pub mod math;
 pub mod quote;
 pub mod solve;
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
 use alloy_sol_types::SolEvent;
 use liq_protocol::{
-    Archive, BlockNum, DecodedLog, DirtySet, FlashRoute, Health, LegChoice, LiquidationPlan,
-    PositionRef, ProbeCall, Protocol, ProtocolError, Quote, Result, StateWriter, Timestamp,
+    Archive, BlockNum, DecodedLog, DirtySet, ExecutorAdapter, FlashRoute, Health, LegChoice,
+    LiquidationLeg, LiquidationPlan, PositionRef, ProbeCall, Protocol, ProtocolError, Quote,
+    Result, StateWriter, Timestamp,
 };
 use liq_types::{AssetId, LogFilter, LogSubscriber, Price, PriceVector, ProtocolId};
 
@@ -258,7 +260,40 @@ impl Protocol for SiloV2 {
         recipient: Address,
     ) -> Result<LiquidationPlan> {
         encode_validate(&self.cfg, q, self.cfg.protocol, legs, funding, recipient)?;
-        Err(ProtocolError::ExecutorUnwired)
+        let repay = q
+            .repay_options
+            .get(usize::from(legs.repay))
+            .ok_or(ProtocolError::LegOutOfRange)?;
+        let seize = q
+            .seize_options
+            .get(usize::from(legs.seize))
+            .ok_or(ProtocolError::LegOutOfRange)?;
+        let (_, pair) = self
+            .cfg
+            .pair_by_market(q.key.market)
+            .ok_or(ProtocolError::UnknownMarket(q.key.market))?;
+        let debt_asset = self
+            .cfg
+            .underlying_of(repay.asset)
+            .ok_or(ProtocolError::OracleSourceMismatch)?;
+        let collateral_asset = self
+            .cfg
+            .underlying_of(seize.asset)
+            .ok_or(ProtocolError::OracleSourceMismatch)?;
+        let wire = |v: U256| u128::try_from(v).map_err(|_| ProtocolError::AmountTooLarge);
+        Ok(LiquidationPlan {
+            provider: funding.provider,
+            flash_source: funding.source,
+            debt_asset,
+            flash_amount: wire(funding.amount)?,
+            leg: LiquidationLeg {
+                adapter: ExecutorAdapter::SiloV2,
+                market: pair.hook_receiver,
+                borrower: q.key.user,
+                collateral_asset,
+                repay_amount: wire(repay.max_repay)?,
+            },
+        })
     }
 
     fn health_probe(&self, _pos: PositionRef<'_>) -> Result<ProbeCall> {

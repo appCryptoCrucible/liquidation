@@ -262,6 +262,16 @@ impl Config {
             .map(|(_, id)| *id)
     }
 
+    /// Reverse of [`Self::interned_id`]: interned MarketId → debt/coll vault.
+    #[inline]
+    #[must_use]
+    pub(crate) fn vault_of(&self, market: MarketId) -> Option<Address> {
+        self.interned
+            .iter()
+            .find(|(_, id)| *id == market)
+            .map(|(a, _)| *a)
+    }
+
     #[inline]
     pub(crate) fn asset_by_underlying(&self, underlying: Address) -> Option<&AssetConfig> {
         self.assets.iter().find(|a| a.underlying == underlying)

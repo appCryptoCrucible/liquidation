@@ -13,3 +13,12 @@ univ3 = 355632
 univ4 = 460032
 sky_dss = 384134
 
+# 10E adapters — no live-fork snapshot at pin 26019284 (honest skip; see
+# ForkLiveLiquidations.t.sol). Do not invent p99.
+# euler_v2 = ABSENT
+# silo_v2 = ABSENT
+# liquity_v2 = ABSENT
+# fluid_t1 = ABSENT
+# gearbox = ABSENT
+# compound_v2 = ABSENT
+

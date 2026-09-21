@@ -27,7 +27,7 @@ pub mod hook {
     use super::sol;
     // Pin IPartialLiquidation.LiquidationCall — three indexed addresses.
     // liq-watch silo::LiquidationCall(liquidator, borrower, repay, withdraw)
-    // is a different topic0 (10R must use this pin ABI).
+    // is a different topic0 (10E uses this pin ABI; do not change W).
     sol! {
         event LiquidationCall(
             address indexed liquidator,
@@ -69,7 +69,7 @@ pub mod halt {
     }
 }
 
-/// 10R wire ABI — call the hook receiver, never the Silo.
+/// 10E wire ABI — call the hook receiver, never the Silo.
 pub mod liquidation_abi {
     use super::sol;
     sol! {

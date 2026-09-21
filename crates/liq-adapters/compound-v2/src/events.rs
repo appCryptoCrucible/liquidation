@@ -101,7 +101,7 @@ pub mod views {
     }
 }
 
-/// 10R — `CErc20.liquidateBorrow`. Not an `ExecutorAdapter` discriminant.
+/// 10E — `CErc20.liquidateBorrow`. Adapter id 8.
 pub mod cerc20 {
     use super::sol;
     sol! {
@@ -111,7 +111,7 @@ pub mod cerc20 {
     }
 }
 
-/// 10R — `CEther.liquidateBorrow` (`msg.value`, no ERC-20 `underlying`).
+/// 10E — `CEther.liquidateBorrow` (`msg.value`, no ERC-20 `underlying`).
 pub mod cether {
     use super::sol;
     sol! {

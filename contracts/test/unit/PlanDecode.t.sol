@@ -212,8 +212,8 @@ contract PlanDecodeTest is Test {
 
         // Unknown adapter id fails at the leg.
         bytes memory bad = good;
-        bad[36 + 59] = 0x03;
-        vm.expectRevert(abi.encodeWithSelector(PlanDecoder.UnknownAdapter.selector, uint8(3)));
+        bad[36 + 59] = 0x09;
+        vm.expectRevert(abi.encodeWithSelector(PlanDecoder.UnknownAdapter.selector, uint8(9)));
         h.debugHeader(bad);
 
         // Trailing garbage.
@@ -231,6 +231,36 @@ contract PlanDecodeTest is Test {
         out = new bytes(b.length - 1);
         for (uint256 i; i < at; i++) out[i] = b[i];
         for (uint256 i = at + 1; i < b.length; i++) out[i - 1] = b[i];
+    }
+
+    function test_tail_len_10e_and_unknown_9() public {
+        // Existing fixtures still decode (V3/V4/Morpho).
+        h.debugHeader(_fixture("plan_v1_full"));
+        h.debugHeader(_fixture("plan_v1_min"));
+        assertEq(PlanDecoder.A_AAVE_V3, 0);
+        assertEq(PlanDecoder.A_AAVE_V4, 1);
+        assertEq(PlanDecoder.A_MORPHO, 2);
+        assertEq(PlanDecoder.A_EULER, 3);
+        assertEq(PlanDecoder.A_SILO, 4);
+        assertEq(PlanDecoder.A_LIQUITY, 5);
+        assertEq(PlanDecoder.A_FLUID, 6);
+        assertEq(PlanDecoder.A_GEARBOX, 7);
+        assertEq(PlanDecoder.A_COMPOUND, 8);
+        assertEq(PlanDecoder.tailLen(0), 0);
+        assertEq(PlanDecoder.tailLen(1), 4);
+        assertEq(PlanDecoder.tailLen(2), 32);
+        assertEq(PlanDecoder.tailLen(3), 32);
+        assertEq(PlanDecoder.tailLen(4), 0);
+        assertEq(PlanDecoder.tailLen(5), 32);
+        assertEq(PlanDecoder.tailLen(6), 32);
+        assertEq(PlanDecoder.tailLen(7), 32);
+        assertEq(PlanDecoder.tailLen(8), 21);
+        vm.expectRevert(abi.encodeWithSelector(PlanDecoder.UnknownAdapter.selector, uint8(9)));
+        this.tailLen9();
+    }
+
+    function tailLen9() external pure returns (uint256) {
+        return PlanDecoder.tailLen(9);
     }
 
     function _insert(bytes memory b, uint256 at, bytes1 v) internal pure returns (bytes memory out) {

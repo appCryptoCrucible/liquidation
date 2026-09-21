@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {Executor} from "../../src/Executor.sol";
 import {PlanBuilder as PB} from "../unit/PlanBuilder.sol";
 import {ExecutorTestBase} from "../unit/Base.sol";
-import {MockERC20, MockUniV3Pool} from "../unit/Mocks.sol";
+import {MockERC20, MockUniV3Pool, MockEulerVault} from "../unit/Mocks.sol";
 
 /// Collateral that under-delivers only when paid TO `taxed` (the Executor).
 contract FoTColl is MockERC20 {
@@ -253,6 +253,29 @@ contract ExecutorCoverage10CTest is ExecutorTestBase {
         assertEq(pool.hf(b0), 2e18);
         assertEq(pool.hf(b1), 2e18);
         assertEq(pool.hf(b2), 2e18);
+        assertGt(weth.balanceOf(sink), 0);
+        _assertClean();
+    }
+
+    function test_10e_euler_invariants_zero_dust_zero_allowance() public {
+        MockEulerVault euler = new MockEulerVault();
+        euler.setDebtToken(address(debt));
+        euler.setPosition(borrower, REPAY, COLL_OUT);
+        debt.mint(address(euler), 1e15);
+        coll.mint(address(euler), 1e12);
+        uint256 poolDebt = debt.balanceOf(address(pool));
+        uint256 eulerDebt = debt.balanceOf(address(euler));
+        _exec(_plan(
+            PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1,
+            PB.legEuler(address(euler), borrower, address(coll), REPAY, 1)
+        ));
+        // Flash source is the Aave mock, not the Euler vault: out REPAY, in OWED,
+        // net = premium. V3's `+ REPAY` does not apply — that repay lands on Euler.
+        assertEq(debt.balanceOf(address(pool)), poolDebt + (OWED - REPAY), "flash repaid exactly");
+        assertEq(debt.balanceOf(address(euler)), eulerDebt + REPAY, "euler pulled repay");
+        assertEq(debt.allowance(address(ex), address(euler)), 0);
+        assertEq(weth.balanceOf(address(ex)), 0);
+        assertEq(coll.balanceOf(address(ex)), 0);
         assertGt(weth.balanceOf(sink), 0);
         _assertClean();
     }

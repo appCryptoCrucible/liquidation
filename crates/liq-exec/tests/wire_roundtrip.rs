@@ -477,13 +477,13 @@ fn stride_mutations_are_rejected() {
     );
 
     // Unknown adapter byte in the V3 leg fails at that leg, before anything
-    // after it is read.
+    // after it is read. After 10E, ids 0..=8 are wired; unknown starts at 9.
     let mut bad = good.clone();
-    bad[36 + 59] = 3;
-    assert_eq!(Plan::parse(&bad), Err(WireError::UnknownAdapter(3)));
+    bad[36 + 59] = 9;
+    assert_eq!(Plan::parse(&bad), Err(WireError::UnknownAdapter(9)));
     assert_eq!(
         decode_liq_leg(&bad, 36 + 59).map(|(l, _)| l.adapter),
-        Err(WireError::UnknownAdapter(3))
+        Err(WireError::UnknownAdapter(9))
     );
 
     // Trailing garbage: walked length != actual.

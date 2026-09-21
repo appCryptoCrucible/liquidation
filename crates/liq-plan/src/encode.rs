@@ -72,7 +72,7 @@ fn encode_liq(b: &mut Vec<u8>, l: &LiqLeg) -> Result<()> {
     b.extend_from_slice(l.collateral_asset.as_slice());
     b.extend_from_slice(&l.repay_amount.to_be_bytes());
     match (l.adapter, &l.tail) {
-        (ExecutorAdapter::AaveV3, LegTail::None) => {}
+        (ExecutorAdapter::AaveV3 | ExecutorAdapter::SiloV2, LegTail::None) => {}
         (
             ExecutorAdapter::AaveV4,
             LegTail::AaveV4 {
@@ -86,9 +86,37 @@ fn encode_liq(b: &mut Vec<u8>, l: &LiqLeg) -> Result<()> {
         (ExecutorAdapter::MorphoBlue, LegTail::Morpho { market_id }) => {
             b.extend_from_slice(market_id.as_slice());
         }
+        (ExecutorAdapter::EulerV2, LegTail::Euler { min_yield }) => {
+            b.extend_from_slice(&min_yield.to_be_bytes::<32>());
+        }
+        (ExecutorAdapter::LiquityV2, LegTail::Liquity { trove_id }) => {
+            b.extend_from_slice(&trove_id.to_be_bytes::<32>());
+        }
+        (ExecutorAdapter::Fluid, LegTail::Fluid { col_per_unit_debt }) => {
+            b.extend_from_slice(&col_per_unit_debt.to_be_bytes::<32>());
+        }
+        (ExecutorAdapter::Gearbox, LegTail::Gearbox { min_seized }) => {
+            b.extend_from_slice(&min_seized.to_be_bytes::<32>());
+        }
+        (
+            ExecutorAdapter::CompoundV2,
+            LegTail::CompoundV2 {
+                ctoken_collateral,
+                is_cether,
+            },
+        ) => {
+            b.extend_from_slice(ctoken_collateral.as_slice());
+            b.push(*is_cether);
+        }
         (ExecutorAdapter::AaveV3, _) => return Err(EncodeError::V3TailShape),
         (ExecutorAdapter::AaveV4, _) => return Err(EncodeError::V4TailShape),
         (ExecutorAdapter::MorphoBlue, _) => return Err(EncodeError::MorphoTailShape),
+        (ExecutorAdapter::EulerV2, _) => return Err(EncodeError::EulerTailShape),
+        (ExecutorAdapter::SiloV2, _) => return Err(EncodeError::SiloTailShape),
+        (ExecutorAdapter::LiquityV2, _) => return Err(EncodeError::LiquityTailShape),
+        (ExecutorAdapter::Fluid, _) => return Err(EncodeError::FluidTailShape),
+        (ExecutorAdapter::Gearbox, _) => return Err(EncodeError::GearboxTailShape),
+        (ExecutorAdapter::CompoundV2, _) => return Err(EncodeError::CompoundTailShape),
     }
     Ok(())
 }

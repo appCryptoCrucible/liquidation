@@ -24,8 +24,8 @@ use liq_adapters_liquity_v2::{alloc_meter, math, Config, LiquityV2};
 use liq_config::{Intern, OnChainId, Registry};
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
-    BonusCurve, CallbackShape, Constraints, DirtySet, FlashRoute, HealthState, LegChoice, Protocol,
-    ProtocolError, StateWriter,
+    BonusCurve, CallbackShape, Constraints, DirtySet, ExecutorAdapter, FlashRoute, HealthState,
+    LegChoice, Protocol, ProtocolError, StateWriter,
 };
 use liq_types::{AssetId, LogSubscriber, MarketId, ProtocolId, Ray, Wad};
 
@@ -189,12 +189,10 @@ fn ten_checks_liquidatable_executes_5_and_10_then_inapplicable_8() {
     // GUIDE-01 `run()` over a liquidatable WETH trove.
     //
     // Check 5 (`bonus == curve.at(hf)`) and check 10 (`Liquidatable` quotes)
-    // execute. Checks 8 and 9 cannot pass this protocol: gas-comp-only sets
-    // `max_repay == 0` (check 8 rejects zeros) and `encode` returns
-    // `ExecutorUnwired` (check 9 requires Ok(plan)). `run()` therefore fails
-    // at check 8 after 5 and 10 have already run. Vacuous assertions[7]==0
-    // after a healthy-only fixture is not a pass. Dedicated encode test
-    // covers ExecutorUnwired.
+    // execute. Check 8 cannot pass this protocol: gas-comp-only sets
+    // `max_repay == 0` (check 8 rejects zeros). `run()` therefore fails at
+    // check 8 after 5 and 10 have already run. Dedicated encode test covers
+    // the 10E `LiquityV2` adapter id. Check 9 is not reached.
     let d = Deploy::new();
     let (p, st) = full_store(&d);
     let px_liq = prices(ETH_USD_LIQ_WAD, BOLD_USD_WAD);
@@ -256,7 +254,7 @@ fn ten_checks_liquidatable_executes_5_and_10_then_inapplicable_8() {
         &fx,
         alloc_meter().map(|m| m as &dyn Fn() -> u64),
     )
-    .expect_err("checks 8/9 are inapplicable for gas-comp-only / ExecutorUnwired");
+    .expect_err("check 8 is inapplicable for gas-comp-only (max_repay == 0)");
     assert_eq!(err.check, 8, "run must die at max_repay==0, got {err}");
     assert!(
         err.detail.contains("max_repay 0"),
@@ -332,7 +330,7 @@ fn quote_is_gas_comp_only() {
 }
 
 #[test]
-fn encode_validates_then_executor_unwired() {
+fn encode_validates_then_ok() {
     let d = Deploy::new();
     let (p, st) = full_store(&d);
     let q = p
@@ -352,10 +350,13 @@ fn encode_validates_then_executor_unwired() {
         callback: CallbackShape::AaveExecuteOperation,
     };
     let rec = Address::repeat_byte(0x99);
-    assert_eq!(
-        p.encode(&q, LegChoice::PREFERRED, &route, rec),
-        Err(ProtocolError::ExecutorUnwired)
-    );
+    let plan = p
+        .encode(&q, LegChoice::PREFERRED, &route, rec)
+        .expect("10E Liquity encode");
+    assert_eq!(plan.leg.adapter, ExecutorAdapter::LiquityV2);
+    assert_eq!(plan.leg.market, TM);
+    assert_eq!(plan.leg.borrower, q.key.user);
+    assert_eq!(plan.leg.repay_amount, 0);
     let mut q2 = q.clone();
     q2.key.protocol = ProtocolId(99);
     assert_eq!(

@@ -416,6 +416,22 @@ impl Config {
     }
 
     #[inline]
+    /// Debt/seize cToken from config: native asset → CEther (`underlying == 0`);
+    /// otherwise the pin whose `underlying` matches the interned token. Never
+    /// guessed via an on-chain `underlying()` call.
+    pub(crate) fn ctoken_for_asset<'a>(
+        &'a self,
+        fork: &'a ForkConfig,
+        asset: AssetId,
+    ) -> Option<&'a CTokenPin> {
+        let under = self.underlying_of(asset)?;
+        if under == fork.native {
+            return fork.ctokens.iter().find(|c| c.underlying.is_zero());
+        }
+        fork.ctokens.iter().find(|c| c.underlying == under)
+    }
+
+    #[inline]
     pub(crate) fn underlying_of(&self, asset: AssetId) -> Option<Address> {
         self.assets
             .iter()

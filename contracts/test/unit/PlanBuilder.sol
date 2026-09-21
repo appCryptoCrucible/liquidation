@@ -15,6 +15,8 @@ library PlanBuilder {
     uint8 internal constant P_AAVE = 0; uint8 internal constant P_UNIV3 = 1; uint8 internal constant P_UNIV4 = 2;
     uint8 internal constant P_MORPHO = 3; uint8 internal constant P_SKY = 4;
     uint8 internal constant A_V3 = 0; uint8 internal constant A_V4 = 1; uint8 internal constant A_MORPHO = 2;
+    uint8 internal constant A_EULER = 3; uint8 internal constant A_SILO = 4; uint8 internal constant A_LIQUITY = 5;
+    uint8 internal constant A_FLUID = 6; uint8 internal constant A_GEARBOX = 7; uint8 internal constant A_COMPOUND = 8;
     uint8 internal constant S_POOL = 0; uint8 internal constant S_ROUTER = 1;
 
     function header(uint8 flags, uint16 bidBps, uint128 gasCostWei, uint128 minProfit, uint8 groups)
@@ -43,6 +45,42 @@ library PlanBuilder {
         internal pure returns (bytes memory)
     {
         return abi.encodePacked(A_MORPHO, morpho, borrower, coll, repay, id);
+    }
+
+    function legEuler(address vault, address borrower, address coll, uint128 repay, uint256 minYield)
+        internal pure returns (bytes memory)
+    {
+        return abi.encodePacked(A_EULER, vault, borrower, coll, repay, minYield);
+    }
+
+    function legSilo(address hook, address borrower, address coll, uint128 repay)
+        internal pure returns (bytes memory)
+    {
+        return abi.encodePacked(A_SILO, hook, borrower, coll, repay);
+    }
+
+    function legLiquity(address tm, address borrower, address coll, uint128 repay, uint256 troveId)
+        internal pure returns (bytes memory)
+    {
+        return abi.encodePacked(A_LIQUITY, tm, borrower, coll, repay, troveId);
+    }
+
+    function legFluid(address vault, address borrower, address coll, uint128 repay, uint256 colPer)
+        internal pure returns (bytes memory)
+    {
+        return abi.encodePacked(A_FLUID, vault, borrower, coll, repay, colPer);
+    }
+
+    function legGearbox(address facade, address borrower, address coll, uint128 repay, uint256 minSeized)
+        internal pure returns (bytes memory)
+    {
+        return abi.encodePacked(A_GEARBOX, facade, borrower, coll, repay, minSeized);
+    }
+
+    function legCompound(address cDebt, address borrower, address coll, uint128 repay, address cColl, uint8 isCEther)
+        internal pure returns (bytes memory)
+    {
+        return abi.encodePacked(A_COMPOUND, cDebt, borrower, coll, repay, cColl, isCEther);
     }
 
     function swap(uint8 venue, address tIn, address tOut, uint8 flags, uint128 amount, bytes memory data)

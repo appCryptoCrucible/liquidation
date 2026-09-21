@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {PlanBuilder as PB} from "../unit/PlanBuilder.sol";
 import {ExecutorTestBase} from "../unit/Base.sol";
-import {MockERC20, MockUniV3Pool, MockDssFlash} from "../unit/Mocks.sol";
+import {MockERC20, MockUniV3Pool, MockDssFlash, MockEulerVault} from "../unit/Mocks.sol";
 
 /// Isolates wrapping+plan gas per flash provider (mock world).
 contract ProviderGasTest is ExecutorTestBase {
@@ -82,5 +82,24 @@ contract ProviderGasTest is ExecutorTestBase {
         );
         _exec(plan);
         assertEq(weth.balanceOf(sink), GROSS_0FEE);
+    }
+
+    /// Mock-world Euler adapter overhead. Live p99 stays ABSENT in
+    /// `config/flash-gas.toml` until a real fork snapshot exists.
+    function test_gas_adapter_euler_v2() public {
+        MockEulerVault euler = new MockEulerVault();
+        euler.setDebtToken(address(debt));
+        euler.setPosition(borrower, REPAY, COLL_OUT);
+        debt.mint(address(euler), 1e15);
+        coll.mint(address(euler), 1e12);
+        bytes memory plan = bytes.concat(
+            PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
+            PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 1),
+            PB.legEuler(address(euler), borrower, address(coll), REPAY, 1),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.profit(1, _profitLeg())
+        );
+        _exec(plan);
+        assertEq(weth.balanceOf(sink), GROSS_WETH);
     }
 }

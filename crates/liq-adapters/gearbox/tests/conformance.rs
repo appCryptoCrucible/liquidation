@@ -20,8 +20,8 @@ use liq_adapters_gearbox::layout::{TokenRow, UNDERLYING_SLOT, UNMAPPED_ASSET};
 use liq_adapters_gearbox::{alloc_meter, math, Config, GearboxV3, PROTOCOL};
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
-    CallbackShape, Constraints, DirtySet, FlashRoute, HealthState, LegChoice, MarketSlot, Protocol,
-    ProtocolError, StateWriter,
+    CallbackShape, Constraints, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice,
+    MarketSlot, Protocol, ProtocolError, StateWriter,
 };
 use liq_types::{LogSubscriber, PositionKey, PriceVector, Ray};
 
@@ -246,15 +246,14 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
         recipient: Address::repeat_byte(0x99),
     };
     let mut log_store_u = store_after(&p_u, &listing_logs(&d));
-    let err = run(
+    let rep = run(
         &p_u,
         &mut log_store_u,
         &fx_u,
         alloc_meter().map(|m| m as &dyn Fn() -> u64),
     )
-    .expect_err("check 9 cannot Ok: encode is ExecutorUnwired until 10R");
-    assert_eq!(err.check, 9);
-    assert_eq!(err.detail, "ExecutorUnwired");
+    .unwrap_or_else(|f| panic!("{f}"));
+    assert!(rep.assertions[8] > 0, "check 9 must fire after 10E encode");
 }
 
 #[test]
@@ -339,7 +338,7 @@ fn quote_partial_pin_math_and_full_unpriced() {
 }
 
 #[test]
-fn quote_static_bonus_and_encode_unwired() {
+fn quote_static_bonus_and_encode_ok() {
     let d = Deploy::new();
     let (p, st) = full_store(&d, ALICE_COLL_LIQ, ALICE_DEBT_LIQ);
     let px = prices(RAY_ONE, RAY_ONE);
@@ -356,10 +355,12 @@ fn quote_static_bonus_and_encode_unwired() {
         fee_bps: 0,
         callback: CallbackShape::ALL[0],
     };
-    assert_eq!(
-        p.encode(&q, LegChoice::PREFERRED, &route, rec),
-        Err(ProtocolError::ExecutorUnwired)
-    );
+    let plan = p
+        .encode(&q, LegChoice::PREFERRED, &route, rec)
+        .expect("10E Gearbox partial encode");
+    assert_eq!(plan.leg.adapter, ExecutorAdapter::Gearbox);
+    assert_eq!(plan.leg.market, d.facade);
+    assert_eq!(plan.leg.borrower, q.key.user);
     let mut q2 = q.clone();
     q2.key.protocol = liq_types::ProtocolId(99);
     assert_eq!(
@@ -401,6 +402,12 @@ fn quote_static_bonus_and_encode_unwired() {
     assert_eq!(
         p.encode(&q, LegChoice::PREFERRED, &huge, rec),
         Err(ProtocolError::AmountTooLarge)
+    );
+    let mut full = q.clone();
+    full.seize_options[0].asset = UNDERLYING;
+    assert_eq!(
+        p.encode(&full, LegChoice::PREFERRED, &route, rec),
+        Err(ProtocolError::ExecutorUnwired)
     );
 }
 

@@ -24,7 +24,8 @@ use liq_adapters_fluid::{
 };
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
-    CallbackShape, Constraints, FlashRoute, HealthState, LegChoice, Protocol, ProtocolError,
+    CallbackShape, Constraints, ExecutorAdapter, FlashRoute, HealthState, LegChoice, Protocol,
+    ProtocolError,
 };
 use liq_types::{LogSubscriber, Ray};
 
@@ -194,15 +195,14 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
         recipient: Address::repeat_byte(0x99),
     };
     let mut log_store_u = store_after(&p_u, &listing_logs(&d));
-    let err = run(
+    let rep = run(
         &p_u,
         &mut log_store_u,
         &fx_u,
         alloc_meter().map(|m| m as &dyn Fn() -> u64),
     )
-    .expect_err("check 9 cannot Ok: encode is ExecutorUnwired until 10R");
-    assert_eq!(err.check, 9);
-    assert_eq!(err.detail, "ExecutorUnwired");
+    .unwrap_or_else(|f| panic!("{f}"));
+    assert!(rep.assertions[8] > 0, "check 9 must fire after 10E T1 encode");
 }
 
 #[test]
@@ -328,7 +328,7 @@ fn t3_is_not_t1_cloned_and_selector_collides() {
 }
 
 #[test]
-fn quote_static_bonus_and_encode_unwired() {
+fn quote_static_bonus_and_encode_ok() {
     let d = Deploy::new();
     let (p, st) = full_store(&d, ALICE_DEBT_LIQ);
     let px = prices(ETH_USD, RAY_ONE);
@@ -352,10 +352,12 @@ fn quote_static_bonus_and_encode_unwired() {
         fee_bps: 0,
         callback: CallbackShape::ALL[0],
     };
-    assert_eq!(
-        p.encode(&q, LegChoice::PREFERRED, &route, rec),
-        Err(ProtocolError::ExecutorUnwired)
-    );
+    let plan = p
+        .encode(&q, LegChoice::PREFERRED, &route, rec)
+        .expect("10E Fluid T1 encode");
+    assert_eq!(plan.leg.adapter, ExecutorAdapter::Fluid);
+    assert_eq!(plan.leg.market, d.vault_t1);
+    assert_eq!(plan.leg.borrower, q.key.user);
     let mut q2 = q.clone();
     q2.key.protocol = liq_types::ProtocolId(99);
     assert_eq!(
@@ -397,6 +399,18 @@ fn quote_static_bonus_and_encode_unwired() {
     assert_eq!(
         p.encode(&q, LegChoice::PREFERRED, &huge, rec),
         Err(ProtocolError::AmountTooLarge)
+    );
+    let mut t3 = q.clone();
+    t3.key.user = d.vault_t3;
+    assert_eq!(
+        p.encode(&t3, LegChoice::PREFERRED, &route, rec),
+        Err(ProtocolError::ExecutorUnwired)
+    );
+    let mut unknown = q.clone();
+    unknown.key.user = Address::repeat_byte(0xee);
+    assert_eq!(
+        p.encode(&unknown, LegChoice::PREFERRED, &route, rec),
+        Err(ProtocolError::ExecutorUnwired)
     );
 }
 

@@ -5,8 +5,8 @@
 //! credit managers 4201..=4299).
 //!
 //! Liquidator entry is **CreditFacadeV3**, never the manager
-//! (`creditFacadeOnly`). `encode` validates then
-//! [`ProtocolError::ExecutorUnwired`] — no `ExecutorAdapter` discriminant (10R).
+//! (`creditFacadeOnly`). Partial `encode` emits [`ExecutorAdapter::Gearbox`]
+//! (id 7). Full close + MultiCall stays [`ProtocolError::ExecutorUnwired`].
 //!
 //! Partial quote is repay-and-seize from `_calcPartialLiquidationPayments`.
 //! Full close needs on-account adapter `MultiCall` fills: fail closed (no
@@ -26,8 +26,9 @@ pub mod solve;
 use alloy_primitives::{Address, U256};
 use alloy_sol_types::{SolCall, SolEvent};
 use liq_protocol::{
-    Archive, BlockNum, DecodedLog, DirtySet, FlashRoute, Health, LegChoice, LiquidationPlan,
-    PositionRef, ProbeCall, Protocol, ProtocolError, Quote, Result, StateWriter, Timestamp,
+    Archive, BlockNum, DecodedLog, DirtySet, ExecutorAdapter, FlashRoute, Health, LegChoice,
+    LiquidationLeg, LiquidationPlan, PositionRef, ProbeCall, Protocol, ProtocolError, Quote,
+    Result, StateWriter, Timestamp,
 };
 use liq_types::{AssetId, LogFilter, LogSubscriber, Price, PriceVector, ProtocolId, Ray};
 
@@ -273,7 +274,43 @@ impl Protocol for GearboxV3 {
         recipient: Address,
     ) -> Result<LiquidationPlan> {
         encode_validate(&self.cfg, q, self.cfg.protocol, legs, funding, recipient)?;
-        Err(ProtocolError::ExecutorUnwired)
+        let repay = q
+            .repay_options
+            .get(usize::from(legs.repay))
+            .ok_or(ProtocolError::LegOutOfRange)?;
+        let seize = q
+            .seize_options
+            .get(usize::from(legs.seize))
+            .ok_or(ProtocolError::LegOutOfRange)?;
+        let (_, mgr) = self
+            .cfg
+            .manager_by_market(q.key.market)
+            .ok_or(ProtocolError::UnknownMarket(q.key.market))?;
+        let seize_token = self
+            .cfg
+            .underlying_of(seize.asset)
+            .ok_or(ProtocolError::OracleSourceMismatch)?;
+        if seize.asset == repay.asset || seize_token == mgr.underlying {
+            return Err(ProtocolError::ExecutorUnwired);
+        }
+        let debt_asset = self
+            .cfg
+            .underlying_of(repay.asset)
+            .ok_or(ProtocolError::OracleSourceMismatch)?;
+        let wire = |v: U256| u128::try_from(v).map_err(|_| ProtocolError::AmountTooLarge);
+        Ok(LiquidationPlan {
+            provider: funding.provider,
+            flash_source: funding.source,
+            debt_asset,
+            flash_amount: wire(funding.amount)?,
+            leg: LiquidationLeg {
+                adapter: ExecutorAdapter::Gearbox,
+                market: mgr.facade,
+                borrower: q.key.user,
+                collateral_asset: seize_token,
+                repay_amount: wire(repay.max_repay)?,
+            },
+        })
     }
 
     fn health_probe(&self, pos: PositionRef<'_>) -> Result<ProbeCall> {

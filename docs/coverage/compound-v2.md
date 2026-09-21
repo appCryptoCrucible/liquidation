@@ -7,14 +7,14 @@ DirtySet lives in `liq-protocol` (D46). `halt` is GUIDE-03 HaltSink, not a Dirty
 
 topic0 = keccak256(canonical ABI signature). Intern key is the **comptroller**. Official Unitroller `0x3d9819210A31b4961b30EF54bE2aeD79B9c9Cd3B` is **MarketId 355**. Family intern ids **295..=560** (266). cTokens are not intern markets. ProtocolId 3.
 
-`encode` returns `ProtocolError::ExecutorUnwired` (D48 / 10R). Liquidation ABI is not an `ExecutorAdapter` discriminant:
+`encode` emits `ExecutorAdapter::CompoundV2` (id 8, tail 21 = `cTokenCollateral ‖ isCEther`). Liquidation ABI:
 
 ```
 CErc20: liquidateBorrow(address borrower, uint repayAmount, address cTokenCollateral) returns (uint)
 CEther: liquidateBorrow(address borrower, address cTokenCollateral) payable
 ```
 
-CEther is discriminated by **absence of `underlying()`**, not a symbol. Conformance check 9 cannot Ok until 10R. Do not starve checks 5/8/10 with healthy-only fixtures.
+CEther is discriminated by the **config pin** (`underlying == 0`), not a symbol and not an on-chain `underlying()` guess. Conformance check 9 is live after 10E. Do not starve checks 5/8/9/10 with healthy-only fixtures.
 
 `health()` is Comptroller shortfall (`sumBorrow > sumColl`), not Aave HF. Equality is healthy. Deprecated-market path (`isDeprecated`) is also `Liquidatable`. Bonus = that comptroller's `liquidationIncentiveMantissa` (admin file). closeFactor is per-comptroller admin storage; pin bounds only `0.05e18 < x ≤ 0.9e18`. Live values from `assert_live_registry` eth_call + `NewCloseFactor` / `NewLiquidationIncentive`. Do not invent `1.08`.
 

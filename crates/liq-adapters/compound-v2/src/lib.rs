@@ -3,8 +3,9 @@
 //! `a3214f67b73310d547e00fc578e8355911c9d376`.
 //!
 //! ProtocolId 3. Intern MarketIds 295..=560 (official Unitroller = 355).
-//! `encode` returns [`ProtocolError::ExecutorUnwired`] (D48 / 10R). Do not
-//! invent an `ExecutorAdapter` discriminant.
+//! `encode` emits [`ExecutorAdapter::CompoundV2`] (id 8). `market` is the
+//! debt cToken. CEther vs CErc20 is the config pin (`underlying == 0`), never
+//! a symbol or an on-chain `underlying()` guess.
 
 #![forbid(unsafe_code)]
 
@@ -17,11 +18,12 @@ pub mod math;
 pub mod quote;
 pub mod solve;
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
 use alloy_sol_types::SolEvent;
 use liq_protocol::{
-    Archive, BlockNum, DecodedLog, DirtySet, FlashRoute, Health, LegChoice, LiquidationPlan,
-    PositionRef, ProbeCall, Protocol, ProtocolError, Quote, Result, StateWriter, Timestamp,
+    Archive, BlockNum, DecodedLog, DirtySet, ExecutorAdapter, FlashRoute, Health, LegChoice,
+    LiquidationLeg, LiquidationPlan, PositionRef, ProbeCall, Protocol, ProtocolError, Quote,
+    Result, StateWriter, Timestamp,
 };
 use liq_types::{AssetId, LogFilter, LogSubscriber, Price, PriceVector, ProtocolId};
 
@@ -206,8 +208,7 @@ impl Protocol for CompoundV2 {
         quote::quote(pos, px, cons)
     }
 
-    /// Validates then [`ProtocolError::ExecutorUnwired`].
-    /// 10R: `CErc20.liquidateBorrow(borrower, repayAmount, cTokenCollateral)`
+    /// 10E: `CErc20.liquidateBorrow(borrower, repayAmount, cTokenCollateral)`
     /// or payable `CEther.liquidateBorrow(borrower, cTokenCollateral)`.
     /// CEther is underlying-absence, not a symbol.
     fn encode(
@@ -218,7 +219,48 @@ impl Protocol for CompoundV2 {
         recipient: Address,
     ) -> Result<LiquidationPlan> {
         encode_validate(&self.cfg, q, self.cfg.protocol, legs, funding, recipient)?;
-        Err(ProtocolError::ExecutorUnwired)
+        let repay = q
+            .repay_options
+            .get(usize::from(legs.repay))
+            .ok_or(ProtocolError::LegOutOfRange)?;
+        let seize = q
+            .seize_options
+            .get(usize::from(legs.seize))
+            .ok_or(ProtocolError::LegOutOfRange)?;
+        let fork = self
+            .cfg
+            .fork_by_market(q.key.market)
+            .ok_or(ProtocolError::UnknownMarket(q.key.market))?;
+        let debt_pin = self
+            .cfg
+            .ctoken_for_asset(fork, repay.asset)
+            .ok_or(ProtocolError::OracleSourceMismatch)?;
+        let _coll_pin = self
+            .cfg
+            .ctoken_for_asset(fork, seize.asset)
+            .ok_or(ProtocolError::OracleSourceMismatch)?;
+        let debt_asset = self
+            .cfg
+            .underlying_of(repay.asset)
+            .ok_or(ProtocolError::OracleSourceMismatch)?;
+        let collateral_asset = self
+            .cfg
+            .underlying_of(seize.asset)
+            .ok_or(ProtocolError::OracleSourceMismatch)?;
+        let wire = |v: U256| u128::try_from(v).map_err(|_| ProtocolError::AmountTooLarge);
+        Ok(LiquidationPlan {
+            provider: funding.provider,
+            flash_source: funding.source,
+            debt_asset,
+            flash_amount: wire(funding.amount)?,
+            leg: LiquidationLeg {
+                adapter: ExecutorAdapter::CompoundV2,
+                market: debt_pin.ctoken,
+                borrower: q.key.user,
+                collateral_asset,
+                repay_amount: wire(repay.max_repay)?,
+            },
+        })
     }
 
     fn health_probe(&self, _pos: PositionRef<'_>) -> Result<ProbeCall> {

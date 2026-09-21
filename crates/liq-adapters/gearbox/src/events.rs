@@ -207,7 +207,7 @@ pub mod views {
     }
 }
 
-/// 10R wire ABI — call the facade, never the manager.
+/// 10E wire ABI — call the facade, never the manager. Partial only.
 pub mod liquidation_abi {
     use super::sol;
     sol! {

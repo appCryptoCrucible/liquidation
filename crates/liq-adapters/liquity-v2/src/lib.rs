@@ -3,8 +3,10 @@
 //!
 //! Liquidator PnL is **gas compensation only**. The Stability Pool is the
 //! counterparty: the caller does not repay BOLD and does not seize trove
-//! collateral. `encode` fails closed with [`ProtocolError::ExecutorUnwired`]
-//! until 10R wires `batchLiquidateTroves(uint256[])`.
+//! collateral. `encode` emits [`ExecutorAdapter::LiquityV2`] (id 5). Tail is
+//! the full uint256 trove id (assembled from `TroveExtra`; `PositionKey.user`
+//! holds only the low 160 bits). `max_repay` is 0 — the Stability Pool is
+//! the counterparty.
 
 #![forbid(unsafe_code)]
 
@@ -17,11 +19,12 @@ pub mod math;
 pub mod quote;
 pub mod solve;
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
 use alloy_sol_types::SolEvent;
 use liq_protocol::{
-    Archive, BlockNum, DecodedLog, DirtySet, FlashRoute, Health, LegChoice, LiquidationPlan,
-    PositionRef, ProbeCall, Protocol, ProtocolError, Quote, Result, StateWriter, Timestamp,
+    Archive, BlockNum, DecodedLog, DirtySet, ExecutorAdapter, FlashRoute, Health, LegChoice,
+    LiquidationLeg, LiquidationPlan, PositionRef, ProbeCall, Protocol, ProtocolError, Quote,
+    Result, StateWriter, Timestamp,
 };
 use liq_types::{AssetId, LogFilter, LogSubscriber, Price, PriceVector, ProtocolId};
 
@@ -189,10 +192,9 @@ impl Protocol for LiquityV2 {
         quote::quote(pos, px, cons, self.cfg.weth.asset, self.cfg.weth.decimals)
     }
 
-    /// Validates the quote/route then returns [`ProtocolError::ExecutorUnwired`].
-    /// 10R ABI: `TroveManager.batchLiquidateTroves(uint256[] _troveArray)`.
+    /// 10E ABI: `TroveManager.batchLiquidateTroves(uint256[] _troveArray)`.
     /// Empty array reverts `EmptyData`; no liquidatable id reverts
-    /// `NothingToLiquidate`. Not an `ExecutorAdapter` discriminant yet.
+    /// `NothingToLiquidate` (Executor skips the leg).
     fn encode(
         &self,
         q: &Quote,
@@ -223,21 +225,32 @@ impl Protocol for LiquityV2 {
         if funding.amount < repay.max_repay {
             return Err(ProtocolError::FundingShort);
         }
-        let _branch = self
+        let branch = self
             .cfg
             .branch_by_market(q.key.market)
             .ok_or(ProtocolError::UnknownMarket(q.key.market))?;
-        let _debt = self
+        let debt_asset = self
             .cfg
             .underlying_of(repay.asset)
             .ok_or(ProtocolError::OracleSourceMismatch)?;
-        let _coll = self
+        let collateral_asset = self
             .cfg
             .underlying_of(seize.asset)
             .ok_or(ProtocolError::OracleSourceMismatch)?;
-        let _ = u128::try_from(funding.amount).map_err(|_| ProtocolError::AmountTooLarge)?;
-        let _ = u128::try_from(repay.max_repay).map_err(|_| ProtocolError::AmountTooLarge)?;
-        Err(ProtocolError::ExecutorUnwired)
+        let wire = |v: U256| u128::try_from(v).map_err(|_| ProtocolError::AmountTooLarge);
+        Ok(LiquidationPlan {
+            provider: funding.provider,
+            flash_source: funding.source,
+            debt_asset,
+            flash_amount: wire(funding.amount)?,
+            leg: LiquidationLeg {
+                adapter: ExecutorAdapter::LiquityV2,
+                market: branch.trove_manager,
+                borrower: q.key.user,
+                collateral_asset,
+                repay_amount: wire(repay.max_repay)?,
+            },
+        })
     }
 
     fn health_probe(&self, _pos: PositionRef<'_>) -> Result<ProbeCall> {

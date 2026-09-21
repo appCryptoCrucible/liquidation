@@ -20,8 +20,8 @@ use liq_adapters_silo_v2::events::{factory, hook, silo};
 use liq_adapters_silo_v2::{alloc_meter, math};
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
-    CallbackShape, Constraints, DirtySet, FlashRoute, HealthState, LegChoice, MarketFlags,
-    MarketRow, Protocol, ProtocolError, StateWriter,
+    CallbackShape, Constraints, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice,
+    MarketFlags, MarketRow, Protocol, ProtocolError, StateWriter,
 };
 use liq_types::{LogSubscriber, PositionKey, Ray};
 
@@ -250,7 +250,7 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
                 assert_eq!(
                     *n,
                     0,
-                    "healthy-only report: check {} has no quote (4/8 need post or liq; 9 inapplicable)",
+                    "healthy-only report: check {} has no quote (4/8/9 need post or liq)",
                     i + 1
                 );
             }
@@ -259,9 +259,8 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
     }
     assert_eq!(rep.alloc_metered, alloc_meter().is_some());
 
-    // Liquidatable (LTV ≥ 1e18, coll remaining) through `run` so checks 5/10
-    // fire. Check 9 cannot Ok: encode is ExecutorUnwired until 10R. Do not
-    // starve 5/10 with healthy-only fixtures.
+    // Liquidatable (LTV ≥ 1e18, coll remaining) through `run` so checks 5/9/10
+    // fire. Do not starve those checks with healthy-only fixtures.
     let (p_u, st_u) = full_store_pos(&d, ALICE_COLL_UNDER, ALICE_DEBT_UNDER);
     let px_u = prices(RAY_ONE, RAY_ONE);
     let h_u = p_u.health(st_u.view(ALICE_ID, T0).unwrap(), &px_u).unwrap();
@@ -288,15 +287,14 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
         recipient: Address::repeat_byte(0x99),
     };
     let mut log_store_u = store_after(&p_u, &listing_logs(&d));
-    let err = run(
+    let rep = run(
         &p_u,
         &mut log_store_u,
         &fx_u,
         alloc_meter().map(|m| m as &dyn Fn() -> u64),
     )
-    .expect_err("check 9 cannot Ok: encode is ExecutorUnwired until 10R");
-    assert_eq!(err.check, 9);
-    assert_eq!(err.detail, "ExecutorUnwired");
+    .unwrap_or_else(|f| panic!("{f}"));
+    assert!(rep.assertions[8] > 0, "check 9 must fire after 10E encode");
 }
 
 #[test]
@@ -317,7 +315,7 @@ fn health_matches_is_solvent_at_pin_math() {
 }
 
 #[test]
-fn quote_static_bonus_and_encode_unwired() {
+fn quote_static_bonus_and_encode_ok() {
     let d = Deploy::new();
     let (p, st) = full_store(&d, ALICE_DEBT_LIQ);
     let px = prices(RAY_ONE, RAY_ONE);
@@ -344,11 +342,12 @@ fn quote_static_bonus_and_encode_unwired() {
         fee_bps: 0,
         callback: CallbackShape::ALL[0],
     };
-    // Happy-path Unwired is 10R. Negatives follow encode_validate order.
-    assert_eq!(
-        p.encode(&q, LegChoice::PREFERRED, &route, rec),
-        Err(ProtocolError::ExecutorUnwired)
-    );
+    let plan = p
+        .encode(&q, LegChoice::PREFERRED, &route, rec)
+        .expect("10E Silo encode");
+    assert_eq!(plan.leg.adapter, ExecutorAdapter::SiloV2);
+    assert_eq!(plan.leg.market, d.hook);
+    assert_eq!(plan.leg.borrower, q.key.user);
     let mut q2 = q.clone();
     q2.key.protocol = liq_types::ProtocolId(99);
     assert_eq!(

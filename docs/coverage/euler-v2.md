@@ -7,15 +7,15 @@ DirtySet lives in `liq-protocol` (D46). `halt` is GUIDE-03 HaltSink, not a Dirty
 
 topic0 = keccak256(canonical ABI signature). Enumeration is Family B: `ProxyCreated` / `getProxyListSlice` on GenericFactory `0x29a56a1b8214D9Cf7c5561811750D5cBDb45CC8e`. Config `vaults` are admitted-address **subscriptions** from the registry pin (block **26015175**), never the live universe.
 
-`encode` returns `ProtocolError::ExecutorUnwired` (D48 / 10R). Liquidation ABI is not an `ExecutorAdapter` discriminant:
+`encode` emits `ExecutorAdapter::EulerV2` (id 3, tail 32 = `minYieldBalance`). Liquidation ABI:
 
 ```
 liquidate(address violator, address collateral, uint256 repayAssets, uint256 minYieldBalance)
 ```
 
-Target = **debt** EVault. `collateral` = collateral vault address (shares), not underlying. Documented for the 10R redeploy WP; this adapter does not invent a wire id.
+Target = **debt** EVault. `collateral` = collateral vault address (shares), not underlying. Wired in 10E (D63). After H3, a new ABI is `10R-n`.
 
-Conformance check 9 (`encode` accepts every callback shape) is **inapplicable** until 10R: `run()` with a liquidatable fixture executes checks 5 and 8 then fails check 9 with `ExecutorUnwired`. Do not starve those checks with healthy-only fixtures.
+Conformance check 9 (`encode` accepts every callback shape) is live after 10E. Do not starve checks 5/8/9/10 with healthy-only fixtures.
 
 `health_probe` is `accountLiquidity(account, true)` on the debt vault (`RiskManager.sol`). `checkLiquidation` returns `(0,0)` when healthy and cannot recover HF.
 

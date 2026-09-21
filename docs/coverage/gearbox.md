@@ -7,9 +7,9 @@ DirtySet lives in `liq-protocol` (D46). `halt` is GUIDE-03 HaltSink, not a Dirty
 
 topic0 = keccak256(canonical ABI signature).
 
-**Facade vs manager.** Permissionless liquidator entry is `CreditFacadeV3`. Manager liquidation is `creditFacadeOnly`. 10R must call the facade. **Do not change W** (no Gearbox decoder there).
+**Facade vs manager.** Permissionless liquidator entry is `CreditFacadeV3`. Manager liquidation is `creditFacadeOnly`. 10E calls the facade. **Do not change W** (no Gearbox decoder there).
 
-`encode` validates then `ProtocolError::ExecutorUnwired` until 10R wires the facade ABI. No `ExecutorAdapter` discriminant. Happy-path Unwired is 10R. Check 9 cannot Ok — inapplicable, not starved with healthy-only fixtures.
+Partial `encode` emits `ExecutorAdapter::Gearbox` (id 7, tail 32 = quoted `minSeizedAmount`). Full `liquidateCreditAccount` + MultiCall stays `ProtocolError::ExecutorUnwired` — do not invent MultiCall fills. Check 9 is live for the partial path after 10E.
 
 ## Health state
 

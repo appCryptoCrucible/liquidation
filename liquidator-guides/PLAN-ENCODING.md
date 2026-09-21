@@ -126,25 +126,41 @@ of scope and has no provider id.
 #### Liquidation legs (77 fixed bytes + adapter tail)
 
 ```
-  1 byte    adapter          0 AaveV3 · 1 AaveV4 · 2 MorphoBlue  (ExecutorAdapter / A_*)
-  20 bytes  market           Aave V3 Pool · V4 Spoke · Morpho singleton
+  1 byte    adapter          ExecutorAdapter / PlanDecoder.A_* (do not reorder)
+  20 bytes  market           registry address the operator encoded (see table)
   20 bytes  borrower
   20 bytes  collateralAsset
   16 bytes  repayAmount      u128 — what we ask the protocol to take
 then: adapter tail (`PlanDecoder.tailLen` / `ExecutorAdapter::tail_len`)
-  Aave V3     0 bytes     reserves are addressed by underlying
-  Aave V4     4 bytes     u16 collateralReserveId ‖ u16 debtReserveId
-                          (Spoke.liquidationCall; the 20-byte market is the Spoke)
-  Morpho Blue 32 bytes    bytes32 market Id (keccak256(abi.encode(MarketParams));
-                          Morpho.liquidate takes MarketParams recovered via
-                          idToMarketParams)
 ```
 
-The 20-byte `market` field cannot carry V4 reserve ids or a Morpho `Id`. Off-chain
+| id | adapter | market | tail | layout |
+|---:|---|---|---:|---|
+| 0 | AaveV3 | V3 Pool | 0 | reserves by underlying |
+| 1 | AaveV4 | V4 Spoke | 4 | `u16` collateralReserveId ‖ `u16` debtReserveId |
+| 2 | MorphoBlue | Morpho singleton | 32 | `bytes32` market Id (`idToMarketParams`) |
+| 3 | EulerV2 | debt EVault | 32 | `uint256` minYieldBalance (quoted yield shares) |
+| 4 | SiloV2 | hook receiver | 0 | `receiveSToken = false` hardcoded; never the Silo ERC-4626 |
+| 5 | LiquityV2 | TroveManager | 32 | `uint256` troveId (full id; `PositionKey.user` is low 160 bits) |
+| 6 | Fluid | T1 vault | 32 | `uint256` colPerUnitDebt (quoted 1e27); `absorb_ = true` hardcoded. T2/T3/T4 are not this ABI |
+| 7 | Gearbox | CreditFacadeV3 | 32 | `uint256` minSeizedAmount (partial only; full MultiCall is unwired) |
+| 8 | CompoundV2 | debt cToken | 21 | `address` cTokenCollateral ‖ `uint8` isCEther (from config, not `underlying()`) |
+
+Unknown after 10E is adapter id **9**. After H3, a new ABI is `10R-n` + D55-A.
+
+The 20-byte `market` field cannot carry V4 reserve ids, a Morpho `Id`, an Euler
+`minYieldBalance`, a Liquity trove id, a Fluid `colPerUnitDebt`, a Gearbox
+`minSeizedAmount`, or a Compound cToken + CEther flag. Off-chain
 `liq-plan::validate` pins V4 ids to the leg's token addresses from adapter config
 (the contract has no address→id view) and checks that the Morpho Id's
 `(loanToken, collateralToken)` equals `(group.debtAsset, leg.collateralAsset)` —
-on-chain a mismatch is `LegMismatch` and reverts the whole plan.
+on-chain a mismatch is `LegMismatch` and reverts the whole plan. 10E tails that
+are quoted amounts (Euler / Fluid / Gearbox / Liquity trove id / Compound cToken)
+are assembled from adapter config + the quote, never guessed.
+
+`liq-plan::validate` pins V4 ids and Morpho tokens as before. The 10E tails are
+shape-checked only (quoted `uint256` / config address+flag); the profit guard
+bounds a wrong quoted amount the same way it bounds a wrong V4 id.
 
 `adapter` is per-leg, so one group may span protocols — Alice on Aave V3 and Bob
 on Aave V4, both owing USDC, is one group.

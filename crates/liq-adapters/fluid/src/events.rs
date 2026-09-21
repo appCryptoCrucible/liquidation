@@ -67,7 +67,7 @@ pub mod halt {
     }
 }
 
-/// T1 `liquidate` + `constantsView` / `TYPE` / factory views. 10R wire.
+/// T1 `liquidate` + `constantsView` / `TYPE` / factory views. 10E wire.
 pub mod t1 {
     use super::sol;
     sol! {

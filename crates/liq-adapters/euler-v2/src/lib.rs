@@ -1,7 +1,7 @@
-//! Euler V2 (EVK) adapter — WP 15C-euler.
+//! Euler V2 (EVK) adapter — WP 15C-euler / 10E.
 //! Pin: `euler-xyz/euler-vault-kit` @ `bfb325a6e6ca09613d940b46f72ccfe017353933`.
-//! `encode` returns [`ProtocolError::ExecutorUnwired`] (D48 / 10R). Do not
-//! invent an `ExecutorAdapter` discriminant.
+//! `encode` emits [`ExecutorAdapter::EulerV2`] (id 3). Tail is
+//! `uint256 minYieldBalance` (assembled from the quoted yield).
 
 #![forbid(unsafe_code)]
 
@@ -17,8 +17,9 @@ pub mod solve;
 use alloy_primitives::{Address, U256};
 use alloy_sol_types::{SolCall, SolEvent};
 use liq_protocol::{
-    Archive, BlockNum, DecodedLog, DirtySet, FlashRoute, Health, LegChoice, PositionRef, ProbeCall,
-    Protocol, ProtocolError, Quote, Result, StateWriter, Timestamp,
+    Archive, BlockNum, DecodedLog, DirtySet, ExecutorAdapter, FlashRoute, Health, LegChoice,
+    LiquidationLeg, LiquidationPlan, PositionRef, ProbeCall, Protocol, ProtocolError, Quote,
+    Result, StateWriter, Timestamp,
 };
 use liq_types::fixed::WAD;
 use liq_types::{AssetId, LogFilter, LogSubscriber, Price, PriceVector, ProtocolId, Ray};
@@ -242,9 +243,42 @@ impl Protocol for EulerV2 {
         legs: LegChoice,
         funding: &FlashRoute,
         recipient: Address,
-    ) -> Result<liq_protocol::LiquidationPlan> {
+    ) -> Result<LiquidationPlan> {
         encode_validate(&self.cfg, q, self.cfg.protocol, legs, funding, recipient)?;
-        Err(ProtocolError::ExecutorUnwired)
+        let repay = q
+            .repay_options
+            .get(usize::from(legs.repay))
+            .ok_or(ProtocolError::LegOutOfRange)?;
+        let seize = q
+            .seize_options
+            .get(usize::from(legs.seize))
+            .ok_or(ProtocolError::LegOutOfRange)?;
+        let market = self
+            .cfg
+            .vault_of(q.key.market)
+            .ok_or(ProtocolError::UnknownMarket(q.key.market))?;
+        let debt_asset = self
+            .cfg
+            .underlying_of(repay.asset)
+            .ok_or(ProtocolError::OracleSourceMismatch)?;
+        let collateral_asset = self
+            .cfg
+            .underlying_of(seize.asset)
+            .ok_or(ProtocolError::OracleSourceMismatch)?;
+        let wire = |v: U256| u128::try_from(v).map_err(|_| ProtocolError::AmountTooLarge);
+        Ok(LiquidationPlan {
+            provider: funding.provider,
+            flash_source: funding.source,
+            debt_asset,
+            flash_amount: wire(funding.amount)?,
+            leg: LiquidationLeg {
+                adapter: ExecutorAdapter::EulerV2,
+                market,
+                borrower: q.key.user,
+                collateral_asset,
+                repay_amount: wire(repay.max_repay)?,
+            },
+        })
     }
 
     fn health_probe(&self, pos: PositionRef<'_>) -> Result<ProbeCall> {

@@ -22,8 +22,8 @@ use liq_adapters_euler_v2::{
 };
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
-    BlockReason, CallbackShape, Constraints, DirtySet, FlashRoute, HealthState, LegChoice,
-    MarketSlot, Protocol, ProtocolError, StateWriter,
+    BlockReason, CallbackShape, Constraints, DirtySet, ExecutorAdapter, FlashRoute, HealthState,
+    LegChoice, MarketSlot, Protocol, ProtocolError, StateWriter,
 };
 use liq_types::fixed::WAD;
 use liq_types::{LogSubscriber, MarketId};
@@ -241,7 +241,7 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
             ),
             9 => assert_eq!(
                 *n, 0,
-                "check 9 inapplicable: encode is ExecutorUnwired (D48 / 10R)"
+                "check 9 needs a liquidatable quote (healthy-only here)"
             ),
             _ => {
                 assert!(*n > 0, "check {} was vacuous", i + 1);
@@ -252,7 +252,7 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
 }
 
 #[test]
-fn liquidatable_through_run_executes_5_and_8_then_check_9_unwired() {
+fn liquidatable_through_run_executes_5_8_and_9() {
     let d = Deploy::new();
     let p = d.adapter();
     let mut logs_liq = listing_logs(&d);
@@ -296,18 +296,14 @@ fn liquidatable_through_run_executes_5_and_8_then_check_9_unwired() {
         recipient: Address::repeat_byte(0x99),
     };
     let mut log_store = store_after(&p, &listing_logs(&d));
-    let err = run(
+    let rep = run(
         &p,
         &mut log_store,
         &fx,
         alloc_meter().map(|m| m as &dyn Fn() -> u64),
     )
-    .expect_err("check 9 cannot Ok while encode is ExecutorUnwired");
-    assert_eq!(err.check, 9, "{err}");
-    assert!(
-        err.detail.contains("ExecutorUnwired"),
-        "check 9 inapplicable (D48): {err}"
-    );
+    .unwrap_or_else(|f| panic!("{f}"));
+    assert!(rep.assertions[8] > 0, "check 9 must fire after 10E encode");
 }
 
 #[test]
@@ -382,7 +378,7 @@ fn liquidatable_when_coll_adj_not_greater_than_liability() {
 }
 
 #[test]
-fn encode_validates_then_executor_unwired() {
+fn encode_validates_then_ok() {
     let d = Deploy::new();
     let (p, st) = liq_store(&d);
     let px = prices(WETH_P8, USDC_P8);
@@ -398,10 +394,12 @@ fn encode_validates_then_executor_unwired() {
         fee_bps: 0,
         callback: CallbackShape::MorphoFlashCallback,
     };
-    assert_eq!(
-        p.encode(&q, LegChoice::PREFERRED, &route, Address::repeat_byte(0x99)),
-        Err(ProtocolError::ExecutorUnwired)
-    );
+    let plan = p
+        .encode(&q, LegChoice::PREFERRED, &route, Address::repeat_byte(0x99))
+        .expect("10E Euler encode");
+    assert_eq!(plan.leg.adapter, ExecutorAdapter::EulerV2);
+    assert_eq!(plan.leg.market, d.debt_vault);
+    assert_eq!(plan.leg.borrower, q.key.user);
     let mut q2 = q.clone();
     q2.key.protocol = liq_types::ProtocolId(99);
     assert_eq!(

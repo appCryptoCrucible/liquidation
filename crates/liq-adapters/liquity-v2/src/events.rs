@@ -128,7 +128,7 @@ pub mod halt {
     }
 }
 
-/// `TroveManager.batchLiquidateTroves(uint256[] _troveArray)` — 10R ABI.
+/// `TroveManager.batchLiquidateTroves(uint256[] _troveArray)` — 10E ABI.
 /// Empty calldata array reverts `EmptyData`; no liquidatable id reverts
 /// `NothingToLiquidate`. Not an `ExecutorAdapter` discriminant yet.
 pub mod liq {

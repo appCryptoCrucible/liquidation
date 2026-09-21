@@ -41,7 +41,7 @@ pub fn validate(p: &BatchPlan, ctx: &ValidateCtx) -> Result<()> {
                 });
             }
             match (l.adapter, &l.tail) {
-                (ExecutorAdapter::AaveV3, LegTail::None) => {}
+                (ExecutorAdapter::AaveV3 | ExecutorAdapter::SiloV2, LegTail::None) => {}
                 (
                     ExecutorAdapter::AaveV4,
                     LegTail::AaveV4 {
@@ -57,6 +57,42 @@ pub fn validate(p: &BatchPlan, ctx: &ValidateCtx) -> Result<()> {
                     check_morpho(ctx, *market_id, l.market, g.debt_asset, l.collateral_asset)?;
                 }
                 (ExecutorAdapter::MorphoBlue, _) => return Err(EncodeError::MorphoTailShape),
+                (ExecutorAdapter::EulerV2, LegTail::Euler { min_yield: _ }) => {}
+                (ExecutorAdapter::EulerV2, _) => return Err(EncodeError::EulerTailShape),
+                (ExecutorAdapter::SiloV2, _) => return Err(EncodeError::SiloTailShape),
+                (ExecutorAdapter::LiquityV2, LegTail::Liquity { trove_id }) => {
+                    if trove_id.is_zero() {
+                        return Err(EncodeError::LiquityZeroTrove);
+                    }
+                }
+                (ExecutorAdapter::LiquityV2, _) => return Err(EncodeError::LiquityTailShape),
+                (ExecutorAdapter::Fluid, LegTail::Fluid { col_per_unit_debt }) => {
+                    if col_per_unit_debt.is_zero() {
+                        return Err(EncodeError::FluidZeroColPer);
+                    }
+                }
+                (ExecutorAdapter::Fluid, _) => return Err(EncodeError::FluidTailShape),
+                (ExecutorAdapter::Gearbox, LegTail::Gearbox { min_seized }) => {
+                    if min_seized.is_zero() {
+                        return Err(EncodeError::GearboxZeroMinSeized);
+                    }
+                }
+                (ExecutorAdapter::Gearbox, _) => return Err(EncodeError::GearboxTailShape),
+                (
+                    ExecutorAdapter::CompoundV2,
+                    LegTail::CompoundV2 {
+                        ctoken_collateral,
+                        is_cether,
+                    },
+                ) => {
+                    if ctoken_collateral.is_zero() {
+                        return Err(EncodeError::CompoundZeroCToken);
+                    }
+                    if *is_cether > 1 {
+                        return Err(EncodeError::CompoundBadFlag);
+                    }
+                }
+                (ExecutorAdapter::CompoundV2, _) => return Err(EncodeError::CompoundTailShape),
                 (ExecutorAdapter::AaveV3, _) => return Err(EncodeError::V3TailShape),
             }
         }

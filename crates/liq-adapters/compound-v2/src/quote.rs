@@ -174,7 +174,7 @@ pub(crate) fn quote(
     }))
 }
 
-/// Pin seize tokens for a chosen repay/seize pair (tests + 10R preview).
+/// Pin seize tokens for a chosen repay/seize pair (tests + 10E preview).
 pub fn seize_tokens_for(
     pos: PositionRef<'_>,
     px: &PriceVector,

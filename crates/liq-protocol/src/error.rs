@@ -109,6 +109,11 @@ pub enum ProtocolError {
     /// The on-chain probe returned bytes the adapter cannot decode.
     #[error("health probe result malformed")]
     ProbeDecode,
+    /// `encode` cannot emit an Executor wire plan: the path is unwired on
+    /// purpose (Fluid T2/T3/T4, Gearbox full-close MultiCall). Do not invent
+    /// an ABI, share rate, or MultiCall fill. After H3, a new family is 10R-n.
+    #[error("executor adapter not wired (unpriced or non-T1 path)")]
+    ExecutorUnwired,
 }
 
 /// Failure of an [`crate::Archive`] read.

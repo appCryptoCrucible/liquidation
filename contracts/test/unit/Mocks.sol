@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity 0.8.28;
 
-import {MarketParams} from "../../src/lib/Interfaces.sol";
+import {MarketParams, PriceUpdate} from "../../src/lib/Interfaces.sol";
 
 /*
  * Counterparty test doubles for the unit suite. Each reproduces the exact
@@ -487,6 +487,253 @@ contract MockRouter {
 }
 
 // ─────────────────────────────── Coinbase ─────────────────────────────
+
+// ─────────────────────────── 10E protocol doubles ─────────────────────
+
+contract MockEulerVault {
+    mapping(address => uint256) public maxRepay;
+    mapping(address => uint256) public collOut;
+    bool public revertOnLiquidate;
+    address public lastViolator;
+    uint256 public lastRepay;
+    uint256 public lastMinYield;
+
+    function setPosition(address u, uint256 maxRepay_, uint256 collOut_) external {
+        maxRepay[u] = maxRepay_;
+        collOut[u] = collOut_;
+    }
+    function setRevertOnLiquidate(bool v) external { revertOnLiquidate = v; }
+
+    function checkLiquidation(address, address violator, address)
+        external view returns (uint256, uint256)
+    {
+        return (maxRepay[violator], collOut[violator]);
+    }
+
+    function liquidate(address violator, address collateral, uint256 repayAssets, uint256 minYield) external {
+        require(!revertOnLiquidate, "euler: revert");
+        uint256 maxR = maxRepay[violator];
+        require(maxR != 0, "euler: healthy");
+        uint256 actual = repayAssets < maxR ? repayAssets : maxR;
+        lastViolator = violator;
+        lastRepay = actual;
+        lastMinYield = minYield;
+        Tok.pull(debtToken, msg.sender, address(this), actual);
+        Tok.push(collateral, msg.sender, collOut[violator] * actual / maxR);
+        maxRepay[violator] = 0;
+    }
+
+    address public debtToken;
+    function setDebtToken(address t) external { debtToken = t; }
+}
+
+/// Same settlement as V3: pull debt, push coll. Guard via maxLiquidation.
+contract MockSiloHook {
+    mapping(address => uint256) public maxRepay;
+    mapping(address => uint256) public collOut;
+    bool public revertOnLiquidate;
+    address public lastBorrower;
+    uint256 public lastCover;
+    bool public lastReceiveS;
+    address public debtToken;
+
+    function setDebtToken(address t) external { debtToken = t; }
+    function setPosition(address u, uint256 maxRepay_, uint256 collOut_) external {
+        maxRepay[u] = maxRepay_;
+        collOut[u] = collOut_;
+    }
+    function setRevertOnLiquidate(bool v) external { revertOnLiquidate = v; }
+
+    function maxLiquidation(address borrower)
+        external view returns (uint256, uint256 debtToRepay, bool)
+    {
+        debtToRepay = maxRepay[borrower];
+        return (collOut[borrower], debtToRepay, false);
+    }
+
+    function liquidationCall(
+        address collateralAsset, address debtAsset, address borrower,
+        uint256 maxDebtToCover, bool receiveSToken
+    ) external returns (uint256, uint256) {
+        require(!revertOnLiquidate, "silo: revert");
+        require(!receiveSToken, "silo: sToken");
+        uint256 maxR = maxRepay[borrower];
+        require(maxR != 0, "silo: solvent");
+        uint256 actual = maxDebtToCover < maxR ? maxDebtToCover : maxR;
+        lastBorrower = borrower;
+        lastCover = actual;
+        lastReceiveS = receiveSToken;
+        Tok.pull(debtAsset, msg.sender, address(this), actual);
+        uint256 out = collOut[borrower] * actual / maxR;
+        Tok.push(collateralAsset, msg.sender, out);
+        maxRepay[borrower] = 0;
+        return (out, actual);
+    }
+}
+
+contract MockTroveManager {
+    mapping(uint256 => uint8) public status; // 1 active, 4 zombie
+    mapping(uint256 => uint256) public collOut;
+    bool public revertOnLiquidate;
+    uint256 public lastId;
+    address public collToken;
+
+    function setTrove(uint256 id, uint8 status_, uint256 collOut_) external {
+        status[id] = status_;
+        collOut[id] = collOut_;
+    }
+    function setCollToken(address t) external { collToken = t; }
+    function setRevertOnLiquidate(bool v) external { revertOnLiquidate = v; }
+
+    function getTroveStatus(uint256 id) external view returns (uint8) {
+        return status[id];
+    }
+
+    function batchLiquidateTroves(uint256[] calldata ids) external {
+        require(!revertOnLiquidate, "liquity: revert");
+        require(ids.length != 0, "EmptyData");
+        bool any;
+        for (uint256 i; i < ids.length; ++i) {
+            uint8 s = status[ids[i]];
+            if (s == 1 || s == 4) {
+                any = true;
+                lastId = ids[i];
+                Tok.push(collToken, msg.sender, collOut[ids[i]]);
+                status[ids[i]] = 3; // closed by liquidation
+            }
+        }
+        require(any, "NothingToLiquidate");
+    }
+}
+
+contract MockFluidT1 {
+    mapping(address => uint256) public maxRepay;
+    mapping(address => uint256) public collOut;
+    bool public revertOnLiquidate;
+    uint256 public lastDebt;
+    uint256 public lastColPer;
+    bool public lastAbsorb;
+    address public lastTo;
+    address public debtToken;
+
+    function setDebtToken(address t) external { debtToken = t; }
+    function setPosition(address, uint256 maxRepay_, uint256 collOut_) external {
+        maxRepay[address(this)] = maxRepay_;
+        collOut[address(this)] = collOut_;
+    }
+    function setRevertOnLiquidate(bool v) external { revertOnLiquidate = v; }
+
+    function liquidate(uint256 debtAmt_, uint256 colPerUnitDebt_, address to_, bool absorb_)
+        external payable returns (uint256, uint256)
+    {
+        require(!revertOnLiquidate, "fluid: revert");
+        uint256 maxR = maxRepay[address(this)];
+        require(maxR != 0, "fluid: healthy");
+        uint256 actual = debtAmt_ < maxR ? debtAmt_ : maxR;
+        lastDebt = actual;
+        lastColPer = colPerUnitDebt_;
+        lastAbsorb = absorb_;
+        lastTo = to_;
+        Tok.pull(debtToken, msg.sender, address(this), actual);
+        uint256 out = collOut[address(this)] * actual / maxR;
+        Tok.push(_coll(), to_, out);
+        maxRepay[address(this)] = 0;
+        return (actual, out);
+    }
+
+    address public collToken;
+    function setCollToken(address t) external { collToken = t; }
+    function _coll() internal view returns (address) { return collToken; }
+}
+
+contract MockCreditFacade {
+    mapping(address => uint256) public maxRepay;
+    mapping(address => uint256) public collOut;
+    bool public revertOnLiquidate;
+    address public lastAccount;
+    uint256 public lastRepaid;
+    uint256 public lastMinSeized;
+    address public lastTo;
+    address public debtToken;
+
+    function setDebtToken(address t) external { debtToken = t; }
+    function setPosition(address u, uint256 maxRepay_, uint256 collOut_) external {
+        maxRepay[u] = maxRepay_;
+        collOut[u] = collOut_;
+    }
+    function setRevertOnLiquidate(bool v) external { revertOnLiquidate = v; }
+
+    function partiallyLiquidateCreditAccount(
+        address creditAccount, address token, uint256 repaidAmount,
+        uint256 minSeizedAmount, address to, PriceUpdate[] calldata
+    ) external returns (uint256) {
+        require(!revertOnLiquidate, "gearbox: revert");
+        uint256 maxR = maxRepay[creditAccount];
+        require(maxR != 0, "gearbox: healthy");
+        uint256 actual = repaidAmount < maxR ? repaidAmount : maxR;
+        uint256 out = collOut[creditAccount] * actual / maxR;
+        require(out >= minSeizedAmount, "gearbox: min");
+        lastAccount = creditAccount;
+        lastRepaid = actual;
+        lastMinSeized = minSeizedAmount;
+        lastTo = to;
+        Tok.pull(debtToken, msg.sender, address(this), actual);
+        Tok.push(token, to, out);
+        maxRepay[creditAccount] = 0;
+        return out;
+    }
+}
+
+contract MockComptroller {
+    mapping(address => uint256) public shortfall;
+    mapping(address => bool) public deprecated;
+    function setShortfall(address u, uint256 s) external { shortfall[u] = s; }
+    function setDeprecated(address c, bool d) external { deprecated[c] = d; }
+    function getAccountLiquidity(address account)
+        external view returns (uint256 err, uint256, uint256)
+    {
+        return (0, 0, shortfall[account]);
+    }
+    function isDeprecated(address cToken) external view returns (bool) {
+        return deprecated[cToken];
+    }
+}
+
+contract MockCErc20 {
+    MockComptroller public unitroller;
+    mapping(address => uint256) public maxRepay;
+    mapping(address => uint256) public collOut;
+    bool public revertOnLiquidate;
+    address public lastBorrower;
+    uint256 public lastRepay;
+    address public lastCColl;
+    address public debtToken;
+
+    constructor(MockComptroller u) { unitroller = u; }
+    function setDebtToken(address t) external { debtToken = t; }
+    function setPosition(address u, uint256 maxRepay_, uint256 collOut_) external {
+        maxRepay[u] = maxRepay_;
+        collOut[u] = collOut_;
+    }
+    function setRevertOnLiquidate(bool v) external { revertOnLiquidate = v; }
+    function comptroller() external view returns (address) { return address(unitroller); }
+
+    function liquidateBorrow(address borrower, uint256 repayAmount, address cTokenCollateral)
+        external returns (uint256)
+    {
+        if (revertOnLiquidate) return 1;
+        uint256 maxR = maxRepay[borrower];
+        if (maxR == 0) return 2;
+        uint256 actual = repayAmount < maxR ? repayAmount : maxR;
+        lastBorrower = borrower;
+        lastRepay = actual;
+        lastCColl = cTokenCollateral;
+        Tok.pull(debtToken, msg.sender, address(this), actual);
+        Tok.push(cTokenCollateral, msg.sender, collOut[borrower] * actual / maxR);
+        maxRepay[borrower] = 0;
+        return 0;
+    }
+}
 
 /// A fee recipient that needs more than the 2300-gas stipend.
 contract ExpensiveCoinbase {

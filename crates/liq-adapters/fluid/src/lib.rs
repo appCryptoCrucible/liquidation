@@ -5,11 +5,11 @@
 //! Quote unit is **(vault, currently liquidatable debt)**. `liquidate` does
 //! not take an NFT id. Four vault types = four `liquidate` ABIs (T1–T4).
 //!
-//! `encode` validates then returns [`ProtocolError::ExecutorUnwired`] — no
-//! `ExecutorAdapter` discriminant (D48 / 10R). Order: ProtocolMismatch,
-//! LegOutOfRange, CallbackProviderMismatch, ZeroRecipient,
-//! FundingAssetMismatch, FundingShort, OracleSourceMismatch, AmountTooLarge,
-//! Unwired.
+//! T1 `encode` emits [`ExecutorAdapter::Fluid`] (id 6). T2/T3/T4 stay
+//! [`ProtocolError::ExecutorUnwired`] — never call the T1 ABI on them.
+//! Order: ProtocolMismatch, LegOutOfRange, CallbackProviderMismatch,
+//! ZeroRecipient, FundingAssetMismatch, FundingShort, OracleSourceMismatch,
+//! AmountTooLarge, then the plan or Unwired.
 //!
 //! ProtocolId **10**. MarketIds **4000..=4199** (catalog 4000, vault 1 → 4001).
 
@@ -24,11 +24,12 @@ pub mod math;
 pub mod quote;
 pub mod solve;
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
 use alloy_sol_types::SolEvent;
 use liq_protocol::{
-    Archive, BlockNum, DecodedLog, DirtySet, FlashRoute, Health, LegChoice, LiquidationPlan,
-    PositionRef, ProbeCall, Protocol, ProtocolError, Quote, Result, StateWriter, Timestamp,
+    Archive, BlockNum, DecodedLog, DirtySet, ExecutorAdapter, FlashRoute, Health, LegChoice,
+    LiquidationLeg, LiquidationPlan, PositionRef, ProbeCall, Protocol, ProtocolError, Quote,
+    Result, StateWriter, Timestamp,
 };
 use liq_types::{AssetId, LogFilter, LogSubscriber, Price, PriceVector, ProtocolId};
 
@@ -239,7 +240,43 @@ impl Protocol for Fluid {
         recipient: Address,
     ) -> Result<LiquidationPlan> {
         encode_validate(&self.cfg, q, self.cfg.protocol, legs, funding, recipient)?;
-        Err(ProtocolError::ExecutorUnwired)
+        let pin = self
+            .cfg
+            .pin_of(q.key.user)
+            .ok_or(ProtocolError::ExecutorUnwired)?;
+        if pin.vault_type != VAULT_T1 {
+            return Err(ProtocolError::ExecutorUnwired);
+        }
+        let repay = q
+            .repay_options
+            .get(usize::from(legs.repay))
+            .ok_or(ProtocolError::LegOutOfRange)?;
+        let seize = q
+            .seize_options
+            .get(usize::from(legs.seize))
+            .ok_or(ProtocolError::LegOutOfRange)?;
+        let debt_asset = self
+            .cfg
+            .underlying_of(repay.asset)
+            .ok_or(ProtocolError::OracleSourceMismatch)?;
+        let collateral_asset = self
+            .cfg
+            .underlying_of(seize.asset)
+            .ok_or(ProtocolError::OracleSourceMismatch)?;
+        let wire = |v: U256| u128::try_from(v).map_err(|_| ProtocolError::AmountTooLarge);
+        Ok(LiquidationPlan {
+            provider: funding.provider,
+            flash_source: funding.source,
+            debt_asset,
+            flash_amount: wire(funding.amount)?,
+            leg: LiquidationLeg {
+                adapter: ExecutorAdapter::Fluid,
+                market: q.key.user,
+                borrower: q.key.user,
+                collateral_asset,
+                repay_amount: wire(repay.max_repay)?,
+            },
+        })
     }
 
     fn health_probe(&self, _pos: PositionRef<'_>) -> Result<ProbeCall> {
