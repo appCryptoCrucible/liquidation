@@ -58,6 +58,9 @@ impl WarmInputs for AbsentWarmInputs {
     fn next_base_fee(&self) -> u128 {
         0
     }
+    fn priority_fee_wei(&self) -> u128 {
+        0
+    }
     fn block(&self) -> u64 {
         0
     }

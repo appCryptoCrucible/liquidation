@@ -33,7 +33,7 @@ pub use assert::assert_registry;
 pub use config::{load, BotConfig, RiskConfig, VenuesConfig};
 pub use error::{ConfigError, Result};
 pub use intern::{AssetRec, FeedRec, Intern, MarketRec};
-pub use protocols::AaveV3Toml;
+pub use protocols::{AaveV3Toml, AaveV4Toml, MorphoBlueToml};
 pub use registry::{
     OnChainId, OracleEntry, PoolEntry, PoolVenue, ProtocolEntry, Registry, SymbolCollision,
     TokenEntry, TokenQuirk,

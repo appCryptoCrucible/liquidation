@@ -219,7 +219,8 @@ pub async fn run(
         tracing::error!("registry WETH missing — SelectReady stays None");
         alloy_primitives::Address::ZERO
     });
-    let select_bind = bind::select_bind(wrap, weth);
+    let select_bind = bind::select_bind(wrap, weth, loaded.intern.protocol("aave-v4"));
+    let bid_cfg = bind::load_bid_config(&config_dir.join("bid.toml"));
     let oracle = liq_router::GasOracle::with_priority_cap(liq_router::gas::DEFAULT_PRIORITY_CAP);
     let fee = match oracle.as_ref() {
         Some(o) => bind::fee_from_oracle(o, 0),
@@ -258,7 +259,8 @@ pub async fn run(
         fee,
         oracle,
     )
-    .with_index(index);
+    .with_index(index)
+    .with_bid_cfg(bid_cfg);
     let _map = pin_threads(cores_path, allow_unpinned)?;
     let sink: &'static dyn liq_types::HaltSink = shared.risk;
     let (forwarder, hot) = register_exex(

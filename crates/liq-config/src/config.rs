@@ -40,9 +40,51 @@ const fn mainnet() -> u64 {
     1
 }
 
-/// Risk section. WP 14A populates the halt matrix; 00D only carries the slot.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RiskConfig {}
+const fn default_global_concurrent() -> u32 {
+    20
+}
+const fn default_per_provider_concurrent() -> u32 {
+    1
+}
+const fn default_concentration_alert_bps() -> u32 {
+    8_000
+}
+const fn default_haircut_floor_bps() -> u16 {
+    8_000
+}
+const fn default_haircut_ceil_bps() -> u16 {
+    9_900
+}
+
+/// Risk section. No per-liquidation notional cap — the viability band is
+/// the size filter. Other defaults are the existing 14A concurrency and
+/// haircut numbers. Empty `[risk]` deserializes to those.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RiskConfig {
+    #[serde(default = "default_global_concurrent")]
+    pub global_concurrent: u32,
+    #[serde(default = "default_per_provider_concurrent")]
+    pub per_provider_concurrent: u32,
+    #[serde(default = "default_concentration_alert_bps")]
+    pub concentration_alert_bps: u32,
+    #[serde(default = "default_haircut_floor_bps")]
+    pub haircut_floor_bps: u16,
+    #[serde(default = "default_haircut_ceil_bps")]
+    pub haircut_ceil_bps: u16,
+}
+
+impl Default for RiskConfig {
+    fn default() -> Self {
+        Self {
+            global_concurrent: default_global_concurrent(),
+            per_provider_concurrent: default_per_provider_concurrent(),
+            concentration_alert_bps: default_concentration_alert_bps(),
+            haircut_floor_bps: default_haircut_floor_bps(),
+            haircut_ceil_bps: default_haircut_ceil_bps(),
+        }
+    }
+}
 
 /// Venues section. `executor` is unset until the H3 deploy is committed.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

@@ -213,19 +213,26 @@ fn wire_eq(a: &BatchPlan, b: &BatchPlan) -> bool {
 }
 
 fn plan_v3() -> BatchPlan {
+    plan_v3_legs(1, 1, 9_000, 12_345)
+}
+
+fn plan_v3_legs(n: u8, min_profit_wei: u128, bid_bps: u16, gas_cost_wei: u128) -> BatchPlan {
     let pull = 1_000_000_000u128;
+    let n = n.max(1);
+    let liqs = (0..n).map(|_| v3_leg(WETH, pull, pull)).collect();
+    let total = pull.saturating_mul(u128::from(n));
     BatchPlan {
         flags: FLAG_SWEEP,
-        bid_bps: 9_000,
-        gas_cost_wei: 12_345,
-        min_profit_wei: 1,
+        bid_bps,
+        gas_cost_wei,
+        min_profit_wei,
         groups: vec![group(
             FlashProvider::Aave,
             AAVE_V3,
             DAI,
-            pull,
-            vec![v3_leg(WETH, pull, pull)],
-            vec![exact_out(WETH, DAI, pull)],
+            total,
+            liqs,
+            vec![exact_out(WETH, DAI, total)],
         )],
         profit_swaps: vec![profit_tb(WETH)],
     }
@@ -423,7 +430,7 @@ fn encode_decode_10e_tails() {
             flags: FLAG_SWEEP,
             bid_bps: 0,
             gas_cost_wei: 0,
-            min_profit_wei: 0,
+            min_profit_wei: 1,
             groups: vec![FlashGroup {
                 provider: FlashProvider::Aave,
                 flash_source: AAVE_V3,
@@ -452,7 +459,7 @@ fn one_leg_plan(leg: LiqLeg) -> BatchPlan {
         flags: FLAG_SWEEP,
         bid_bps: 0,
         gas_cost_wei: 0,
-        min_profit_wei: 0,
+        min_profit_wei: 1,
         groups: vec![FlashGroup {
             provider: FlashProvider::Aave,
             flash_source: AAVE_V3,
@@ -832,16 +839,102 @@ proptest! {
     }
 }
 
+fn router_data_padded(extra: usize) -> Vec<u8> {
+    let mut d = ROUTER_A.to_vec();
+    d.extend(std::iter::repeat(0x11u8).take(extra));
+    d
+}
+
+/// One group. `liq_n`, repay-swap count, profit-swap count, adapter, and
+/// router `data` length move on different moduli so none determines another.
+fn varied_case(i: u32) -> BatchPlan {
+    let c = ctx();
+    let liq_n = u8::try_from((i / 3) % 3 + 1).unwrap();
+    let repay_n = u8::try_from((i / 9) % 3 + 1).unwrap();
+    let profit_extra = (i / 27) % 2 == 1;
+    let pad = usize::try_from(i % 32).unwrap();
+    let pull = 1_000_000_000u128;
+    let total = pull.saturating_mul(u128::from(liq_n));
+    let (provider, src, debt, coll, liqs) = match i % 3 {
+        0 => (
+            FlashProvider::Aave,
+            AAVE_V3,
+            DAI,
+            WETH,
+            (0..liq_n).map(|_| v3_leg(WETH, pull, pull)).collect(),
+        ),
+        1 => (
+            FlashProvider::UniV4,
+            UNIV4_PM,
+            USDC,
+            WETH,
+            (0..liq_n)
+                .map(|_| v4_leg(WETH, 0, 1, pull, pull))
+                .collect(),
+        ),
+        _ => (
+            FlashProvider::Morpho,
+            MORPHO,
+            WETH,
+            WSTETH,
+            (0..liq_n)
+                .map(|_| morpho_leg(pull, pull, &c))
+                .collect(),
+        ),
+    };
+    let mut repay = Vec::with_capacity(usize::from(repay_n));
+    let mut acc = 0u128;
+    for k in 0..repay_n {
+        let amt = if k + 1 == repay_n {
+            total - acc
+        } else {
+            total / u128::from(repay_n)
+        };
+        acc = acc.saturating_add(amt);
+        if k % 2 == 1 {
+            repay.push(SwapLeg {
+                venue: VENUE_ROUTER,
+                token_in: coll,
+                token_out: debt,
+                flags: LEG_EXACT_OUT,
+                amount: amt,
+                data: router_data_padded(pad),
+            });
+        } else {
+            repay.push(exact_out(coll, debt, amt));
+        }
+    }
+    let mut profit = Vec::new();
+    if profit_extra {
+        profit.push(SwapLeg {
+            venue: VENUE_ROUTER,
+            token_in: coll,
+            token_out: WETH,
+            flags: LEG_EXACT_OUT,
+            amount: 1,
+            data: router_data_padded(pad),
+        });
+    }
+    profit.push(profit_tb(coll));
+    BatchPlan {
+        flags: FLAG_SWEEP,
+        bid_bps: 1u16.saturating_add(u16::try_from(i % 9_000).unwrap()),
+        gas_cost_wei: 1u128.saturating_add(u128::from(i)),
+        min_profit_wei: 1u128.saturating_add(u128::from(i % 97)),
+        groups: vec![group(provider, src, debt, total, liqs, repay)],
+        profit_swaps: profit,
+    }
+}
+
 /// Writes `contracts/test/encoding/generated.bin` for the Foundry decoder.
 #[test]
 fn write_solidity_roundtrip_cases() {
     let c = ctx();
-    let plans = [plan_v3(), plan_v4_clamped(), plan_morpho(), plan_multi()];
     let mut blob = Vec::new();
     let n: u32 = 256;
     blob.extend_from_slice(&n.to_be_bytes());
     for i in 0..n {
-        let p = plans[i as usize % plans.len()].clone();
+        let p = varied_case(i);
         let bytes = EncodedPlan::encode(&p, &c).unwrap().into_bytes();
         let len = u32::try_from(bytes.len()).unwrap();
         blob.extend_from_slice(&len.to_be_bytes());
@@ -857,16 +950,48 @@ fn write_solidity_roundtrip_cases() {
     ))
     .unwrap();
     std::fs::write(path, blob).unwrap();
+}
 
-    let contracts = concat!(env!("CARGO_MANIFEST_DIR"), "/../../contracts");
-    let forge = if cfg!(windows) { "forge.exe" } else { "forge" };
-    let status = std::process::Command::new(forge)
-        .args(["test", "--match-contract", "PlanEncodingRoundTrip", "-vv"])
-        .current_dir(contracts)
-        .status();
-    match status {
-        Ok(s) if s.success() => {}
-        Ok(s) => panic!("forge PlanEncodingRoundTrip failed: {s}"),
-        Err(e) => panic!("forge not runnable ({e}); Solidity round-trip is required"),
+#[test]
+fn varied_cases_move_counts_independently() {
+    let mut liq = std::collections::BTreeSet::new();
+    let mut repay = std::collections::BTreeSet::new();
+    let mut profit = std::collections::BTreeSet::new();
+    let mut data = std::collections::BTreeSet::new();
+    let mut v4_liq = std::collections::BTreeSet::new();
+    let mut morpho_liq = std::collections::BTreeSet::new();
+    for i in 0..256u32 {
+        let p = varied_case(i);
+        let g = &p.groups[0];
+        liq.insert(g.liqs.len());
+        repay.insert(g.repay_swaps.len());
+        profit.insert(p.profit_swaps.len());
+        for s in g.repay_swaps.iter().chain(p.profit_swaps.iter()) {
+            data.insert(s.data.len());
+        }
+        match g.liqs[0].adapter {
+            ExecutorAdapter::AaveV4 => {
+                v4_liq.insert(g.liqs.len());
+            }
+            ExecutorAdapter::MorphoBlue => {
+                morpho_liq.insert(g.liqs.len());
+            }
+            _ => {}
+        }
+        EncodedPlan::encode(&p, &ctx()).unwrap();
     }
+    assert!(liq.len() > 1 && repay.len() > 1 && profit.len() > 1 && data.len() > 1);
+    assert!(v4_liq.contains(&2), "V4 tail stride must be reached at liq index ≥ 1");
+    assert!(morpho_liq.contains(&2), "Morpho tail stride must be reached at liq index ≥ 1");
+}
+
+#[test]
+fn zero_min_profit_is_refused() {
+    let c = ctx();
+    let mut p = plan_v3();
+    p.min_profit_wei = 0;
+    assert!(matches!(
+        EncodedPlan::encode(&p, &c),
+        Err(liq_plan::EncodeError::ZeroMinProfit)
+    ));
 }

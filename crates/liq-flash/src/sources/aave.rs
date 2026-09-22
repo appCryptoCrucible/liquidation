@@ -59,6 +59,7 @@ pub struct AavePool {
     configurator: Address,
     premium_total: u16,
     slots: Vec<Option<Slot>>,
+    overhead: u64,
 }
 
 impl AavePool {
@@ -91,7 +92,14 @@ impl AavePool {
             configurator,
             premium_total,
             slots,
+            overhead: GAS_OVERHEAD_STUB,
         }
+    }
+
+    #[must_use]
+    pub fn with_overhead(mut self, gas: u64) -> Self {
+        self.overhead = gas;
+        self
     }
 
     fn slot_by_underlying_mut(&mut self, token: Address) -> Option<&mut Slot> {
@@ -184,7 +192,7 @@ impl FlashSource for AavePool {
 
     #[inline]
     fn gas_overhead(&self) -> u64 {
-        GAS_OVERHEAD_STUB
+        self.overhead
     }
 
     fn apply_log(&mut self, log: &DecodedLog<'_>) {

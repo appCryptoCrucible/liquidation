@@ -105,6 +105,11 @@ jobs:
           apt-get install -y --no-install-recommends \
             ca-certificates curl git build-essential pkg-config libssl-dev
 
+      - name: Install Rust 1.95.0
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
       - name: Install Foundry
         run: |
           curl -L https://foundry.paradigm.xyz | bash
@@ -115,9 +120,19 @@ jobs:
         working-directory: contracts
         run: forge install foundry-rs/forge-std --no-git
 
-      - name: forge test (unit + invariant + fork skip)
+      - name: generate PlanEncodingRoundTrip vectors
+        run: cargo test -p liq-plan write_solidity_roundtrip_cases -- --exact
+
+      - name: forge test (unit + invariant)
         working-directory: contracts
-        run: forge test --no-match-path test/differential/HealthDiff.t.sol
+        run: forge test --no-match-path test/differential/HealthDiff.t.sol --no-match-path test/fork/
+
+      - name: forge test fork
+        working-directory: contracts
+        env:
+          # Public endpoint. A repo secret overrides it; the URL is not a credential.
+          MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL || 'https://ethereum-rpc.publicnode.com' }}
+        run: forge test --match-path test/fork/
 
       - name: forge snapshot --check (2%)
         working-directory: contracts

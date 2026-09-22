@@ -44,6 +44,7 @@ pub struct SkyDssFlash {
     /// ERC-3156 `toll` [wad]. Current deployment hardcodes `flashFee = 0`.
     toll: U256,
     live: bool,
+    overhead: u64,
 }
 
 impl SkyDssFlash {
@@ -63,7 +64,14 @@ impl SkyDssFlash {
             max,
             toll,
             live,
+            overhead: GAS_OVERHEAD_STUB,
         }
+    }
+
+    #[must_use]
+    pub fn with_overhead(mut self, gas: u64) -> Self {
+        self.overhead = gas;
+        self
     }
 
     fn bps_from_toll(&self) -> u16 {
@@ -131,7 +139,7 @@ impl FlashSource for SkyDssFlash {
 
     #[inline]
     fn gas_overhead(&self) -> u64 {
-        GAS_OVERHEAD_STUB
+        self.overhead
     }
 
     fn apply_log(&mut self, log: &DecodedLog<'_>) {

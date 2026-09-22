@@ -25,6 +25,7 @@ sol! {
 pub struct MorphoBlue {
     morpho: Address,
     table: SlotTable,
+    overhead: u64,
 }
 
 impl MorphoBlue {
@@ -33,7 +34,14 @@ impl MorphoBlue {
         Self {
             morpho,
             table: SlotTable::from_held(morpho, assets),
+            overhead: GAS_OVERHEAD_STUB,
         }
+    }
+
+    #[must_use]
+    pub fn with_overhead(mut self, gas: u64) -> Self {
+        self.overhead = gas;
+        self
     }
 }
 
@@ -89,7 +97,7 @@ impl FlashSource for MorphoBlue {
 
     #[inline]
     fn gas_overhead(&self) -> u64 {
-        GAS_OVERHEAD_STUB
+        self.overhead
     }
 
     fn apply_log(&mut self, log: &DecodedLog<'_>) {

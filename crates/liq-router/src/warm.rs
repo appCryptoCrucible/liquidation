@@ -37,8 +37,10 @@ pub trait WarmInputs {
     fn bucket_sizes(&self, coll: AssetId) -> Option<SmallVec<[U256; BUCKETS]>>;
     /// Raw units of `asset` per `1e18` wei.
     fn per_eth(&self, asset: AssetId) -> Option<U256>;
-    /// Exact next base fee (wei / gas).
+    /// Exact next base fee (wei / gas). Not mixed with priority.
     fn next_base_fee(&self) -> u128;
+    /// Priority fee (wei / gas). Kept separate from [`Self::next_base_fee`].
+    fn priority_fee_wei(&self) -> u128;
     /// Block the folded state corresponds to.
     fn block(&self) -> u64;
 }
@@ -210,6 +212,7 @@ impl WarmBuilder {
     pub fn rebuild(&mut self, book: &PoolBook, inputs: &dyn WarmInputs) -> Arc<RouteTable> {
         let n_twa = usize::from(self.cfg.twa_blocks).clamp(1, MAX_TWA_BLOCKS);
         let base_fee = inputs.next_base_fee();
+        let priority_fee = inputs.priority_fee_wei();
         let mut table = RouteTable {
             pairs: HashMap::new(),
             exit_cap: Vec::new(),
@@ -229,6 +232,7 @@ impl WarmBuilder {
             };
             let gas = GasTerms {
                 base_fee_wei: base_fee,
+                priority_fee_wei: priority_fee,
                 out_per_eth: per_eth,
             };
             let mut legs: SmallVec<[(U256, Leg); 8]> = book

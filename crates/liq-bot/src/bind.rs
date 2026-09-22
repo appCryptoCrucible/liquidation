@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 
 use alloy_primitives::{address, Address, U256};
-use liq_config::{AaveV3Toml, Intern};
+use liq_config::{AaveV3Toml, AaveV4Toml, Intern, MorphoBlueToml};
 use liq_engine::Candidate;
 use liq_exec::fee::FeeQuote;
 use liq_flash::Haircut;
@@ -35,6 +35,8 @@ pub const REGISTRY_WETH: Address = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083
 /// A constructed adapter that passed `new`. Omitted crates are not stored.
 pub enum BoundProtocol {
     AaveV3(liq_adapters_aave_v3::AaveV3),
+    AaveV4(liq_adapters_aave_v4::AaveV4),
+    MorphoBlue(liq_adapters_morpho_blue::MorphoBlue),
     EulerV2(liq_adapters_euler_v2::EulerV2),
     SiloV2(liq_adapters_silo_v2::SiloV2),
 }
@@ -44,6 +46,8 @@ impl BoundProtocol {
     pub fn as_dyn(&self) -> &dyn Protocol {
         match self {
             Self::AaveV3(p) => p,
+            Self::AaveV4(p) => p,
+            Self::MorphoBlue(p) => p,
             Self::EulerV2(p) => p,
             Self::SiloV2(p) => p,
         }
@@ -58,6 +62,8 @@ impl BoundProtocol {
     pub fn token_addrs(&self) -> Vec<Address> {
         match self {
             Self::AaveV3(p) => p.config().assets.iter().map(|a| a.underlying).collect(),
+            Self::AaveV4(p) => p.config().assets.iter().map(|a| a.underlying).collect(),
+            Self::MorphoBlue(p) => p.config().assets.iter().map(|a| a.underlying).collect(),
             Self::EulerV2(p) => p.config().assets.iter().map(|a| a.underlying).collect(),
             Self::SiloV2(p) => p.config().assets.iter().map(|a| a.underlying).collect(),
         }
@@ -75,6 +81,8 @@ impl BoundProtocol {
         let _ = extra;
         match self {
             Self::AaveV3(p) => pins_aave_v3(p.config(), c),
+            Self::AaveV4(p) => pins_aave_v4(p.config(), c),
+            Self::MorphoBlue(p) => pins_morpho(p.config(), c),
             Self::EulerV2(p) => pins_euler(p.config(), c),
             Self::SiloV2(p) => pins_silo(p.config(), c),
         }
@@ -186,6 +194,9 @@ pub fn load_protocols(config_dir: &Path, intern: &Intern) -> ProtocolLoad {
         }
     }
     push_spark(&proto_dir, intern, &mut out);
+    push_aave_v3(&proto_dir, intern, &mut out);
+    push_aave_v4(&proto_dir, intern, &mut out);
+    push_morpho(&proto_dir, intern, &mut out);
     push_euler(&proto_dir, intern, &mut out);
     push_silo(&proto_dir, &mut out);
     push_liquity(&proto_dir, &mut out);
@@ -238,6 +249,163 @@ fn push_spark(dir: &Path, intern: &Intern, out: &mut ProtocolLoad) {
     match liq_adapters_aave_v3::AaveV3::new(cfg) {
         Ok(p) => out.protocols.push(BoundProtocol::AaveV3(p)),
         Err(e) => omit(out, "spark", e),
+    }
+}
+
+fn push_aave_v3(dir: &Path, intern: &Intern, out: &mut ProtocolLoad) {
+    let path = dir.join("aave-v3.toml");
+    if !path.is_file() {
+        omit(out, "aave-v3", "toml absent");
+        return;
+    }
+    let toml = match AaveV3Toml::from_path(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            omit(out, "aave-v3", e);
+            return;
+        }
+    };
+    if let Some(want) = intern.protocol("aave-v3") {
+        if want != ProtocolId(toml.protocol) {
+            omit(
+                out,
+                "aave-v3",
+                format!("toml protocol {} != intern {want:?}", toml.protocol),
+            );
+            return;
+        }
+    }
+    let cfg = spark_to_config(&toml);
+    match liq_adapters_aave_v3::AaveV3::new(cfg) {
+        Ok(p) => out.protocols.push(BoundProtocol::AaveV3(p)),
+        Err(e) => omit(out, "aave-v3", e),
+    }
+}
+
+fn push_aave_v4(dir: &Path, intern: &Intern, out: &mut ProtocolLoad) {
+    let path = dir.join("aave-v4.toml");
+    if !path.is_file() {
+        omit(out, "aave-v4", "toml absent");
+        return;
+    }
+    let toml = match AaveV4Toml::from_path(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            omit(out, "aave-v4", e);
+            return;
+        }
+    };
+    if let Some(want) = intern.protocol("aave-v4") {
+        if want != ProtocolId(toml.protocol) {
+            omit(
+                out,
+                "aave-v4",
+                format!("toml protocol {} != intern {want:?}", toml.protocol),
+            );
+            return;
+        }
+    }
+    let cfg = aave_v4_to_config(&toml);
+    match liq_adapters_aave_v4::AaveV4::new(cfg) {
+        Ok(p) => out.protocols.push(BoundProtocol::AaveV4(p)),
+        Err(e) => omit(out, "aave-v4", e),
+    }
+}
+
+fn aave_v4_to_config(t: &AaveV4Toml) -> liq_adapters_aave_v4::Config {
+    liq_adapters_aave_v4::Config {
+        protocol: ProtocolId(t.protocol),
+        hubs: t
+            .hubs
+            .iter()
+            .map(|h| liq_adapters_aave_v4::HubConfig {
+                address: h.address,
+                market: MarketId(h.market),
+            })
+            .collect(),
+        spokes: t
+            .spokes
+            .iter()
+            .map(|s| liq_adapters_aave_v4::SpokeConfig {
+                address: s.address,
+                market: MarketId(s.market),
+                oracle: s.oracle,
+            })
+            .collect(),
+        assets: t
+            .assets
+            .iter()
+            .map(|a| liq_adapters_aave_v4::AssetConfig {
+                underlying: a.underlying,
+                asset: AssetId(a.asset),
+                feed: FeedId(a.feed),
+            })
+            .collect(),
+        price_sources: t
+            .price_sources
+            .iter()
+            .map(|s| liq_adapters_aave_v4::SourcePin {
+                spoke: s.spoke,
+                reserve_id: s.reserve_id,
+                source: s.source,
+            })
+            .collect(),
+        pinned_through: t.pinned_through,
+    }
+}
+
+fn push_morpho(dir: &Path, intern: &Intern, out: &mut ProtocolLoad) {
+    let path = dir.join("morpho-blue.toml");
+    if !path.is_file() {
+        omit(out, "morpho-blue", "toml absent");
+        return;
+    }
+    let toml = match MorphoBlueToml::from_path(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            omit(out, "morpho-blue", e);
+            return;
+        }
+    };
+    if let Some(want) = intern.protocol("morpho-blue") {
+        if want != ProtocolId(toml.protocol) {
+            omit(
+                out,
+                "morpho-blue",
+                format!("toml protocol {} != intern {want:?}", toml.protocol),
+            );
+            return;
+        }
+    }
+    let cfg = morpho_to_config(&toml);
+    match liq_adapters_morpho_blue::MorphoBlue::new(cfg) {
+        Ok(p) => out.protocols.push(BoundProtocol::MorphoBlue(p)),
+        Err(e) => omit(out, "morpho-blue", e),
+    }
+}
+
+fn morpho_to_config(t: &MorphoBlueToml) -> liq_adapters_morpho_blue::Config {
+    liq_adapters_morpho_blue::Config {
+        protocol: ProtocolId(t.protocol),
+        morpho: t.morpho,
+        catalog: MarketId(t.catalog),
+        first_market: MarketId(t.first_market),
+        assets: t
+            .assets
+            .iter()
+            .map(|a| liq_adapters_morpho_blue::AssetConfig {
+                underlying: a.underlying,
+                asset: AssetId(a.asset),
+                feed: FeedId(a.feed),
+                decimals: a.decimals,
+            })
+            .collect(),
+        price_sources: t
+            .price_sources
+            .iter()
+            .map(|s| liq_adapters_morpho_blue::SourcePin { oracle: s.oracle })
+            .collect(),
+        pinned_through: t.pinned_through,
     }
 }
 
@@ -549,11 +717,19 @@ pub fn registry_weth(intern: &Intern) -> Option<Address> {
     Some(rec.address)
 }
 
+/// 10C wrap snapshots. `by_provider` is indexed by [`FlashProvider`].
+/// `aave_v4` is the V3-flash + V4-adapter measurement (no FlashProvider id).
+#[derive(Copy, Clone, Debug, Default)]
+pub struct WrapGas {
+    pub by_provider: [u64; 5],
+    pub aave_v4: u64,
+}
+
 /// 10C `gas_overhead` mapped onto [`FlashProvider`] discriminants.
 /// Missing key → `0` (that provider unusable). Never invents 30M.
 #[must_use]
-pub fn load_wrap_gas(flash_gas: &Path) -> [u64; 5] {
-    let mut wrap = [0u64; 5];
+pub fn load_wrap_gas(flash_gas: &Path) -> WrapGas {
+    let mut wrap = WrapGas::default();
     let raw = match fs::read_to_string(flash_gas) {
         Ok(s) => s,
         Err(e) => {
@@ -569,11 +745,16 @@ pub fn load_wrap_gas(flash_gas: &Path) -> [u64; 5] {
             return wrap;
         }
     };
-    set_wrap(&mut wrap, FlashProvider::Aave, file.gas_overhead.aave_v3);
-    set_wrap(&mut wrap, FlashProvider::UniV3, file.gas_overhead.univ3);
-    set_wrap(&mut wrap, FlashProvider::UniV4, file.gas_overhead.univ4);
-    set_wrap(&mut wrap, FlashProvider::Morpho, file.gas_overhead.morpho);
-    set_wrap(&mut wrap, FlashProvider::SkyDss, file.gas_overhead.sky_dss);
+    set_wrap(&mut wrap.by_provider, FlashProvider::Aave, file.gas_overhead.aave_v3);
+    set_wrap(&mut wrap.by_provider, FlashProvider::UniV3, file.gas_overhead.univ3);
+    set_wrap(&mut wrap.by_provider, FlashProvider::UniV4, file.gas_overhead.univ4);
+    set_wrap(&mut wrap.by_provider, FlashProvider::Morpho, file.gas_overhead.morpho);
+    set_wrap(&mut wrap.by_provider, FlashProvider::SkyDss, file.gas_overhead.sky_dss);
+    match file.gas_overhead.aave_v4 {
+        Some(g) if g != 0 => wrap.aave_v4 = g,
+        Some(_) => tracing::error!("10C aave_v4 snapshot is zero — V4 wrap unusable"),
+        None => tracing::error!("10C aave_v4 snapshot missing — V4 wrap unusable"),
+    }
     wrap
 }
 
@@ -599,6 +780,7 @@ struct FlashGasToml {
 #[derive(serde::Deserialize)]
 struct GasOverheadToml {
     aave_v3: Option<u64>,
+    aave_v4: Option<u64>,
     univ3: Option<u64>,
     univ4: Option<u64>,
     morpho: Option<u64>,
@@ -611,6 +793,8 @@ struct GasOverheadToml {
 #[derive(Clone, Debug)]
 pub struct SelectBind {
     pub wrap_gas: [u64; 5],
+    pub wrap_aave_v4: u64,
+    pub aave_v4: Option<ProtocolId>,
     pub weth: Address,
     pub validate: ValidateCtx,
     pub haircut: Haircut,
@@ -619,13 +803,15 @@ pub struct SelectBind {
 
 /// Build [`SelectBind`] from 10C wrap + registry WETH. Zero WETH → None.
 #[must_use]
-pub fn select_bind(wrap_gas: [u64; 5], weth: Address) -> Option<SelectBind> {
+pub fn select_bind(wrap: WrapGas, weth: Address, aave_v4: Option<ProtocolId>) -> Option<SelectBind> {
     if weth.is_zero() {
         tracing::error!("WETH is zero — SelectReady stays None");
         return None;
     }
     Some(SelectBind {
-        wrap_gas,
+        wrap_gas: wrap.by_provider,
+        wrap_aave_v4: wrap.aave_v4,
+        aave_v4,
         weth,
         validate: ValidateCtx {
             weth,
@@ -637,6 +823,55 @@ pub fn select_bind(wrap_gas: [u64; 5], weth: Address) -> Option<SelectBind> {
         haircut: Haircut::NONE,
         gas_failed: 0,
     })
+}
+
+/// Committed `config/bid.toml` only. Missing / refused fields → None (D11).
+#[must_use]
+pub fn load_bid_config(path: &Path) -> Option<liq_router::BidConfig> {
+    if !path.is_file() {
+        tracing::error!("bid.toml absent — SelectReady stays None (D11 unset)");
+        return None;
+    }
+    let raw = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "bid.toml unreadable — SelectReady stays None");
+            return None;
+        }
+    };
+    let parsed: Result<BidToml, _> = toml::from_str(&raw);
+    let file = match parsed {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::error!(error = %e, "bid.toml malformed — SelectReady stays None");
+            return None;
+        }
+    };
+    match liq_router::BidConfig::try_from_fields(
+        file.bid.beta_cap_bps,
+        file.bid.learning_target_bps,
+        file.bid.jitter_lo_bps,
+        file.bid.jitter_hi_bps,
+    ) {
+        Some(c) => Some(c),
+        None => {
+            tracing::error!("bid.toml fields refused by BidConfig — SelectReady stays None");
+            None
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct BidToml {
+    bid: BidSection,
+}
+
+#[derive(serde::Deserialize)]
+struct BidSection {
+    beta_cap_bps: u16,
+    learning_target_bps: u16,
+    jitter_lo_bps: i16,
+    jitter_hi_bps: i16,
 }
 
 /// Fee only from a real 12A-2 window. Empty window / missing base → None.
@@ -681,6 +916,31 @@ pub fn fee_from_oracle(oracle: &GasOracle, parent_block: u64) -> Option<FeeQuote
         priority_wei: priority,
         modest_priority_wei: modest,
     })
+}
+
+fn pins_aave_v4(cfg: &liq_adapters_aave_v4::Config, c: &Candidate) -> Option<TailPins> {
+    let spoke = cfg.spokes.iter().find(|s| s.market == c.quote.key.market)?;
+    if spoke.address.is_zero() || c.quote.key.user.is_zero() {
+        tracing::error!("aave-v4 spoke/borrower zero — skip (no zero tail)");
+        return None;
+    }
+    Some(base_pins(
+        ExecutorAdapter::AaveV4,
+        spoke.address,
+        c.quote.key.user,
+    ))
+}
+
+fn pins_morpho(cfg: &liq_adapters_morpho_blue::Config, c: &Candidate) -> Option<TailPins> {
+    if cfg.morpho.is_zero() || c.quote.key.user.is_zero() {
+        tracing::error!("morpho singleton/borrower zero — skip (no zero tail)");
+        return None;
+    }
+    Some(base_pins(
+        ExecutorAdapter::MorphoBlue,
+        cfg.morpho,
+        c.quote.key.user,
+    ))
 }
 
 fn pins_aave_v3(cfg: &liq_adapters_aave_v3::Config, c: &Candidate) -> Option<TailPins> {
@@ -876,14 +1136,20 @@ mod tests {
     }
 
     #[test]
+    fn missing_bid_toml_is_none() {
+        assert!(load_bid_config(std::path::Path::new("/no/such/bid.toml")).is_none());
+    }
+
+    #[test]
     fn wrap_gas_matches_10c_toml() {
         let w = load_wrap_gas(&root().join("config/flash-gas.toml"));
-        assert_eq!(w[FlashProvider::Aave as usize], 366_332);
-        assert_eq!(w[FlashProvider::UniV3 as usize], 355_632);
-        assert_eq!(w[FlashProvider::UniV4 as usize], 460_032);
-        assert_eq!(w[FlashProvider::Morpho as usize], 370_435);
-        assert_eq!(w[FlashProvider::SkyDss as usize], 384_134);
-        assert!(!w.contains(&30_000_000));
+        assert_eq!(w.by_provider[FlashProvider::Aave as usize], 366_332);
+        assert_eq!(w.by_provider[FlashProvider::UniV3 as usize], 355_632);
+        assert_eq!(w.by_provider[FlashProvider::UniV4 as usize], 460_032);
+        assert_eq!(w.by_provider[FlashProvider::Morpho as usize], 370_435);
+        assert_eq!(w.by_provider[FlashProvider::SkyDss as usize], 384_134);
+        assert_eq!(w.aave_v4, 496_704);
+        assert!(!w.by_provider.contains(&30_000_000));
     }
 
     #[test]
@@ -899,7 +1165,15 @@ mod tests {
 
     #[test]
     fn zero_weth_select_bind_none() {
-        assert!(select_bind([366_332, 355_632, 460_032, 370_435, 384_134], Address::ZERO).is_none());
+        assert!(select_bind(
+            WrapGas {
+                by_provider: [366_332, 355_632, 460_032, 370_435, 384_134],
+                aave_v4: 496_704,
+            },
+            Address::ZERO,
+            None,
+        )
+        .is_none());
     }
 
     #[test]

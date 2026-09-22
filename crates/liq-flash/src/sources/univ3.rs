@@ -31,6 +31,7 @@ pub struct UniV3Pool {
     fee: u32,
     bal0: U256,
     bal1: U256,
+    overhead: u64,
 }
 
 impl UniV3Pool {
@@ -54,7 +55,14 @@ impl UniV3Pool {
             fee,
             bal0,
             bal1,
+            overhead: GAS_OVERHEAD_STUB,
         }
+    }
+
+    #[must_use]
+    pub fn with_overhead(mut self, gas: u64) -> Self {
+        self.overhead = gas;
+        self
     }
 }
 
@@ -122,7 +130,7 @@ impl FlashSource for UniV3Pool {
 
     #[inline]
     fn gas_overhead(&self) -> u64 {
-        GAS_OVERHEAD_STUB
+        self.overhead
     }
 
     fn apply_log(&mut self, log: &DecodedLog<'_>) {

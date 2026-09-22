@@ -17,8 +17,7 @@ contract PlanEncodingRoundTrip is Test {
 
     function test_generated_plans_decode_and_repack() public {
         if (!vm.exists("test/encoding/generated.bin")) {
-            vm.skip(true);
-            return;
+            revert("generated.bin missing — run cargo test -p liq-plan write_solidity_roundtrip_cases");
         }
         bytes memory blob = vm.readFileBinary("test/encoding/generated.bin");
         require(blob.length >= 4, "empty generated.bin");

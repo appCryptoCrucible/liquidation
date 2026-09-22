@@ -213,7 +213,7 @@ impl TokenEntry {
     clippy::unwrap_used
 )]
 mod tests {
-    use super::{Registry, TokenQuirk};
+    use super::{PoolVenue, Registry, TokenQuirk};
     use alloy_primitives::{address, Address};
     use std::path::PathBuf;
 
@@ -241,6 +241,17 @@ mod tests {
         assert_eq!(reg.chain_id, 1);
         assert!(!reg.tokens.is_empty());
         assert!(!reg.pools.is_empty());
+        for (addr, p) in &reg.pools {
+            if p.venue != PoolVenue::Univ3 {
+                continue;
+            }
+            assert!(
+                p.token0 < p.token1,
+                "UniV3 factory order is token0 < token1; registry {addr:#x} has token0 {:#x} token1 {:#x}",
+                p.token0,
+                p.token1
+            );
+        }
         // Discovery recorded JSON null rather than guessing a symbol. Load must
         // accept that; boot assertion refuses to start on those rows.
         let null_syms: Vec<_> = reg

@@ -16,6 +16,8 @@ arc-swap = { workspace = true }
 core_affinity = { workspace = true }
 crossbeam-channel = { workspace = true }
 liq-adapters-aave-v3 = { path = "../liq-adapters/aave-v3" }
+liq-adapters-aave-v4 = { path = "../liq-adapters/aave-v4" }
+liq-adapters-morpho-blue = { path = "../liq-adapters/morpho-blue" }
 liq-adapters-compound-v2 = { path = "../liq-adapters/compound-v2" }
 liq-adapters-euler-v2 = { path = "../liq-adapters/euler-v2" }
 liq-adapters-fluid = { path = "../liq-adapters/fluid" }

@@ -62,6 +62,83 @@ impl AaveV3Toml {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct AaveV4Toml {
+    pub protocol: u16,
+    pub pinned_through: u64,
+    pub hubs: Vec<AaveV4HubToml>,
+    pub spokes: Vec<AaveV4SpokeToml>,
+    pub assets: Vec<AaveV4AssetToml>,
+    pub price_sources: Vec<AaveV4SourceToml>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct AaveV4HubToml {
+    pub address: Address,
+    pub market: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct AaveV4SpokeToml {
+    pub address: Address,
+    pub market: u32,
+    pub oracle: Address,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct AaveV4AssetToml {
+    pub underlying: Address,
+    pub asset: u16,
+    pub feed: u16,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct AaveV4SourceToml {
+    pub spoke: Address,
+    pub reserve_id: u16,
+    pub source: Address,
+}
+
+impl AaveV4Toml {
+    pub fn from_path(path: &Path) -> Result<Self> {
+        let bytes = std::fs::read(path).map_err(|e| ConfigError::Load(e.to_string()))?;
+        let text = std::str::from_utf8(&bytes).map_err(|e| ConfigError::Load(e.to_string()))?;
+        toml::from_str(text).map_err(|e| ConfigError::Load(e.to_string()))
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct MorphoBlueToml {
+    pub protocol: u16,
+    pub pinned_through: u64,
+    pub morpho: Address,
+    pub catalog: u32,
+    pub first_market: u32,
+    pub assets: Vec<MorphoAssetToml>,
+    pub price_sources: Vec<MorphoSourceToml>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct MorphoAssetToml {
+    pub underlying: Address,
+    pub asset: u16,
+    pub feed: u16,
+    pub decimals: u8,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct MorphoSourceToml {
+    pub oracle: Address,
+}
+
+impl MorphoBlueToml {
+    pub fn from_path(path: &Path) -> Result<Self> {
+        let bytes = std::fs::read(path).map_err(|e| ConfigError::Load(e.to_string()))?;
+        let text = std::str::from_utf8(&bytes).map_err(|e| ConfigError::Load(e.to_string()))?;
+        toml::from_str(text).map_err(|e| ConfigError::Load(e.to_string()))
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {

@@ -23,6 +23,7 @@ sol! {
 pub struct UniV4PoolManager {
     manager: Address,
     table: SlotTable,
+    overhead: u64,
 }
 
 impl UniV4PoolManager {
@@ -31,7 +32,14 @@ impl UniV4PoolManager {
         Self {
             manager,
             table: SlotTable::from_held(manager, assets),
+            overhead: GAS_OVERHEAD_STUB,
         }
+    }
+
+    #[must_use]
+    pub fn with_overhead(mut self, gas: u64) -> Self {
+        self.overhead = gas;
+        self
     }
 }
 
@@ -84,7 +92,7 @@ impl FlashSource for UniV4PoolManager {
 
     #[inline]
     fn gas_overhead(&self) -> u64 {
-        GAS_OVERHEAD_STUB
+        self.overhead
     }
 
     fn apply_log(&mut self, log: &DecodedLog<'_>) {

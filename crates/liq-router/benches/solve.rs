@@ -165,6 +165,7 @@ fn six() -> Vec<Pool> {
 fn bench(c: &mut Criterion) {
     let gas = GasTerms {
         base_fee_wei: 30_000_000_000,
+        priority_fee_wei: 0,
         out_per_eth: e18(1),
     };
     let budget = SolveBudget::default();

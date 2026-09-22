@@ -161,13 +161,22 @@ impl GasOracle {
         tmp.get(idx).copied().ok_or(GasError::EmptyPriorityWindow)
     }
 
-    /// `gas_used × next_base_fee` in wei. Priority is **not** included:
-    /// the band and the profit model charge base fee only (GUIDE 12 §4b);
-    /// priority is a bid-channel floor (GUIDE 12 §4e).
+    /// `gas_used × next_base_fee` in wei. Base fee only — priority is not
+    /// folded into this number. Accounting uses [`Self::inclusion_cost_wei`].
     pub fn base_fee_cost_wei(&self, gas_used: u64) -> Result<U256, GasError> {
         let bf = self.base_fee_wei().ok_or(GasError::MissingBaseFee)?;
         U256::from(gas_used)
             .checked_mul(U256::from(bf))
+            .ok_or(GasError::BadHeader)
+    }
+
+    /// `(next_base_fee + priority_wei) × gas_used`. The two fees stay
+    /// separate inputs; the sum exists only as the accounting product.
+    pub fn inclusion_cost_wei(&self, gas_used: u64, priority_wei: u128) -> Result<U256, GasError> {
+        let bf = self.base_fee_wei().ok_or(GasError::MissingBaseFee)?;
+        let per = bf.checked_add(priority_wei).ok_or(GasError::BadHeader)?;
+        U256::from(gas_used)
+            .checked_mul(U256::from(per))
             .ok_or(GasError::BadHeader)
     }
 }
@@ -260,6 +269,17 @@ mod tests {
     fn base_fee_cost_excludes_priority() {
         let mut o = GasOracle::with_priority_cap(2).unwrap();
         o.observe_parent(30, 15_000_000, 30_000_000, &[5]).unwrap();
+        assert_eq!(o.base_fee_cost_wei(10).unwrap(), U256::from(300u64));
+    }
+
+    /// Accounting is `(base + priority) × gas`. Priority is not stored on
+    /// the oracle and is not added into `base_fee_wei`.
+    #[test]
+    fn inclusion_cost_is_base_plus_priority_times_gas() {
+        let mut o = GasOracle::with_priority_cap(2).unwrap();
+        o.observe_parent(30, 15_000_000, 30_000_000, &[5]).unwrap();
+        assert_eq!(o.base_fee_wei().unwrap(), 30);
+        assert_eq!(o.inclusion_cost_wei(10, 7).unwrap(), U256::from(370u64));
         assert_eq!(o.base_fee_cost_wei(10).unwrap(), U256::from(300u64));
     }
 }

@@ -22,7 +22,7 @@ use liq_types::{AssetId, PositionId};
 use smallvec::SmallVec;
 
 use crate::bid::{searcher_net, Bid};
-use crate::exact::{Allocation, ExitQuote};
+use crate::exact::{Allocation, ExitQuote, GasTerms};
 use crate::profit::ProfitError;
 use crate::select::{Scored, SelectCfg, SelectedPlan};
 use crate::solver::{PoolBook, PoolId, RouteError, Venue};
@@ -497,7 +497,7 @@ pub fn assemble(
     validate_ctx: &ValidateCtx,
     bid: &Bid,
     gas_price_in_debt: U256,
-    base_fee_wei: u128,
+    gas_terms: &GasTerms,
     flags: u8,
     flash: &FlashIndex,
     haircut: Haircut,
@@ -515,7 +515,7 @@ pub fn assemble(
             validate_ctx,
             bid,
             gas_price_in_debt,
-            base_fee_wei,
+            gas_terms,
             flags,
             flash,
             haircut,
@@ -533,7 +533,7 @@ fn assemble_one(
     validate_ctx: &ValidateCtx,
     bid: &Bid,
     gas_price_in_debt: U256,
-    base_fee_wei: u128,
+    gas_terms: &GasTerms,
     flags: u8,
     flash: &FlashIndex,
     haircut: Haircut,
@@ -541,7 +541,7 @@ fn assemble_one(
     let min_profit_wei = min_profit_floor(p, bid, view, gas_price_in_debt)?;
     let gas_cost_wei = u128_of(
         U256::from(p.hop_and_wrap_gas)
-            .checked_mul(U256::from(base_fee_wei))
+            .checked_mul(U256::from(gas_terms.accounting_wei_per_gas()?))
             .ok_or(RouteError::Math)?,
     )?;
     let mut groups = Vec::new();
@@ -814,6 +814,7 @@ mod tests {
     };
     const GAS: GasTerms = GasTerms {
         base_fee_wei: 1,
+        priority_fee_wei: 0,
         out_per_eth: WEI,
     };
     const H: Haircut = match Haircut::from_bps(10_000) {
@@ -931,6 +932,8 @@ mod tests {
             nonce_slots: 4,
             header_gas_limit: 30_000_000,
             wrap_gas: [366_332, 355_632, 460_032, 370_435, 384_134],
+            wrap_aave_v4: 496_704,
+            aave_v4: None,
             liq_gas: 80_000,
             over_borrow: U256::from(1u64),
             budget: B,
@@ -950,6 +953,7 @@ mod tests {
     const L: u128 = 1_000_000_000_000_000_000_000;
     const FREE: GasTerms = GasTerms {
         base_fee_wei: 0,
+        priority_fee_wei: 0,
         out_per_eth: WEI,
     };
 
@@ -1122,7 +1126,7 @@ mod tests {
             &vctx(tok(1)),
             &bd,
             price,
-            GAS.base_fee_wei,
+            &GAS,
             FLAG_SWEEP,
             &flash,
             H,
@@ -1194,7 +1198,7 @@ mod tests {
             &vctx(tok(1)),
             &bd,
             gas_price_in_debt(&GAS).unwrap(),
-            1,
+            &GAS,
             0,
             &flash,
             H,
@@ -1239,7 +1243,7 @@ mod tests {
             &vctx(tok(1)),
             &bd,
             gas_price_in_debt(&GAS).unwrap(),
-            1,
+            &GAS,
             0,
             &flash,
             H,
@@ -1309,7 +1313,7 @@ mod tests {
             &vctx(tok(1)),
             &bd,
             gas_price_in_debt(&GAS).unwrap(),
-            1,
+            &GAS,
             0,
             &flash,
             H,
@@ -1383,7 +1387,7 @@ mod tests {
             &vctx(tok(1)),
             &bd,
             gas_price_in_debt(&FREE).unwrap(),
-            0,
+            &FREE,
             FLAG_SWEEP,
             &flash,
             H,
@@ -1435,7 +1439,7 @@ mod tests {
             &vctx(tok(1)),
             &bd,
             gas_price_in_debt(&GAS).unwrap(),
-            GAS.base_fee_wei,
+            &GAS,
             FLAG_SWEEP,
             &flash,
             H,
@@ -1499,7 +1503,7 @@ mod tests {
             &vctx(weth),
             &bd,
             gas_price_in_debt(&GAS).unwrap(),
-            GAS.base_fee_wei,
+            &GAS,
             FLAG_SWEEP,
             &flash,
             H,
@@ -1549,7 +1553,7 @@ mod tests {
             &vctx(tok(1)),
             &bd,
             gas_price_in_debt(&GAS).unwrap(),
-            GAS.base_fee_wei,
+            &GAS,
             FLAG_SWEEP,
             &flash,
             H,

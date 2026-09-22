@@ -47,6 +47,8 @@ use crate::solver::{
 
 /// `1e18` wei per ETH.
 const WEI_PER_ETH: U256 = U256::from_limbs([1_000_000_000_000_000_000, 0, 0, 0]);
+/// D29: profit numeraire is ETH/WETH — `out_per_eth` identity, not a price.
+pub const OUT_PER_ETH_WETH: U256 = WEI_PER_ETH;
 /// Relative tolerance denominator for `λ` (GUIDE 12 §4: "1e-6 is ample").
 const REL_TOL: U256 = U256::from_limbs([1_000_000, 0, 0, 0]);
 /// Most permutations evaluated exhaustively (`K ≤ 4` → 24).
@@ -59,17 +61,28 @@ const MAX_SEGS: usize = 256;
 /// directly (GUIDE 12 §4b "everything reduces to ETH").
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct GasTerms {
-    /// Exact next base fee (wei / gas), from [`crate::band::next_base_fee`].
+    /// Block base fee (wei / gas). Not mixed with priority, and not
+    /// `maxFeePerGas` (that ceiling is only on the builder transaction).
     pub base_fee_wei: u128,
+    /// Priority fee (wei / gas), kept separate from [`Self::base_fee_wei`].
+    pub priority_fee_wei: u128,
     /// Raw output-token units per `1e18` wei (oracle, `min(spot, twa)`).
     pub out_per_eth: U256,
 }
 
 impl GasTerms {
-    /// `gas · base_fee · out_per_eth / 1e18`, floor.
+    /// Accounting price: block base fee plus priority. Overflow refuses.
+    pub fn accounting_wei_per_gas(&self) -> Result<u128, RouteError> {
+        self.base_fee_wei
+            .checked_add(self.priority_fee_wei)
+            .ok_or(RouteError::Math)
+    }
+
+    /// `gas · (base_fee + priority) · out_per_eth / 1e18`, floor.
     pub fn cost_in_out(&self, gas: u64) -> Result<U256, RouteError> {
+        let per = self.accounting_wei_per_gas()?;
         let wei = U256::from(gas)
-            .checked_mul(U256::from(self.base_fee_wei))
+            .checked_mul(U256::from(per))
             .ok_or(RouteError::Math)?;
         mul_div_512(wei, self.out_per_eth, WEI_PER_ETH)
     }
@@ -1015,6 +1028,7 @@ mod tests {
 
     const FREE: GasTerms = GasTerms {
         base_fee_wei: 0,
+        priority_fee_wei: 0,
         out_per_eth: U256::ZERO,
     };
     const B: SolveBudget = SolveBudget {
@@ -1189,6 +1203,7 @@ mod tests {
         // 30 gwei, output token is 18-dec ETH-equivalent: one hop = 0.003 out.
         let gas = GasTerms {
             base_fee_wei: 30_000_000_000,
+            priority_fee_wei: 0,
             out_per_eth: e18(1),
         };
         let small = solve_pair(&bk, A0, A1, e18(1), &gas, &B).unwrap();
@@ -1297,6 +1312,7 @@ mod tests {
     fn gas_terms_cost() {
         let g = GasTerms {
             base_fee_wei: 20_000_000_000,
+            priority_fee_wei: 0,
             out_per_eth: U256::from(3_000_000_000u64), // 3000 USDC (6 dec) per ETH
         };
         // 100k gas · 20 gwei = 0.002 ETH = 6 USDC = 6_000_000 raw

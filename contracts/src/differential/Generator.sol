@@ -4,11 +4,16 @@ pragma solidity ^0.8.28;
 import {HealthOracle} from "./HealthOracle.sol";
 import {AccountView, DiffCase, DiffSlot, SlotFlags} from "./Types.sol";
 
-/// State generator biased to HF ∈ [0.995, 1.005]. Spoke kind, e-mode kind and
-/// isolation are taken from independent bits of `seed` — they are not coupled
-/// to the HF solve. The generator is not the oracle: after constructing a
-/// candidate it asks `HealthOracle.viewAccount` and nudges debt shares until
-/// the **on-chain** HF sits in the band.
+/// State generator biased to HF ∈ [0.995, 1.005]. The generator is not the
+/// oracle: after constructing a candidate it asks `HealthOracle.viewAccount`
+/// and nudges debt shares until the **on-chain** HF sits in the band.
+///
+/// `emodeKind` is coupled to that solve: `_cf` writes `collateralFactor`,
+/// which `viewAccount` reads. `spokeKind` and `isolation` are stored on
+/// `DiffCase` and then ignored — `viewAccount` never reads them, and
+/// `_poolIdentity` discards `isolated`. Premium shares stay 0, so
+/// `premiumRay` is 0. A Rust health path that branches on spoke kind,
+/// isolation, or a nonzero premium is not checked by this oracle.
 library Generator {
     uint256 internal constant RAY = 1e27;
     uint256 internal constant HF_LO = 995e15;

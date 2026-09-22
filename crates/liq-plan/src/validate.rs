@@ -26,6 +26,9 @@ pub fn validate(p: &BatchPlan, ctx: &ValidateCtx) -> Result<()> {
     if ctx.weth == Address::ZERO {
         return Err(EncodeError::ZeroAddress("weth"));
     }
+    if p.min_profit_wei == 0 {
+        return Err(EncodeError::ZeroMinProfit);
+    }
     for g in &p.groups {
         nonzero(g.flash_source, "flashSource")?;
         nonzero(g.debt_asset, "debtAsset")?;

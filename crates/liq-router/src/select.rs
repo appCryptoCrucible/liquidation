@@ -38,7 +38,7 @@ pub enum SelectError {
     ZeroExactK,
     #[error("wrap gas for the chosen flash provider is zero (10C stub; do not bid)")]
     ZeroWrapGas,
-    #[error("failed-leg gas is required")]
+    #[error("failed-leg gas is required when p < 1")]
     ZeroFailedGas,
     #[error("p > 1")]
     BadP,
@@ -122,6 +122,11 @@ pub fn admit<'a>(p: &'a PositionInput<'a>) -> Option<Eligible<'a>> {
     Some(Eligible { pos: p })
 }
 
+/// 07B cascade `MAX_CANDIDATES` — exact-solve K. Not a bid parameter.
+pub const EXACT_K: u8 = 8;
+/// GUIDE 13 nonce-slot budget (one plan per slot).
+pub const NONCE_SLOTS: u8 = 20;
+
 /// Selection / truncation parameters. `header_gas_limit` is the parent
 /// header's gas limit (GUIDE 12 §4f) — never a constant in this crate.
 #[derive(Copy, Clone, Debug)]
@@ -135,6 +140,10 @@ pub struct SelectCfg {
     pub header_gas_limit: u64,
     /// Wrapping gas per `FlashProvider as usize`. 10C measurements.
     pub wrap_gas: [u64; 5],
+    /// Aave V3 flash + V4 adapter leg (`flash-gas.toml` `aave_v4`).
+    pub wrap_aave_v4: u64,
+    /// Intern id for family `aave-v4`. `None` → Aave wrap is V3/Spark.
+    pub aave_v4: Option<ProtocolId>,
     pub liq_gas: u64,
     pub over_borrow: U256,
     pub budget: SolveBudget,
@@ -171,7 +180,21 @@ pub struct DebtGroup {
     pub need: U256,
 }
 
-fn wrap_gas(cfg: &SelectCfg, provider: liq_types::FlashProvider) -> Result<u64, SelectError> {
+fn wrap_gas(
+    cfg: &SelectCfg,
+    provider: liq_types::FlashProvider,
+    protocol: ProtocolId,
+) -> Result<u64, SelectError> {
+    if provider == liq_types::FlashProvider::Aave {
+        if let Some(id) = cfg.aave_v4 {
+            if protocol == id {
+                if cfg.wrap_aave_v4 == 0 {
+                    return Err(SelectError::ZeroWrapGas);
+                }
+                return Ok(cfg.wrap_aave_v4);
+            }
+        }
+    }
     let g = cfg
         .wrap_gas
         .get(provider as usize)
@@ -187,8 +210,9 @@ fn success_gas(
     cfg: &SelectCfg,
     scored_hop: u64,
     provider: liq_types::FlashProvider,
+    protocol: ProtocolId,
 ) -> Result<u64, SelectError> {
-    wrap_gas(cfg, provider)?
+    wrap_gas(cfg, provider, protocol)?
         .checked_add(cfg.liq_gas)
         .and_then(|a| a.checked_add(scored_hop))
         .ok_or(SelectError::ZeroWrapGas)
@@ -271,12 +295,14 @@ fn rank(
         let gs = match el.pos.gas_success {
             Some(g) if g > 0 => g,
             Some(_) => return Err(SelectError::ZeroWrapGas),
-            None => success_gas(cfg, leg.hop_gas, leg.route.provider)?,
+            None => success_gas(cfg, leg.hop_gas, leg.route.provider, el.pos.protocol)?,
         };
-        if el.pos.gas_failed == 0 {
-            return Err(SelectError::ZeroFailedGas);
-        }
         let p_raw = el.pos.p.raw();
+        // Learning p = 1 ⇒ expected_gas = gas_success; failed-leg gas is unused.
+        // p < 1 with no failed-path snapshot: skip this candidate, not the drain.
+        if el.pos.gas_failed == 0 && p_raw != RAY {
+            continue;
+        }
         let eg = expected_gas(p_raw, gs, el.pos.gas_failed).ok_or(SelectError::BadP)?;
         let cpg = expected_contrib_per_gas(leg.contribution, p_raw, gs, el.pos.gas_failed)?;
         scored.push(Scored {
@@ -370,16 +396,19 @@ fn pack(
         if d.is_none_or(|v| v.is_zero()) {
             continue;
         }
-        let wrap = wrap_gas(cfg, s.leg.route.provider)?;
-        let same = cur.groups.iter().any(|g| g.debt == s.leg.debt);
-        let incr = if same {
-            s.leg.hop_gas.saturating_add(cfg.liq_gas)
-        } else {
-            s.leg
-                .hop_gas
-                .saturating_add(cfg.liq_gas)
-                .saturating_add(wrap)
+        let wrap = wrap_gas(cfg, s.leg.route.provider, s.protocol)?;
+        let incr_for = |same_debt: bool| -> u64 {
+            if same_debt {
+                s.leg.hop_gas.saturating_add(cfg.liq_gas)
+            } else {
+                s.leg
+                    .hop_gas
+                    .saturating_add(cfg.liq_gas)
+                    .saturating_add(wrap)
+            }
         };
+        let same = cur.groups.iter().any(|g| g.debt == s.leg.debt);
+        let mut incr = incr_for(same);
         let new_gas = cur.hop_and_wrap_gas.saturating_add(incr);
         if new_gas > cfg.header_gas_limit {
             if !cur.groups.is_empty() {
@@ -394,6 +423,11 @@ fn pack(
                     groups: SmallVec::new(),
                     hop_and_wrap_gas: 0,
                 };
+                // Fresh plan: wrap is not yet counted. Recompute vs the reset.
+                incr = incr_for(false);
+                if incr > cfg.header_gas_limit {
+                    continue;
+                }
             } else {
                 // A single leg exceeds the header limit: cannot include it.
                 continue;
@@ -624,6 +658,7 @@ mod tests {
     };
     const GAS: GasTerms = GasTerms {
         base_fee_wei: 1,
+        priority_fee_wei: 0,
         out_per_eth: WEI,
     };
     const H: Haircut = match Haircut::from_bps(10_000) {
@@ -731,6 +766,8 @@ mod tests {
             nonce_slots: 4,
             header_gas_limit: 30_000_000,
             wrap_gas: [366_332, 355_632, 460_032, 370_435, 384_134],
+            wrap_aave_v4: 496_704,
+            aave_v4: None,
             liq_gas: 80_000,
             over_borrow: U256::from(1u64),
             budget: B,
@@ -962,6 +999,74 @@ mod tests {
         assert!(
             packed < independent,
             "sequential displacement must cut net: packed {packed} vs independent {independent}"
+        );
+    }
+
+    #[test]
+    fn gas_failed_zero_at_learning_p_selects() {
+        let quote = q(40, e18(10));
+        let one = inp(&quote, true, learning_p(), 0);
+        let bk = book(vec![deep()]);
+        let (_s, flash) = idx();
+        let plans = select(&[one], &cfg(), &flash, H, &bk, None, &Mkt, &GAS).unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].groups[0].legs.len(), 1);
+    }
+
+    #[test]
+    fn gas_failed_zero_below_ray_skips_candidate_not_drain() {
+        let a = q(41, e18(10));
+        let b = q(42, e18(10));
+        let tiny = Ray::from_raw(U256::from(1u64));
+        let inputs = [
+            inp(&a, true, tiny, 0),
+            inp(&b, true, learning_p(), 50_000),
+        ];
+        let bk = book(vec![deep()]);
+        let (_s, flash) = idx();
+        let plans = select(&inputs, &cfg(), &flash, H, &bk, None, &Mkt, &GAS).unwrap();
+        let ids: Vec<u32> = plans
+            .iter()
+            .flat_map(|p| p.groups.iter())
+            .flat_map(|g| g.legs.iter())
+            .map(|s| s.position.0)
+            .collect();
+        assert!(!ids.contains(&41), "p<1 with gas_failed=0 must skip");
+        assert!(ids.contains(&42), "sibling must still be selected");
+    }
+
+    #[test]
+    fn wrap_gas_recomputed_after_plan_reset() {
+        let a = q(50, e18(10));
+        let b = q(51, e18(10));
+        let bk = book(vec![deep()]);
+        let (_s, flash) = idx();
+        let mut c = cfg();
+        c.wrap_gas = [100_000, 100_000, 100_000, 100_000, 100_000];
+        c.liq_gas = 200_000;
+        c.header_gas_limit = 30_000_000;
+        let inputs = [
+            inp(&a, true, learning_p(), 50_000),
+            inp(&b, true, learning_p(), 50_000),
+        ];
+        let wide = select(&inputs, &c, &flash, H, &bk, None, &Mkt, &GAS).unwrap();
+        assert_eq!(wide.len(), 1);
+        assert_eq!(wide[0].groups[0].legs.len(), 2);
+        let first_leg = wide[0].groups[0].legs[0].leg.hop_gas;
+        let wrap = 100_000u64;
+        let one = wrap
+            .saturating_add(c.liq_gas)
+            .saturating_add(first_leg);
+        let liq_plus_hop = one.saturating_sub(wrap);
+        c.header_gas_limit = one.saturating_add(liq_plus_hop).saturating_sub(1);
+        let rolled = select(&inputs, &c, &flash, H, &bk, None, &Mkt, &GAS).unwrap();
+        assert!(
+            rolled.len() >= 2,
+            "second same-provider hop must roll a new plan: {rolled:?}"
+        );
+        assert_eq!(
+            rolled[1].hop_and_wrap_gas, one,
+            "reset plan must re-add wrap, not reuse stale incr"
         );
     }
 }

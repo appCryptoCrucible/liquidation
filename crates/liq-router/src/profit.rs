@@ -229,10 +229,11 @@ pub fn evaluate(
     // Seize-option bonus is authoritative (D26 / GUIDE 01). Overlay so two
     // seize legs of one pair with different e-mode bonuses stay distinct.
     terms.bonus = seize.bonus;
+    // Unset cap is unlimited. A published band is the size filter.
     let cap = ctx
         .market
         .notional_cap_raw(repay.asset)
-        .ok_or(ProfitError::Missing("notional_cap"))?;
+        .unwrap_or(U256::MAX);
     let flash_cap = available_after_haircut(entry, ctx.haircut);
     let route_cap = match ctx.warm {
         Some(w) => route_depth_repay(w, seize.asset, &terms)?,
@@ -341,8 +342,12 @@ pub fn best_plan(ctx: &ProfitCtx<'_>, q: &Quote) -> Result<Option<SizedLeg>, Pro
 /// `expected_gas = p · gas_success + (1 − p) · gas_failed`
 /// `expected_contrib_per_gas = p · contribution / expected_gas`
 ///
-/// `p` is a RAY fraction (`LEARNING_P_RAY` = 1). Numerator is **not**
-/// `contribution − gas` — that double-charges gas (D45).
+/// `p` is a RAY fraction (`LEARNING_P_RAY` = 1). Numerator is pre-gas
+/// contribution. Truncation is [`delta_net`], which subtracts gas once.
+/// For a common `p` and a common wei-per-gas, `(contribution − gas) /
+/// expected_gas` differs from this ratio by a constant and ranks the
+/// same; the forms stop being order-identical once `gas_failed > 0`
+/// makes `expected_gas` not proportional to `p`.
 pub fn expected_contrib_per_gas(
     contribution: U256,
     p_ray: U256,
@@ -577,6 +582,7 @@ mod tests {
     const WEI: U256 = U256::from_limbs([1_000_000_000_000_000_000, 0, 0, 0]);
     const FREE: GasTerms = GasTerms {
         base_fee_wei: 0,
+        priority_fee_wei: 0,
         out_per_eth: WEI,
     };
     const B: SolveBudget = SolveBudget {

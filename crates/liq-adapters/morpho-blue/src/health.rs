@@ -173,3 +173,72 @@ pub(crate) fn health(pos: PositionRef<'_>, px: &PriceVector) -> Result<Health> {
     let t = terms(pos)?;
     Ok(finish(&t, px)?.1)
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
+mod hf_boundary {
+    use super::{finish, Terms};
+    use crate::layout::LoanRow;
+    use alloy_primitives::U256;
+    use bytemuck::Zeroable;
+    use liq_protocol::{HealthState, MarketRow};
+    use liq_types::fixed::WAD;
+    use liq_types::{AssetId, Price, PriceVector, Ray, SourceKind};
+
+    fn px() -> PriceVector {
+        PriceVector(vec![
+            Price {
+                asset: AssetId(0),
+                price: Ray::ONE,
+                source: SourceKind::Canonical,
+                block: 0,
+                ts: 0,
+            },
+            Price {
+                asset: AssetId(1),
+                price: Ray::ONE,
+                source: SourceKind::Canonical,
+                block: 0,
+                ts: 0,
+            },
+        ])
+    }
+
+    /// Equal prices, 18 decimals, LLTV = 1, borrowed == collateral ⇒ HF == 1.
+    /// `hf > ONE` would mark this liquidatable. One wei past is liquidatable.
+    #[test]
+    fn hf_exactly_one_is_healthy() {
+        let mut loan = LoanRow::zeroed();
+        loan.lltv = 1_000_000_000_000_000_000;
+        loan.coll_decimals = 18;
+        let loan_row = MarketRow::blank(AssetId(0), 18);
+        let coll_row = MarketRow::blank(AssetId(1), 18);
+        let size = U256::from(1_000_000_000_000_000_000u128);
+        let t = Terms {
+            loan: &loan,
+            loan_row: &loan_row,
+            coll_row: &coll_row,
+            borrow_shares: U256::ZERO,
+            collateral: size,
+            borrow_a: U256::ZERO,
+            borrow_s: U256::ZERO,
+            borrowed: size,
+            oracle: U256::ZERO,
+            max_borrow: U256::ZERO,
+            p_loan: U256::ZERO,
+            p_coll: U256::ZERO,
+        };
+        let prices = px();
+        let (_, h) = finish(&t, &prices).unwrap();
+        assert_eq!(h.hf, Ray::ONE);
+        assert_eq!(h.hf.raw(), WAD * U256::from(1_000_000_000u64));
+        assert!(matches!(h.state, HealthState::Healthy));
+
+        let past = Terms {
+            borrowed: size + U256::from(1u8),
+            ..t
+        };
+        let (_, h2) = finish(&past, &prices).unwrap();
+        assert!(matches!(h2.state, HealthState::Liquidatable));
+    }
+}

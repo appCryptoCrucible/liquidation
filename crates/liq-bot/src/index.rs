@@ -16,7 +16,7 @@ use liq_node::LogHandler;
 use liq_oracle::{CanonicalBook, DerivedBook, FeedSet, FeedsConfig};
 use liq_protocol::{DecodedLog, DirtySet, ProtocolError};
 use liq_router::{Pool, PoolBook, PoolState, V3State};
-use liq_types::{HaltSink, LogFilter, LogSubscriber};
+use liq_types::{FlashProvider, HaltSink, LogFilter, LogSubscriber};
 use parking_lot::{Mutex, RwLock};
 use smallvec::SmallVec;
 
@@ -348,7 +348,14 @@ impl BoundIndex {
 #[must_use]
 pub fn load_index(config_dir: &Path, intern: &Intern, registry: &Registry) -> IndexLoad {
     let mut omitted = Vec::new();
-    let sources = load_flash(config_dir, intern, registry, &mut omitted);
+    let wrap = crate::bind::load_wrap_gas(&config_dir.join("flash-gas.toml"));
+    let sources = load_flash(
+        config_dir,
+        intern,
+        registry,
+        &wrap.by_provider,
+        &mut omitted,
+    );
     let book = load_book(intern, registry, &mut omitted);
     let canonical = load_feeds(config_dir, intern, registry, &mut omitted);
     let derived = load_derived(&mut omitted);
@@ -444,10 +451,15 @@ pub fn leak_index(load: IndexLoad) -> &'static BoundIndex {
     Box::leak(Box::new(load.into_bound()))
 }
 
+fn wrap_of(wrap: &[u64; 5], p: FlashProvider) -> u64 {
+    wrap.get(p as usize).copied().unwrap_or(0)
+}
+
 fn load_flash(
     config_dir: &Path,
     intern: &Intern,
     registry: &Registry,
+    wrap: &[u64; 5],
     omitted: &mut Vec<(&'static str, String)>,
 ) -> Vec<Box<dyn FlashSource>> {
     let mut sources: Vec<Box<dyn FlashSource>> = Vec::new();
@@ -484,12 +496,15 @@ fn load_flash(
                 "aave configurator missing — premium/reserve-flag logs unsubscribed"
             );
         }
-        sources.push(Box::new(AavePool::new(
-            pool,
-            configurator.unwrap_or(Address::ZERO),
-            0,
-            &[],
-        )));
+        sources.push(Box::new(
+            AavePool::new(
+                pool,
+                configurator.unwrap_or(Address::ZERO),
+                0,
+                &[],
+            )
+            .with_overhead(wrap_of(wrap, FlashProvider::Aave)),
+        ));
     }
 
     for (addr, entry) in &registry.pools {
@@ -516,16 +531,19 @@ fn load_flash(
             );
             continue;
         };
-        sources.push(Box::new(UniV3Pool::new(
-            *addr,
-            entry.token0,
-            entry.token1,
-            a0,
-            a1,
-            entry.fee,
-            U256::ZERO,
-            U256::ZERO,
-        )));
+        sources.push(Box::new(
+            UniV3Pool::new(
+                *addr,
+                entry.token0,
+                entry.token1,
+                a0,
+                a1,
+                entry.fee,
+                U256::ZERO,
+                U256::ZERO,
+            )
+            .with_overhead(wrap_of(wrap, FlashProvider::UniV3)),
+        ));
     }
 
     match flash_map_addr(registry, &["univ4", "pool_manager"])
@@ -533,7 +551,10 @@ fn load_flash(
     {
         Some(pm) => {
             let held = intern_held(intern);
-            sources.push(Box::new(UniV4PoolManager::new(pm, &held)));
+            sources.push(Box::new(
+                UniV4PoolManager::new(pm, &held)
+                    .with_overhead(wrap_of(wrap, FlashProvider::UniV4)),
+            ));
         }
         None => omit(
             omitted,
@@ -547,7 +568,9 @@ fn load_flash(
     }) {
         Some(m) => {
             let held = intern_held(intern);
-            sources.push(Box::new(MorphoBlue::new(m, &held)));
+            sources.push(Box::new(
+                MorphoBlue::new(m, &held).with_overhead(wrap_of(wrap, FlashProvider::Morpho)),
+            ));
         }
         None => omit(
             omitted,
@@ -563,14 +586,17 @@ fn load_flash(
     let dai = intern.asset(REGISTRY_DAI);
     match (sky, end, dai) {
         (Some(flash), Some(end), Some(dai)) => {
-            sources.push(Box::new(SkyDssFlash::new(
-                flash,
-                end,
-                dai,
-                U256::ZERO,
-                U256::ZERO,
-                false,
-            )));
+            sources.push(Box::new(
+                SkyDssFlash::new(
+                    flash,
+                    end,
+                    dai,
+                    U256::ZERO,
+                    U256::ZERO,
+                    false,
+                )
+                .with_overhead(wrap_of(wrap, FlashProvider::SkyDss)),
+            ));
         }
         _ => omit(
             omitted,

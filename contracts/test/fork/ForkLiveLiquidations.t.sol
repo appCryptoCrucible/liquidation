@@ -97,7 +97,10 @@ contract ForkLiveLiquidationsTest is Test {
     bool forked;
 
     function setUp() public {
-        string memory url = vm.envOr("MAINNET_RPC_URL", string(""));
+        string memory url = vm.envOr(
+            "MAINNET_RPC_URL",
+            string("https://ethereum-rpc.publicnode.com")
+        );
         if (bytes(url).length == 0) return;
         vm.createSelectFork(url, PINNED_BLOCK);
         forked = true;

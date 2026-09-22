@@ -114,6 +114,8 @@ pub enum EncodeError {
     ZeroAddress(&'static str),
     #[error("protocol_pull {pull} is zero")]
     ZeroPull { pull: u128 },
+    #[error("minProfit is zero (dust / multi-leg floor refused)")]
+    ZeroMinProfit,
     #[error("EXACT_OUT repay {exact_out} exceeds protocol pull {pull} (under-seizure)")]
     UnderSeizure { exact_out: u128, pull: u128 },
     #[error("EXACT_OUT repay {exact_out} != protocol pull {pull}")]

@@ -9,7 +9,9 @@ import {PlanBuilder as PB} from "../unit/PlanBuilder.sol";
 /*
  * Mainnet fork matrix — WP 10A scaffold, WP 10C deepens.
  *
- * Runs only with MAINNET_RPC_URL set; skips otherwise. Nothing here is a
+ * Forks `MAINNET_RPC_URL` when set, otherwise the public endpoint
+ * `https://ethereum-rpc.publicnode.com`. An explicit empty URL skips.
+ * Nothing here is a
  * mock: every provider and market is the real deployment, at the fork block.
  *
  * What 10A proves on real state, per flash provider:
@@ -50,7 +52,10 @@ contract ForkMatrixTest is Test {
     uint256 constant PINNED_BLOCK = 26_019_284;
 
     function setUp() public {
-        string memory url = vm.envOr("MAINNET_RPC_URL", string(""));
+        string memory url = vm.envOr(
+            "MAINNET_RPC_URL",
+            string("https://ethereum-rpc.publicnode.com")
+        );
         if (bytes(url).length == 0) return;
         vm.createSelectFork(url, PINNED_BLOCK);
         forked = true;

@@ -1,0 +1,9 @@
+# Learning-phase bid. 5100 bps is 51% of net: one point above the 50%
+# cluster in the reconstructed bids. Target equals the cap and jitter is
+# zero, so every draw is exactly 51%. Cap must stay strictly below 10000.
+
+[bid]
+beta_cap_bps = 5100
+learning_target_bps = 5100
+jitter_lo_bps = 0
+jitter_hi_bps = 0

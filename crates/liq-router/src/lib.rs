@@ -86,6 +86,7 @@ pub use bid::{bid, searcher_net, Bid, BidConfig, BidError};
 pub use cache::WarmRouteCache;
 pub use exact::{
     solve_batch, solve_on, solve_pair, Allocation, BatchQuote, ExitQuote, GasTerms, SolveBudget,
+    OUT_PER_ETH_WETH,
 };
 pub use gas::{header_gas_limit, GasError, GasOracle};
 pub use profit::{
@@ -93,7 +94,8 @@ pub use profit::{
     seized_for, MarketView, ProfitCtx, ProfitError, SizedLeg, LEARNING_P_RAY,
 };
 pub use select::{
-    admit, is_liquidatable, select, Eligible, PositionInput, SelectCfg, SelectedPlan,
+    admit, is_liquidatable, select, Eligible, PositionInput, SelectCfg, SelectedPlan, EXACT_K,
+    NONCE_SLOTS,
 };
 pub use solver::{
     CurveState, Leg, Pool, PoolBook, PoolId, PoolState, RouteError, Tick, V2State, V3State, Venue,

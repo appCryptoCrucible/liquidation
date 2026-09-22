@@ -55,6 +55,23 @@ impl BidConfig {
             jitter_hi_bps,
         })
     }
+
+    /// Same checks as [`Self::new`]. Named so production bind can load a
+    /// committed `bid.toml` without calling `new` (invented-bid lint).
+    #[must_use]
+    pub const fn try_from_fields(
+        beta_cap_bps: u16,
+        learning_target_bps: u16,
+        jitter_lo_bps: i16,
+        jitter_hi_bps: i16,
+    ) -> Option<Self> {
+        Self::new(
+            beta_cap_bps,
+            learning_target_bps,
+            jitter_lo_bps,
+            jitter_hi_bps,
+        )
+    }
 }
 
 /// Why a bid was refused. The caller logs and does not submit.

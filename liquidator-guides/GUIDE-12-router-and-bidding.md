@@ -296,7 +296,7 @@ cost at very different allocations.
 
 | Property | Consequence |
 |---|---|
-| **Monotone decreasing in λ** | The root is unique and bracketable. Every method below is safe on that front. |
+| **Monotone non-increasing in ρ** | The root set is an interval (a plateau, or a jump across zero), not necessarily one λ. What is pinned is the allocation: floor, cap, and the residual to the best-ρ₀ pool. |
 | **Continuous but not C¹** | `absorbed_i` is smooth *within* a V3/V4 tick range and kinks at every boundary, because liquidity `L` jumps. `g` inherits kinks at the union of all crossed ticks. |
 | **Exact integer arithmetic** | At the finest resolution `g` is a step function, differentiable nowhere in the strict sense. |
 
@@ -312,17 +312,21 @@ reintroduce float error and cost two evaluations per step. Unsafeguarded Newton
 on a piecewise function is how you get a router that is fast on 99 routes and
 diverges on the hundredth.
 
-**Brent — yes, as the generic fallback.** Derivative-free, maintains a bracket,
-superlinear (~1.6) on smooth stretches, and degrades gracefully to bisection at
-kinks with guaranteed convergence. For a monotone, bracketed, non-smooth,
-derivative-free root find this is the correct default.
+**Brent — the right shape, not the implementation.** Derivative-free, maintains
+a bracket, superlinear (~1.6) on smooth stretches, and degrades to bisection at
+kinks. The code's generic fallback is Illinois regula falsi (order ≈ 1.44,
+bisection on stall), not `brentq`. Brent's inverse-quadratic step needs a
+three-point rational interpolant that overflows 512-bit arithmetic at Q96 × wei.
+Floats are denied. The property this section requires is the bracket, not the
+1.6 constant.
 
 One correction worth making explicit: **Brent's root-finder falls back to
 bisection, not golden section.** Golden section belongs to Brent's *minimization*
 method (golden section + parabolic interpolation). This problem is a root find on
-`g(λ) = 0`, so the right algorithm is the `brentq` shape: inverse quadratic
-interpolation → secant → bisection. An agent told to implement "Brent with golden
-section fallback" will produce something that does not converge correctly here.
+`g(λ) = 0`. An agent told to implement "Brent with golden section fallback" will
+produce something that does not converge correctly here. Do not replace the
+Illinois fallback with `brentq` either: the inverse-quadratic step overflows
+the 512-bit integer path.
 
 **Plain bisection — only as Brent's internal safety net.** On its own it needs
 ~40+ iterations for useful precision, and each iteration is a quote per pool. At
@@ -468,10 +472,13 @@ Profit is realised in the debt token; gas is paid in ETH. ETH is the only
 numeraire both sides share, so the comparison is always made after conversion —
 which is why no per-token threshold can exist.
 
-**Base fee is a cost; the bid is not.** The bid is a distribution of profit paid
+**Gas is a cost; the bid is not.** The bid is a distribution of profit paid
 *out of* net, not a cost subtracted before it. Keep them separate or you get a
-circularity — net depends on the bid, the bid is a fraction of net. The band is
-computed on **base fee only**.
+circularity — net depends on the bid, the bid is a fraction of net. Gas cost
+for accounting is `(base fee at the block + priority fee) × gas used`. The two
+fees stay separate inputs. The builder's `maxFeePerGas` is the base-fee
+inclusion ceiling and does not have the priority added into it;
+`maxPriorityFeePerGas` carries the priority on its own.
 
 ### It is a join, not a new subsystem
 
@@ -482,7 +489,7 @@ The band is four things you already maintain, joined and materialised:
 | flash depth + fee | `FlashIndex` (GUIDE 07) | **debt token** |
 | exit liquidity | warm route cache (Step 3) | **(collateral, debt) pair** |
 | bonus rate | registry / adapter | (protocol, collateral) |
-| base fee | gas oracle (Step 6) | global, per block |
+| base fee and priority fee | gas oracle (Step 6) | per block, stored as two fields. Accounting cost is their sum × gas |
 
 Emit it from the **warm tier**, which already refreshes on pool state changes from
 the ExEx stream and already runs off the hot path. Do not build a parallel
@@ -535,9 +542,10 @@ collapse during a cascade when everyone pulls at once and opportunities are
 densest, and your band claims depth that is not there. You oversize, the guard
 catches it, and you lose an opportunity you could have taken at the right size.
 
-And because band errors are free in one direction and cost only a missed trade in
-the other, **lean generous**. The exact computation and the on-chain guard are
-what decide.
+A band that includes an unviable size only spends a solver cycle: exact net and
+`minProfit` drop it. A band that excludes a viable size loses the trade. The
+published edges are therefore kept on the viable side, so the interval sits
+**inside** `{net ≥ 0}`. It does not lean generous.
 
 ### What replaces the old number operationally
 
@@ -794,12 +802,15 @@ to win. Ignoring the rule produces a worse outcome, not a subtly wrong one.
 
 Builders rank by value delivered, but they are filling a constrained block, so
 what actually matters is value **per gas**. The plan objective remains
-**maximise `net_bundle_profit`** (then bid a fraction of realized net). Ranking
-must not double-count gas.
+**maximise `net_bundle_profit`** (then bid a fraction of realized net).
 
-`net` in Step 4 already subtracts `gas_cost`. Putting that same `net` in the
-numerator of a per-gas ratio **charges gas twice** and truncates legs that would
-still raise `net_bundle_profit`. Use the **pre-gas contribution** in the numerator:
+`net` in Step 4 already subtracts `gas_cost`. The ratio is only a sort key.
+Truncation is the separate Δnet test, which subtracts gas once. For a common
+`p` and a common wei-per-gas, `p · (contribution − gas) / expected_gas` and
+`p · contribution / expected_gas` differ by a constant and rank the same — the
+first form does not, by itself, drop a leg that Δnet would keep. They stop
+being order-identical once `gas_failed > 0` makes `expected_gas` not
+proportional to `p`. The numerator the code uses is the pre-gas contribution:
 
 ```
 contribution           = swap_out − flash_owed          // = gross_leg; NO gas subtraction
@@ -810,23 +821,24 @@ expected_contrib_per_gas = p · contribution / expected_gas
 Add / keep a marginal candidate when it raises expected `net_bundle_profit`:
 
 ```
-Δ net_bundle_profit ≈ p · contribution − (marginal expected gas · base_fee)  >  0
+Δ net_bundle_profit ≈ p · contribution − (marginal expected gas · (base_fee + priority_fee))  >  0
 ```
 
-Do **not** truncate on `p · (contribution − gas) / expected_gas` — that is the
-double-charged form.
+Do **not** truncate on the ratio. Truncate on Δnet.
 
 `p` is the probability the position is still liquidatable when the bundle
 executes. Start at `p = 1` — you cannot estimate it before you have data — then
 fit it per bracket and contest class from the GUIDE 09 miss taxonomy, which
 already records exactly the outcomes you would fit on.
 
-**This is why batch size needs no threshold.** During a cascade `p` falls (everyone
-is liquidating at once), marginal candidates drop below the cutoff on their own,
-and batches shrink without anyone configuring that they should. A rule like
-"batch when more than N opportunities in a block" would reintroduce two code paths
-and a discontinuity at the boundary — and you already decided a single position is
-just a batch of one.
+**Falling `p` shrinks a batch only when `gas_failed > 0`.** At `gas_failed = 0`,
+`expected_gas = p · gas_success`, so Δnet = `p · (contribution − gas_cost)` and
+the sign does not change as `p` falls. With `gas_failed > 0`, expected gas
+stops scaling with `p` and marginal candidates cross Δnet ≤ 0 on their own.
+`gas_failed = 0` at learning `p = 1` is allowed; `p < 1` with `gas_failed = 0`
+skips that candidate. A rule like "batch when more than N opportunities in a
+block" is still the wrong shape — a single position is a batch of one — but
+`p` alone is not a batch-size controller.
 
 ### Grouping and truncation
 
@@ -976,10 +988,12 @@ A bundle's whole trace is visible too, so you can reconstruct the winner's *net*
 their swap output, flash fee, gas — and therefore bid-as-a-fraction, not just
 bid-in-wei.
 
-**The limitation that shapes everything: you only ever see winning bids.** Losing
-bids are never on chain, so the sample is the top of the distribution, not the
-clearing level. Treat `F` as fitted on winners and remember that the winner paid
-what they *chose*, which was already ≥ what was needed.
+**The limitation that shapes everything: you only ever see auctions someone
+entered.** For an auction that cleared, the winning bid **is** the max rival
+bid — it is the clearing level of that auction, not a sample from above it.
+The missing mass is the auctions nobody entered. That atom `(1 − q)` is not on
+chain, and leaving it out pushes `F̂` down. Do not treat the observed winner
+as biased high relative to a clearing level you did not see.
 
 Four things the estimator must get right:
 
@@ -1077,20 +1091,25 @@ labelled as secondary.
 - [ ] Partial-size fallback: when flash depth or route depth binds below
       `max_repay`, the smaller liquidation is taken, not skipped
 - [ ] Profit model reproduces realized profit within 2% on 100 historical
-      liquidations replayed through GUIDE 11, **flash fee included**
+      liquidations replayed through GUIDE 11, **flash fee included**.
+      This 2% is a replay tolerance. It is not the `(1 − β)` retained
+      fraction (1% of net at β = 0.99). `historical_profit_parity` returns
+      `ArchiveUnavailable` until that archive exists; it must not be
+      treated as a pass.
 - [ ] Viability band computed per `(protocol, collateral, debt)` per block from
       the exactly-known next base fee, emitted by the warm tier — **no cached
       `min_viable_notional`, and no gas regimes unless per-block proved too slow**
 - [ ] Band uses `min(spot, twa)` for liquidity and price; a test proves a
       simulated liquidity collapse shrinks `max_size` on the next block rather
       than being averaged away
-- [ ] Band is computed on **base fee only**; the bid is modelled as a
-      distribution of net, not a cost
+- [ ] Band gas cost is `(base fee + priority fee) × gas`; the two fees stay
+      separate fields, and the bid is modelled as a distribution of net, not a cost
 - [ ] **Eligibility gate is separate from ranking in the code, not just in the
       comments** — a test feeds a high-net-per-gas position that is NOT
       liquidatable and asserts it never enters the candidate set
-- [ ] Expected contribution-per-gas folds in `p` (numerator is pre-gas); batch size falls when `p` falls, proven
-      by a test rather than assumed
+- [ ] Expected contribution-per-gas folds in `p` (numerator is pre-gas).
+      With `gas_failed > 0`, batch size falls when `p` falls. At
+      `gas_failed = 0` the sign of Δnet does not change with `p`
 - [ ] **No batching threshold anywhere.** A single position is one group with
       `liqCount == 1`, taking the same code path as fifty
 - [ ] Gas limit read from the block header, never a constant (grep for it in CI)

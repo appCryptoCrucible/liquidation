@@ -41,9 +41,9 @@ pub use sources::{
     AavePool, AaveReserve, HeldAsset, MorphoBlue, SkyDssFlash, UniV3Pool, UniV4PoolManager,
 };
 
-/// Placeholder wrapping-gas until GUIDE 10C measures real fork txs.
-/// **Not a measurement. Do not bid with this number.**
-pub const GAS_OVERHEAD_STUB: u64 = 0; // TODO 10C
+/// Default wrapping gas when a source is constructed without a 10C snapshot.
+/// Production bind applies `config/flash-gas.toml` via `with_overhead`.
+pub const GAS_OVERHEAD_STUB: u64 = 0;
 
 /// One flash-loan venue. Built once at startup; `available` is the hot path.
 pub trait FlashSource: LogSubscriber + Send + Sync + 'static {
@@ -54,7 +54,7 @@ pub trait FlashSource: LogSubscriber + Send + Sync + 'static {
     fn available(&self, asset: AssetId) -> U256;
     fn fee_bps(&self, asset: AssetId, amount: U256) -> u16;
     fn callback(&self) -> CallbackShape;
-    /// Wrapping gas. Stub [`GAS_OVERHEAD_STUB`] until 10C.
+    /// Wrapping gas from the 10C snapshot when bound; else [`GAS_OVERHEAD_STUB`].
     fn gas_overhead(&self) -> u64;
     /// Fold one routed log. Ingest thread only.
     fn apply_log(&mut self, log: &DecodedLog<'_>);

@@ -23,7 +23,8 @@ pub struct CapConfig {
 impl Default for CapConfig {
     fn default() -> Self {
         Self {
-            per_liquidation_notional: U256::from(10_000_000_000_000_000_000u64),
+            // No notional cap. Size is the viability band's job.
+            per_liquidation_notional: U256::MAX,
             per_protocol_exposure: U256::MAX,
             global_concurrent: 20,
             per_provider_concurrent: 1,

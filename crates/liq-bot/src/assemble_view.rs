@@ -167,7 +167,8 @@ impl MarketView for ProcessAssembleView {
     }
 
     fn notional_cap_raw(&self, debt: AssetId) -> Option<U256> {
-        self.notional_cap.get(&debt).copied()
+        // No entry → no notional cap. Viability band is the size filter.
+        Some(self.notional_cap.get(&debt).copied().unwrap_or(U256::MAX))
     }
 }
 

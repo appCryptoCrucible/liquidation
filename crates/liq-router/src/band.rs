@@ -1,6 +1,7 @@
 //! Viability band (GUIDE 12 §4b): per `(protocol, coll, debt)` per block,
-//! the debt-size interval on which `net(s) ≥ 0` at the **exact next base
-//! fee**, base fee only — the bid is a share of net, never a cost here.
+//! the debt-size interval on which `net(s) ≥ 0`. Gas cost is
+//! `(base fee + priority fee) × gas`; the two fees stay separate fields.
+//! The bid is a share of net, never a cost here.
 //!
 //! `net(s) = min(spot, twa)(exact_quote(seized(s))) − s·(1 + flash) − gas`
 //! with `seized(s) = s · (1 + bonus) · coll_per_debt`. `exact_quote` is
@@ -8,7 +9,8 @@
 //! `net` is concave in `s` (concave quote minus affine), so `{net ≥ 0}`
 //! is one interval and each edge is a bracketed bisection. The band is a
 //! pre-filter — errors cost an opportunity, never money — so edges are
-//! resolved to 1e-3 relative and lean generous (GUIDE 12 §4b).
+//! resolved to 1e-3 relative and kept on the viable side of each edge,
+//! so the published interval sits inside the true `{net ≥ 0}` set.
 
 use std::collections::HashMap;
 
@@ -271,6 +273,7 @@ pub fn build_table(
     haircut: &dyn Fn(AssetId, AssetId, U256, U256) -> U256,
     budget: &SolveBudget,
     base_fee: u128,
+    priority_fee: u128,
     block: u64,
 ) -> BandTable {
     let mut out = BandTable {
@@ -293,6 +296,7 @@ pub fn build_table(
         };
         let gas = GasTerms {
             base_fee_wei: base_fee,
+            priority_fee_wei: priority_fee,
             out_per_eth: per_eth,
         };
         let hc = |size_in: U256, spot: U256| haircut(coll, debt, size_in, spot);
@@ -402,6 +406,9 @@ mod tests {
         fn next_base_fee(&self) -> u128 {
             self.base_fee
         }
+        fn priority_fee_wei(&self) -> u128 {
+            0
+        }
         fn block(&self) -> u64 {
             self.block
         }
@@ -438,6 +445,7 @@ mod tests {
         let t = terms(500, 400_000);
         let gas = GasTerms {
             base_fee_wei: 30_000_000_000,
+            priority_fee_wei: 0,
             out_per_eth: e18(1),
         };
         let spot = |_: U256, o: U256| o;
@@ -465,6 +473,7 @@ mod tests {
         // Higher base fee → higher lower edge; upper edge unchanged to 1e-3.
         let gas2 = GasTerms {
             base_fee_wei: 60_000_000_000,
+            priority_fee_wei: 0,
             ..gas
         };
         let band2 = cb(&bk, &t, &gas2, &spot, 8).unwrap().unwrap();
@@ -483,6 +492,7 @@ mod tests {
         )]);
         let gas = GasTerms {
             base_fee_wei: 30_000_000_000,
+            priority_fee_wei: 0,
             out_per_eth: e18(1),
         };
         let spot = |_: U256, o: U256| o;
@@ -508,6 +518,7 @@ mod tests {
             SmallVec::from_slice(&[e18(10), e18(100), e18(1_000), e18(5_000)]);
         let gas = GasTerms {
             base_fee_wei: 30_000_000_000,
+            priority_fee_wei: 0,
             out_per_eth: e18(1),
         };
         let t = terms(500, 400_000);
@@ -589,6 +600,7 @@ mod tests {
             &hc,
             &SolveBudget::default(),
             30_000_000_000,
+            0,
             42,
         );
         assert_eq!(t.bands.len(), 2);

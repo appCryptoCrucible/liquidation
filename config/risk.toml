@@ -1,2 +1,4 @@
-# Halt matrix, caps, treasury — filled by WP 14A. Empty is structurally valid.
+# Halt matrix / caps. There is no per-liquidation notional cap; size is
+# the viability band. Empty keys take the existing concurrency and haircut
+# defaults (sweep_k=20, haircut 8000–9900).
 [risk]

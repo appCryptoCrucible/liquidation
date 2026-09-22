@@ -79,6 +79,9 @@ mod tests {
         fn next_base_fee(&self) -> u128 {
             30_000_000_000
         }
+        fn priority_fee_wei(&self) -> u128 {
+            0
+        }
         fn block(&self) -> u64 {
             1
         }
@@ -281,6 +284,9 @@ mod tests {
             }
             fn next_base_fee(&self) -> u128 {
                 1
+            }
+            fn priority_fee_wei(&self) -> u128 {
+                0
             }
             fn block(&self) -> u64 {
                 1

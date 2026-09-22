@@ -282,3 +282,75 @@ pub(crate) fn quote(
         seize_options: seize.into_iter().map(|(o, _, _, _)| o).collect(),
     }))
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
+mod close_factor_boundary {
+    use super::{max_liquidatable_debt, AmountsIn};
+    use crate::health::{Collateral, Debt, SlotTerms};
+    use crate::layout::{Reserve, UserReserve};
+    use crate::math::asset_unit;
+    use alloy_primitives::U256;
+    use bytemuck::Zeroable;
+    use liq_protocol::MarketRow;
+    use liq_types::AssetId;
+
+    /// Close-factor cap applies only when `hf_wad > close_hf`. Equality is
+    /// a 100% close. Flipping the compare to `>=` caps this case.
+    #[test]
+    fn equality_with_close_hf_does_not_apply_the_partial_cap() {
+        let row = MarketRow::blank(AssetId(0), 18);
+        let reserve = Reserve::zeroed();
+        let user = UserReserve::ZERO;
+        let unit = asset_unit(18).unwrap();
+        let coll = SlotTerms {
+            slot: 0,
+            row: &row,
+            reserve: &reserve,
+            user: &user,
+            supply_scaled: 0,
+            debt_scaled: 0,
+            p: unit,
+            liq_idx: U256::ZERO,
+            debt_idx: U256::ZERO,
+            collateral: Some(Collateral {
+                assets: U256::from(1_000u64),
+                per_price: U256::from(1u8),
+                value: U256::from(1_000u64),
+                lt: U256::from(8_000u64),
+            }),
+            debt: None,
+            liq_bonus: U256::ZERO,
+        };
+        let debt_side = SlotTerms {
+            collateral: None,
+            debt: Some(Debt {
+                assets: U256::from(1_000u64),
+                per_price: U256::from(1u8),
+                value: U256::from(1_000u64),
+            }),
+            ..coll
+        };
+        let close_hf = U256::from(9_500u64);
+        let at_eq = AmountsIn {
+            coll: &coll,
+            debt: &debt_side,
+            total_debt_base: U256::from(1_000u64),
+            hf_wad: close_hf,
+            bonus_bps: U256::ZERO,
+            debt_to_cover: U256::ZERO,
+            close_factor_bps: U256::from(5_000u64),
+            close_hf,
+            min_base: U256::from(1u8),
+        };
+        assert_eq!(max_liquidatable_debt(&at_eq).unwrap(), U256::from(1_000u64));
+        let at_above = AmountsIn {
+            hf_wad: close_hf + U256::from(1u8),
+            ..at_eq
+        };
+        assert_eq!(
+            max_liquidatable_debt(&at_above).unwrap(),
+            U256::from(500u64)
+        );
+    }
+}

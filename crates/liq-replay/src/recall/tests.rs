@@ -45,7 +45,9 @@ fn fork_in_scope() -> ForkFacts {
 /// TESTING.md §4 mutation #13 — design check (review item).
 #[test]
 fn mutation_13_classifier_imports_neither_state_flash_nor_router() {
-    let src = include_str!("classifier.rs");
+    // A `pub(crate) use` in `mod.rs` plus `super::` in the classifier
+    // would not show up in `classifier.rs` alone.
+    let files = [("classifier.rs", include_str!("classifier.rs")), ("mod.rs", include_str!("mod.rs"))];
     for needle in [
         "liq_state",
         "liq-state",
@@ -54,10 +56,12 @@ fn mutation_13_classifier_imports_neither_state_flash_nor_router() {
         "liq_router",
         "liq-router",
     ] {
-        assert!(
-            !src.contains(needle),
-            "classifier.rs must not mention {needle} (mutation #13)"
-        );
+        for (name, src) in files {
+            assert!(
+                !src.contains(needle),
+                "{name} must not mention {needle} (mutation #13)"
+            );
+        }
     }
 }
 

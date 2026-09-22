@@ -14,12 +14,13 @@ use arc_swap::ArcSwap;
 use liq_engine::{Candidate, Engine, EngineConfig, TriggerCause, World};
 use liq_exec::fee::FeeQuote;
 use liq_exec::path::{ExecInbox, ExecJob};
-use liq_flash::{FlashIndex, Haircut};
+use liq_flash::{CostModel, FlashIndex, Haircut};
 use liq_node::{as_dirty_sets, AfterBlock, AfterBlockCtx};
-use liq_plan::{EncodedPlan, ValidateCtx};
+use liq_plan::{EncodedPlan, ValidateCtx, FLAG_SWEEP};
 use liq_protocol::{Constraints, DirtySet, Protocol};
 use liq_router::{
     assemble, bid, select, Bid, BidConfig, GasTerms, PoolBook, PositionInput, SelectCfg,
+    SolveBudget, EXACT_K, NONCE_SLOTS, OUT_PER_ETH_WETH,
 };
 use parking_lot::RwLock;
 use liq_sim::{
@@ -105,6 +106,8 @@ pub struct DrainJoin {
     pub fee: Option<FeeQuote>,
     /// Kept for the process. `observe_parent` only when header base fee ≠ 0.
     pub oracle: Option<liq_router::GasOracle>,
+    /// Committed `bid.toml` only. Missing → [`Self::select`] stays None.
+    pub bid_cfg: Option<BidConfig>,
 }
 
 impl DrainJoin {
@@ -140,6 +143,7 @@ impl DrainJoin {
             cons: Constraints::UNBOUNDED,
             fee: None,
             oracle: None,
+            bid_cfg: None,
         }
     }
 
@@ -223,9 +227,15 @@ impl DrainJoin {
         self
     }
 
+    #[must_use]
+    pub fn with_bid_cfg(mut self, bid_cfg: Option<BidConfig>) -> Self {
+        self.bid_cfg = bid_cfg;
+        self
+    }
+
     /// Header `gas_limit == 0` → `select` stays `None` (no 30M default).
-    /// Nonzero updates an existing [`SelectReady`] header only — never
-    /// invents wrap / bid / failed gas.
+    /// Nonzero updates an existing [`SelectReady`] header, or forms one
+    /// from bind + fee + committed bid. Missing bid.toml → stays None.
     pub fn refresh_select(&mut self, header_gas_limit: u64) {
         if header_gas_limit == 0 {
             tracing::error!("header gas_limit missing — SelectReady stays None (no 30M default)");
@@ -236,13 +246,54 @@ impl DrainJoin {
             ready.cfg.header_gas_limit = header_gas_limit;
             return;
         }
-        if self.select_bind.is_none() {
-            tracing::error!("select bind absent — SelectReady stays None");
-        } else {
-            tracing::error!(
-                "header gas present but SelectReady still None (no committed bid / exact_k / failed-gas snapshot)"
-            );
+        self.select = self.form_select(header_gas_limit);
+        if self.select.is_none() {
+            if self.select_bind.is_none() {
+                tracing::error!("select bind absent — SelectReady stays None");
+            } else if self.bid_cfg.is_none() {
+                tracing::error!("bid.toml absent — SelectReady stays None (D11 unset)");
+            } else if self.fee.is_none() {
+                tracing::error!("fee window empty — SelectReady stays None");
+            } else {
+                tracing::error!("SelectReady refused (wrap all-zero or bid refused)");
+            }
         }
+    }
+
+    fn form_select(&self, header_gas_limit: u64) -> Option<SelectReady> {
+        let bind = self.select_bind.as_ref()?;
+        let fee = self.fee.as_ref()?;
+        let bid_cfg = self.bid_cfg.as_ref()?;
+        if bind.wrap_gas.iter().all(|&g| g == 0) {
+            tracing::error!("wrap_gas all zero — SelectReady stays None");
+            return None;
+        }
+        let bid = learning_bid(bid_cfg, fee.priority_wei)?;
+        Some(SelectReady {
+            cfg: SelectCfg {
+                cost: CostModel::FEE_ONLY,
+                close_bps: 0,
+                exact_k: EXACT_K,
+                nonce_slots: NONCE_SLOTS,
+                header_gas_limit,
+                wrap_gas: bind.wrap_gas,
+                wrap_aave_v4: bind.wrap_aave_v4,
+                aave_v4: bind.aave_v4,
+                liq_gas: 0,
+                over_borrow: U256::ZERO,
+                budget: SolveBudget::default(),
+            },
+            gas: GasTerms {
+                base_fee_wei: fee.next_base_fee,
+                priority_fee_wei: fee.priority_wei,
+                out_per_eth: OUT_PER_ETH_WETH,
+            },
+            bid,
+            validate: bind.validate.clone(),
+            haircut: bind.haircut,
+            gas_failed: 0,
+            flags: FLAG_SWEEP,
+        })
     }
 
     /// Fold the parent header into the live oracle. `base_fee_per_gas == 0`
@@ -330,11 +381,6 @@ impl DrainJoin {
         let gas_failed = match self.select.as_ref() {
             None => {
                 tracing::error!("select inputs absent — skip (no invented header gas / wrap / failed gas)");
-                stats.skipped_select = stats.skipped_select.saturating_add(1);
-                return stats;
-            }
-            Some(ready) if ready.gas_failed == 0 => {
-                tracing::error!("gas_failed is zero — skip (never defaulted)");
                 stats.skipped_select = stats.skipped_select.saturating_add(1);
                 return stats;
             }
@@ -439,7 +485,7 @@ impl DrainJoin {
                 &ready.validate,
                 &ready.bid,
                 price,
-                ready.gas.base_fee_wei,
+                &ready.gas,
                 ready.flags,
                 flash.as_ref(),
                 ready.haircut,
@@ -972,12 +1018,15 @@ mod tests {
                 nonce_slots: 1,
                 header_gas_limit: 30_000_000,
                 wrap_gas: wrap_gas(),
+                wrap_aave_v4: 496_704,
+                aave_v4: None,
                 liq_gas: 80_000,
                 over_borrow: U256::from(1u64),
                 budget: SolveBudget::default(),
             },
             gas: GasTerms {
                 base_fee_wei: 1,
+                priority_fee_wei: 0,
                 out_per_eth: e18(1),
             },
             bid: bd,
@@ -1337,6 +1386,81 @@ mod tests {
         assert_eq!(st.jobs_sent, 0);
         assert!(st.skipped_select >= 1);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn refresh_select_forms_ready_from_committed_inputs() {
+        let mut j = DrainJoin::live_noop(
+            flash(),
+            routes(),
+            filled_view(addr(0xB1)),
+            None,
+            Some(OPERATOR),
+            1,
+        )
+        .with_select_bind(
+            crate::bind::select_bind(
+                crate::bind::WrapGas {
+                    by_provider: wrap_gas(),
+                    aave_v4: 496_704,
+                },
+                tok(1),
+                None,
+            )
+            .unwrap(),
+        )
+        .with_fee(fee(0))
+        .with_bid_cfg(BidConfig::new(9_900, 9_900, 0, 0));
+        assert!(j.select.is_none());
+        j.refresh_select(15_000_000);
+        let ready = j.select.expect("SelectReady must form from bind+fee+bid");
+        assert_eq!(ready.cfg.header_gas_limit, 15_000_000);
+        assert_eq!(ready.cfg.exact_k, EXACT_K);
+        assert_eq!(ready.cfg.nonce_slots, NONCE_SLOTS);
+        assert_eq!(ready.gas_failed, 0);
+        assert_eq!(ready.cfg.liq_gas, 0);
+        assert_eq!(ready.cfg.wrap_aave_v4, 496_704);
+    }
+
+    #[test]
+    fn refresh_select_stays_none_without_bid() {
+        let mut j = DrainJoin::live_noop(
+            flash(),
+            routes(),
+            filled_view(addr(0xB1)),
+            None,
+            Some(OPERATOR),
+            1,
+        )
+        .with_select_bind(
+            crate::bind::select_bind(
+                crate::bind::WrapGas {
+                    by_provider: wrap_gas(),
+                    aave_v4: 496_704,
+                },
+                tok(1),
+                None,
+            )
+            .unwrap(),
+        )
+        .with_fee(fee(0));
+        j.refresh_select(15_000_000);
+        assert!(j.select.is_none(), "D11 unset must not invent BidConfig");
+    }
+
+    #[test]
+    fn gas_failed_zero_does_not_abort_enqueue() {
+        let (inbox, rx) = ExecInbox::pair(4);
+        let mut j = join_base(Some(inbox), false);
+        if let Some(s) = j.select.as_mut() {
+            s.gas_failed = 0;
+        }
+        let st = j.enqueue_candidates(&[fireable(1)], 0, 1);
+        assert!(
+            st.skipped_sim >= 1 || st.jobs_sent >= 1,
+            "gas_failed=0 at learning p must reach select, not abort: {st:?}"
+        );
+        let _ = rx;
     }
 
     #[test]

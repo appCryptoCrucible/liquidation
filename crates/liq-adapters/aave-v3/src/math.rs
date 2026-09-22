@@ -199,6 +199,28 @@ pub fn value_ray_of(amount: U256, price: Ray, decimals: u8) -> Result<U256> {
     )?)
 }
 
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
+mod rounding_direction {
+    use super::{a_token_balance, v_token_balance, RAY};
+
+    use alloy_primitives::U256;
+
+    /// `scaled * index` not divisible by RAY. Floor and ceil differ by 1.
+    /// An index of RAY makes them identical, so a ceil↔floor flip stays green.
+    #[test]
+    fn supply_floors_and_debt_ceils_off_the_ray_identity() {
+        let scaled = U256::from(1u8);
+        let index = RAY + U256::from(1u8);
+        let floor = scaled * index / RAY;
+        let ceil = (scaled * index + RAY - U256::from(1u8)) / RAY;
+        assert_eq!(floor, U256::from(1u8));
+        assert_eq!(ceil, U256::from(2u8));
+        assert_eq!(a_token_balance(scaled, index).unwrap(), floor);
+        assert_eq!(v_token_balance(scaled, index).unwrap(), ceil);
+    }
+}
+
 /// Silence unused half constants that document the chain's HALF_* (used via Rounding::HalfUp).
 const _: () = {
     let _ = HALF_BPS.as_limbs();
