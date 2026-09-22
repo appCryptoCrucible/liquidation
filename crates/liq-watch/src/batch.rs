@@ -20,7 +20,6 @@ use crate::decode::WatchDecoder;
 use crate::error::{Result, WatchError};
 use crate::source::{LogSource, OwnedBlock, Poll, RpcPoll, DEFAULT_PAGE_BLOCKS};
 use crate::types::{ActualLiquidation, DecodedLiquidation};
-use liq_types::LogSubscriber;
 
 pub async fn extract_range<P: Provider>(
     provider: P,
@@ -64,7 +63,7 @@ async fn drain_block<P: Provider>(
         let Some(ev) = decoder.decode_log(log, trig, vol)? else {
             continue;
         };
-        let bid = inferred_bid(poll.provider(), ev.tx_hash, ev.block).await?;
+        let bid = attested_inferred_bid(poll.provider(), ev.tx_hash, ev.block).await?;
         let backrun = oracle_backrun_tx(decoder, buf, log.tx_index);
         match (
             decoder.asset_id(ev.repay_asset),
@@ -89,7 +88,11 @@ async fn drain_block<P: Provider>(
 
 /// GUIDE 12: `inferred_bid = coinbase_transfer + (effectiveGasPrice − baseFee) × gasUsed`.
 /// Either component unknown → `None` (fail-closed; never a guessed bid).
-async fn inferred_bid<P: Provider>(provider: &P, tx: B256, block: u64) -> Result<Option<U256>> {
+pub async fn attested_inferred_bid<P: Provider>(
+    provider: &P,
+    tx: B256,
+    block: u64,
+) -> Result<Option<U256>> {
     let receipt = provider
         .get_transaction_receipt(tx)
         .await

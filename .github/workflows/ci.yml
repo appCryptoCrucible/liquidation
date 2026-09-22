@@ -39,6 +39,20 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Install Foundry
+        run: |
+          curl -L https://foundry.paradigm.xyz | bash
+          /root/.foundry/bin/foundryup
+          echo "/root/.foundry/bin" >> "$GITHUB_PATH"
+
+      - name: Install forge-std
+        working-directory: contracts
+        run: forge install foundry-rs/forge-std --no-git
+
+      - name: forge build
+        working-directory: contracts
+        run: forge build
+
       - name: cargo test
         run: cargo test --workspace
 

@@ -111,6 +111,7 @@ pub struct DrainJoin {
     pub oracle: Option<liq_router::GasOracle>,
     /// Committed `bid.toml` only. Missing → [`Self::select`] stays None.
     pub bid_cfg: Option<BidSchedule>,
+    header_clock: Option<Arc<crate::stall::HeaderClock>>,
 }
 
 impl DrainJoin {
@@ -147,6 +148,7 @@ impl DrainJoin {
             fee: None,
             oracle: None,
             bid_cfg: None,
+            header_clock: None,
         }
     }
 
@@ -233,6 +235,13 @@ impl DrainJoin {
     #[must_use]
     pub fn with_bid_cfg(mut self, bid_cfg: Option<BidSchedule>) -> Self {
         self.bid_cfg = bid_cfg;
+        self
+    }
+
+    /// Shared with the stall thread. `None` means no silence measurement.
+    #[must_use]
+    pub fn with_header_clock(mut self, clock: Arc<crate::stall::HeaderClock>) -> Self {
+        self.header_clock = Some(clock);
         self
     }
 
@@ -324,6 +333,9 @@ impl DrainJoin {
             return;
         }
         self.fee = crate::bind::fee_from_oracle(oracle, parent_block);
+        if let Some(clock) = &self.header_clock {
+            clock.note_now();
+        }
     }
 
     fn world_haircut(&self) -> Haircut {

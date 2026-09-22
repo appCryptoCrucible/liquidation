@@ -3767,12 +3767,23 @@ dependencies = [
 [[package]]
 name = "liq-books"
 version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "reqwest 0.12.23",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "liq-bot"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-provider",
+ "alloy-rpc-types-eth 2.4.2",
+ "alloy-sol-types",
  "arc-swap",
  "core_affinity",
  "crossbeam-channel",
@@ -3799,6 +3810,7 @@ dependencies = [
  "liq-sim",
  "liq-state",
  "liq-types",
+ "liq-watch",
  "mimalloc",
  "notify",
  "parking_lot",

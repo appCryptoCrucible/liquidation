@@ -25,6 +25,8 @@ pub mod lease;
 pub mod rebuild;
 pub mod reload;
 pub mod routes;
+pub mod inclusion_feed;
 pub mod shared;
+pub mod stall;
 pub mod startup;
 pub mod threads;

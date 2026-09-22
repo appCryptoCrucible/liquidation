@@ -54,6 +54,10 @@ pub enum HaltReason {
 /// on `liq-risk` (D46).
 pub trait HaltSink: Send + Sync {
     fn halt(&self, scope: HaltScope, reason: HaltReason);
+
+    /// Drop an auto-clearing halt after a fresh observation. Default is a
+    /// no-op so test sinks do not have to implement it.
+    fn clear(&self, _scope: HaltScope, _reason: HaltReason) {}
 }
 
 /// What [`RiskAllow::allow`] returns. 13A treats [`Allow::Denied`] as do-not-send.

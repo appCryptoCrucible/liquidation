@@ -147,7 +147,6 @@ pub struct Bid {
 
 /// `min(cap, target + jitter)` with `jitter` linearly interpolated from
 /// `draw ∈ [0, 10_000]` across `[jitter_lo, jitter_hi]`.
-#[must_use]
 pub fn beta_of(cfg: &BidConfig, draw: u16) -> Result<u16, BidError> {
     if draw > BPS {
         return Err(BidError::BadDraw(draw));

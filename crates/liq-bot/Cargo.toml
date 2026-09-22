@@ -11,7 +11,10 @@ license.workspace = true
 alloc-assert = []
 
 [dependencies]
-alloy-primitives = { workspace = true }
+alloy-primitives = { workspace = true, features = ["std"] }
+alloy-provider = { workspace = true }
+alloy-rpc-types-eth = { workspace = true }
+alloy-sol-types = { workspace = true, features = ["std"] }
 arc-swap = { workspace = true }
 core_affinity = { workspace = true }
 crossbeam-channel = { workspace = true }
@@ -38,6 +41,7 @@ liq-router = { path = "../liq-router" }
 liq-sim = { path = "../liq-sim" }
 liq-state = { path = "../liq-state" }
 liq-types = { path = "../liq-types" }
+liq-watch = { path = "../liq-watch" }
 mimalloc = { workspace = true }
 notify = { workspace = true }
 parking_lot = { workspace = true }

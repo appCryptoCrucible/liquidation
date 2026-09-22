@@ -73,6 +73,7 @@ mod tests {
     use liq_router::{WarmBuilder, WarmConfig};
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn leak_is_not_lazylock_and_submit_defaults_false() {
         assert!(COLD_RESTART_P99.is_none(), "cold-restart p99 ABSENT");
         assert!(!PROD_ALLOW_UNPINNED);

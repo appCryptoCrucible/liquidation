@@ -674,7 +674,8 @@ pub fn learning_p() -> Ray {
     clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
     clippy::panic,
-    clippy::unwrap_used
+    clippy::unwrap_used,
+    clippy::expect_used
 )]
 mod tests {
     use super::*;

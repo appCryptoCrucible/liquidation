@@ -115,6 +115,9 @@ pub struct Started {
     /// 13A path. `None` when secrets/builders are missing — not an invented signer.
     pub exec: Option<Arc<ExecPath<ShadowRecorder, &'static RiskGate>>>,
     pub assemble: ProcessAssembleView,
+    /// Inclusion watcher threads. `None` when the feed could not be built.
+    pub inclusion: Option<crate::inclusion_feed::InclusionJoin>,
+    _stall: Option<std::thread::JoinHandle<()>>,
 }
 
 /// Step 5: split ExEx rings and spawn hot (pin asserted inside).
@@ -149,6 +152,29 @@ pub fn register_exex(
         after_block,
     )?;
     Ok((inst.forwarder, handle))
+}
+
+/// `PROFIT_SINK` is the Executor's sink. Unset or zero leaves inclusion
+/// profit unresolved — a successful receipt is not marked Included.
+fn profit_sink_from_env() -> Option<alloy_primitives::Address> {
+    let raw = match std::env::var("PROFIT_SINK") {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+    if raw.is_empty() {
+        return None;
+    }
+    match raw.parse::<alloy_primitives::Address>() {
+        Ok(a) if !a.is_zero() => Some(a),
+        Ok(_) => {
+            tracing::error!("PROFIT_SINK is zero — inclusion profit stays unresolved");
+            None
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "PROFIT_SINK unreadable — inclusion profit stays unresolved");
+            None
+        }
+    }
 }
 
 /// Full production order. RPC/registry failure refuses. Lease gates submit.
@@ -199,8 +225,7 @@ pub async fn run(
         &shadow,
         shared,
         ProcessSecrets::from_env(),
-    )
-    .map(Arc::new);
+    );
     if let Some(ref path) = exec {
         if let Err(e) = path.prewarm().await {
             tracing::error!(error = %e, "13A prewarm failed — path stays bound; handshake_free Absent");
@@ -230,6 +255,25 @@ pub async fn run(
     if fee.is_none() {
         tracing::error!("fee window empty — fee stays None (no invented base/priority)");
     }
+    let inclusion = if exec.is_some() {
+        crate::inclusion_feed::start(
+            &loaded.config.rpc_url,
+            &loaded.registry,
+            loaded.intern.clone(),
+            profit_sink_from_env(),
+        )
+    } else {
+        tracing::error!("inclusion feed not started — ExecPath unbound");
+        None
+    };
+    let exec = match (exec, inclusion.as_ref()) {
+        (Some(path), Some(feed)) => Some(Arc::new(path.with_watch(feed.cmd_tx.clone()))),
+        (Some(path), None) => {
+            tracing::error!("inclusion feed absent — submissions are not tracked");
+            Some(Arc::new(path))
+        }
+        (None, _) => None,
+    };
     let operator = exec
         .as_ref()
         .and_then(|p| p.signers.first().map(|s| s.address()));
@@ -245,6 +289,14 @@ pub async fn run(
             tracing::error!(?e, "exec worker not started — inbox will count full");
         }
     }
+    let clock = Arc::new(crate::stall::HeaderClock::new());
+    let stall = match crate::stall::spawn(Arc::clone(&clock), shared.risk) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            tracing::error!(error = %e, "stall heartbeat not started");
+            None
+        }
+    };
     let hook = DrainJoin::live(
         Arc::clone(&shared.flash),
         shared.routes.clone(),
@@ -258,7 +310,8 @@ pub async fn run(
         oracle,
     )
     .with_index(index)
-    .with_bid_cfg(bid_cfg);
+    .with_bid_cfg(bid_cfg)
+    .with_header_clock(clock);
     let _map = pin_threads(cores_path, allow_unpinned)?;
     let sink: &'static dyn liq_types::HaltSink = shared.risk;
     let (forwarder, hot) = register_exex(
@@ -276,6 +329,8 @@ pub async fn run(
         forwarder,
         exec,
         assemble,
+        inclusion,
+        _stall: stall,
     })
 }
 

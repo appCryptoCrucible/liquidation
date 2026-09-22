@@ -266,6 +266,7 @@ pub trait BandInputs {
 
 /// Build the table for `keys` at `base_fee` / `block`. Off the hot path
 /// (warm tier, inter-block window).
+#[allow(clippy::too_many_arguments)] // each input is a distinct required term
 pub fn build_table(
     book: &PoolBook,
     keys: &[(ProtocolId, AssetId, AssetId)],

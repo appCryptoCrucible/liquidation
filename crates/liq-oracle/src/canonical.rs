@@ -211,7 +211,7 @@ impl CanonicalBook {
             return Ok(false);
         };
         if *t0 == ANSWER_UPDATED_TOPIC0 {
-            return self.apply_answer(log);
+            return self.apply_answer(log, sink);
         }
         if *t0 == asset_source_updated_topic0() {
             return self.apply_source_swap(log, sink);
@@ -222,7 +222,7 @@ impl CanonicalBook {
         Ok(false)
     }
 
-    fn apply_answer(&mut self, log: &DecodedLog<'_>) -> Result<bool> {
+    fn apply_answer(&mut self, log: &DecodedLog<'_>, sink: &dyn HaltSink) -> Result<bool> {
         let ev = IAggregator::AnswerUpdated::decode_raw_log(log.topics.iter().copied(), log.data)
             .map_err(|_| OracleError::BadAnswerUpdated)?;
         let ts = u64::try_from(ev.updatedAt).map_err(|_| OracleError::BadAnswerUpdated)?;
@@ -242,6 +242,7 @@ impl CanonicalBook {
             let asset = feed.asset;
             if self.write_price(asset, price, log.block, ts)? {
                 changed = true;
+                sink.clear(HaltScope::Asset(asset), HaltReason::OracleStale);
             }
         }
         Ok(changed)

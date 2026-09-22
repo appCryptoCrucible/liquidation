@@ -11,6 +11,7 @@ use liq_types::{PositionKey, TraceId};
 use liq_watch::types::DecodedLiquidation;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 /// Live `LostToCompetitor` resolution percent. Not measured (no live W stream).
 pub const LOST_TO_COMPETITOR_LIVE_PCT: Option<u8> = None;
@@ -56,6 +57,9 @@ pub struct BlockObs {
     pub liquidations: Vec<DecodedLiquidation>,
     /// Attested competitor bids keyed by the winner's tx hash.
     pub inferred_bids: Vec<(B256, Option<U256>)>,
+    /// A read succeeded but an outcome was withheld (no profit sink, no
+    /// attested WETH transfer). The block must not become `Dropped`.
+    pub incomplete: bool,
 }
 
 /// Commands for the single watcher task.
@@ -94,6 +98,11 @@ impl InclusionWatch {
         self.map.len()
     }
 
+    #[must_use]
+    pub fn open_tracks(&self) -> Vec<Tracked> {
+        self.map.values().cloned().collect()
+    }
+
     /// Apply one block. Resolved traces are removed and returned.
     pub fn observe(&mut self, obs: &BlockObs) -> Result<Vec<(TraceId, Terminal)>> {
         let mut out = Vec::new();
@@ -102,7 +111,7 @@ impl InclusionWatch {
             if let Some(term) = resolve_one(t, obs)? {
                 out.push((*trace, term));
                 resolved.push(*trace);
-            } else if obs.block > t.max_block {
+            } else if !obs.incomplete && obs.block > t.max_block {
                 out.push((*trace, Terminal::Dropped));
                 resolved.push(*trace);
             }
@@ -182,36 +191,78 @@ pub fn parse_inferred_bid(s: Option<&str>) -> Result<Option<U256>> {
         .map_err(|_| ExecError::BadInferredBid)
 }
 
+/// Off-thread block reader. `None` means this poll failed or saw nothing —
+/// the watcher must not advance, or a missed block becomes a false `Dropped`.
+pub trait BlockSource: Send {
+    fn poll(&mut self, open: &[Tracked]) -> Option<BlockObs>;
+}
+
 /// Single watcher thread. Outcomes are `try_send`; a full channel is counted.
 pub fn spawn_watch(
     cmds: Receiver<WatchCmd>,
     outcomes: Sender<(TraceId, Terminal)>,
     outcome_full: std::sync::Arc<AtomicU64>,
 ) -> Result<std::thread::JoinHandle<()>> {
+    spawn_sourced(cmds, outcomes, outcome_full, None)
+}
+
+/// Same watcher. `source` is polled when the command channel is idle.
+/// A source that returns `None` does not resolve anything.
+pub fn spawn_sourced(
+    cmds: Receiver<WatchCmd>,
+    outcomes: Sender<(TraceId, Terminal)>,
+    outcome_full: std::sync::Arc<AtomicU64>,
+    mut source: Option<Box<dyn BlockSource>>,
+) -> Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
         .name("liq-exec-inclusion".into())
         .spawn(move || {
             let mut watch = InclusionWatch::new();
-            while let Ok(cmd) = cmds.recv() {
-                match cmd {
-                    WatchCmd::Track(t) => watch.track(t),
-                    WatchCmd::Observe(obs) => match watch.observe(&obs) {
-                        Ok(rows) => {
-                            for row in rows {
-                                if outcomes.try_send(row).is_err() {
-                                    outcome_full.fetch_add(1, Ordering::Relaxed);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!(err = %e, "inclusion observe failed");
-                        }
-                    },
-                    WatchCmd::Shutdown => break,
+            if source.is_none() {
+                tracing::error!("inclusion block feed unwired — outcome counts are not a win rate");
+            }
+            loop {
+                let cmd = match cmds.recv_timeout(Duration::from_secs(2)) {
+                    Ok(c) => Some(c),
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => None,
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                };
+                if let Some(cmd) = cmd {
+                    match cmd {
+                        WatchCmd::Track(t) => watch.track(t),
+                        WatchCmd::Observe(obs) => emit(&mut watch, &obs, &outcomes, &outcome_full),
+                        WatchCmd::Shutdown => break,
+                    }
+                }
+                if let Some(src) = source.as_mut() {
+                    let open = watch.open_tracks();
+                    if let Some(obs) = src.poll(&open) {
+                        emit(&mut watch, &obs, &outcomes, &outcome_full);
+                    }
                 }
             }
         })
         .map_err(|e| ExecError::Config(e.to_string()))
+}
+
+fn emit(
+    watch: &mut InclusionWatch,
+    obs: &BlockObs,
+    outcomes: &Sender<(TraceId, Terminal)>,
+    outcome_full: &std::sync::Arc<AtomicU64>,
+) {
+    match watch.observe(obs) {
+        Ok(rows) => {
+            for row in rows {
+                if outcomes.try_send(row).is_err() {
+                    outcome_full.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(err = %e, "inclusion observe failed");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -354,6 +405,21 @@ mod tests {
             })
             .unwrap();
         assert!(matches!(out[0].1, Terminal::Reverted { .. }));
+    }
+
+    #[test]
+    fn incomplete_observation_is_not_a_drop() {
+        let mut w = InclusionWatch::new();
+        w.track(tracked());
+        let out = w
+            .observe(&BlockObs {
+                block: 103,
+                incomplete: true,
+                ..BlockObs::default()
+            })
+            .unwrap();
+        assert!(out.is_empty());
+        assert_eq!(w.unresolved(), 1);
     }
 
     #[test]

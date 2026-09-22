@@ -609,6 +609,11 @@ impl WatchDecoder {
             },
         }
     }
+
+    #[must_use]
+    pub fn subscriptions(&self) -> Vec<LogFilter> {
+        self.filters.clone()
+    }
 }
 
 impl LogSubscriber for WatchDecoder {

@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use alloy_provider::{Provider, ProviderBuilder};
 use liq_config::{Intern, Registry};
-use liq_types::LogSubscriber;
 use liq_watch::batch::{extract_range, write_parquet};
 use liq_watch::decode::WatchDecoder;
 use liq_watch::join::NoEngineJoin;

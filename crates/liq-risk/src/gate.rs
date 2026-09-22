@@ -314,6 +314,16 @@ fn deny(trace: TraceId, scope: HaltScope, reason: HaltReason) -> Allow {
 }
 
 impl HaltSink for RiskGate {
+    fn clear(&self, scope: HaltScope, reason: HaltReason) {
+        if reason == HaltReason::OracleStale {
+            if let HaltScope::Asset(asset) = scope {
+                self.observe_oracle_fresh(asset);
+                return;
+            }
+        }
+        self.clear_auto(scope, reason);
+    }
+
     fn halt(&self, scope: HaltScope, reason: HaltReason) {
         let class = class_of(reason);
         let scope = normalize_scope(scope, reason, class);

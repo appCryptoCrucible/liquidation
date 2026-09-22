@@ -14,7 +14,6 @@ use std::time::Duration;
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_sol_types::SolEvent;
 use liq_config::{Intern, OnChainId, Registry};
-use liq_types::LogSubscriber;
 use liq_watch::batch::write_parquet;
 use liq_watch::decode::WatchDecoder;
 use liq_watch::join::NoEngineJoin;
