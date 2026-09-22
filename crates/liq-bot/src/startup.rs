@@ -167,20 +167,18 @@ pub async fn run(
         }
     };
     let (warm_builder, routes) = warm_handles();
-    let shared = leak_shared(
-        &loaded.config,
-        lease,
-        routes,
-        loaded.intern.assets().len(),
-    );
+    let shared = leak_shared(&loaded.config, lease, routes, loaded.intern.assets().len());
     let index = crate::index::leak_index(crate::index::load_index(
         config_dir,
         &loaded.intern,
         &loaded.registry,
     ));
     let stop_warm = Arc::new(AtomicBool::new(false));
-    if let Err(e) = spawn_warm_thread(warm_builder, Arc::clone(&stop_warm), Arc::clone(&index.book))
-    {
+    if let Err(e) = spawn_warm_thread(
+        warm_builder,
+        Arc::clone(&stop_warm),
+        Arc::clone(&index.book),
+    ) {
         tracing::error!(
             ?e,
             "warm-builder thread not started — empty cache stays empty"
@@ -220,7 +218,7 @@ pub async fn run(
         alloy_primitives::Address::ZERO
     });
     let select_bind = bind::select_bind(wrap, weth, loaded.intern.protocol("aave-v4"));
-    let bid_cfg = bind::load_bid_config(&config_dir.join("bid.toml"));
+    let bid_cfg = bind::load_bid_config(&config_dir.join("bid.toml"), &loaded.intern);
     let oracle = liq_router::GasOracle::with_priority_cap(liq_router::gas::DEFAULT_PRIORITY_CAP);
     let fee = match oracle.as_ref() {
         Some(o) => bind::fee_from_oracle(o, 0),

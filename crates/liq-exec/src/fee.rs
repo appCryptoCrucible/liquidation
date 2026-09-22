@@ -1,9 +1,9 @@
 //! Fee fields from the 12A-2 gas-oracle pattern (GUIDE 13 §4b).
 //!
 //! `maxFeePerGas = ceil(next_base_fee × (9/8)^k)` for inclusion span `k`.
-//! Not a flat 12.5 %. `maxPriorityFeePerGas` is supplied by the caller from
-//! the percentile / bid channel — never hard-coded, never reused across
-//! blocks.
+//! Not a flat 12.5 %. `maxPriorityFeePerGas` is the caller's priority,
+//! which the quote sets to 1 gwei. It is not added into `maxFeePerGas`,
+//! and a previous block's base fee is never reused.
 
 use crate::error::{ExecError, Result};
 use alloy_primitives::U256;
@@ -15,9 +15,9 @@ pub struct FeeQuote {
     pub parent_block: u64,
     /// Exact next-block base fee (wei / gas) from the 12A-2 / 12A-1 identity.
     pub next_base_fee: u128,
-    /// Percentile / bid-channel priority (wei / gas). Required nonzero.
+    /// Priority (wei / gas). The quote sets this to 1 gwei. Required nonzero.
     pub priority_wei: u128,
-    /// Uncontested (InterestDrift / Stale) priority. Required nonzero, modest.
+    /// Uncontested (InterestDrift / Stale) priority. Same 1 gwei. Required nonzero.
     pub modest_priority_wei: u128,
 }
 

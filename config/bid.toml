@@ -1,9 +1,32 @@
-# Learning-phase bid. 5100 bps is 51% of net: one point above the 50%
-# cluster in the reconstructed bids. Target equals the cap and jitter is
-# zero, so every draw is exactly 51%. Cap must stay strictly below 10000.
+# Bid is a fraction of net, in bps. Cap stays strictly below 10000.
+# Target equals the cap and jitter is zero, so every draw is exact.
+#
+# Size is the sized repay converted to ETH. Under 3 ETH uses `below`.
+# 3 ETH and above uses `above`. Aave v3 and Aave v4 use [aave].
+# Every other protocol, including Morpho, uses [other].
 
-[bid]
-beta_cap_bps = 5100
-learning_target_bps = 5100
+size_cut_wei = "3000000000000000000"
+
+[aave.below]
+beta_cap_bps = 9950
+learning_target_bps = 9950
+jitter_lo_bps = 0
+jitter_hi_bps = 0
+
+[aave.above]
+beta_cap_bps = 9980
+learning_target_bps = 9980
+jitter_lo_bps = 0
+jitter_hi_bps = 0
+
+[other.below]
+beta_cap_bps = 6500
+learning_target_bps = 6500
+jitter_lo_bps = 0
+jitter_hi_bps = 0
+
+[other.above]
+beta_cap_bps = 6700
+learning_target_bps = 6700
 jitter_lo_bps = 0
 jitter_hi_bps = 0

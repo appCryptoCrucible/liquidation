@@ -82,13 +82,15 @@ pub use band::{
     build_table, compute_band, next_base_fee, BandCtx, BandInputs, BandTable, PairTerms,
     ViabilityBand,
 };
-pub use bid::{bid, searcher_net, Bid, BidConfig, BidError};
+pub use bid::{
+    beta_of, bid, debt_notional_eth_wei, searcher_net, Bid, BidConfig, BidError, BidSchedule,
+};
 pub use cache::WarmRouteCache;
 pub use exact::{
     solve_batch, solve_on, solve_pair, Allocation, BatchQuote, ExitQuote, GasTerms, SolveBudget,
     OUT_PER_ETH_WETH,
 };
-pub use gas::{header_gas_limit, GasError, GasOracle};
+pub use gas::{header_gas_limit, GasError, GasOracle, PRIORITY_FEE_WEI};
 pub use profit::{
     best_plan, delta_net, evaluate, expected_contrib_per_gas, historical_profit_parity, min4,
     seized_for, MarketView, ProfitCtx, ProfitError, SizedLeg, LEARNING_P_RAY,

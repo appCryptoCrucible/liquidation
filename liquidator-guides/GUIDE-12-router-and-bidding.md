@@ -927,11 +927,9 @@ fn next_base_fee(parent_base: u64, parent_gas_used: u64, target: u64) -> u64 {
 
 Anyone treating gas as an estimate is carrying an error term you do not have to.
 
-**Priority fee is the estimated part**, and it only matters on the standalone
-private-relay path (`InterestDrift`, `Stale`). Maintain a rolling percentile of
-effective priority fees from recent blocks and target a percentile that clears
-inclusion. Inside a bundle the bid dominates and the priority fee can sit at
-minimum.
+**Priority fee is 1 gwei on every path.** It is not a rolling percentile and
+not a second estimate beside the base fee. Contested and uncontested sends
+use the same tip. The coinbase bid is still a fraction of net, not this tip.
 
 **Track the regime, not just the number.** Base fee moves an order of magnitude
 between calm markets and volatility, and volatility is when liquidations cluster.
@@ -1053,8 +1051,21 @@ Included bundles build relay reputation on the identity key, which compounds.
 And a model fitted on someone else's historical behaviour is worth less than one
 fitted on your own outcomes.
 
-So: start near the cap, measure `F` from your own wins plus the archive, and
-optimise downward once the curve is visible. That is sequencing, not a concession.
+So: start from the committed schedule, measure `F` from your own wins plus
+the archive, and optimise downward once the curve is visible. That is
+sequencing, not a concession.
+
+The live bid is that schedule, not one cap and not `F(β)`. `config/bid.toml`
+holds four exact rates. Size is the sized repay in ETH (`per_eth(debt)`).
+Under 3 ETH is `below`. 3 ETH and above is `above`.
+
+| | under 3 ETH | 3 ETH and above |
+| --- | --- | --- |
+| Aave v3 and Aave v4 | 99.5% of net | 99.8% of net |
+| every other protocol | 65% of net | 67% of net |
+
+A missing `per_eth` skips the leg. The executor carries one `bidBps` per
+plan, so legs that resolve to different rates are packed separately.
 
 ### One objective, stated once
 

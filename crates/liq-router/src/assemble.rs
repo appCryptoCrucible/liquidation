@@ -937,6 +937,7 @@ mod tests {
             liq_gas: 80_000,
             over_borrow: U256::from(1u64),
             budget: B,
+            bids: None,
         }
     }
 

@@ -20,9 +20,7 @@ use liq_protocol::{
     StateWriter,
 };
 use liq_router::{GasOracle, TailPins};
-use liq_types::{
-    AssetId, FlashProvider, HaltSink, LogFilter, LogSubscriber, MarketId, ProtocolId,
-};
+use liq_types::{AssetId, FlashProvider, HaltSink, LogFilter, LogSubscriber, MarketId, ProtocolId};
 
 use crate::index::BoundIndex;
 
@@ -182,14 +180,13 @@ pub struct ProtocolLoad {
 pub fn load_protocols(config_dir: &Path, intern: &Intern) -> ProtocolLoad {
     let mut out = ProtocolLoad::default();
     let proto_dir = config_dir.join("protocols");
-    for name in [
-        "aave-v3.toml",
-        "aave-v4.toml",
-        "morpho-blue.toml",
-    ] {
+    for name in ["aave-v3.toml", "aave-v4.toml", "morpho-blue.toml"] {
         let path = proto_dir.join(name);
         if !path.is_file() {
-            tracing::error!(file = name, "protocol toml absent — adapter omitted (no invented config)");
+            tracing::error!(
+                file = name,
+                "protocol toml absent — adapter omitted (no invented config)"
+            );
             out.omitted.push((name, "toml absent".into()));
         }
     }
@@ -668,7 +665,10 @@ pub fn intern_view(intern: &Intern) -> ProcessAssembleView {
     let mut v = ProcessAssembleView::empty();
     for rec in intern.assets() {
         if rec.address.is_zero() {
-            tracing::error!(asset = rec.id.0, "registry token is zero — intern discarded");
+            tracing::error!(
+                asset = rec.id.0,
+                "registry token is zero — intern discarded"
+            );
             return ProcessAssembleView::empty();
         }
         match v.intern_token(rec.address) {
@@ -745,11 +745,31 @@ pub fn load_wrap_gas(flash_gas: &Path) -> WrapGas {
             return wrap;
         }
     };
-    set_wrap(&mut wrap.by_provider, FlashProvider::Aave, file.gas_overhead.aave_v3);
-    set_wrap(&mut wrap.by_provider, FlashProvider::UniV3, file.gas_overhead.univ3);
-    set_wrap(&mut wrap.by_provider, FlashProvider::UniV4, file.gas_overhead.univ4);
-    set_wrap(&mut wrap.by_provider, FlashProvider::Morpho, file.gas_overhead.morpho);
-    set_wrap(&mut wrap.by_provider, FlashProvider::SkyDss, file.gas_overhead.sky_dss);
+    set_wrap(
+        &mut wrap.by_provider,
+        FlashProvider::Aave,
+        file.gas_overhead.aave_v3,
+    );
+    set_wrap(
+        &mut wrap.by_provider,
+        FlashProvider::UniV3,
+        file.gas_overhead.univ3,
+    );
+    set_wrap(
+        &mut wrap.by_provider,
+        FlashProvider::UniV4,
+        file.gas_overhead.univ4,
+    );
+    set_wrap(
+        &mut wrap.by_provider,
+        FlashProvider::Morpho,
+        file.gas_overhead.morpho,
+    );
+    set_wrap(
+        &mut wrap.by_provider,
+        FlashProvider::SkyDss,
+        file.gas_overhead.sky_dss,
+    );
     match file.gas_overhead.aave_v4 {
         Some(g) if g != 0 => wrap.aave_v4 = g,
         Some(_) => tracing::error!("10C aave_v4 snapshot is zero — V4 wrap unusable"),
@@ -803,7 +823,11 @@ pub struct SelectBind {
 
 /// Build [`SelectBind`] from 10C wrap + registry WETH. Zero WETH → None.
 #[must_use]
-pub fn select_bind(wrap: WrapGas, weth: Address, aave_v4: Option<ProtocolId>) -> Option<SelectBind> {
+pub fn select_bind(
+    wrap: WrapGas,
+    weth: Address,
+    aave_v4: Option<ProtocolId>,
+) -> Option<SelectBind> {
     if weth.is_zero() {
         tracing::error!("WETH is zero — SelectReady stays None");
         return None;
@@ -825,9 +849,10 @@ pub fn select_bind(wrap: WrapGas, weth: Address, aave_v4: Option<ProtocolId>) ->
     })
 }
 
-/// Committed `config/bid.toml` only. Missing / refused fields → None (D11).
+/// Committed `config/bid.toml` only. Missing file, refused cell, or a
+/// missing Aave family id → None.
 #[must_use]
-pub fn load_bid_config(path: &Path) -> Option<liq_router::BidConfig> {
+pub fn load_bid_config(path: &Path, intern: &Intern) -> Option<liq_router::BidSchedule> {
     if !path.is_file() {
         tracing::error!("bid.toml absent — SelectReady stays None (D11 unset)");
         return None;
@@ -847,23 +872,64 @@ pub fn load_bid_config(path: &Path) -> Option<liq_router::BidConfig> {
             return None;
         }
     };
-    match liq_router::BidConfig::try_from_fields(
-        file.bid.beta_cap_bps,
-        file.bid.learning_target_bps,
-        file.bid.jitter_lo_bps,
-        file.bid.jitter_hi_bps,
-    ) {
-        Some(c) => Some(c),
-        None => {
-            tracing::error!("bid.toml fields refused by BidConfig — SelectReady stays None");
-            None
+    let size_cut_wei = match file.size_cut_wei.parse::<u128>() {
+        Ok(w) if w != 0 => U256::from(w),
+        _ => {
+            tracing::error!("bid.toml size_cut_wei refused — SelectReady stays None");
+            return None;
         }
+    };
+    let Some(aave_v3) = intern.protocol("aave-v3") else {
+        tracing::error!("intern missing aave-v3 — SelectReady stays None");
+        return None;
+    };
+    let Some(aave_v4) = intern.protocol("aave-v4") else {
+        tracing::error!("intern missing aave-v4 — SelectReady stays None");
+        return None;
+    };
+    if aave_v3 == aave_v4 {
+        tracing::error!("aave-v3 and aave-v4 intern to the same id — SelectReady stays None");
+        return None;
     }
+    let cell = |s: &BidSection| {
+        liq_router::BidConfig::try_from_fields(
+            s.beta_cap_bps,
+            s.learning_target_bps,
+            s.jitter_lo_bps,
+            s.jitter_hi_bps,
+        )
+    };
+    let (Some(aave_below), Some(aave_above), Some(other_below), Some(other_above)) = (
+        cell(&file.aave.below),
+        cell(&file.aave.above),
+        cell(&file.other.below),
+        cell(&file.other.above),
+    ) else {
+        tracing::error!("bid.toml cell refused by BidConfig — SelectReady stays None");
+        return None;
+    };
+    Some(liq_router::BidSchedule {
+        size_cut_wei,
+        aave_v3,
+        aave_v4,
+        aave_below,
+        aave_above,
+        other_below,
+        other_above,
+    })
 }
 
 #[derive(serde::Deserialize)]
 struct BidToml {
-    bid: BidSection,
+    size_cut_wei: String,
+    aave: BidPair,
+    other: BidPair,
+}
+
+#[derive(serde::Deserialize)]
+struct BidPair {
+    below: BidSection,
+    above: BidSection,
 }
 
 #[derive(serde::Deserialize)]
@@ -874,7 +940,8 @@ struct BidSection {
     jitter_hi_bps: i16,
 }
 
-/// Fee only from a real 12A-2 window. Empty window / missing base → None.
+/// Base fee from the observed header. Priority is [`liq_router::PRIORITY_FEE_WEI`].
+/// Missing base fee → None. An empty priority ring does not block the quote.
 #[must_use]
 pub fn fee_from_oracle(oracle: &GasOracle, parent_block: u64) -> Option<FeeQuote> {
     let next_base_fee = match oracle.base_fee_wei() {
@@ -888,33 +955,11 @@ pub fn fee_from_oracle(oracle: &GasOracle, parent_block: u64) -> Option<FeeQuote
             return None;
         }
     };
-    let priority = match oracle.priority_percentile(50) {
-        Ok(p) if p != 0 => u128::from(p),
-        Ok(_) => {
-            tracing::error!("priority percentile is zero — fee stays None");
-            return None;
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "priority window empty — fee stays None");
-            return None;
-        }
-    };
-    let modest = match oracle.priority_percentile(1) {
-        Ok(p) if p != 0 => u128::from(p),
-        Ok(_) => {
-            tracing::error!("modest priority is zero — fee stays None");
-            return None;
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "modest priority window empty — fee stays None");
-            return None;
-        }
-    };
     Some(FeeQuote {
         parent_block,
         next_base_fee,
-        priority_wei: priority,
-        modest_priority_wei: modest,
+        priority_wei: liq_router::PRIORITY_FEE_WEI,
+        modest_priority_wei: liq_router::PRIORITY_FEE_WEI,
     })
 }
 
@@ -1066,7 +1111,7 @@ pub fn pins_fluid_required(
 mod tests {
     use super::*;
     use liq_config::{Intern, Registry};
-    use liq_router::{AssembleView, GasOracle};
+    use liq_router::{AssembleView, GasOracle, PRIORITY_FEE_WEI};
 
     fn root() -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1077,9 +1122,10 @@ mod tests {
 
     #[test]
     fn adapter_toml_load_constructs_and_omits_unasserted() {
-        let intern =
-            Intern::from_registry(&Registry::from_path(&root().join("registry/registry.json")).unwrap())
-                .unwrap();
+        let intern = Intern::from_registry(
+            &Registry::from_path(&root().join("registry/registry.json")).unwrap(),
+        )
+        .unwrap();
         let load = load_protocols(&root().join("config"), &intern);
         assert!(
             !load.protocols.is_empty(),
@@ -1087,25 +1133,24 @@ mod tests {
             load.omitted
         );
         assert!(
-            load.omitted.iter().any(|(n, w)| {
-                *n == "liquity-v2" && w.contains("not asserted")
-            }),
+            load.omitted
+                .iter()
+                .any(|(n, w)| { *n == "liquity-v2" && w.contains("not asserted") }),
             "LiveRegistryUnasserted crate must be omitted: {:?}",
             load.omitted
         );
         assert!(
-            load.omitted.iter().any(|(n, w)| {
-                *n == "gearbox" && w.contains("fees() was not asserted")
-            }),
+            load.omitted
+                .iter()
+                .any(|(n, w)| { *n == "gearbox" && w.contains("fees() was not asserted") }),
             "LiveFeesUnasserted crate must be omitted: {:?}",
             load.omitted
         );
         assert!(load.omitted.iter().any(|(n, _)| *n == "compound-v2"));
-        assert!(
-            load.protocols
-                .iter()
-                .any(|p| matches!(p, BoundProtocol::AaveV3(_) | BoundProtocol::EulerV2(_) | BoundProtocol::SiloV2(_)))
-        );
+        assert!(load.protocols.iter().any(|p| matches!(
+            p,
+            BoundProtocol::AaveV3(_) | BoundProtocol::EulerV2(_) | BoundProtocol::SiloV2(_)
+        )));
     }
 
     #[test]
@@ -1116,9 +1161,7 @@ mod tests {
             pins_compound_required(m, b, None, Some(false)).is_none(),
             "missing cToken must not become a zero tail"
         );
-        assert!(
-            pins_compound_required(m, b, Some(Address::ZERO), Some(true)).is_none()
-        );
+        assert!(pins_compound_required(m, b, Some(Address::ZERO), Some(true)).is_none());
         assert!(pins_liquity_required(m, b, None).is_none());
         assert!(pins_liquity_required(m, b, Some(U256::ZERO)).is_none());
         assert!(pins_fluid_required(m, b, None).is_none());
@@ -1136,8 +1179,43 @@ mod tests {
     }
 
     #[test]
+    fn observed_base_fee_quotes_one_gwei_without_priority_samples() {
+        let mut o = GasOracle::with_priority_cap(4).unwrap();
+        o.observe_parent(1_000_000_000, 15_000_000, 30_000_000, &[])
+            .unwrap();
+        let fee = fee_from_oracle(&o, 9).unwrap();
+        assert_eq!(fee.priority_wei, PRIORITY_FEE_WEI);
+        assert_eq!(fee.modest_priority_wei, PRIORITY_FEE_WEI);
+        assert_eq!(PRIORITY_FEE_WEI, 1_000_000_000);
+        assert_ne!(fee.next_base_fee, 0);
+        assert_eq!(fee.parent_block, 9);
+    }
+
+    #[test]
     fn missing_bid_toml_is_none() {
-        assert!(load_bid_config(std::path::Path::new("/no/such/bid.toml")).is_none());
+        let intern = Intern::from_registry(
+            &Registry::from_path(&root().join("registry/registry.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(load_bid_config(std::path::Path::new("/no/such/bid.toml"), &intern).is_none());
+    }
+
+    #[test]
+    fn committed_bid_toml_is_four_cells() {
+        let intern = Intern::from_registry(
+            &Registry::from_path(&root().join("registry/registry.json")).unwrap(),
+        )
+        .unwrap();
+        let s = load_bid_config(&root().join("config/bid.toml"), &intern).expect("bid.toml");
+        assert_eq!(s.aave_v3, intern.protocol("aave-v3").unwrap());
+        assert_eq!(s.aave_v4, intern.protocol("aave-v4").unwrap());
+        assert_ne!(s.aave_v3, intern.protocol("spark").unwrap());
+        assert_ne!(s.aave_v3, intern.protocol("morpho-blue").unwrap());
+        assert_eq!(s.aave_below.beta_cap_bps, 9_950);
+        assert_eq!(s.aave_above.beta_cap_bps, 9_980);
+        assert_eq!(s.other_below.beta_cap_bps, 6_500);
+        assert_eq!(s.other_above.beta_cap_bps, 6_700);
+        assert_eq!(s.size_cut_wei, U256::from(3_000_000_000_000_000_000u128));
     }
 
     #[test]
@@ -1154,9 +1232,10 @@ mod tests {
 
     #[test]
     fn intern_view_matches_registry_weth() {
-        let intern =
-            Intern::from_registry(&Registry::from_path(&root().join("registry/registry.json")).unwrap())
-                .unwrap();
+        let intern = Intern::from_registry(
+            &Registry::from_path(&root().join("registry/registry.json")).unwrap(),
+        )
+        .unwrap();
         let view = intern_view(&intern);
         let weth = registry_weth(&intern).unwrap();
         let id = intern.asset(weth).unwrap();
@@ -1178,22 +1257,29 @@ mod tests {
 
     #[test]
     fn loaded_adapters_are_nonempty_subscribers_and_ids_match() {
-        let intern =
-            Intern::from_registry(&Registry::from_path(&root().join("registry/registry.json")).unwrap())
-                .unwrap();
+        let intern = Intern::from_registry(
+            &Registry::from_path(&root().join("registry/registry.json")).unwrap(),
+        )
+        .unwrap();
         let load = load_protocols(&root().join("config"), &intern);
         assert!(
-            load.protocols.iter().any(|p| matches!(p, BoundProtocol::AaveV3(_))),
+            load.protocols
+                .iter()
+                .any(|p| matches!(p, BoundProtocol::AaveV3(_))),
             "spark must construct: omitted={:?}",
             load.omitted
         );
         assert!(
-            load.protocols.iter().any(|p| matches!(p, BoundProtocol::EulerV2(_))),
+            load.protocols
+                .iter()
+                .any(|p| matches!(p, BoundProtocol::EulerV2(_))),
             "euler must construct: omitted={:?}",
             load.omitted
         );
         assert!(
-            load.protocols.iter().any(|p| matches!(p, BoundProtocol::SiloV2(_))),
+            load.protocols
+                .iter()
+                .any(|p| matches!(p, BoundProtocol::SiloV2(_))),
             "silo must construct: omitted={:?}",
             load.omitted
         );
@@ -1216,15 +1302,19 @@ mod tests {
 
     #[test]
     fn empty_load_subscribers_and_ids_empty() {
-        let intern =
-            Intern::from_registry(&Registry::from_path(&root().join("registry/registry.json")).unwrap())
-                .unwrap();
+        let intern = Intern::from_registry(
+            &Registry::from_path(&root().join("registry/registry.json")).unwrap(),
+        )
+        .unwrap();
         let missing = root().join("config/protocols/.17f-empty-omitted");
         let load = load_protocols(&missing, &intern);
         assert!(
             load.protocols.is_empty(),
             "omitted dir must not invent adapters: {:?}",
-            load.protocols.iter().map(BoundProtocol::id).collect::<Vec<_>>()
+            load.protocols
+                .iter()
+                .map(BoundProtocol::id)
+                .collect::<Vec<_>>()
         );
         let leaked = leak_protocols(load);
         assert!(leaked.is_empty());
@@ -1238,9 +1328,10 @@ mod tests {
 
     #[test]
     fn router_concat_keeps_protocol_ids_as_adapters() {
-        let intern =
-            Intern::from_registry(&Registry::from_path(&root().join("registry/registry.json")).unwrap())
-                .unwrap();
+        let intern = Intern::from_registry(
+            &Registry::from_path(&root().join("registry/registry.json")).unwrap(),
+        )
+        .unwrap();
         let load = load_protocols(&root().join("config"), &intern);
         let leaked = leak_protocols(load);
         let index = crate::index::leak_index(crate::index::load_index(

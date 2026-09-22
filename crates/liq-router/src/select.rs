@@ -16,6 +16,7 @@ use liq_types::fixed::RAY;
 use liq_types::{AssetId, PositionId, ProtocolId, Ray, TriggerKind};
 use smallvec::SmallVec;
 
+use crate::bid::{beta_of, BidSchedule};
 use crate::exact::{solve_batch, GasTerms, SolveBudget};
 use crate::profit::{
     best_plan, delta_net, expected_contrib_per_gas, expected_gas, gas_price_in_debt,
@@ -147,6 +148,9 @@ pub struct SelectCfg {
     pub liq_gas: u64,
     pub over_borrow: U256,
     pub budget: SolveBudget,
+    /// Committed four-cell schedule. `None` does not split plans (tests
+    /// that inject one bid). Production sets this from `bid.toml`.
+    pub bids: Option<BidSchedule>,
 }
 
 /// One scored, exact-solved leg ready to batch.
@@ -160,6 +164,9 @@ pub struct Scored {
     pub expected_gas: u64,
     pub contrib_per_gas: U256,
     pub leg: SizedLeg,
+    /// Wire `bidBps` when [`SelectCfg::bids`] is set. `None` means the
+    /// caller supplies one bid for the plan.
+    pub bid_bps: Option<u16>,
 }
 
 /// One nonce's worth of legs, grouped by debt asset, with the 07B cascade
@@ -305,6 +312,26 @@ fn rank(
         }
         let eg = expected_gas(p_raw, gs, el.pos.gas_failed).ok_or(SelectError::BadP)?;
         let cpg = expected_contrib_per_gas(leg.contribution, p_raw, gs, el.pos.gas_failed)?;
+        let bid_bps = match cfg.bids {
+            None => None,
+            Some(sched) => {
+                let Some(per) = market.per_eth(leg.debt) else {
+                    tracing::error!("per_eth missing — leg not bid");
+                    continue;
+                };
+                let Some(size) = crate::debt_notional_eth_wei(leg.s, per) else {
+                    tracing::error!("debt notional refused — leg not bid");
+                    continue;
+                };
+                match beta_of(sched.config(el.pos.protocol, size), 0) {
+                    Ok(bps) => Some(bps),
+                    Err(e) => {
+                        tracing::error!(error = %e, "bid cell refused — leg not bid");
+                        continue;
+                    }
+                }
+            }
+        };
         scored.push(Scored {
             position: el.position(),
             protocol: el.pos.protocol,
@@ -314,6 +341,7 @@ fn rank(
             expected_gas: eg,
             contrib_per_gas: cpg,
             leg,
+            bid_bps,
         });
     }
     scored.sort_by(|a, b| {
@@ -397,6 +425,21 @@ fn pack(
             continue;
         }
         let wrap = wrap_gas(cfg, s.leg.route.provider, s.protocol)?;
+        if let Some(bps) = s.bid_bps {
+            if cur_bid_bps(&cur).is_some_and(|have| have != bps) && !cur.groups.is_empty() {
+                seal_cascades(&mut cur, cfg, flash, book, gas)?;
+                if !cur.groups.is_empty() {
+                    plans.push(cur);
+                }
+                if plans.len() >= usize::from(cfg.nonce_slots) {
+                    return Ok(plans);
+                }
+                cur = SelectedPlan {
+                    groups: SmallVec::new(),
+                    hop_and_wrap_gas: 0,
+                };
+            }
+        }
         let incr_for = |same_debt: bool| -> u64 {
             if same_debt {
                 s.leg.hop_gas.saturating_add(cfg.liq_gas)
@@ -445,6 +488,10 @@ fn pack(
         }
     }
     Ok(plans)
+}
+
+fn cur_bid_bps(plan: &SelectedPlan) -> Option<u16> {
+    plan.groups.first()?.legs.first()?.bid_bps
 }
 
 fn push_leg(plan: &mut SelectedPlan, s: Scored, incr: u64) {
@@ -771,6 +818,7 @@ mod tests {
             liq_gas: 80_000,
             over_borrow: U256::from(1u64),
             budget: B,
+            bids: None,
         }
     }
 
@@ -1018,10 +1066,7 @@ mod tests {
         let a = q(41, e18(10));
         let b = q(42, e18(10));
         let tiny = Ray::from_raw(U256::from(1u64));
-        let inputs = [
-            inp(&a, true, tiny, 0),
-            inp(&b, true, learning_p(), 50_000),
-        ];
+        let inputs = [inp(&a, true, tiny, 0), inp(&b, true, learning_p(), 50_000)];
         let bk = book(vec![deep()]);
         let (_s, flash) = idx();
         let plans = select(&inputs, &cfg(), &flash, H, &bk, None, &Mkt, &GAS).unwrap();
@@ -1054,9 +1099,7 @@ mod tests {
         assert_eq!(wide[0].groups[0].legs.len(), 2);
         let first_leg = wide[0].groups[0].legs[0].leg.hop_gas;
         let wrap = 100_000u64;
-        let one = wrap
-            .saturating_add(c.liq_gas)
-            .saturating_add(first_leg);
+        let one = wrap.saturating_add(c.liq_gas).saturating_add(first_leg);
         let liq_plus_hop = one.saturating_sub(wrap);
         c.header_gas_limit = one.saturating_add(liq_plus_hop).saturating_sub(1);
         let rolled = select(&inputs, &c, &flash, H, &bk, None, &Mkt, &GAS).unwrap();
@@ -1068,5 +1111,42 @@ mod tests {
             rolled[1].hop_and_wrap_gas, one,
             "reset plan must re-add wrap, not reuse stale incr"
         );
+    }
+
+    /// One executor plan has one `bidBps`. Aave at 1 ETH and another
+    /// protocol at 1 ETH must not share it.
+    #[test]
+    fn different_bid_cells_are_separate_plans() {
+        use crate::BidConfig;
+        use crate::BidSchedule;
+        let aave_q = q(1, e18(1));
+        let other_q = q(2, e18(1));
+        let mut aave = inp(&aave_q, true, learning_p(), 0);
+        aave.protocol = ProtocolId(1);
+        let mut other = inp(&other_q, true, learning_p(), 0);
+        other.protocol = ProtocolId(7);
+        let sched = BidSchedule {
+            size_cut_wei: e18(3),
+            aave_v3: ProtocolId(1),
+            aave_v4: ProtocolId(2),
+            aave_below: BidConfig::new(9_950, 9_950, 0, 0).unwrap(),
+            aave_above: BidConfig::new(9_980, 9_980, 0, 0).unwrap(),
+            other_below: BidConfig::new(6_500, 6_500, 0, 0).unwrap(),
+            other_above: BidConfig::new(6_700, 6_700, 0, 0).unwrap(),
+        };
+        let mut c = cfg();
+        c.bids = Some(sched);
+        let bk = book(vec![deep()]);
+        let (_s, flash) = idx();
+        let plans = select(&[aave, other], &c, &flash, H, &bk, None, &Mkt, &GAS).unwrap();
+        assert_eq!(plans.len(), 2, "two cells must not share a plan");
+        let mut rates: Vec<u16> = plans
+            .iter()
+            .flat_map(|p| p.groups.iter())
+            .flat_map(|g| g.legs.iter())
+            .map(|s| s.bid_bps.expect("schedule stamps bid_bps"))
+            .collect();
+        rates.sort_unstable();
+        assert_eq!(rates, vec![6_500, 9_950]);
     }
 }

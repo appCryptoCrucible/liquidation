@@ -19,15 +19,16 @@ use liq_node::{as_dirty_sets, AfterBlock, AfterBlockCtx};
 use liq_plan::{EncodedPlan, ValidateCtx, FLAG_SWEEP};
 use liq_protocol::{Constraints, DirtySet, Protocol};
 use liq_router::{
-    assemble, bid, select, Bid, BidConfig, GasTerms, PoolBook, PositionInput, SelectCfg,
-    SolveBudget, EXACT_K, NONCE_SLOTS, OUT_PER_ETH_WETH,
+    assemble, bid, debt_notional_eth_wei, select, Bid, BidConfig, BidSchedule, GasTerms,
+    MarketView, PoolBook, PositionInput, SelectCfg, SelectedPlan, SolveBudget, EXACT_K,
+    NONCE_SLOTS, OUT_PER_ETH_WETH,
 };
-use parking_lot::RwLock;
 use liq_sim::{
     block_env_at, execute_calldata, verify, Bundle, MemoryFactory, SimError, SimOutcome, SimTx,
     Simulator, StateProviderFactory, Trigger, PLANNED_EXECUTOR,
 };
 use liq_types::{AssetId, FlashProvider, TriggerKind};
+use parking_lot::RwLock;
 
 use crate::assemble_view::{require_meta, require_token, ProcessAssembleView};
 use crate::bind::{BoundProtocol, SelectBind};
@@ -38,7 +39,9 @@ use crate::index::{BoundIndex, FlashSources};
 pub struct SelectReady {
     pub cfg: SelectCfg,
     pub gas: GasTerms,
-    pub bid: Bid,
+    /// Set when no schedule is loaded (tests). Production leaves this
+    /// empty and bids from [`SelectCfg::bids`].
+    pub bid: Option<Bid>,
     pub validate: ValidateCtx,
     pub haircut: Haircut,
     pub gas_failed: u64,
@@ -107,7 +110,7 @@ pub struct DrainJoin {
     /// Kept for the process. `observe_parent` only when header base fee ≠ 0.
     pub oracle: Option<liq_router::GasOracle>,
     /// Committed `bid.toml` only. Missing → [`Self::select`] stays None.
-    pub bid_cfg: Option<BidConfig>,
+    pub bid_cfg: Option<BidSchedule>,
 }
 
 impl DrainJoin {
@@ -228,7 +231,7 @@ impl DrainJoin {
     }
 
     #[must_use]
-    pub fn with_bid_cfg(mut self, bid_cfg: Option<BidConfig>) -> Self {
+    pub fn with_bid_cfg(mut self, bid_cfg: Option<BidSchedule>) -> Self {
         self.bid_cfg = bid_cfg;
         self
     }
@@ -263,12 +266,11 @@ impl DrainJoin {
     fn form_select(&self, header_gas_limit: u64) -> Option<SelectReady> {
         let bind = self.select_bind.as_ref()?;
         let fee = self.fee.as_ref()?;
-        let bid_cfg = self.bid_cfg.as_ref()?;
+        let bid_cfg = *self.bid_cfg.as_ref()?;
         if bind.wrap_gas.iter().all(|&g| g == 0) {
             tracing::error!("wrap_gas all zero — SelectReady stays None");
             return None;
         }
-        let bid = learning_bid(bid_cfg, fee.priority_wei)?;
         Some(SelectReady {
             cfg: SelectCfg {
                 cost: CostModel::FEE_ONLY,
@@ -282,13 +284,14 @@ impl DrainJoin {
                 liq_gas: 0,
                 over_borrow: U256::ZERO,
                 budget: SolveBudget::default(),
+                bids: Some(bid_cfg),
             },
             gas: GasTerms {
                 base_fee_wei: fee.next_base_fee,
                 priority_fee_wei: fee.priority_wei,
                 out_per_eth: OUT_PER_ETH_WETH,
             },
-            bid,
+            bid: None,
             validate: bind.validate.clone(),
             haircut: bind.haircut,
             gas_failed: 0,
@@ -297,8 +300,8 @@ impl DrainJoin {
     }
 
     /// Fold the parent header into the live oracle. `base_fee_per_gas == 0`
-    /// skips [`liq_router::GasOracle::observe_parent`]. Priority samples
-    /// are not fabricated — empty window keeps `fee` None.
+    /// skips [`liq_router::GasOracle::observe_parent`]. Priority is
+    /// [`liq_router::PRIORITY_FEE_WEI`], not a sample from the ring.
     pub fn observe_parent_header(
         &mut self,
         base_fee_per_gas: u64,
@@ -314,12 +317,9 @@ impl DrainJoin {
             tracing::error!("gas oracle missing — observe_parent skipped");
             return;
         };
-        if let Err(e) = oracle.observe_parent(
-            u128::from(base_fee_per_gas),
-            gas_used,
-            gas_limit,
-            &[],
-        ) {
+        if let Err(e) =
+            oracle.observe_parent(u128::from(base_fee_per_gas), gas_used, gas_limit, &[])
+        {
             tracing::error!(error = %e, "observe_parent refused — fee stays None");
             return;
         }
@@ -373,14 +373,16 @@ impl DrainJoin {
         let mut stats = DrainStats::default();
         if self.inbox.is_none() {
             tracing::error!("ExecPath unbound — drain try_send refused (no invented key)");
-            stats.skipped_exec = stats.skipped_exec.saturating_add(
-                u64::try_from(cands.len()).unwrap_or(u64::MAX),
-            );
+            stats.skipped_exec = stats
+                .skipped_exec
+                .saturating_add(u64::try_from(cands.len()).unwrap_or(u64::MAX));
             return stats;
         }
         let gas_failed = match self.select.as_ref() {
             None => {
-                tracing::error!("select inputs absent — skip (no invented header gas / wrap / failed gas)");
+                tracing::error!(
+                    "select inputs absent — skip (no invented header gas / wrap / failed gas)"
+                );
                 stats.skipped_select = stats.skipped_select.saturating_add(1);
                 return stats;
             }
@@ -477,13 +479,17 @@ impl DrainJoin {
             }
         };
         for plan in &plans {
+            let Some(bid) = plan_bid(plan, ready, &self.assemble) else {
+                stats.skipped_job = stats.skipped_job.saturating_add(1);
+                continue;
+            };
             let assembled = match assemble(
                 std::slice::from_ref(plan),
                 &ready.cfg,
                 &book,
                 &self.assemble,
                 &ready.validate,
-                &ready.bid,
+                &bid,
                 price,
                 &ready.gas,
                 ready.flags,
@@ -502,7 +508,7 @@ impl DrainJoin {
                     stats.skipped_job = stats.skipped_job.saturating_add(1);
                     continue;
                 };
-                match self.finish_job(lead, &a, plan.hop_and_wrap_gas, tip, timestamp) {
+                match self.finish_job(lead, &a, plan.hop_and_wrap_gas, tip, timestamp, &bid) {
                     Finish::Sent => stats.jobs_sent = stats.jobs_sent.saturating_add(1),
                     Finish::Sim => stats.skipped_sim = stats.skipped_sim.saturating_add(1),
                     Finish::Job => stats.skipped_job = stats.skipped_job.saturating_add(1),
@@ -547,6 +553,7 @@ impl DrainJoin {
         hop_and_wrap_gas: u64,
         tip: u64,
         timestamp: u64,
+        bid: &Bid,
     ) -> Finish {
         let Some(inbox) = self.inbox.as_ref() else {
             tracing::error!("inbox gone — try_send refused");
@@ -616,7 +623,7 @@ impl DrainJoin {
             operator,
             self.chain_id,
             tip,
-            &ready.bid,
+            bid,
         ) else {
             return Finish::Job;
         };
@@ -632,12 +639,7 @@ impl DrainJoin {
 impl AfterBlock for DrainJoin {
     fn after_block(&mut self, ctx: AfterBlockCtx<'_>) {
         self.publish_flash();
-        self.observe_parent_header(
-            ctx.base_fee_per_gas,
-            ctx.gas_used,
-            ctx.gas_limit,
-            ctx.block,
-        );
+        self.observe_parent_header(ctx.base_fee_per_gas, ctx.gas_used, ctx.gas_limit, ctx.block);
         self.refresh_select(ctx.gas_limit);
         let tip = ctx.store.tip();
         let ts = ctx.timestamp;
@@ -828,7 +830,44 @@ fn assets_of(c: &Candidate) -> Option<(AssetId, AssetId)> {
     Some((seize.asset, repay.asset))
 }
 
-/// Learning-phase bid from a configured cap. Missing config → None.
+/// One `bidBps` for this plan. A schedule resolves every leg; mixed cells
+/// are a skip. No schedule uses the injected bid.
+fn plan_bid(plan: &SelectedPlan, ready: &SelectReady, view: &dyn MarketView) -> Option<Bid> {
+    if let Some(sched) = ready.cfg.bids {
+        let mut chosen: Option<BidConfig> = None;
+        for g in &plan.groups {
+            for s in &g.legs {
+                let per = match view.per_eth(s.leg.debt) {
+                    Some(p) if !p.is_zero() => p,
+                    _ => {
+                        tracing::error!("per_eth missing — plan not bid");
+                        return None;
+                    }
+                };
+                let size = match debt_notional_eth_wei(s.leg.s, per) {
+                    Some(sz) => sz,
+                    None => {
+                        tracing::error!("debt notional refused — plan not bid");
+                        return None;
+                    }
+                };
+                let cfg = *sched.config(s.protocol, size);
+                if let Some(prev) = chosen {
+                    if prev != cfg {
+                        tracing::error!("plan mixes bid cells — skip");
+                        return None;
+                    }
+                } else {
+                    chosen = Some(cfg);
+                }
+            }
+        }
+        return learning_bid(&chosen?, ready.gas.priority_fee_wei);
+    }
+    ready.bid
+}
+
+/// Bid from one cell. Draw is 0. Missing priority → None.
 #[must_use]
 pub fn learning_bid(cfg: &BidConfig, priority_wei: u128) -> Option<Bid> {
     match bid(cfg, 0, priority_wei) {
@@ -859,7 +898,6 @@ mod tests {
     use crate::assemble_view::ProcessAssembleView;
     use crate::exec_bind::{bind, ProcessSecrets};
     use crate::lease::SubmitLease;
-    use liq_node::CollapsedDirty;
     use alloy_primitives::{address, b256, Address, U256};
     use liq_engine::TriggerCause;
     use liq_exec::builders::{leak_str, BuilderEndpoint, BuilderSet};
@@ -869,6 +907,7 @@ mod tests {
     use liq_exec::submit::{LiveSendBits, SubmitEnabled};
     use liq_exec::template::PrecomputedSigner;
     use liq_flash::{CostModel, FlashSource, HeldAsset, MorphoBlue};
+    use liq_node::CollapsedDirty;
     use liq_oracle::mevshare::SearcherKey;
     use liq_plan::{ValidateCtx, FLAG_SWEEP};
     use liq_protocol::{
@@ -1007,6 +1046,19 @@ mod tests {
         [366_332, 355_632, 460_032, 370_435, 384_134]
     }
 
+    fn flat_schedule() -> BidSchedule {
+        let c = BidConfig::new(9_900, 9_900, 0, 0).unwrap();
+        BidSchedule {
+            size_cut_wei: U256::from(3_000_000_000_000_000_000u128),
+            aave_v3: ProtocolId(1),
+            aave_v4: ProtocolId(2),
+            aave_below: c,
+            aave_above: c,
+            other_below: c,
+            other_above: c,
+        }
+    }
+
     fn select_ready(weth: Address) -> SelectReady {
         let bcfg = BidConfig::new(9_900, 9_900, 0, 0).unwrap();
         let bd = bid(&bcfg, 0, 1).unwrap();
@@ -1023,13 +1075,14 @@ mod tests {
                 liq_gas: 80_000,
                 over_borrow: U256::from(1u64),
                 budget: SolveBudget::default(),
+                bids: None,
             },
             gas: GasTerms {
                 base_fee_wei: 1,
                 priority_fee_wei: 0,
                 out_per_eth: e18(1),
             },
-            bid: bd,
+            bid: Some(bd),
             validate: ValidateCtx {
                 weth,
                 v4_underlying: Vec::new(),
@@ -1267,14 +1320,8 @@ mod tests {
     fn hot_path_source_has_no_await_or_block_on() {
         let src = include_str!("drain.rs");
         let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
-        assert!(
-            !prod.contains(".await"),
-            "hot drain must not .await"
-        );
-        assert!(
-            !prod.contains("block_on"),
-            "hot drain must not block_on"
-        );
+        assert!(!prod.contains(".await"), "hot drain must not .await");
+        assert!(!prod.contains("block_on"), "hot drain must not block_on");
     }
 
     #[test]
@@ -1410,7 +1457,7 @@ mod tests {
             .unwrap(),
         )
         .with_fee(fee(0))
-        .with_bid_cfg(BidConfig::new(9_900, 9_900, 0, 0));
+        .with_bid_cfg(Some(flat_schedule()));
         assert!(j.select.is_none());
         j.refresh_select(15_000_000);
         let ready = j.select.expect("SelectReady must form from bind+fee+bid");
@@ -1536,7 +1583,14 @@ mod tests {
     fn absent_base_fee_skips_observe_fee_none() {
         let store = tiny_store();
         let dirty = CollapsedDirty::default();
-        let mut j = DrainJoin::live_noop(flash(), routes(), ProcessAssembleView::empty(), None, None, 1);
+        let mut j = DrainJoin::live_noop(
+            flash(),
+            routes(),
+            ProcessAssembleView::empty(),
+            None,
+            None,
+            1,
+        );
         j.oracle = liq_router::GasOracle::with_priority_cap(4);
         assert!(j.oracle.as_ref().and_then(|o| o.base_fee_wei()).is_none());
         j.after_block(after_ctx(&store, &dirty, 0, 15_000_000, 45_000_000));
@@ -1551,7 +1605,14 @@ mod tests {
     fn observed_base_fee_records_parent_fee_stays_none() {
         let store = tiny_store();
         let dirty = CollapsedDirty::default();
-        let mut j = DrainJoin::live_noop(flash(), routes(), ProcessAssembleView::empty(), None, None, 1);
+        let mut j = DrainJoin::live_noop(
+            flash(),
+            routes(),
+            ProcessAssembleView::empty(),
+            None,
+            None,
+            1,
+        );
         j.oracle = liq_router::GasOracle::with_priority_cap(4);
         j.after_block(after_ctx(
             &store,
@@ -1566,10 +1627,10 @@ mod tests {
             "observed base fee must leave a parent sample"
         );
         assert_eq!(o.block_gas_limit(), Some(45_000_000));
-        assert!(
-            j.fee.is_none(),
-            "empty priority window must keep fee None (no fabricated sample)"
-        );
+        let fee = j.fee.expect("observed base fee quotes 1 gwei priority");
+        assert_eq!(fee.priority_wei, liq_router::PRIORITY_FEE_WEI);
+        assert_eq!(fee.modest_priority_wei, liq_router::PRIORITY_FEE_WEI);
+        assert_ne!(fee.next_base_fee, 0);
     }
 
     #[test]

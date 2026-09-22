@@ -1,5 +1,5 @@
-//! Gas oracle (GUIDE 12 §6): exact next base fee, header gas limit,
-//! rolling priority-fee percentile.
+//! Gas oracle (GUIDE 12 §6): exact next base fee and header gas limit.
+//! Priority is not estimated. Quotes use [`PRIORITY_FEE_WEI`] (1 gwei).
 //!
 //! Next base fee is a thin call into [`crate::band::next_base_fee`] (WP
 //! 12A-1). This module does not re-derive EIP-1559. The header gas limit
@@ -9,8 +9,12 @@ use alloy_primitives::U256;
 
 /// Default ring length for observed effective priority fees. Construction
 /// still takes an explicit cap; this is a documented starting size, not a
-/// gas-limit stand-in.
+/// gas-limit stand-in. The ring is not read when building a fee quote.
 pub const DEFAULT_PRIORITY_CAP: usize = 256;
+
+/// Fixed priority fee, wei per gas. 1 gwei. Contested and modest paths
+/// both use this. The percentile ring is not a quote input.
+pub const PRIORITY_FEE_WEI: u128 = 1_000_000_000;
 
 /// Fail-closed gas-oracle errors. Nothing is estimated in place of a
 /// missing header or an empty sample window.

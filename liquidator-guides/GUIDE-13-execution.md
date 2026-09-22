@@ -297,10 +297,9 @@ for the base-fee moves the inclusion window can see: `base_fee(n+1)` is exact,
 and each further block compounds, so spanning `maxBlock = block + k` needs
 `base_fee(n+1) · 1.125^k` (k = 1 → +12.5 %, k = 2 → +26.6 %, k = 3 → +42.4 %),
 rounded up — not a flat 12.5 %. Under-headroom makes the bundle invalid in
-exactly the later blocks you paid the span for; `maxPriorityFeePerGas` from the
-rolling percentile on standalone sends, and at minimum inside a bundle where the
-bid carries the value. Never hard-code either, and never reuse a value computed
-for a previous block.
+exactly the later blocks you paid the span for. `maxPriorityFeePerGas` is
+1 gwei on standalone sends and inside a bundle. Never reuse a base fee
+computed for a previous block, and do not add the 1 gwei into `maxFeePerGas`.
 
 **Hot path → executor: bounded MPSC, never a blocking call.** The engine hands
 off a verified bundle and returns immediately. The hot thread never awaits, never

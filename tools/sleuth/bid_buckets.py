@@ -11,12 +11,11 @@ Mixed / unpriceable leftovers are recorded with drop_reason, never filled.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from collections import defaultdict
 from pathlib import Path
 import socket
@@ -52,11 +51,13 @@ LOOKBACK_BLOCKS = 400_000
 PAGE = 20_000
 
 OUT = Path(__file__).resolve().parent / "out"
-SLEEP = 0.12
+# Floor until a response advertises a budget. Not a second sleep on top of it.
+SLEEP = 0.2
 # Blockscout keyset pages are 50 items. 200 pages = 10_000 rows; beyond that
 # the tree is still incomplete and must drop, not reconstruct from a prefix.
 MAX_PAGES = 200
-PAGE_TIMEOUT = 30.0
+PAGE_TIMEOUT = 15.0
+GET_RETRIES = 4
 
 # Prior run stubs: first internals page was partial, or the GET died.
 # Refetch after the walker exists. Do not refetch priced/unpriced reconstructs.
@@ -82,40 +83,167 @@ def cache_usable(rec: dict) -> bool:
     return True
 
 
-def get(url: str, retries: int = 20, timeout: float = 8) -> object:
-    last = None
-    for i in range(retries):
+_HOST = "eth.blockscout.com"
+_conn: http.client.HTTPSConnection | None = None
+_pace_interval = SLEEP
+_pace_next = 0.0
+
+
+def _seconds_until(headers: dict[str, str]) -> float | None:
+    """Seconds to wait. Absolute reset timestamps are not treated as durations."""
+    retry = headers.get("retry-after")
+    if retry is not None:
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "liq-sleuth/1"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
+            return max(0.0, float(retry))
+        except ValueError:
+            return None
+    raw = headers.get("x-ratelimit-reset") or headers.get("ratelimit-reset")
+    if raw is None:
+        return None
+    try:
+        v = float(raw)
+    except ValueError:
+        return None
+    now = time.time()
+    if v > 1e12:
+        return max(0.0, v / 1000.0 - now)
+    if v > 1e9:
+        return max(0.0, v - now)
+    return max(0.0, v)
+
+
+def _pace_wait() -> None:
+    global _pace_next
+    now = time.monotonic()
+    if now < _pace_next:
+        time.sleep(_pace_next - now)
+    _pace_next = time.monotonic() + _pace_interval
+
+
+def _pace_observe(status: int, headers: dict[str, str]) -> float | None:
+    """Tighten the gap from the advertised budget. 429 returns how long to sit out."""
+    global _pace_interval
+    limit = headers.get("x-ratelimit-limit") or headers.get("ratelimit-limit")
+    remaining_raw = headers.get("x-ratelimit-remaining") or headers.get("ratelimit-remaining")
+    try:
+        lim = float(limit) if limit is not None else None
+    except ValueError:
+        lim = None
+    try:
+        remaining = float(remaining_raw) if remaining_raw is not None else None
+    except ValueError:
+        remaining = None
+    window = _seconds_until(headers)
+    if (
+        status != 429
+        and lim is not None
+        and lim > 0
+        and window is not None
+        and window > 0
+        and (remaining is None or remaining > 1)
+    ):
+        budget = remaining if remaining is not None else lim
+        # Spread the remaining budget across the rest of the window. Floor 20/s.
+        _pace_interval = max(window / max(budget, 1.0) * 1.25, 0.05)
+    if status == 429 or (remaining is not None and remaining <= 1):
+        _pace_interval = min(1.0, max(_pace_interval * 2, SLEEP))
+        wait = _seconds_until(headers)
+        if wait is None:
+            wait = 2.0
+        return min(wait + 0.25, 30.0)
+    return None
+
+
+def _http_get(url: str, timeout: float) -> tuple[int, dict[str, str], bytes]:
+    """One keep-alive GET. A dead socket is reopened once, then the error propagates."""
+    global _conn
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.netloc and parsed.netloc != _HOST:
+        raise RuntimeError(f"unexpected host {parsed.netloc}")
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    last: Exception | None = None
+    for attempt in (1, 2):
+        if _conn is None:
+            _conn = http.client.HTTPSConnection(_HOST, timeout=timeout)
+        _conn.timeout = timeout
+        try:
+            _conn.request(
+                "GET",
+                path,
+                headers={
+                    "User-Agent": "liq-sleuth/1",
+                    "Accept": "application/json",
+                    "Connection": "keep-alive",
+                },
+            )
+            resp = _conn.getresponse()
+            body = resp.read()
+            headers = {k.lower(): v for k, v in resp.getheaders()}
+            return resp.status, headers, body
+        except Exception as e:  # noqa: BLE001 — reconnect once; caller retries
             last = e
-            wait = 0.4 * (2 ** min(i, 6))
-            if e.code == 429:
-                reset = e.headers.get("x-ratelimit-reset")
-                if reset is not None:
-                    try:
-                        wait = max(wait, (int(reset) / 1000.0) + 0.75)
-                    except ValueError:
-                        wait = max(wait, 8.0)
-                print(f"429 sleep {wait:.1f}s {url[:80]}", flush=True)
-                time.sleep(wait)
-                continue
-            time.sleep(wait)
-        except (TimeoutError, socket.timeout, urllib.error.URLError) as e:
+            try:
+                _conn.close()
+            except Exception:
+                pass
+            _conn = None
+            if attempt == 2:
+                raise
+    raise RuntimeError(f"GET transport {url}: {last}")
+
+
+def get(url: str, retries: int = GET_RETRIES, timeout: float = PAGE_TIMEOUT) -> object:
+    last: Exception | None = None
+    attempts = 0
+    rate_waits = 0
+    while attempts < retries:
+        _pace_wait()
+        try:
+            status, headers, body = _http_get(url, timeout)
+        except (TimeoutError, socket.timeout, OSError, http.client.HTTPException) as e:
             last = e
-            wait = 0.4 * (2 ** min(i, 6))
+            attempts += 1
+            wait = min(8.0, 0.5 * (2 ** (attempts - 1)))
             print(
-                f"timeout {type(e).__name__} try={i+1} sleep {wait:.1f}s {url[:80]}",
+                f"timeout {type(e).__name__} try={attempts}/{retries} sleep {wait:.1f}s {url[:80]}",
                 flush=True,
             )
             time.sleep(wait)
             continue
-        except Exception as e:  # noqa: BLE001 — log and retry; never invent
+        extra = _pace_observe(status, headers)
+        if status == 429:
+            rate_waits += 1
+            wait = extra if extra is not None else 2.0
+            print(f"429 sleep {wait:.1f}s {url[:80]}", flush=True)
+            if rate_waits > 8:
+                raise RuntimeError(f"GET rate-limited {url}")
+            time.sleep(wait)
+            continue
+        if status in (500, 502, 503, 504):
+            last = RuntimeError(f"HTTP {status}")
+            attempts += 1
+            time.sleep(min(8.0, 0.5 * (2 ** (attempts - 1))))
+            continue
+        if status != 200:
+            raise RuntimeError(f"GET failed {url}: HTTP {status}")
+        if extra:
+            time.sleep(extra)
+        try:
+            return json.loads(body.decode("utf-8"))
+        except json.JSONDecodeError as e:
             last = e
-            time.sleep(0.4 * (2 ** min(i, 6)))
+            attempts += 1
+            time.sleep(min(8.0, 0.5 * (2 ** (attempts - 1))))
     raise RuntimeError(f"GET failed {url}: {last}")
+
+
+def save_cache(path: Path, cache: dict) -> None:
+    """Replace the cache only after the new body is complete. A kill mid-write keeps the previous file."""
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(cache), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def encode_page_params(params: dict, extra: dict | None = None) -> str:
@@ -157,7 +285,6 @@ def fetch_pages(
             qs = ""
         full = f"{url}?{qs}" if qs else url
         raw = get(full, timeout=timeout)
-        time.sleep(SLEEP)
         if isinstance(raw, list):
             if pages != 1 or params is not None:
                 raise RuntimeError(f"list body after page 1 {url}")
@@ -268,7 +395,6 @@ def fetch_logs() -> list[dict]:
                 f"&address={pool}&topic0={t0}"
             )
             data = get(url)
-            time.sleep(SLEEP)
             if data.get("message") not in ("OK", "No records found") and data.get("status") not in (
                 "1",
                 "0",
@@ -568,64 +694,73 @@ def process(logs: list[dict], cache: dict, max_new: int | None = None) -> tuple[
     remaining = False
     cache_path = OUT / "tx_cache.json"
     total = len(by_tx)
+    miners: dict[int, str | None] = {}
     for txh, evs in by_tx.items():
         n += 1
         if txh in cache and cache_usable(cache[txh]):
             rec = cache[txh]
-        else:
-            if max_new is not None and new >= max_new:
-                remaining = True
-                break
-            new += 1
-            print(f"fetch {n}/{total} {txh[:18]}", flush=True)
-            try:
-                tx = get(f"{BASE}/api/v2/transactions/{txh}")
-                time.sleep(SLEEP)
-                internals, internal_pages = fetch_internals(txh)
-                if bool(tx.get("token_transfers_overflow")):
-                    transfers, _tpages = fetch_token_transfers(txh)
-                    tx = dict(tx)
-                    tx["token_transfers"] = transfers
-                    tx["token_transfers_overflow"] = False
-                blk = tx.get("block_number")
-                miner = None
-                if blk is not None:
-                    block = get(f"{BASE}/api/v2/blocks/{blk}")
-                    time.sleep(SLEEP)
+            out.append(rec)
+            continue
+        if max_new is not None and new >= max_new:
+            remaining = True
+            break
+        new += 1
+        t0 = time.perf_counter()
+        print(f"fetch {n}/{total} {txh[:18]}", flush=True)
+        try:
+            tx = get(f"{BASE}/api/v2/transactions/{txh}")
+            internals, internal_pages = fetch_internals(txh)
+            if bool(tx.get("token_transfers_overflow")):
+                transfers, _tpages = fetch_token_transfers(txh)
+                tx = dict(tx)
+                tx["token_transfers"] = transfers
+                tx["token_transfers_overflow"] = False
+            blk = tx.get("block_number")
+            miner = None
+            if blk is not None:
+                blk_i = int(blk)
+                if blk_i in miners:
+                    miner = miners[blk_i]
+                else:
+                    block = get(f"{BASE}/api/v2/blocks/{blk_i}")
                     m = block.get("miner") if isinstance(block, dict) else None
                     miner = party_hash(m) if m else None
-                # one reconstruct per tx (first event); extra events recorded
-                rec = reconstruct(evs[0]["family"], evs[0]["ev"], tx, internals, miner)
-                rec["tx"] = txh
-                rec["family"] = evs[0]["family"]
-                rec["n_liq_events"] = len(evs)
-                rec["internal_n"] = len(internals)
-                rec["internal_pages"] = internal_pages
-                if len(evs) > 1:
-                    rec["multi_liq"] = True
-                cache[txh] = rec
-            except IncompletePages as e:
-                rec = {
-                    "tx": txh,
-                    "family": evs[0]["family"],
-                    "drop_reason": (
-                        "internals_paginated_incomplete"
-                        if e.kind == "internals"
-                        else "token_transfers_overflow_mixed"
-                    ),
-                }
-                cache[txh] = rec
-            except Exception as e:  # noqa: BLE001
-                rec = {
-                    "tx": txh,
-                    "family": evs[0]["family"],
-                    "drop_reason": f"fetch_error:{type(e).__name__}",
-                }
-                cache[txh] = rec
-            cache_path.write_text(json.dumps(cache))
+                    miners[blk_i] = miner
+            # one reconstruct per tx (first event); extra events recorded
+            rec = reconstruct(evs[0]["family"], evs[0]["ev"], tx, internals, miner)
+            rec["tx"] = txh
+            rec["family"] = evs[0]["family"]
+            rec["n_liq_events"] = len(evs)
+            rec["internal_n"] = len(internals)
+            rec["internal_pages"] = internal_pages
+            if len(evs) > 1:
+                rec["multi_liq"] = True
+            cache[txh] = rec
+        except IncompletePages as e:
+            rec = {
+                "tx": txh,
+                "family": evs[0]["family"],
+                "drop_reason": (
+                    "internals_paginated_incomplete"
+                    if e.kind == "internals"
+                    else "token_transfers_overflow_mixed"
+                ),
+            }
+            cache[txh] = rec
+        except Exception as e:  # noqa: BLE001
+            rec = {
+                "tx": txh,
+                "family": evs[0]["family"],
+                "drop_reason": f"fetch_error:{type(e).__name__}",
+            }
+            cache[txh] = rec
+        save_cache(cache_path, cache)
+        dt = time.perf_counter() - t0
+        print(
+            f"wrote {n}/{total} {dt:.1f}s {txh[:18]} drop={rec.get('drop_reason')} cache={len(cache)}",
+            flush=True,
+        )
         out.append(rec)
-        if n % 50 == 0:
-            print(f"txs {n}/{total} last={txh[:10]} drop={rec.get('drop_reason')} cache={len(cache)}", flush=True)
     return out, remaining
 
 
@@ -684,7 +819,7 @@ def main() -> None:
         logs_path.write_text(json.dumps(logs))
         print(f"wrote {len(logs)} logs", flush=True)
     rows, remaining = process(logs, cache, max_new=max_new)
-    cache_path.write_text(json.dumps(cache))
+    save_cache(cache_path, cache)
     if remaining:
         print(f"batch done cache={len(cache)} remaining=yes", flush=True)
         return
