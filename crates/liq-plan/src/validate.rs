@@ -61,7 +61,11 @@ pub fn validate(p: &BatchPlan, ctx: &ValidateCtx) -> Result<()> {
                     check_morpho(ctx, *market_id, l.market, g.debt_asset, l.collateral_asset)?;
                 }
                 (ExecutorAdapter::MorphoBlue, _) => return Err(EncodeError::MorphoTailShape),
-                (ExecutorAdapter::EulerV2, LegTail::Euler { min_yield: _ }) => {}
+                (ExecutorAdapter::EulerV2, LegTail::Euler { min_yield: _, vault }) => {
+                    if vault.is_zero() {
+                        return Err(EncodeError::EulerZeroVault);
+                    }
+                }
                 (ExecutorAdapter::EulerV2, _) => return Err(EncodeError::EulerTailShape),
                 (ExecutorAdapter::SiloV2, _) => return Err(EncodeError::SiloTailShape),
                 (ExecutorAdapter::LiquityV2, LegTail::Liquity { trove_id }) => {

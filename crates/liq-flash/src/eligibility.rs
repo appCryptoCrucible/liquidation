@@ -201,6 +201,7 @@ mod tests {
             curve: BonusCurve::Static {
                 bonus: bps(bonus_bps),
             },
+            call_target: alloy_primitives::Address::ZERO,
         }
     }
 

@@ -147,6 +147,7 @@ mod tests {
                 curve: BonusCurve::Static {
                     bonus: Ray::from_raw(RAY / U256::from(20u64)),
                 },
+                call_target: alloy_primitives::Address::ZERO,
             }]),
         }
     }

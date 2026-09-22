@@ -123,6 +123,7 @@ pub(crate) fn quote(
                     max_seize: underlying,
                     bonus,
                     curve,
+                    call_target: alloy_primitives::Address::ZERO,
                 });
             }
         }

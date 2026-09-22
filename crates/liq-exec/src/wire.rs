@@ -94,8 +94,9 @@ pub enum LegTail {
     },
     /// Morpho Blue market `Id`; `idToMarketParams` on-chain.
     Morpho { market_id: B256 },
-    /// Euler V2 `liquidate(…, minYieldBalance)` — quoted yield shares.
-    Euler { min_yield: U256 },
+    /// Euler V2 `liquidate(…, minYieldBalance)` — quoted yield shares, then
+    /// the collateral vault. `LiqLeg.collateral_asset` stays the underlying.
+    Euler { min_yield: U256, vault: Address },
     /// Liquity V2 `batchLiquidateTroves` — full uint256 trove id.
     Liquity { trove_id: U256 },
     /// Fluid T1 `liquidate(…, colPerUnitDebt_, …)` — quoted **1e18** min
@@ -250,6 +251,7 @@ pub fn decode_liq_leg(b: &[u8], o: usize) -> Result<(LiqLeg, usize)> {
         },
         ExecutorAdapter::EulerV2 => LegTail::Euler {
             min_yield: u256_at(b, tail_offset)?,
+            vault: addr_at(b, add(tail_offset, 32)?)?,
         },
         ExecutorAdapter::LiquityV2 => LegTail::Liquity {
             trove_id: u256_at(b, tail_offset)?,
@@ -559,7 +561,7 @@ mod tests {
         assert_eq!(tail_len(0).unwrap(), 0);
         assert_eq!(tail_len(1).unwrap(), 4);
         assert_eq!(tail_len(2).unwrap(), 32);
-        assert_eq!(tail_len(3).unwrap(), 32);
+        assert_eq!(tail_len(3).unwrap(), 52);
         assert_eq!(tail_len(4).unwrap(), 0);
         assert_eq!(tail_len(5).unwrap(), 32);
         assert_eq!(tail_len(6).unwrap(), 32);
@@ -570,18 +572,22 @@ mod tests {
 
     #[test]
     fn decode_10e_tails() {
-        let mut b = vec![0u8; LIQ_LEG_LEN + 32];
+        let mut b = vec![0u8; LIQ_LEG_LEN + 52];
         b[0] = 3; // Euler
         b[LIQ_LEG_LEN + 31] = 7;
+        b[LIQ_LEG_LEN + 51] = 0xAB;
         let (leg, next) = decode_liq_leg(&b, 0).unwrap();
         assert_eq!(leg.adapter, ExecutorAdapter::EulerV2);
+        let mut vault = [0u8; 20];
+        vault[19] = 0xAB;
         assert_eq!(
             leg.tail,
             LegTail::Euler {
-                min_yield: U256::from(7u64)
+                min_yield: U256::from(7u64),
+                vault: Address::from(vault),
             }
         );
-        assert_eq!(next, LIQ_LEG_LEN + 32);
+        assert_eq!(next, LIQ_LEG_LEN + 52);
 
         let mut c = vec![0u8; LIQ_LEG_LEN + 21];
         c[0] = 8; // Compound

@@ -574,6 +574,7 @@ mod tests {
                     max_seize,
                     bonus,
                     curve: BonusCurve::Static { bonus },
+                    call_target: Address::ZERO,
                 })
                 .collect(),
         }
@@ -742,7 +743,7 @@ mod tests {
         assert_eq!(l5.seized, seized_for(e18(50), &terms()).unwrap());
     }
 
-    /// Flash fee on `s` (Aave 5 bps half-up). Independent:
+    /// Flash fee on `s` (Aave 5 bps, `percentMulCeil`). Independent:
     /// `fee_amount(Aave, s, 5)`.
     #[test]
     fn flash_fee_is_charged_on_s() {
@@ -775,7 +776,7 @@ mod tests {
         assert_eq!(
             fee,
             e18(1_000) * U256::from(5u64) / U256::from(10_000u64),
-            "1_000e18 at 5 bps is 0.5e18 (half-up equals exact here)"
+            "1_000e18 at 5 bps is 0.5e18 (exact, so ceil does not add a wei)"
         );
     }
 

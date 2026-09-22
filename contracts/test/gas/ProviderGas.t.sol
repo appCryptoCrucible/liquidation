@@ -95,7 +95,7 @@ contract ProviderGasTest is ExecutorTestBase {
         bytes memory plan = bytes.concat(
             PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
             PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 1),
-            PB.legEuler(address(euler), borrower, address(coll), REPAY, 1),
+            PB.legEuler(address(euler), borrower, address(coll), REPAY, 1, address(coll)),
             PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, OWED),
             PB.profit(1, _profitLeg())
         );

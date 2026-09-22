@@ -13,7 +13,7 @@ use smallvec::SmallVec;
 
 use crate::health::{finish, terms};
 use crate::layout::{CollRow, UserExtra, DEBT_SLOT, UNMAPPED_ASSET};
-use crate::math::{asset_unit, bonus_ray, max_liquidation, value_wad};
+use crate::math::{addr_from, asset_unit, bonus_ray, max_liquidation, value_wad};
 
 #[inline]
 fn cell(v: &[u128], slot: u16) -> u128 {
@@ -89,6 +89,7 @@ pub(crate) fn quote(
                 max_seize: yield_bal,
                 bonus,
                 curve,
+                call_target: addr_from(coll.vault),
             },
             repay,
             seize_value,

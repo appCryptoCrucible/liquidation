@@ -86,8 +86,9 @@ fn encode_liq(b: &mut Vec<u8>, l: &LiqLeg) -> Result<()> {
         (ExecutorAdapter::MorphoBlue, LegTail::Morpho { market_id }) => {
             b.extend_from_slice(market_id.as_slice());
         }
-        (ExecutorAdapter::EulerV2, LegTail::Euler { min_yield }) => {
+        (ExecutorAdapter::EulerV2, LegTail::Euler { min_yield, vault }) => {
             b.extend_from_slice(&min_yield.to_be_bytes::<32>());
+            b.extend_from_slice(vault.as_slice());
         }
         (ExecutorAdapter::LiquityV2, LegTail::Liquity { trove_id }) => {
             b.extend_from_slice(&trove_id.to_be_bytes::<32>());

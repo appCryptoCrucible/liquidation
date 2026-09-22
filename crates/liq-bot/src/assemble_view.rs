@@ -113,6 +113,15 @@ impl ProcessAssembleView {
         match pins.adapter {
             ExecutorAdapter::EulerV2 => {
                 pins.euler_min_yield = Some(euler_min_yield_from_quote(quote, seize)?);
+                let target = quote
+                    .seize_options
+                    .get(seize)
+                    .ok_or(AssembleError::Missing("euler seize"))?
+                    .call_target;
+                if target.is_zero() {
+                    return Err(AssembleError::Missing("euler collateral vault"));
+                }
+                pins.euler_collateral_vault = Some(target);
             }
             ExecutorAdapter::Fluid => {
                 pins.fluid_col_per_unit_debt =
@@ -201,6 +210,7 @@ mod tests {
             borrower: address!("0x00000000000000000000000000000000000000b1"),
             protocol_pull: None,
             euler_min_yield: None,
+            euler_collateral_vault: None,
             liquity_trove_id: None,
             fluid_t1: None,
             fluid_col_per_unit_debt: None,
@@ -287,12 +297,23 @@ mod tests {
                 curve: BonusCurve::Static {
                     bonus: Ray::from_raw(RAY / U256::from(20u64)),
                 },
+                call_target: address!("0x00000000000000000000000000000000000000e1"),
             }]),
         };
         let mut pins = empty_pins(ExecutorAdapter::EulerV2);
+        let zero = q.clone();
+        let mut zero_q = zero;
+        zero_q.seize_options[0].call_target = Address::ZERO;
+        assert!(matches!(
+            ProcessAssembleView::apply_quote_derived(&mut pins, &zero_q, 0, 0),
+            Err(AssembleError::Missing("euler collateral vault"))
+        ));
         ProcessAssembleView::apply_quote_derived(&mut pins, &q, 0, 0).unwrap();
         match leg_meta_from_pins(&pins).unwrap().tail {
-            LegTail::Euler { min_yield } => assert_eq!(min_yield, U256::from(9u64)),
+            LegTail::Euler { min_yield, vault } => {
+                assert_eq!(min_yield, U256::from(9u64));
+                assert_eq!(vault, address!("0x00000000000000000000000000000000000000e1"));
+            }
             other => panic!("expected Euler tail, got {other:?}"),
         }
     }

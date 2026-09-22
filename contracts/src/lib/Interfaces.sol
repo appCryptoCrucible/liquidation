@@ -127,10 +127,31 @@ interface IDssFlash {
 /// `IEVault` liquidation module pin `bfb325a6`. Call the **debt** vault.
 /// `collateral` is the collateral vault (shares), not the underlying.
 interface IEVault {
+    function EVC() external view returns (address);
     function checkLiquidation(address liquidator, address violator, address collateral)
         external view returns (uint256 maxRepay, uint256 maxYield);
     function liquidate(address violator, address collateral, uint256 repayAssets, uint256 minYieldBalance)
         external;
+    /// Pulls `amount` of underlying from the caller and burns `receiver`'s debt.
+    /// `type(uint256).max` repays the full owed balance.
+    function repay(uint256 amount, address receiver) external returns (uint256);
+    /// Releases this vault as the caller's controller. Only valid with no debt.
+    function disableController() external;
+    /// `amount` is shares (`Vault.sol` `toShares`). Returns assets. Pin `bfb325a6`.
+    function redeem(uint256 amount, address receiver, address owner) external returns (uint256);
+}
+
+/// Ethereum Vault Connector. `batch` of a self-call uses delegatecall so
+/// `msg.sender` stays the executor (`enableController`'s owner check).
+interface IEVC {
+    struct BatchItem {
+        address targetContract;
+        address onBehalfOfAccount;
+        uint256 value;
+        bytes data;
+    }
+    function batch(BatchItem[] calldata items) external payable;
+    function enableController(address account, address vault) external payable;
 }
 
 // ───────────────────────────── Silo V2 ──────────────────────────────────
@@ -183,6 +204,9 @@ interface ICreditFacadeV3 {
 /// never `underlying()` on-chain.
 interface ICToken {
     function comptroller() external view returns (address);
+    /// `CTokenInterfaces.redeem` pin `a3214f67`. Same selector on CEther and CErc20.
+    /// Returns 0 on success. CEther sends ETH; CErc20 sends `underlying`.
+    function redeem(uint256 redeemTokens) external returns (uint256);
 }
 
 interface IComptroller {

@@ -6,7 +6,7 @@ import {Plan, FlashGroup, LiqLeg, SwapLeg, PlanDecoder} from "./lib/PlanDecoder.
 import {
     IERC20, IWETH, IAavePool, IAaveV4Spoke, IMorpho, MarketParams,
     IUniV3Pool, IPoolManager, IDssFlash,
-    IEVault, ISiloHook, ITroveManager, IFluidT1, ICreditFacadeV3, PriceUpdate,
+    IEVault, IEVC, ISiloHook, ITroveManager, IFluidT1, ICreditFacadeV3, PriceUpdate,
     ICToken, IComptroller, ICErc20, ICEther
 } from "./lib/Interfaces.sol";
 
@@ -125,6 +125,9 @@ contract Executor {
     error LegMismatch();
     error FlashLoanRejected();
     error ZeroAddress();
+    /// Seized cTokens did not redeem. The whole `execute` reverts so the
+    /// liquidation and the flash roll back together.
+    error RedeemFailed(address token, uint256 code);
 
     constructor(
         address operator_, address profitSink_,
@@ -561,15 +564,17 @@ contract Executor {
     }
 
     /// Euler V2 `IEVault.liquidate(violator, collateral, repayAssets, minYieldBalance)`
-    /// pin `bfb325a6`. Target = debt vault (`market`). `collateralAsset` is
-    /// the collateral vault. Guard: `checkLiquidation` returns `(0,0)` when
-    /// healthy; HF==1 is liquidatable. Seized assets are vault shares — the
-    /// ABI has no receive-underlying flag.
+    /// pin `bfb325a6`. Target = debt vault (`market`). Tail vault is the
+    /// collateral vault (shares). `collateralAsset` is the underlying the
+    /// swaps sell. Guard: `checkLiquidation` returns `(0,0)` when healthy;
+    /// HF==1 is liquidatable. The ABI has no receive-underlying flag, so the
+    /// seized shares are redeemed before the swap.
     function _liquidateEulerV2(address debtAsset, LiqLeg memory l, bytes calldata plan)
         internal returns (bool ok)
     {
-        uint256 minYield = plan.tailU256(l.tailOffset);
-        try IEVault(l.market).checkLiquidation(address(this), l.borrower, l.collateralAsset)
+        (uint256 minYield, address vault) = plan.tailEuler(l.tailOffset);
+        if (vault == address(0)) return false;
+        try IEVault(l.market).checkLiquidation(address(this), l.borrower, vault)
             returns (uint256 maxRepay, uint256)
         {
             if (maxRepay == 0) return false;
@@ -577,11 +582,65 @@ contract Executor {
             return false;
         }
 
+        address connector;
+        try IEVault(l.market).EVC() returns (address e) {
+            connector = e;
+        } catch {
+            return false;
+        }
+        if (connector == address(0)) return false;
+
+        // `liquidate` transfers the violator's debt onto the caller and seizes
+        // shares (`transferBorrow`). The caller's account check at the end of
+        // the batch reverts `E_AccountLiquidity` unless that debt is repaid
+        // first. `repay(uint256.max)` pulls the underlying and clears it.
+        // `redeem(uint256.max)` is the vault's full-balance flag. The
+        // controller is released in the same batch so a later debt vault can
+        // be enabled.
+        IEVC.BatchItem[] memory items = new IEVC.BatchItem[](5);
+        items[0] = IEVC.BatchItem({
+            targetContract: connector,
+            onBehalfOfAccount: address(0),
+            value: 0,
+            data: abi.encodeCall(IEVC.enableController, (address(this), l.market))
+        });
+        items[1] = IEVC.BatchItem({
+            targetContract: l.market,
+            onBehalfOfAccount: address(this),
+            value: 0,
+            data: abi.encodeCall(IEVault.liquidate, (l.borrower, vault, l.repayAmount, minYield))
+        });
+        items[2] = IEVC.BatchItem({
+            targetContract: l.market,
+            onBehalfOfAccount: address(this),
+            value: 0,
+            data: abi.encodeCall(IEVault.repay, (type(uint256).max, address(this)))
+        });
+        items[3] = IEVC.BatchItem({
+            targetContract: vault,
+            onBehalfOfAccount: address(this),
+            value: 0,
+            data: abi.encodeCall(IEVault.redeem, (type(uint256).max, address(this), address(this)))
+        });
+        items[4] = IEVC.BatchItem({
+            targetContract: l.market,
+            onBehalfOfAccount: address(this),
+            value: 0,
+            data: abi.encodeCall(IEVault.disableController, ())
+        });
+
+        uint256 sharesBefore = IERC20(vault).balanceOf(address(this));
         debtAsset.safeApprove(l.market, l.repayAmount);
-        try IEVault(l.market).liquidate(l.borrower, l.collateralAsset, l.repayAmount, minYield) {
+        try IEVC(connector).batch(items) {
             ok = true;
         } catch {}
         debtAsset.safeApprove(l.market, 0);
+        if (ok) {
+            uint256 sharesNow = IERC20(vault).balanceOf(address(this));
+            if (sharesNow > sharesBefore) {
+                IEVault(vault).redeem(sharesNow - sharesBefore, address(this), address(this));
+            }
+        }
     }
 
     /// Silo V2 `IPartialLiquidation.liquidationCall` pin `570a668a` topic0
@@ -608,7 +667,10 @@ contract Executor {
     /// Liquity V2 `batchLiquidateTroves(uint256[])` selector `0xef49a6b4`
     /// pin `c8a5a4ee`. No token repay (Stability Pool is the counterparty).
     /// Guard: `getTroveStatus` ∈ {active=1, zombie=4}. `NothingToLiquidate`
-    /// / `EmptyData` → catch → skip. ETH gas-comp is wrapped to WETH.
+    /// / `EmptyData` → catch → skip. Gas compensation is a WETH
+    /// `transferFrom` from the gas pool plus `sendColl` of the branch
+    /// collateral (pin `c8a5a4ee`). A native-ETH delta, if one arrives, is
+    /// wrapped; the WETH transfer is already in the WETH balance `gross` reads.
     function _liquidateLiquityV2(LiqLeg memory l, bytes calldata plan) internal returns (bool ok) {
         uint256 id = plan.tailU256(l.tailOffset);
         if (id == 0) return false;
@@ -667,8 +729,9 @@ contract Executor {
     /// Compound V2 official Unitroller pin `a3214f67`. `market` = debt
     /// cToken. Tail = cTokenCollateral ‖ isCEther. Guard:
     /// `getAccountLiquidity` shortfall or `isDeprecated`. Never receive
-    /// cTokens as a flag — seize lands as cTokens by protocol and swaps
-    /// take the balance. CEther: unwrap WETH, official 2-arg payable
+    /// cTokens as a flag — seize lands as cTokens. This leg redeems that
+    /// delta to underlying (CEther: ETH, then wrapped) before the swaps.
+    /// CEther debt: unwrap WETH, official 2-arg payable
     /// `liquidateBorrow`, wrap only ETH gained by this leg. Wrong
     /// `isCEther` / repay > WETH / withdraw-or-liq revert skips the **leg**.
     function _liquidateCompoundV2(address debtAsset, LiqLeg memory l, bytes calldata plan)
@@ -696,6 +759,7 @@ contract Executor {
             return false;
         }
 
+        uint256 seizedBefore = IERC20(cTokenColl).balanceOf(address(this));
         if (isCEther != 0) {
             if (debtAsset != WETH) return false;
             uint256 need = l.repayAmount;
@@ -718,6 +782,32 @@ contract Executor {
             } catch {}
             debtAsset.safeApprove(l.market, 0);
         }
+        if (ok) _redeemSeizedCToken(cTokenColl, seizedBefore);
+    }
+
+    /// Redeem only the cTokens this leg seized. CEther pays ETH; wrap that
+    /// delta so `gross` sees WETH. A non-zero Compound error code reverts
+    /// the transaction: the liquidation must not stand with cTokens stuck.
+    function _redeemSeizedCToken(address cToken, uint256 seizedBefore) internal {
+        uint256 seizedNow = IERC20(cToken).balanceOf(address(this));
+        if (seizedNow <= seizedBefore) return;
+        uint256 ethBefore = address(this).balance;
+        // cETH at older implementations returns no data on success. A newer
+        // cToken returns the Compound error code. A non-zero code reverts;
+        // empty return data does not.
+        (bool redeemed, bytes memory ret) =
+            cToken.call(abi.encodeWithSelector(ICToken.redeem.selector, seizedNow - seizedBefore));
+        if (!redeemed) {
+            uint256 code;
+            if (ret.length >= 32) code = abi.decode(ret, (uint256));
+            revert RedeemFailed(cToken, code);
+        }
+        if (ret.length >= 32) {
+            uint256 code = abi.decode(ret, (uint256));
+            if (code != 0) revert RedeemFailed(cToken, code);
+        }
+        uint256 ethNow = address(this).balance;
+        if (ethNow > ethBefore) IWETH(WETH).deposit{value: ethNow - ethBefore}();
     }
 
     // ──────────────────────────────────────────────────────────────────────

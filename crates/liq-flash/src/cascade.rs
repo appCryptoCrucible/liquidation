@@ -261,8 +261,9 @@ mod tests {
     /// and fits two under the 99 % buffer — Morpho 15_721.52 + Aave
     /// 285_706.28 = 301_427.80. With a 1 % close margin the two-group plan
     /// wins over the 1.05-WETH-cheaper three-group {V4, Morpho, Aave}.
-    /// Oracle: Aave `percentMul` on the Aave leg 279_278.478… WETH at
-    /// 5 bps = 139_639_239_052_859_622_178 wei (hand computed).
+    /// Oracle: Aave `percentMulCeil` on the Aave leg 279_278.478… WETH at
+    /// 5 bps. `279278478105719244356558 · 5 = 1_396_392_390_528_596_221_782_790`,
+    /// remainder 2_790, so the fee is 139_639_239_052_859_622_179 wei.
     #[test]
     fn two_sibling_groups_when_no_single_source_fits() {
         let idx = index_of(&five());
@@ -280,13 +281,14 @@ mod tests {
         assert_eq!(c.groups[1].amount, u256("279278478105719244356558"));
         assert_eq!(c.groups[0].source, MORPHO);
         assert_eq!(c.groups[1].source, AAVE_POOL);
-        assert_eq!(c.cost, u256("139639239052859622178"));
+        assert_eq!(c.cost, u256("139639239052859622179"));
     }
 
     /// Oracle: same fixture, margin 0 — the strictly cheapest plan is three
     /// groups {V4, Morpho, Aave}: the V4 leg removes 2_109.84 WETH from the
-    /// 5-bps Aave leg. Aave leg 277_168.638… → fee
-    /// 138_584_319_442_346_253_760 wei (hand computed). Still ≤ 3, flat.
+    /// 5-bps Aave leg. Aave leg 277_168.638… → `percentMulCeil` fee
+    /// 138_584_319_442_346_253_761 wei (one wei above the old half-up).
+    /// Still ≤ 3, flat.
     #[test]
     fn three_groups_when_strictly_cheapest_and_margin_zero() {
         let idx = index_of(&five());
@@ -303,7 +305,7 @@ mod tests {
                 FlashProvider::Aave
             ]
         );
-        assert_eq!(c.cost, u256("138584319442346253760"));
+        assert_eq!(c.cost, u256("138584319442346253761"));
     }
 
     /// Oracle: the §7 rule-2 deviation on real 26M depths, with the V3
@@ -461,6 +463,6 @@ mod tests {
         let c = plan(&idx, ID_WETH, need, &m, 0).unwrap();
         check_shape(&idx, &c, need);
         assert_eq!(c.groups.len(), 2);
-        assert_eq!(c.cost, u256("139639239052859622178") + e18(4));
+        assert_eq!(c.cost, u256("139639239052859622179") + e18(4));
     }
 }

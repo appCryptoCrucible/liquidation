@@ -94,7 +94,7 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
     }
 
     function test_euler_dispatch_approve_zero() public {
-        _execLeg(PB.legEuler(address(euler), borrower, address(coll), REPAY, 1));
+        _execLeg(PB.legEuler(address(euler), borrower, address(coll), REPAY, 1, address(coll)));
         assertEq(euler.lastViolator(), borrower);
         assertEq(euler.lastMinYield(), 1);
     }
@@ -102,13 +102,13 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
     function test_euler_guard_and_revert_zero_allowance() public {
         euler.setPosition(borrower, 0, 0);
         vm.expectRevert(Executor.AllLegsFailed.selector);
-        _exec(_plan(PB.F_SWEEP, 0, GAS_COST, 0, 1, PB.legEuler(address(euler), borrower, address(coll), REPAY, 1)));
+        _exec(_plan(PB.F_SWEEP, 0, GAS_COST, 0, 1, PB.legEuler(address(euler), borrower, address(coll), REPAY, 1, address(coll))));
         assertEq(debt.allowance(address(ex), address(euler)), 0);
 
         euler.setPosition(borrower, REPAY, COLL_OUT);
         euler.setRevertOnLiquidate(true);
         vm.expectRevert(Executor.AllLegsFailed.selector);
-        _exec(_plan(PB.F_SWEEP, 0, GAS_COST, 0, 1, PB.legEuler(address(euler), borrower, address(coll), REPAY, 1)));
+        _exec(_plan(PB.F_SWEEP, 0, GAS_COST, 0, 1, PB.legEuler(address(euler), borrower, address(coll), REPAY, 1, address(coll))));
         assertEq(debt.allowance(address(ex), address(euler)), 0);
     }
 

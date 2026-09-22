@@ -1001,6 +1001,7 @@ mod tests {
                 max_seize: e18(20),
                 bonus: bonus_5(),
                 curve: BonusCurve::Static { bonus: bonus_5() },
+                call_target: alloy_primitives::Address::ZERO,
             }]),
         }
     }
@@ -1038,6 +1039,7 @@ mod tests {
             borrower: addr(0xB1),
             protocol_pull: None,
             euler_min_yield: None,
+            euler_collateral_vault: None,
             liquity_trove_id: None,
             fluid_t1: None,
             fluid_col_per_unit_debt: None,

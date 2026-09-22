@@ -59,8 +59,10 @@ pub enum EncodeError {
     MorphoTailShape,
     #[error("V3 leg must have empty tail")]
     V3TailShape,
-    #[error("Euler V2 leg tail is not a uint256 minYieldBalance")]
+    #[error("Euler V2 leg tail is not minYieldBalance ‖ collateral vault")]
     EulerTailShape,
+    #[error("Euler V2 collateral vault is zero")]
+    EulerZeroVault,
     #[error("Silo V2 leg must have empty tail (receiveSToken is hardcoded)")]
     SiloTailShape,
     #[error("Liquity V2 leg tail is not a uint256 troveId")]

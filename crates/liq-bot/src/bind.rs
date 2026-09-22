@@ -1034,6 +1034,7 @@ fn base_pins(adapter: ExecutorAdapter, market: Address, borrower: Address) -> Ta
         borrower,
         protocol_pull: None,
         euler_min_yield: None,
+        euler_collateral_vault: None,
         liquity_trove_id: None,
         fluid_t1: None,
         fluid_col_per_unit_debt: None,

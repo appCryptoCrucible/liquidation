@@ -57,6 +57,16 @@ contract MockERC20 {
         allowance[msg.sender][s] = a;
         return true;
     }
+
+    /// Unit dispatch only. A no-op so a leg whose seized token is this
+    /// mock still settles. Fork tests redeem real cTokens and vault shares.
+    function redeem(uint256) external pure returns (uint256) {
+        return 0;
+    }
+
+    function redeem(uint256, address, address) external pure returns (uint256) {
+        return 0;
+    }
 }
 
 /// USDT semantics: no return data, and non-zero -> non-zero approve reverts.
@@ -490,7 +500,41 @@ contract MockRouter {
 
 // ─────────────────────────── 10E protocol doubles ─────────────────────
 
+contract MockEVC {
+    address public onBehalf;
+    struct Item {
+        address targetContract;
+        address onBehalfOfAccount;
+        uint256 value;
+        bytes data;
+    }
+    function enableController(address, address) external {}
+    function batch(Item[] calldata items) external {
+        for (uint256 i; i < items.length; ++i) {
+            if (items[i].targetContract == address(this)) {
+                (bool ok,) = address(this).delegatecall(items[i].data);
+                require(ok, "evc self");
+            } else {
+                onBehalf = items[i].onBehalfOfAccount;
+                (bool ok,) = items[i].targetContract.call(items[i].data);
+                require(ok, "evc call");
+            }
+        }
+    }
+}
+
 contract MockEulerVault {
+    address public immutable evcAddr;
+    constructor() {
+        evcAddr = address(new MockEVC());
+    }
+    function EVC() external view returns (address) {
+        return evcAddr;
+    }
+    function disableController() external {}
+    function repay(uint256, address) external pure returns (uint256) {
+        return 0;
+    }
     mapping(address => uint256) public maxRepay;
     mapping(address => uint256) public collOut;
     bool public revertOnLiquidate;
@@ -518,8 +562,9 @@ contract MockEulerVault {
         lastViolator = violator;
         lastRepay = actual;
         lastMinYield = minYield;
-        Tok.pull(debtToken, msg.sender, address(this), actual);
-        Tok.push(collateral, msg.sender, collOut[violator] * actual / maxR);
+        address payer = msg.sender == evcAddr ? MockEVC(evcAddr).onBehalf() : msg.sender;
+        Tok.pull(debtToken, payer, address(this), actual);
+        Tok.push(collateral, payer, collOut[violator] * actual / maxR);
         maxRepay[violator] = 0;
     }
 

@@ -93,6 +93,7 @@ pub(crate) fn quote(
                 max_seize: seize,
                 bonus,
                 curve,
+                call_target: alloy_primitives::Address::ZERO,
             },
             amount,
             seize_value,

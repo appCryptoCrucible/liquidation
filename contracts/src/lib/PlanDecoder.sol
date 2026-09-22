@@ -85,7 +85,7 @@ library PlanDecoder {
     uint256 internal constant TAIL_AAVE_V3  = 0;   // reserves by underlying
     uint256 internal constant TAIL_AAVE_V4  = 4;   // u16 collateralReserveId | u16 debtReserveId
     uint256 internal constant TAIL_MORPHO   = 32;  // bytes32 market Id
-    uint256 internal constant TAIL_EULER    = 32;  // uint256 minYieldBalance
+    uint256 internal constant TAIL_EULER    = 52;  // uint256 minYieldBalance | address collateralVault
     uint256 internal constant TAIL_SILO     = 0;   // receiveSToken=false hardcoded
     uint256 internal constant TAIL_LIQUITY  = 32;  // uint256 troveId
     uint256 internal constant TAIL_FLUID    = 32;  // uint256 colPerUnitDebt 1e18 (absorb_=true)
@@ -201,6 +201,15 @@ library PlanDecoder {
 
     function tailU256(bytes calldata plan, uint256 o) internal pure returns (uint256) {
         return uint256(bytes32(plan[o : o + 32]));
+    }
+
+    /// Euler tail: `minYieldBalance` then the collateral vault `liquidate` names.
+    /// The leg's `collateralAsset` is the underlying the swaps sell after redeem.
+    function tailEuler(bytes calldata plan, uint256 o)
+        internal pure returns (uint256 minYield, address vault)
+    {
+        minYield = uint256(bytes32(plan[o : o + 32]));
+        vault = address(bytes20(plan[o + 32 : o + 52]));
     }
 
     function tailCompound(bytes calldata plan, uint256 o)

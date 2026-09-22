@@ -3,7 +3,7 @@
 //! three repay legs, only some of which are flash-fundable at depth; a quote
 //! that names one asset throws away liquidatable positions (GUIDE 07 §5).
 
-use alloy_primitives::U256;
+use alloy_primitives::{Address, U256};
 use liq_types::{AssetId, PositionId, PositionKey, Ray, Wad};
 use smallvec::SmallVec;
 
@@ -40,6 +40,10 @@ pub struct SeizeOption {
     /// How `bonus` evolves as health deteriorates. Populated by the adapter
     /// from live parameters, evaluated by the engine; never a scalar.
     pub curve: BonusCurve,
+    /// Contract the liquidation call names when it is not `asset`.
+    /// Zero except Euler V2, where it is the collateral vault. The plan's
+    /// collateral asset stays the underlying the swaps sell.
+    pub call_target: Address,
 }
 
 /// Full economics of liquidating one position at one price vector.

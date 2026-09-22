@@ -249,7 +249,7 @@ contract PlanDecodeTest is Test {
         assertEq(PlanDecoder.tailLen(0), 0);
         assertEq(PlanDecoder.tailLen(1), 4);
         assertEq(PlanDecoder.tailLen(2), 32);
-        assertEq(PlanDecoder.tailLen(3), 32);
+        assertEq(PlanDecoder.tailLen(3), 52);
         assertEq(PlanDecoder.tailLen(4), 0);
         assertEq(PlanDecoder.tailLen(5), 32);
         assertEq(PlanDecoder.tailLen(6), 32);

@@ -63,6 +63,8 @@ pub struct TailPins {
     pub borrower: Address,
     pub protocol_pull: Option<u128>,
     pub euler_min_yield: Option<U256>,
+    /// Collateral vault `liquidate` names. Required for Euler. Zero refuses.
+    pub euler_collateral_vault: Option<Address>,
     pub liquity_trove_id: Option<U256>,
     /// `None` missing; `Some(true)` T1; `Some(false)` T2–T4 Unwired.
     pub fluid_t1: Option<bool>,
@@ -128,7 +130,13 @@ pub fn leg_meta_from_pins(p: &TailPins) -> Result<LegMeta, AssembleError> {
             if min_yield.is_zero() {
                 return Err(AssembleError::Missing("euler min_yield"));
             }
-            LegTail::Euler { min_yield }
+            let vault = p
+                .euler_collateral_vault
+                .ok_or(AssembleError::Missing("euler collateral vault"))?;
+            if vault.is_zero() {
+                return Err(AssembleError::Missing("euler collateral vault"));
+            }
+            LegTail::Euler { min_yield, vault }
         }
         ExecutorAdapter::LiquityV2 => {
             let trove_id = p
@@ -910,6 +918,7 @@ mod tests {
                 max_seize: e18(20),
                 bonus: bonus_5(),
                 curve: BonusCurve::Static { bonus: bonus_5() },
+                call_target: alloy_primitives::Address::ZERO,
             }]),
         }
     }
@@ -1581,6 +1590,7 @@ mod tests {
             borrower: addr(0xB1),
             protocol_pull: None,
             euler_min_yield: None,
+            euler_collateral_vault: None,
             liquity_trove_id: None,
             fluid_t1: None,
             fluid_col_per_unit_debt: None,
@@ -1643,10 +1653,16 @@ mod tests {
     fn leg_meta_ids_3_8_ok_when_pins_present() {
         let mut e = pins_base(ExecutorAdapter::EulerV2);
         e.euler_min_yield = Some(U256::from(7u64));
+        assert!(matches!(
+            leg_meta_from_pins(&e),
+            Err(AssembleError::Missing("euler collateral vault"))
+        ));
+        e.euler_collateral_vault = Some(addr(0xE1));
         assert_eq!(
             leg_meta_from_pins(&e).unwrap().tail,
             LegTail::Euler {
-                min_yield: U256::from(7u64)
+                min_yield: U256::from(7u64),
+                vault: addr(0xE1),
             }
         );
         let mut l = pins_base(ExecutorAdapter::LiquityV2);
@@ -1710,6 +1726,7 @@ mod tests {
                 max_seize: e18(3),
                 bonus: bonus_5(),
                 curve: BonusCurve::Static { bonus: bonus_5() },
+                call_target: alloy_primitives::Address::ZERO,
             }]),
         };
         assert_eq!(euler_min_yield_from_quote(&q, 0).unwrap(), e18(3));

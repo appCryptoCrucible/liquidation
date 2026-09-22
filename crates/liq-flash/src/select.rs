@@ -23,9 +23,6 @@ use smallvec::SmallVec;
 
 use crate::index::{FlashIndex, Haircut, SourceEntry, BPS};
 
-/// Aave `PercentageMath.HALF_PERCENTAGE_FACTOR`.
-const HALF_BPS: U256 = U256::from_limbs([5_000, 0, 0, 0]);
-
 /// Cost parameters outside the index. Per debt asset, since both fields
 /// are in that asset's raw units or gas.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -64,11 +61,19 @@ pub fn fee_amount(provider: FlashProvider, amount: U256, fee_bps: u16) -> Option
     }
     let bps = U256::from(fee_bps);
     match provider {
-        // PercentageMath.percentMul: (amount · bps + 5_000) / 10_000, half up.
-        FlashProvider::Aave => amount
-            .checked_mul(bps)?
-            .checked_add(HALF_BPS)?
-            .checked_div(BPS),
+        // Pool revision 11 (`0x728a…03cf`) charges
+        // `amount.percentMulCeil(flashLoanPremium)`:
+        // `product / 10_000 + (product % 10_000 != 0)`.
+        // The pool at block 22_000_000 (`0x9aeb…1327`) was half-up
+        // `percentMul`. One wei under the ceil and USDT `transferFrom`
+        // executes `INVALID` and burns the rest of the gas.
+        FlashProvider::Aave => {
+            // `percentMulCeil` reverts when `amount > type(uint256).max / bps`.
+            if amount > U256::MAX / bps {
+                return None;
+            }
+            mul_div(amount, bps, BPS, Rounding::Up).ok()
+        }
         // FullMath.mulDivRoundingUp(amount, fee, 1e6). `fee = 100 · fee_bps`
         // exactly for every tier (07A: fee_bps = fee / 100), so
         // ceil(amount · fee / 1e6) ≡ ceil(amount · fee_bps / 1e4).
@@ -225,16 +230,16 @@ mod tests {
         assert!(fallback_chain(&idx, NO_DEPTH, usdc(1), H90, &CostModel::FEE_ONLY).is_empty());
     }
 
-    /// Oracle: Aave `PercentageMath.percentMul` = `(v·p + 5000) / 10000`
-    /// by hand at 5 bps: 1_000_000 → 500; 1_001_000 → 501 (5_010_000 /
-    /// 10_000); 998_999 → 499 (4_999_995 / 10_000 floors). The last case
-    /// separates half-up from ceil: V3 gives 500 there.
+    /// Oracle: Aave `PercentageMath.percentMulCeil` at 5 bps.
+    /// 1_000_000 → 500 (exact). 1_001_000 → 501. 998_999 · 5 = 4_994_995,
+    /// which is not a multiple of 10_000, so the fee is 500. Half-up would
+    /// have been 499; that is the old pool.
     #[test]
-    fn aave_fee_rounds_half_up() {
+    fn aave_fee_rounds_up() {
         let f = |v: u64| fee_amount(FlashProvider::Aave, U256::from(v), 5).unwrap();
         assert_eq!(f(1_000_000), U256::from(500u64));
         assert_eq!(f(1_001_000), U256::from(501u64));
-        assert_eq!(f(998_999), U256::from(499u64));
+        assert_eq!(f(998_999), U256::from(500u64));
         assert_eq!(
             fee_amount(FlashProvider::UniV3, U256::from(998_999u64), 5).unwrap(),
             U256::from(500u64)

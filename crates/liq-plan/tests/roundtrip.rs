@@ -345,7 +345,7 @@ fn constants_match_plan_decoder() {
     assert_eq!(ExecutorAdapter::AaveV3.tail_len(), 0);
     assert_eq!(ExecutorAdapter::AaveV4.tail_len(), 4);
     assert_eq!(ExecutorAdapter::MorphoBlue.tail_len(), 32);
-    assert_eq!(ExecutorAdapter::EulerV2.tail_len(), 32);
+    assert_eq!(ExecutorAdapter::EulerV2.tail_len(), 52);
     assert_eq!(ExecutorAdapter::SiloV2.tail_len(), 0);
     assert_eq!(ExecutorAdapter::LiquityV2.tail_len(), 32);
     assert_eq!(ExecutorAdapter::Fluid.tail_len(), 32);
@@ -369,6 +369,7 @@ fn encode_decode_10e_tails() {
             repay_amount: asked,
             tail: LegTail::Euler {
                 min_yield: U256::from(7u64),
+                vault,
             },
             protocol_pull: asked,
         },

@@ -47,10 +47,15 @@ library PlanBuilder {
         return abi.encodePacked(A_MORPHO, morpho, borrower, coll, repay, id);
     }
 
-    function legEuler(address vault, address borrower, address coll, uint128 repay, uint256 minYield)
-        internal pure returns (bytes memory)
-    {
-        return abi.encodePacked(A_EULER, vault, borrower, coll, repay, minYield);
+    function legEuler(
+        address vault,
+        address borrower,
+        address coll,
+        uint128 repay,
+        uint256 minYield,
+        address collVault
+    ) internal pure returns (bytes memory) {
+        return abi.encodePacked(A_EULER, vault, borrower, coll, repay, minYield, collVault);
     }
 
     function legSilo(address hook, address borrower, address coll, uint128 repay)

@@ -1,7 +1,8 @@
 //! Euler V2 (EVK) adapter — WP 15C-euler / 10E.
 //! Pin: `euler-xyz/euler-vault-kit` @ `bfb325a6e6ca09613d940b46f72ccfe017353933`.
 //! `encode` emits [`ExecutorAdapter::EulerV2`] (id 3). Tail is
-//! `uint256 minYieldBalance` (assembled from the quoted yield).
+//! `uint256 minYieldBalance ‖ address collateralVault` (yield from the
+//! quote, vault from [`SeizeOption::call_target`]).
 
 #![forbid(unsafe_code)]
 

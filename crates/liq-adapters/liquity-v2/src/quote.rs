@@ -56,6 +56,7 @@ pub(crate) fn quote(
             max_seize,
             bonus,
             curve,
+            call_target: alloy_primitives::Address::ZERO,
         });
     } else {
         let weth_first = eth_notional >= coll_notional;
@@ -64,12 +65,14 @@ pub(crate) fn quote(
             max_seize: eth_gas,
             bonus,
             curve,
+            call_target: alloy_primitives::Address::ZERO,
         };
         let coll_opt = SeizeOption {
             asset: t.coll_row.asset,
             max_seize: coll_gas,
             bonus,
             curve,
+            call_target: alloy_primitives::Address::ZERO,
         };
         if coll_gas.is_zero() {
             seize_options.push(weth_opt);

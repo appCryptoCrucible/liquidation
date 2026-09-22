@@ -267,7 +267,7 @@ contract ExecutorCoverage10CTest is ExecutorTestBase {
         uint256 eulerDebt = debt.balanceOf(address(euler));
         _exec(_plan(
             PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1,
-            PB.legEuler(address(euler), borrower, address(coll), REPAY, 1)
+            PB.legEuler(address(euler), borrower, address(coll), REPAY, 1, address(coll))
         ));
         // Flash source is the Aave mock, not the Euler vault: out REPAY, in OWED,
         // net = premium. V3's `+ REPAY` does not apply — that repay lands on Euler.

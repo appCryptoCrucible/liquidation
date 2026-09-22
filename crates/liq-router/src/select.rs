@@ -802,6 +802,7 @@ mod tests {
                 max_seize: repay * U256::from(2u64),
                 bonus: bonus_5(),
                 curve: BonusCurve::Static { bonus: bonus_5() },
+                call_target: alloy_primitives::Address::ZERO,
             }]),
         }
     }
