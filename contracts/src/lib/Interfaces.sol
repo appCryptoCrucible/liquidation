@@ -152,6 +152,13 @@ interface IEVC {
     }
     function batch(BatchItem[] calldata items) external payable;
     function enableController(address account, address vault) external payable;
+    /// Marks `vault` as a collateral the account's controller(s) will read
+    /// during the account status check. Without this the seized shares are
+    /// held but not counted toward the account's collateral set, so the
+    /// controller's health check at the end of the batch sees the debt
+    /// (before `repay` clears it) against a smaller collateral set than the
+    /// executor actually holds.
+    function enableCollateral(address account, address vault) external payable;
 }
 
 // ───────────────────────────── Silo V2 ──────────────────────────────────
@@ -197,6 +204,11 @@ interface ICreditFacadeV3 {
         address creditAccount, address token, uint256 repaidAmount,
         uint256 minSeizedAmount, address to, PriceUpdate[] calldata priceUpdates
     ) external returns (uint256 seizedAmount);
+    /// `CreditFacadeV3.creditManager` pin `510fc654`. The facade forwards to
+    /// the manager, and `CreditManagerV3.partiallyLiquidateCreditAccount`
+    /// does the `safeTransferFrom` **as the manager** — so the repay
+    /// allowance belongs to this address, not to the facade.
+    function creditManager() external view returns (address);
 }
 
 // ───────────────────────────── Compound V2 ──────────────────────────────

@@ -565,7 +565,11 @@ mod tests {
             },
             repay_options: repay
                 .iter()
-                .map(|&(asset, max_repay)| RepayOption { asset, max_repay })
+                .map(|&(asset, max_repay)| RepayOption {
+                    asset,
+                    max_repay,
+                    slot: liq_protocol::SlotRef::ByAsset,
+                })
                 .collect(),
             seize_options: seize
                 .iter()
@@ -575,6 +579,7 @@ mod tests {
                     bonus,
                     curve: BonusCurve::Static { bonus },
                     call_target: Address::ZERO,
+                    slot: liq_protocol::SlotRef::ByAsset,
                 })
                 .collect(),
         }

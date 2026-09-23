@@ -98,6 +98,18 @@ pub enum ProtocolError {
     /// was not). The parameters were read wrong; never silently continue.
     #[error("adapter internal invariant violated")]
     Internal,
+    /// A fixed-capacity adapter table is full. Distinct from [`Self::Internal`]
+    /// because it is a sizing decision that was outgrown, not a broken
+    /// invariant: the fix is to raise the table, and the message has to say
+    /// which one and how big it is for that to be actionable. Aave V3's
+    /// e-mode table is the case this exists for.
+    #[error("{table} is full at {cap} entries")]
+    TableFull {
+        /// Name of the table, as it appears in the adapter's layout.
+        table: &'static str,
+        /// The capacity that was exhausted.
+        cap: usize,
+    },
     /// The replay archive failed while backfilling.
     #[error(transparent)]
     Archive(#[from] ArchiveError),

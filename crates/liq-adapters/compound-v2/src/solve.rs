@@ -10,13 +10,27 @@ use liq_types::{AssetId, Price, PriceVector, Ray};
 use crate::health::{finish, price_ray};
 use crate::layout::META_SLOT;
 
-fn liquidatable_at(
-    pos: PositionRef<'_>,
-    px: &PriceVector,
-    asset: AssetId,
-    p_raw: U256,
-) -> Result<bool> {
-    Ok(finish(pos, px, Some((asset, p_raw)))?.1.state == HealthState::Liquidatable)
+/// Has the position crossed the liquidation boundary at `p_raw`?
+///
+/// P4. This asked `state == Liquidatable`, which is **not monotone in the
+/// price** and so cannot bracket a bisection. Drive a single-collateral
+/// position's price far enough down and its collateral value floors to zero,
+/// at which point `health` reports `BadDebt` — strictly *worse* than
+/// liquidatable, but no longer equal to it. The bisection seeds at `lo = 1`
+/// raw RAY, every such position answered `false` there, the
+/// `!liquidatable_at(lo)` bracket check bailed, and `liquidation_price`
+/// returned `None` for **every single-collateral position** — which is the
+/// primary arming signal for the whole adapter.
+///
+/// `BadDebt` is past the boundary, so it counts as crossed. `Blocked` (seize
+/// paused) is a different axis: the position is not callable at any price, so
+/// it is correctly not a crossing and the bracket check still bails.
+fn crossed_at(pos: PositionRef<'_>, px: &PriceVector, asset: AssetId, p_raw: U256) -> Result<bool> {
+    let state = finish(pos, px, Some((asset, p_raw)))?.1.state;
+    Ok(matches!(
+        state,
+        HealthState::Liquidatable | HealthState::BadDebt { .. }
+    ))
 }
 
 pub(crate) fn time_to_cross(_pos: PositionRef<'_>, _px: &PriceVector) -> Result<Option<Timestamp>> {
@@ -78,10 +92,10 @@ pub(crate) fn liquidation_price(
         .checked_mul(U256::from(8u8))
         .ok_or(FixedError::Overflow)?;
     if danger_down {
-        if liquidatable_at(pos, px, asset, cur)? {
+        if crossed_at(pos, px, asset, cur)? {
             hi = cur;
         }
-        if !liquidatable_at(pos, px, asset, lo)? {
+        if !crossed_at(pos, px, asset, lo)? {
             return Ok(None);
         }
         // last healthy is the largest p in [lo, hi] that is not liquidatable,
@@ -92,13 +106,13 @@ pub(crate) fn liquidation_price(
                 .ok_or(FixedError::Overflow)?
                 .checked_div(U256::from(2u8))
                 .ok_or(FixedError::DivisionByZero)?;
-            if liquidatable_at(pos, px, asset, mid)? {
+            if crossed_at(pos, px, asset, mid)? {
                 lo = mid;
             } else {
                 hi = mid;
             }
         }
-        let cand = if !liquidatable_at(pos, px, asset, hi)? {
+        let cand = if !crossed_at(pos, px, asset, hi)? {
             hi
         } else {
             return Ok(None);
@@ -113,10 +127,10 @@ pub(crate) fn liquidation_price(
     }
     // Debt: danger is a higher price.
     lo = cur;
-    if liquidatable_at(pos, px, asset, cur)? {
+    if crossed_at(pos, px, asset, cur)? {
         return Ok(None);
     }
-    if !liquidatable_at(pos, px, asset, hi)? {
+    if !crossed_at(pos, px, asset, hi)? {
         return Ok(None);
     }
     while hi.saturating_sub(lo) > U256::ONE {
@@ -125,13 +139,13 @@ pub(crate) fn liquidation_price(
             .ok_or(FixedError::Overflow)?
             .checked_div(U256::from(2u8))
             .ok_or(FixedError::DivisionByZero)?;
-        if liquidatable_at(pos, px, asset, mid)? {
+        if crossed_at(pos, px, asset, mid)? {
             hi = mid;
         } else {
             lo = mid;
         }
     }
-    let cand = if !liquidatable_at(pos, px, asset, lo)? {
+    let cand = if !crossed_at(pos, px, asset, lo)? {
         lo
     } else {
         return Ok(None);

@@ -366,7 +366,27 @@ fn silo_log(
         return Ok(positions(&[pos]));
     }
     if topic0 == silo::AccruedInterest::SIGNATURE_HASH {
-        patch_row(st, market, slot, Some(ts), |_| Ok(()))?;
+        // T8. This bumped `last_update` and wrote nothing, which freezes
+        // share price while making the row look fresh — debt is monotonically
+        // understated and the position fails OPEN: it reads `Healthy` across
+        // a real band of genuinely liquidatable positions.
+        //
+        // The event carries exactly what is needed: `Silo.sol:825` emits it
+        // as `Δ totalAssets[Debt]` for this accrual (see the rename in
+        // `events.rs`).
+        //
+        // Known limitation, not guessed at: the collateral side also accrues
+        // by `accruedInterest − totalFees`, and `SiloRow` has no fee field to
+        // net that out. Leaving collateral frozen biases LTV UPWARD — the
+        // fail-safe direction for a liquidator — so this is exact for debt
+        // and conservative for collateral. Wiring `daoFee`/`deployerFee` from
+        // `ISiloConfig.getConfig` is the correct follow-up; do not
+        // approximate the fee split here.
+        let ev = decode::<silo::AccruedInterest>(log)?;
+        patch_row(st, market, slot, Some(ts), |b| {
+            b.total_debt_assets = add_u128(b.total_debt_assets, ev.accruedInterest, true)?;
+            Ok(())
+        })?;
         return Ok(DirtySet::MarketAccrual(rows_of(market)));
     }
     if topic0 == silo::Transfer::SIGNATURE_HASH {

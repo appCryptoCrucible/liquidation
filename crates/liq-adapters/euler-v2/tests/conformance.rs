@@ -360,10 +360,28 @@ fn liquidatable_when_coll_adj_not_greater_than_liability() {
     assert_eq!(q.seize_options[0].asset, WETH_SHARES);
     let bonus = math::bonus_ray(df).unwrap();
     assert_eq!(q.seize_options[0].bonus, bonus);
-    assert!(matches!(
+    // E4. Euler's discount is `1/max(hf, min_df) - 1`, so the curve must be
+    // the reciprocal one carrying `min_df` — not `Static`, which pinned the
+    // bonus at one health and claimed it everywhere.
+    assert_eq!(
         q.seize_options[0].curve,
-        liq_protocol::BonusCurve::Static { .. }
-    ));
+        liq_protocol::BonusCurve::Reciprocal {
+            min_df: liq_types::Ray::from_raw(min_df * uint!(1_000_000_000_U256)),
+        }
+    );
+    // The curve is only worth carrying if it actually varies with health.
+    // Evaluate it a long way below the quoted point and require a bigger
+    // bonus there; a `Static` curve would return the same number twice.
+    let deeper = liq_types::Ray::from_raw(min_df * uint!(1_000_000_000_U256));
+    let at_deeper = q.seize_options[0]
+        .curve
+        .bonus_at_hf(deeper)
+        .unwrap()
+        .unwrap();
+    assert!(
+        at_deeper >= bonus,
+        "bonus must not shrink as health falls"
+    );
     let (repay, yield_bal) = math::max_liquidation(
         ALICE_DEBT_LIQ,
         liab,
@@ -373,8 +391,17 @@ fn liquidatable_when_coll_adj_not_greater_than_liability() {
         min_df,
     )
     .unwrap();
-    assert_eq!(q.repay_options[0].max_repay, repay);
-    assert_eq!(q.seize_options[0].max_seize, yield_bal);
+    // E3: one basis point of headroom under the protocol maximum, and the
+    // seize scaled by the same factor so `minYieldBalance` stays reachable
+    // for the repay actually sent (E2's pairing rule, applied to the
+    // headroom as well as to the notional cap).
+    let expect_repay = repay * uint!(9_999_U256) / uint!(10_000_U256);
+    assert_eq!(q.repay_options[0].max_repay, expect_repay);
+    assert_eq!(
+        q.seize_options[0].max_seize,
+        yield_bal * expect_repay / repay,
+        "seize must scale with the repay it is paired to"
+    );
 }
 
 #[test]
@@ -903,7 +930,15 @@ fn quote_pairs_repay_to_preferred_collateral() {
         min_df,
     )
     .unwrap();
-    assert_eq!(q.repay_options[0].max_repay, repay_pref);
+    // E3. The quote gives back one basis point so a block of accrual between
+    // quote and inclusion cannot trip `E_ExcessiveRepayAmount`. Compare
+    // against the protocol maximum less that headroom, not the raw maximum.
+    let expect = repay_pref * uint!(9_999_U256) / uint!(10_000_U256);
+    assert_eq!(q.repay_options[0].max_repay, expect);
+    assert!(
+        q.repay_options[0].max_repay < repay_pref,
+        "a quote sized to the exact maximum reverts on the next block"
+    );
     assert_ne!(repay_pref, repay_small);
     assert!(repay_pref > repay_small);
 }

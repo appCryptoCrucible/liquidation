@@ -128,6 +128,14 @@ pub const EXACT_K: u8 = 8;
 /// GUIDE 13 nonce-slot budget (one plan per slot).
 pub const NONCE_SLOTS: u8 = 20;
 
+/// Default [`SelectCfg::min_out_tolerance_bps`]: 50bp.
+///
+/// Wide enough to absorb an oracle tick and a block of interest accrual on
+/// the quantities these bounds are derived from, and far inside the
+/// bonus — a 50bp floor on a 5% bonus still keeps 4.5% in the worst case,
+/// while a zero floor simply reverts.
+pub const MIN_OUT_TOLERANCE_BPS: u16 = 50;
+
 /// Selection / truncation parameters. `header_gas_limit` is the parent
 /// header's gas limit (GUIDE 12 §4f) — never a constant in this crate.
 #[derive(Copy, Clone, Debug)]
@@ -147,6 +155,21 @@ pub struct SelectCfg {
     pub aave_v4: Option<ProtocolId>,
     pub liq_gas: u64,
     pub over_borrow: U256,
+    /// Slack, in basis points, between what a quote expects to seize and the
+    /// **minimum** the protocol is told to accept.
+    ///
+    /// Cross-cutting #5. Euler's `minYieldBalance`, Fluid's `colPerUnitDebt_`
+    /// and Gearbox's `minSeizedAmount` were all wired to exactly the quoted
+    /// value, i.e. zero tolerance on a price-derived quantity. Any accrual,
+    /// oracle tick or rounding difference between the block the quote was
+    /// built on and the block it lands in makes the bound unreachable and the
+    /// protocol reverts — deterministically, in the direction of "never
+    /// fills", and (before the `LegFailed` logging) silently.
+    ///
+    /// This is a floor on what we accept, so widening it costs us only in the
+    /// bad case; it is not a slippage budget for the swap, which
+    /// `minProfit` in `Executor.execute` bounds separately and globally.
+    pub min_out_tolerance_bps: u16,
     pub budget: SolveBudget,
     /// Committed four-cell schedule. `None` does not split plans (tests
     /// that inject one bid). Production sets this from `bid.toml`.
@@ -529,14 +552,12 @@ fn seal_cascades(
         if g.legs.is_empty() {
             continue;
         }
-        // Cascade must cover principal + flash fee so assemble can set
-        // `flash_amount >= pull + fee` without exceeding source depth.
+        // The source lends the principal plus over-borrow dust. The premium
+        // is bought by the repay swap, so it is not part of source depth.
         let need = g
             .legs
             .iter()
-            .try_fold(cfg.over_borrow, |a, s| {
-                a.checked_add(s.leg.s)?.checked_add(s.leg.flash_fee)
-            })
+            .try_fold(cfg.over_borrow, |a, s| a.checked_add(s.leg.s))
             .ok_or(ProfitError::Missing("cascade need"))?;
         g.need = g
             .legs
@@ -644,7 +665,7 @@ fn shrink_to_funded(g: &mut DebtGroup, funded: U256) {
         if left.is_zero() {
             break;
         }
-        let take = s.leg.s.saturating_add(s.leg.flash_fee);
+        let take = s.leg.s;
         if take <= left {
             left = left.saturating_sub(take);
             keep.push(s);
@@ -796,6 +817,7 @@ mod tests {
             repay_options: SmallVec::from_slice(&[RepayOption {
                 asset: A1,
                 max_repay: repay,
+                slot: liq_protocol::SlotRef::ByAsset,
             }]),
             seize_options: SmallVec::from_slice(&[SeizeOption {
                 asset: A0,
@@ -803,6 +825,7 @@ mod tests {
                 bonus: bonus_5(),
                 curve: BonusCurve::Static { bonus: bonus_5() },
                 call_target: alloy_primitives::Address::ZERO,
+                slot: liq_protocol::SlotRef::ByAsset,
             }]),
         }
     }
@@ -819,6 +842,7 @@ mod tests {
             aave_v4: None,
             liq_gas: 80_000,
             over_borrow: U256::from(1u64),
+            min_out_tolerance_bps: crate::select::MIN_OUT_TOLERANCE_BPS,
             budget: B,
             bids: None,
         }

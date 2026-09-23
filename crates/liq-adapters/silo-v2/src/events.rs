@@ -51,7 +51,13 @@ pub mod silo {
         event Borrow(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares);
         event Repay(address indexed sender, address indexed owner, uint256 assets, uint256 shares);
         event CollateralTypeChanged(address indexed borrower);
-        event AccruedInterest(uint256 hooksBefore);
+        // `ISilo.sol`'s own declaration names this arg `hooksBefore` — a
+        // copy-paste from `HooksUpdated` just above it. `Silo.sol:825` shows
+        // what it actually carries: `emit AccruedInterest(accruedInterest)`,
+        // exactly `Δ totalAssets[Debt]` for this accrual. Topic0 depends only
+        // on the type, so renaming the field is ABI-safe and stops the
+        // misnomer from recurring.
+        event AccruedInterest(uint256 accruedInterest);
         event FlashLoan(uint256 amount);
         event HooksUpdated(uint24 hooksBefore, uint24 hooksAfter);
         event WithdrawnFees(uint256 daoFees, uint256 deployerFees, bool redirectedDeployerFees);

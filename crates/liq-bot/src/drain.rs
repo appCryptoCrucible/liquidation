@@ -292,6 +292,7 @@ impl DrainJoin {
                 aave_v4: bind.aave_v4,
                 liq_gas: 0,
                 over_borrow: U256::ZERO,
+                min_out_tolerance_bps: liq_router::select::MIN_OUT_TOLERANCE_BPS,
                 budget: SolveBudget::default(),
                 bids: Some(bid_cfg),
             },
@@ -420,6 +421,12 @@ impl DrainJoin {
                 &c.quote,
                 usize::from(c.legs.repay),
                 usize::from(c.legs.seize),
+                // Zero when no schedule is loaded, which reproduces the old
+                // exact-value bounds rather than inventing a tolerance the
+                // operator did not configure.
+                self.select
+                    .as_ref()
+                    .map_or(0, |s| s.cfg.min_out_tolerance_bps),
             ) {
                 tracing::error!(error = %e, pos = c.position.0, "quote-derived tail refused");
                 stats.skipped_pins = stats.skipped_pins.saturating_add(1);
@@ -995,6 +1002,7 @@ mod tests {
             repay_options: SmallVec::from_slice(&[RepayOption {
                 asset: A1,
                 max_repay: e18(10),
+                slot: liq_protocol::SlotRef::ByAsset,
             }]),
             seize_options: SmallVec::from_slice(&[SeizeOption {
                 asset: A0,
@@ -1002,6 +1010,7 @@ mod tests {
                 bonus: bonus_5(),
                 curve: BonusCurve::Static { bonus: bonus_5() },
                 call_target: alloy_primitives::Address::ZERO,
+                slot: liq_protocol::SlotRef::ByAsset,
             }]),
         }
     }
@@ -1088,6 +1097,7 @@ mod tests {
                 aave_v4: None,
                 liq_gas: 80_000,
                 over_borrow: U256::from(1u64),
+                min_out_tolerance_bps: liq_router::select::MIN_OUT_TOLERANCE_BPS,
                 budget: SolveBudget::default(),
                 bids: None,
             },

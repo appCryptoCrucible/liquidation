@@ -17,7 +17,7 @@ use liq_plan::{
     LiqLeg, SwapLeg, ValidateCtx, LEG_EXACT_OUT, LEG_TAKE_BALANCE, VENUE_ROUTER, VENUE_UNIV3_POOL,
 };
 use liq_protocol::{ExecutorAdapter, FlashRoute, Quote};
-use liq_types::fixed::RAY;
+use liq_types::fixed::{mul_div, Rounding, RAY};
 use liq_types::{AssetId, PositionId};
 use smallvec::SmallVec;
 
@@ -75,8 +75,28 @@ pub struct TailPins {
     pub compound_is_cether: Option<bool>,
 }
 
-/// Euler `minYieldBalance` is the quoted yield (`SeizeOption::max_seize`).
-pub fn euler_min_yield_from_quote(q: &Quote, seize: usize) -> Result<U256, AssembleError> {
+/// Lower a quoted seize to the minimum we will accept on the wire.
+///
+/// Cross-cutting #5: every one of these bounds was set to exactly the quoted
+/// figure, so the protocol reverted on any movement at all between quote and
+/// inclusion. `tol_bps` is [`crate::select::SelectCfg::min_out_tolerance_bps`].
+/// Rounds DOWN, so the result is always reachable.
+fn with_min_out_tolerance(v: U256, tol_bps: u16) -> Result<U256, AssembleError> {
+    if tol_bps == 0 {
+        return Ok(v);
+    }
+    let keep = U256::from(10_000u32.saturating_sub(u32::from(tol_bps)));
+    mul_div(v, keep, U256::from(10_000u32), Rounding::Down)
+        .map_err(|_| AssembleError::Missing("min-out tolerance"))
+}
+
+/// Euler `minYieldBalance` from the quoted yield (`SeizeOption::max_seize`),
+/// less [`crate::select::SelectCfg::min_out_tolerance_bps`] (E5).
+pub fn euler_min_yield_from_quote(
+    q: &Quote,
+    seize: usize,
+    tol_bps: u16,
+) -> Result<U256, AssembleError> {
     let s = q
         .seize_options
         .get(seize)
@@ -84,7 +104,11 @@ pub fn euler_min_yield_from_quote(q: &Quote, seize: usize) -> Result<U256, Assem
     if s.max_seize.is_zero() {
         return Err(AssembleError::Missing("euler min_yield"));
     }
-    Ok(s.max_seize)
+    let out = with_min_out_tolerance(s.max_seize, tol_bps)?;
+    if out.is_zero() {
+        return Err(AssembleError::Missing("euler min_yield"));
+    }
+    Ok(out)
 }
 
 /// Fluid T1 wire `colPerUnitDebt_` from quote seize/repay.
@@ -106,8 +130,19 @@ pub fn fluid_col_per_unit_debt_from_quote(
         .map_err(|_| AssembleError::Missing("fluid col_per_unit_debt"))
 }
 
-/// Gearbox partial `min_seized` is the quoted seize. Full MultiCall is Unwired.
-pub fn gearbox_min_seized_from_quote(q: &Quote, seize: usize) -> Result<U256, AssembleError> {
+/// Gearbox partial `min_seized` from the quoted seize, less
+/// [`crate::select::SelectCfg::min_out_tolerance_bps`]. Full MultiCall is
+/// Unwired.
+///
+/// G6. This is an exact on-chain minimum on a quantity Gearbox derives from
+/// its own 8-decimal price feeds, which `config.rs` deliberately does not
+/// join — so the bot's figure and the manager's will differ by rounding even
+/// when nothing moved. Zero tolerance made that difference a revert.
+pub fn gearbox_min_seized_from_quote(
+    q: &Quote,
+    seize: usize,
+    tol_bps: u16,
+) -> Result<U256, AssembleError> {
     let s = q
         .seize_options
         .get(seize)
@@ -115,7 +150,11 @@ pub fn gearbox_min_seized_from_quote(q: &Quote, seize: usize) -> Result<U256, As
     if s.max_seize.is_zero() {
         return Err(AssembleError::Missing("gearbox min_seized"));
     }
-    Ok(s.max_seize)
+    let out = with_min_out_tolerance(s.max_seize, tol_bps)?;
+    if out.is_zero() {
+        return Err(AssembleError::Missing("gearbox min_seized"));
+    }
+    Ok(out)
 }
 
 /// Build [`LegMeta`] for adapter ids 3–8 (and Silo/AaveV3 empty tails).
@@ -469,29 +508,93 @@ fn univ3_addr_for(book: &PoolBook, a: Address, b: Address) -> Option<Address> {
     })
 }
 
-/// Smallest `flash_amount` that is ≥ `take`, ≥ `pull`, and ≥ `pull + fee(f)`
-/// under the provider's exact `fee_amount`. Iterates because Aave's fee is
-/// charged on the borrowed amount.
-fn flash_cover_fee(
+/// Premium the pool will pull on top of `flash_amount`.
+fn flash_premium(
     provider: liq_types::FlashProvider,
     fee_bps: u16,
-    pull: u128,
-    take: u128,
+    flash_amount: u128,
 ) -> Result<u128, AssembleError> {
-    let mut f = take.max(pull);
-    let mut n = 0u8;
-    while n < 8 {
-        let fee = fee_amount(provider, U256::from(f), fee_bps)
-            .ok_or(AssembleError::Profit(ProfitError::UnpriceableFee))?;
-        let need = U256::from(pull).checked_add(fee).ok_or(RouteError::Math)?;
-        let want = u128_of(need.max(U256::from(take)))?;
-        if want <= f {
-            return Ok(f);
-        }
-        f = want;
-        n = n.checked_add(1).ok_or(AssembleError::AmountTooLarge)?;
+    let fee = fee_amount(provider, U256::from(flash_amount), fee_bps)
+        .ok_or(AssembleError::Profit(ProfitError::UnpriceableFee))?;
+    u128_of(fee)
+}
+
+/// Add `premium` onto the exact-out repay legs so they sum to
+/// `pull + premium`. Shares stay proportional; the last leg takes the
+/// remainder so the sum is exact.
+fn fund_premium(swaps: &mut [SwapLeg], premium: u128) -> Result<(), AssembleError> {
+    if premium == 0 {
+        return Ok(());
     }
-    Err(AssembleError::Missing("flash fee cover"))
+    let mut n = 0u32;
+    let mut total = U256::ZERO;
+    for s in swaps.iter() {
+        if s.flags & LEG_EXACT_OUT == 0 {
+            continue;
+        }
+        n = n.checked_add(1).ok_or(AssembleError::AmountTooLarge)?;
+        total = total
+            .checked_add(U256::from(s.amount))
+            .ok_or(AssembleError::AmountTooLarge)?;
+    }
+    if n == 0 || total.is_zero() {
+        return Err(AssembleError::Missing("repay swap"));
+    }
+    let prem = U256::from(premium);
+    let mut left = premium;
+    let mut seen = 0u32;
+    for s in swaps.iter_mut() {
+        if s.flags & LEG_EXACT_OUT == 0 {
+            continue;
+        }
+        seen = seen.checked_add(1).ok_or(AssembleError::AmountTooLarge)?;
+        let add = if seen == n {
+            left
+        } else {
+            let share = mul_div(U256::from(s.amount), prem, total, Rounding::Down)
+                .map_err(|_| RouteError::Math)?;
+            let share_u = u128_of(share)?;
+            left = left
+                .checked_sub(share_u)
+                .ok_or(AssembleError::AmountTooLarge)?;
+            share_u
+        };
+        s.amount = s
+            .amount
+            .checked_add(add)
+            .ok_or(AssembleError::AmountTooLarge)?;
+    }
+    Ok(())
+}
+
+/// Move an already-funded premium when a fallback source charges a different fee.
+fn shift_premium(swaps: &mut [SwapLeg], old_fee: u128, new_fee: u128) -> Result<(), AssembleError> {
+    if old_fee == new_fee {
+        return Ok(());
+    }
+    let last = swaps
+        .iter_mut()
+        .rev()
+        .find(|s| s.flags & LEG_EXACT_OUT != 0)
+        .ok_or(AssembleError::Missing("repay swap"))?;
+    if new_fee > old_fee {
+        let d = new_fee
+            .checked_sub(old_fee)
+            .ok_or(AssembleError::AmountTooLarge)?;
+        last.amount = last
+            .amount
+            .checked_add(d)
+            .ok_or(AssembleError::AmountTooLarge)?;
+    } else {
+        let d = old_fee
+            .checked_sub(new_fee)
+            .ok_or(AssembleError::AmountTooLarge)?;
+        last.amount = last
+            .amount
+            .checked_sub(d)
+            .ok_or(AssembleError::Missing("premium headroom"))?;
+    }
+    Ok(())
 }
 
 /// Assemble every selected plan. Empty `plans` → empty output (a skipped
@@ -582,7 +685,17 @@ fn assemble_one(
                 let coll_addr = token(view, s.leg.coll)?;
                 let repay_u = u128_of(s.leg.s)?;
                 let pull = meta.protocol_pull.unwrap_or(repay_u);
-                if pull == 0 {
+                // T13 L1. Liquity is paid by the Stability Pool; the
+                // liquidator repays nothing, so `protocol_pull == 0` here is
+                // the truthful size of the leg, not a missing-data gate
+                // firing. Every other adapter's `0` really is a sizing bug.
+                //
+                // This alone does not make a Liquity-only plan flash-fundable
+                // or profitable to select — `profit.rs`/`select.rs` still
+                // size legs off `protocol_pull`, and sizing a gas-comp-only
+                // leg off `seize.max_seize` instead is separately scoped, per
+                // the spec, from this fail-closed-gate fix.
+                if pull == 0 && meta.adapter != ExecutorAdapter::LiquityV2 {
                     return Err(AssembleError::Missing("protocol_pull"));
                 }
                 liqs.push(LiqLeg {
@@ -613,14 +726,27 @@ fn assemble_one(
                     .ok_or(AssembleError::AmountTooLarge)
             })?;
             let take = u128_of(cg.amount)?;
-            // `exact_out == pull` (liq-plan). Fee-charging flashes are funded
-            // by over-borrow: flash_amount ≥ pull + fee(flash_amount).
-            let flash_amt = flash_cover_fee(cg.provider, cg.fee_bps, pull_sum, take)?;
+            // Borrow the pull, plus over-borrow dust the source can spare.
+            // The premium is not borrowed: the lender pulls
+            // `flash_amount + fee(flash_amount)`, so an extra `fee` of
+            // principal comes straight back out and the fee is still unpaid.
+            // The repay swap buys `pull + fee(flash_amount)`.
+            let spare = take
+                .checked_sub(pull_sum)
+                .ok_or(AssembleError::Missing("flash depth"))?;
+            let extra = u128_of(cfg.over_borrow)?;
+            let add = extra.min(spare);
+            let flash_amt = pull_sum
+                .checked_add(add)
+                .ok_or(AssembleError::AmountTooLarge)?;
+            let premium = flash_premium(cg.provider, cg.fee_bps, flash_amt)?;
+            fund_premium(&mut repay_swaps, premium)?;
             groups.push(FlashGroup {
                 provider: cg.provider,
                 flash_source: cg.source,
                 debt_asset: debt_addr,
                 flash_amount: flash_amt,
+                fee_bps: cg.fee_bps,
                 liqs,
                 repay_swaps,
             });
@@ -735,8 +861,12 @@ pub fn reencode_next_source(
     if next.amount < need && next.amount < U256::from(pull) {
         return Err(AssembleError::NextSourceTooShallow);
     }
+    let old_fee = flash_premium(g.provider, g.fee_bps, g.flash_amount)?;
     g.provider = next.provider;
     g.flash_source = next.source;
+    g.fee_bps = next.fee_bps;
+    let new_fee = flash_premium(g.provider, g.fee_bps, g.flash_amount)?;
+    shift_premium(&mut g.repay_swaps, old_fee, new_fee)?;
     validate(&plan, validate_ctx)?;
     Ok(plan)
 }
@@ -912,6 +1042,7 @@ mod tests {
             repay_options: smallvec::SmallVec::from_slice(&[RepayOption {
                 asset: A1,
                 max_repay: e18(10),
+                slot: liq_protocol::SlotRef::ByAsset,
             }]),
             seize_options: smallvec::SmallVec::from_slice(&[SeizeOption {
                 asset: A0,
@@ -919,6 +1050,7 @@ mod tests {
                 bonus: bonus_5(),
                 curve: BonusCurve::Static { bonus: bonus_5() },
                 call_target: alloy_primitives::Address::ZERO,
+                slot: liq_protocol::SlotRef::ByAsset,
             }]),
         }
     }
@@ -945,6 +1077,7 @@ mod tests {
             aave_v4: None,
             liq_gas: 80_000,
             over_borrow: U256::from(1u64),
+            min_out_tolerance_bps: crate::select::MIN_OUT_TOLERANCE_BPS,
             budget: B,
             bids: None,
         }
@@ -1420,10 +1553,12 @@ mod tests {
         assert!(g.repay_swaps.iter().all(|s| s.amount > 0));
     }
 
-    /// H4: Aave 5 bps is payable. `exact_out == pull`; flash_amount ≥
-    /// pull + fee. Not a Morpho 0-fee fixture.
+    /// H4: Aave 5 bps is bought by the repay swap.
+    /// `exact_out == pull + fee(flash_amount)`. Over-borrow is the 1 wei
+    /// dust, not the premium: borrowing the premium raises the debt by
+    /// the same amount the callback still has to pay.
     #[test]
-    fn aave_nonzero_fee_is_funded_by_over_borrow() {
+    fn aave_premium_is_bought_by_exact_out() {
         let bk = book(vec![deep()]);
         let (_s, flash) = idx_aave();
         let quote = q(1);
@@ -1459,6 +1594,7 @@ mod tests {
         validate(plan, &vctx(tok(1))).unwrap();
         let g = &plan.groups[0];
         assert_eq!(g.provider, liq_types::FlashProvider::Aave);
+        assert_eq!(g.fee_bps, 5);
         let pull: u128 = g.liqs.iter().map(|l| l.protocol_pull).sum();
         let exact_out: u128 = g
             .repay_swaps
@@ -1466,16 +1602,21 @@ mod tests {
             .filter(|s| s.flags & LEG_EXACT_OUT != 0)
             .map(|s| s.amount)
             .sum();
-        assert_eq!(exact_out, pull, "liq-plan: exact_out == pull");
-        let fee = fee_amount(g.provider, U256::from(g.flash_amount), 5).unwrap();
+        let fee = fee_amount(g.provider, U256::from(g.flash_amount), g.fee_bps).unwrap();
         assert!(!fee.is_zero(), "Aave 5 bps is nonzero");
-        assert!(
-            U256::from(g.flash_amount) >= U256::from(pull) + fee,
-            "flash_amount {} must be ≥ pull {} + fee {}",
-            g.flash_amount,
-            pull,
-            fee
+        assert_eq!(
+            U256::from(exact_out),
+            U256::from(pull) + fee,
+            "exact_out must be pull + the premium charged on flash_amount"
         );
+        assert_eq!(g.flash_amount, pull + 1, "over-borrow stays 1 wei of dust");
+        assert!(
+            fee > U256::from(1u8),
+            "the premium is larger than the dust, so it is not inside flash_amount"
+        );
+        let balance = U256::from(g.flash_amount) - U256::from(pull) + U256::from(exact_out);
+        let owed = U256::from(g.flash_amount) + fee;
+        assert_eq!(balance, owed, "callback can pay amount + premium");
         assert_eq!(assembled[0].group_fee_bps[0], 5);
     }
 
@@ -1720,6 +1861,7 @@ mod tests {
             repay_options: smallvec::SmallVec::from_slice(&[RepayOption {
                 asset: A1,
                 max_repay: e18(1),
+                slot: liq_protocol::SlotRef::ByAsset,
             }]),
             seize_options: smallvec::SmallVec::from_slice(&[SeizeOption {
                 asset: A0,
@@ -1727,10 +1869,11 @@ mod tests {
                 bonus: bonus_5(),
                 curve: BonusCurve::Static { bonus: bonus_5() },
                 call_target: alloy_primitives::Address::ZERO,
+                slot: liq_protocol::SlotRef::ByAsset,
             }]),
         };
-        assert_eq!(euler_min_yield_from_quote(&q, 0).unwrap(), e18(3));
-        assert_eq!(gearbox_min_seized_from_quote(&q, 0).unwrap(), e18(3));
-        assert!(euler_min_yield_from_quote(&q, 3).is_err());
+        assert_eq!(euler_min_yield_from_quote(&q, 0, 0).unwrap(), e18(3));
+        assert_eq!(gearbox_min_seized_from_quote(&q, 0, 0).unwrap(), e18(3));
+        assert!(euler_min_yield_from_quote(&q, 3, 0).is_err());
     }
 }

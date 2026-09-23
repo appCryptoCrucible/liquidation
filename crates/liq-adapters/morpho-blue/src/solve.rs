@@ -7,7 +7,7 @@ use liq_types::price::SourceKind;
 use liq_types::{AssetId, Price, PriceVector, Ray};
 
 use crate::health::{finish, terms};
-use crate::math::{mul_div_down, HF_THRESHOLD_WAD, ORACLE_PRICE_SCALE};
+use crate::math::{asset_unit, mul_div_down, HF_THRESHOLD_WAD, ORACLE_PRICE_SCALE};
 use liq_types::fixed::WAD;
 
 pub const HORIZON: u64 = 10 * 365 * 24 * 3600;
@@ -74,19 +74,48 @@ pub(crate) fn liquidation_price(
         return Ok(None);
     }
 
-    let raw = if is_coll {
-        let p = mul_div(oracle_star, t.p_loan, ORACLE_PRICE_SCALE, Rounding::Up)?;
-        if p < U256::from(2u8) {
-            return Ok(None);
+    // Invert `health::oracle_price`. That reconstruction inserts
+    // `10^(loan_decimals - coll_decimals)` into the 1e36 oracle. Dropping
+    // it prices the threshold off by that factor, so a 6-decimal loan
+    // never crosses.
+    let coll_decimals = t.loan.coll_decimals;
+    let loan_decimals = t.loan_row.decimals;
+    let raw = match loan_decimals.cmp(&coll_decimals) {
+        core::cmp::Ordering::Equal => {
+            if is_coll {
+                mul_div(oracle_star, t.p_loan, ORACLE_PRICE_SCALE, Rounding::Up)?
+            } else {
+                mul_div(t.p_coll, ORACLE_PRICE_SCALE, oracle_star, Rounding::Down)?
+            }
         }
-        p
-    } else {
-        let p = mul_div(t.p_coll, ORACLE_PRICE_SCALE, oracle_star, Rounding::Down)?;
-        if p.is_zero() {
-            return Ok(None);
+        core::cmp::Ordering::Greater => {
+            let lift = asset_unit(loan_decimals.wrapping_sub(coll_decimals))?;
+            let scale = ORACLE_PRICE_SCALE
+                .checked_mul(lift)
+                .ok_or(FixedError::Overflow)?;
+            if is_coll {
+                mul_div(oracle_star, t.p_loan, scale, Rounding::Up)?
+            } else {
+                mul_div(t.p_coll, scale, oracle_star, Rounding::Down)?
+            }
         }
-        p
+        core::cmp::Ordering::Less => {
+            let lift = asset_unit(coll_decimals.wrapping_sub(loan_decimals))?;
+            if is_coll {
+                let num = t.p_loan.checked_mul(lift).ok_or(FixedError::Overflow)?;
+                mul_div(oracle_star, num, ORACLE_PRICE_SCALE, Rounding::Up)?
+            } else {
+                let den = oracle_star.checked_mul(lift).ok_or(FixedError::Overflow)?;
+                mul_div(t.p_coll, ORACLE_PRICE_SCALE, den, Rounding::Down)?
+            }
+        }
     };
+    if is_coll && raw < U256::from(2u8) {
+        return Ok(None);
+    }
+    if !is_coll && raw.is_zero() {
+        return Ok(None);
+    }
 
     Ok(Some(Price {
         asset,

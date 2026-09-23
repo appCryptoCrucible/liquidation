@@ -449,11 +449,23 @@ fn configurator_log(
         let disc_e = pf
             .checked_sub(ev.liquidationPremiumExpired)
             .ok_or(ProtocolError::MalformedLog)?;
+        // G2. `ltUnderlying = liquidationDiscount - feeLiquidation` is an
+        // immutable identity (`CreditManagerV3.sol:184`, and
+        // `CreditConfiguratorV3.sol:424` refuses any `setFees` that would
+        // change it) — so it is re-derived here, on every fee update, rather
+        // than read from a per-token LT slot the underlying never has.
+        let lt_underlying = u16::try_from(
+            U256::from(disc)
+                .checked_sub(U256::from(ev.feeLiquidation))
+                .ok_or(ProtocolError::MalformedLog)?,
+        )
+        .map_err(|_| ProtocolError::MalformedLog)?;
         let rows = patch_manager(st, m.market, Some(ts), |b| {
             b.fee_liquidation = ev.feeLiquidation;
             b.liquidation_discount = disc;
             b.fee_liquidation_expired = ev.feeLiquidationExpired;
             b.liquidation_discount_expired = disc_e;
+            b.lt_underlying = lt_underlying;
             b.flags |= ManagerRow::FEES;
             Ok(())
         })?;
@@ -465,11 +477,13 @@ fn configurator_log(
             return Ok(DirtySet::None);
         };
         if tok.slot == UNDERLYING_SLOT {
-            let rows = patch_manager(st, m.market, Some(ts), |b| {
-                b.lt_underlying = ev.liquidationThreshold;
-                Ok(())
-            })?;
-            return Ok(DirtySet::MarketReprice(rows));
+            // G2. `setCollateralTokenData` (pin `510fc654`) reverts for the
+            // underlying, so the real contract cannot emit this event with
+            // `token == underlying` — `ev.liquidationThreshold` here would be
+            // untrusted data from a call path that should not exist. Never
+            // write `lt_underlying` from it; the value is derived only from
+            // `fees` (see `UpdateFees` above and the initial listing).
+            return Ok(DirtySet::None);
         }
         let rows = patch_token(st, m.market, tok.slot, Some(ts), |b| {
             b.lt_initial = ev.liquidationThreshold;

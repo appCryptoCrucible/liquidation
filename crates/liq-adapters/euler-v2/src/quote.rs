@@ -3,6 +3,7 @@
 //! `(repay, seize)` pair, so `max_repay` cannot overstate a smaller coll.
 
 use alloy_primitives::U256;
+use liq_protocol::SlotRef;
 use liq_protocol::{
     BonusCurve, Constraints, HealthState, PositionRef, ProtocolError, Quote, RepayOption, Result,
     SeizeOption,
@@ -14,6 +15,21 @@ use smallvec::SmallVec;
 use crate::health::{finish, terms};
 use crate::layout::{CollRow, UserExtra, DEBT_SLOT, UNMAPPED_ASSET};
 use crate::math::{addr_from, asset_unit, bonus_ray, max_liquidation, value_wad};
+
+/// Basis points of `max_repay` given back so one block of interest accrual
+/// between quote and inclusion cannot trip `E_ExcessiveRepayAmount` (E3).
+/// One bp is far above a block of accrual at any plausible rate and far
+/// below the bonus, so it costs nothing in the good case.
+const REPAY_HEADROOM_BPS: u16 = 1;
+
+/// Euler stores the discount factor in WAD; [`BonusCurve::Reciprocal`] takes
+/// RAY. Exact: RAY is WAD scaled by 1e9.
+#[inline]
+fn wad_to_ray(wad: U256) -> Result<liq_types::Ray> {
+    wad.checked_mul(U256::from(1_000_000_000u64))
+        .map(liq_types::Ray::from_raw)
+        .ok_or(ProtocolError::Fixed(FixedError::Overflow))
+}
 
 #[inline]
 fn cell(v: &[u128], slot: u16) -> u128 {
@@ -34,7 +50,19 @@ pub(crate) fn quote(
         return Err(ProtocolError::EmptyQuote);
     }
     let bonus = bonus_ray(t.df)?;
-    let curve = BonusCurve::Static { bonus };
+    // E4. Euler's discount is health-dependent: `df = max(hf, min_df)` and
+    // the liquidator is paid `1/df - 1`. Quoting that as `Static` pinned the
+    // bonus at the health the quote happened to be built at and claimed it
+    // held everywhere — throwing away exactly the Aave-V4-shaped edge this
+    // engine exists to exploit, and making the assertion below a tautology
+    // (`Static::bonus_at_hf` returns its own field for any input).
+    //
+    // With the real curve the assertion is a genuine cross-check of two
+    // independent expressions: `bonus_ray(t.df)` from the adapter's own
+    // discount factor, against the curve evaluated at the reported health.
+    let curve = BonusCurve::Reciprocal {
+        min_df: wad_to_ray(t.min_df)?,
+    };
     let at_hf = curve
         .bonus_at_hf(health.hf)?
         .ok_or(ProtocolError::Internal)?;
@@ -90,6 +118,7 @@ pub(crate) fn quote(
                 bonus,
                 curve,
                 call_target: addr_from(coll.vault),
+                slot: SlotRef::ByAsset,
             },
             repay,
             seize_value,
@@ -104,7 +133,7 @@ pub(crate) fn quote(
             best = Some(cand);
         }
     }
-    let Some((seize, mut max_repay, _)) = best else {
+    let Some((mut seize, mut max_repay, _)) = best else {
         return Err(ProtocolError::EmptyQuote);
     };
     let cap = cons.per_liquidation_notional_cap.raw();
@@ -116,15 +145,44 @@ pub(crate) fn quote(
             p_debt,
             Rounding::Down,
         )?;
+        // E2. `Liquidation.sol` pays
+        //     yieldBalance = maxYieldBalance * repayAssets / maxRepay
+        // so a repay clamped by the cap seizes proportionally less. Leaving
+        // `max_seize` at the UNCLAMPED yield made `minYieldBalance`
+        // unreachable by construction and every capped liquidation reverted
+        // with `E_MinYield`.
+        let uncapped = max_repay;
         max_repay = max_repay.min(raw_cap);
+        if max_repay < uncapped && !uncapped.is_zero() {
+            seize.max_seize = mul_div(seize.max_seize, max_repay, uncapped, Rounding::Down)?;
+        }
     }
-    if max_repay.is_zero() {
+    // E3. `repay` has zero headroom: Euler rejects `repayAssets` above the
+    // current maximum with `E_ExcessiveRepayAmount`, and in the
+    // collateral-capped regime that maximum strictly DECREASES as debt
+    // accrues — so a quote built at block N is always slightly too large at
+    // N+1. Give back a basis point. The seize scales with it, keeping the
+    // `minYieldBalance` bound consistent with the repay actually sent.
+    if !max_repay.is_zero() {
+        let before = max_repay;
+        max_repay = mul_div(
+            max_repay,
+            U256::from(10_000u32 - u32::from(REPAY_HEADROOM_BPS)),
+            U256::from(10_000u32),
+            Rounding::Down,
+        )?;
+        if max_repay < before && !before.is_zero() {
+            seize.max_seize = mul_div(seize.max_seize, max_repay, before, Rounding::Down)?;
+        }
+    }
+    if max_repay.is_zero() || seize.max_seize.is_zero() {
         return Err(ProtocolError::EmptyQuote);
     }
     let mut repay_options = SmallVec::new();
     repay_options.push(RepayOption {
         asset: t.debt_row.asset,
         max_repay,
+        slot: SlotRef::ByAsset,
     });
     let mut seize_options = SmallVec::<[SeizeOption; 8]>::new();
     seize_options.push(seize);

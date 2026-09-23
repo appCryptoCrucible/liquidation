@@ -496,11 +496,67 @@ fn assert_live_registry_fees_then_new() {
     assert_eq!(cfg.managers.len(), 1);
     assert_eq!(cfg.managers[0].fees.liquidation_discount, DISCOUNT);
     assert_eq!(cfg.managers[0].market.0, 4201);
+    // G2. `ltParams(underlying)` reads an unwritten storage slot on the real
+    // contract and the mock now returns 0 for it (see the comment at the
+    // call site in `common/mod.rs`), so a correct `lt_underlying` here proves
+    // it came from `fees`, not from that dead slot.
+    assert_eq!(
+        cfg.managers[0].lt_underlying,
+        DISCOUNT - FEE_LIQ,
+        "lt_underlying must derive from fees, not ltParams(underlying)"
+    );
     for t in &cfg.managers[0].tokens {
         assert_eq!(t.ramp_start, math::STATIC_LT_RAMP_START);
         assert!(t.ramp_start > u64::from(u32::MAX));
     }
     GearboxV3::new(cfg).expect("asserted config boots");
+}
+
+/// G2. `UpdateFees` must re-derive `lt_underlying` on every fold, not only
+/// at initial listing — a stale value would drift the moment fees change,
+/// even after the listing-time fix.
+#[test]
+fn update_fees_rederives_lt_underlying() {
+    let d = Deploy::new();
+    let p = d.adapter();
+    let mut st = store_after(&p, &listing_logs(&d));
+    let before: &liq_adapters_gearbox::layout::ManagerRow = st
+        .market(MarketSlot {
+            market: MARKET,
+            slot: liq_adapters_gearbox::layout::UNDERLYING_SLOT,
+        })
+        .unwrap()
+        .body()
+        .unwrap();
+    assert_eq!(before.lt_underlying, DISCOUNT - FEE_LIQ);
+
+    // Different fees than the listing-time config: premium 1200 -> discount
+    // 8800, fee 300 -> lt_underlying should become 8500, not stay at the
+    // listing-time 9350 and not go to 0.
+    let ev = log(
+        d.configurator,
+        &configurator::UpdateFees {
+            feeLiquidation: 300,
+            liquidationPremium: 1200,
+            feeLiquidationExpired: FEE_LIQ_EXP,
+            liquidationPremiumExpired: 300,
+        },
+        DEPLOY_BLOCK + 1,
+        T0,
+    );
+    p.apply_log(&mut st, &ev.view()).unwrap();
+    let after: &liq_adapters_gearbox::layout::ManagerRow = st
+        .market(MarketSlot {
+            market: MARKET,
+            slot: liq_adapters_gearbox::layout::UNDERLYING_SLOT,
+        })
+        .unwrap()
+        .body()
+        .unwrap();
+    assert_eq!(
+        after.lt_underlying, 8_500,
+        "lt_underlying must track fees on every fold, not just at listing"
+    );
 }
 
 #[test]

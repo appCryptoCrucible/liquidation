@@ -41,6 +41,32 @@ pub enum BonusCurve {
         max_bonus: Ray,
         quantum: Ray,
     },
+    /// Euler V2: the liquidator's discount is the reciprocal of health,
+    /// floored at the vault's `MAX_LIQUIDATION_DISCOUNT`.
+    ///
+    /// `EVault/Liquidation.sol` (pin `bfb325a6`) prices the seize at a
+    /// *discount factor* `df = max(hf, min_df)` and pays the liquidator
+    /// `collateral / df`, so the bonus is
+    ///
+    /// ```text
+    /// bonus(hf) = 1 / max(hf, min_df) - 1
+    /// ```
+    ///
+    /// which is zero at `hf = 1`, rises as health falls, and saturates at
+    /// `1 / min_df - 1` once `hf <= min_df`. It is a hyperbola, not a line:
+    /// [`Self::HealthLinear`] between the same endpoints understates the
+    /// bonus everywhere in between, because the true curve is convex.
+    ///
+    /// This is exactly the health-dependent edge the engine exists to find,
+    /// and the reason this module warns against collapsing a curve to a
+    /// scalar — quoting Euler as [`Self::Static`] pinned one point and
+    /// claimed it held at every health.
+    Reciprocal {
+        /// `MAX_LIQUIDATION_DISCOUNT` as a discount factor: the smallest
+        /// `df` the vault will use, so the largest bonus it will pay.
+        /// Must be in `(0, 1]`.
+        min_df: Ray,
+    },
     /// Dutch auction: the price offered to the liquidator falls with time
     /// since `start`. Evaluation is auction machinery, deferred (D14).
     TimeDescending {
@@ -108,6 +134,23 @@ impl BonusCurve {
                 bonus_at_threshold
                     .checked_add(Ray::from_raw(rise))
                     .map(Some)
+            }
+            Self::Reciprocal { min_df } => {
+                if min_df.raw().is_zero() {
+                    return Err(FixedError::DivisionByZero);
+                }
+                // Above the threshold the vault pays nothing: `df` is capped
+                // at 1, so `1/1 - 1 = 0`.
+                if hf >= Ray::ONE {
+                    return Ok(Some(Ray::ZERO));
+                }
+                let df = if hf <= min_df { min_df } else { hf };
+                // `1/df - 1` in RAY, floored: the bot must never quote a
+                // bonus above what the vault will actually pay.
+                let inv = mul_div(Ray::ONE.raw(), Ray::ONE.raw(), df.raw(), Rounding::Down)?;
+                inv.checked_sub(Ray::ONE.raw())
+                    .map(|b| Some(Ray::from_raw(b)))
+                    .ok_or(FixedError::Underflow)
             }
             Self::TimeDescending { .. } => Ok(None),
         }

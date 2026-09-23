@@ -1,6 +1,7 @@
 //! `LiquidationLogic.executeLiquidationCall` close factor, bonus, dust.
 
 use alloy_primitives::U256;
+use liq_protocol::SlotRef;
 use liq_protocol::{
     BonusCurve, Constraints, HealthState, PositionRef, ProtocolError, Quote, RepayOption, Result,
     SeizeOption,
@@ -47,6 +48,12 @@ struct Amounts {
     seize: U256,
 }
 
+/// `LiquidationLogic._calculateDebt` (Aave >=3.2, pin 8305565ae):
+/// `maxLiquidatableDebt = vars.borrowerReserveDebt`, clamped to
+/// `vars.totalDebtInBaseCurrency.percentMul(DEFAULT_LIQUIDATION_CLOSE_FACTOR)`
+/// **only when the reserve's own debt exceeds that base-currency cap** — the
+/// cap is computed from the POSITION's total debt, not the reserve's. Aave
+/// 3.0/3.1 was per-reserve; >=3.2, which this adapter pins, is not.
 fn max_liquidatable_debt(p: &AmountsIn<'_>) -> Result<U256> {
     let Some(c) = p.coll.collateral else {
         return Err(ProtocolError::Internal);
@@ -54,11 +61,6 @@ fn max_liquidatable_debt(p: &AmountsIn<'_>) -> Result<U256> {
     let Some(d) = p.debt.debt else {
         return Err(ProtocolError::Internal);
     };
-    let leftover = p
-        .min_base
-        .checked_div(U256::from(2u8))
-        .unwrap_or(U256::ZERO);
-    let _ = leftover;
     let mut max_d = d.assets;
     if c.value >= p.min_base && d.value >= p.min_base && p.hf_wad > p.close_hf {
         let cap_base = crate::math::percent_mul(p.total_debt_base, p.close_factor_bps)?;
@@ -198,25 +200,51 @@ pub(crate) fn quote(
             .ok_or(ProtocolError::MissingPrice(asset))
     };
     let mut seize: SmallVec<[(SeizeOption, U256, u16, U256); 8]> = SmallVec::new();
-    for t in terms.iter().filter(|t| t.seizable()) {
+    for t in terms.iter().filter(|t| t.seizable(pos.timestamp)) {
         let Some(c) = t.collateral else {
             continue;
         };
-        let bonus_span = t.liq_bonus.checked_sub(BPS).ok_or(FixedError::Underflow)?;
-        let bonus = Ray::from_raw(
-            bonus_span
-                .checked_mul(BPS_RAY)
-                .ok_or(FixedError::Overflow)?,
-        );
+        // A reserve governance has deprecated carries LTV/LT/bonus all zero.
+        // `health` still counts its balance as seizable, but `liquidationBonus`
+        // below 100_00 is not a bonus at all — seizing it pays less collateral
+        // than the debt repaid. Skip the option; erroring here (the previous
+        // `checked_sub` underflow) failed the ENTIRE quote, so one deprecated
+        // reserve made every other collateral on the position unliquidatable.
+        let Some(bonus_span) = t.liq_bonus.checked_sub(BPS) else {
+            continue;
+        };
+        // `liquidationProtocolFee` is skimmed from the bonus portion of the
+        // seize, so what the liquidator keeps is
+        //   to_liq = base·(1 + b) − base·b·f = base·(1 + b·(1 − f))
+        // i.e. the realised bonus is exactly `b · (1 − f)`. Quoting the gross
+        // `b` overstated profit by the fee rate on every reserve that charges
+        // one (10% is the common mainnet setting) and — because this list is
+        // ranked by `bonus` — ranked a 7.5%-bonus/30%-fee reserve above a
+        // 6%/0% one despite being worse net.
+        let fee_pct = U256::from(t.reserve.liq_protocol_fee);
+        let keep_bps = BPS.checked_sub(fee_pct).ok_or(FixedError::Underflow)?;
+        let net_span = mul_div(bonus_span, keep_bps, BPS, Rounding::Down)?;
+        let bonus = Ray::from_raw(net_span.checked_mul(BPS_RAY).ok_or(FixedError::Overflow)?);
         let curve = BonusCurve::Static { bonus };
-        let value = value_ray_of(c.assets, price_ray(t.row.asset)?, t.row.decimals)?;
+        // `max_seize` is what this leg can YIELD, so it is net of the fee too.
+        // At the collateral-capped bound the protocol takes the whole balance
+        // and hands back `c.assets − fee`; the router must not size an exit
+        // for collateral that never arrives.
+        let gross_bonus_coll = c
+            .assets
+            .checked_sub(percent_div_floor(c.assets, t.liq_bonus)?)
+            .ok_or(FixedError::Underflow)?;
+        let max_fee = percent_mul_ceil(gross_bonus_coll, fee_pct)?;
+        let max_seize = c.assets.checked_sub(max_fee).ok_or(FixedError::Underflow)?;
+        let value = value_ray_of(max_seize, price_ray(t.row.asset)?, t.row.decimals)?;
         seize.push((
             SeizeOption {
                 asset: t.row.asset,
-                max_seize: c.assets,
+                max_seize,
                 bonus,
                 curve,
                 call_target: alloy_primitives::Address::ZERO,
+                slot: SlotRef::ByAsset,
             },
             value,
             t.slot,
@@ -233,7 +261,7 @@ pub(crate) fn quote(
         .ok_or(ProtocolError::Internal)?;
 
     let mut repay: SmallVec<[(RepayOption, U256); 4]> = SmallVec::new();
-    for t in terms.iter().filter(|t| t.repayable()) {
+    for t in terms.iter().filter(|t| t.repayable(pos.timestamp)) {
         let price = price_ray(t.row.asset)?;
         let cap = cons.per_liquidation_notional_cap.raw();
         let debt_to_cover = if cap == U256::MAX {
@@ -268,6 +296,7 @@ pub(crate) fn quote(
             RepayOption {
                 asset: t.row.asset,
                 max_repay: a.repay,
+                slot: SlotRef::ByAsset,
             },
             value,
         ));
@@ -352,6 +381,22 @@ mod close_factor_boundary {
         assert_eq!(
             max_liquidatable_debt(&at_above).unwrap(),
             U256::from(500u64)
+        );
+
+        // The cap is on the POSITION's total debt (>=3.2 semantics), not the
+        // reserve's own. Two reserves at 1000 each, total 2000: half of 2000
+        // is 1000, which this reserve's 1000 is not strictly above, so the
+        // full 1000 passes here — a 100% close on this leg is correct
+        // because the OTHER reserve is what has headroom left in the total.
+        let two_reserves = AmountsIn {
+            hf_wad: close_hf + U256::from(1u8),
+            total_debt_base: U256::from(2_000u64),
+            ..at_eq
+        };
+        assert_eq!(
+            max_liquidatable_debt(&two_reserves).unwrap(),
+            U256::from(1_000u64),
+            "the close-factor cap is base-currency, computed off the position total"
         );
     }
 }

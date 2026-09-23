@@ -129,6 +129,28 @@ contract Executor {
     /// liquidation and the flash roll back together.
     error RedeemFailed(address token, uint256 code);
 
+    /// Why a liquidation leg did not fill. Every `catch` in this contract
+    /// emits one before returning false, so a skipped leg is diagnosable from
+    /// the receipt instead of being indistinguishable from "no opportunity".
+    /// `stage` names which call failed; `reason` is the raw revert data,
+    /// truncated to the first 256 bytes (a custom-error selector plus args,
+    /// or an ABI-encoded `Error(string)`).
+    event LegFailed(
+        uint8 indexed adapter,
+        address indexed market,
+        address indexed borrower,
+        uint8 stage,
+        bytes reason
+    );
+
+    // `stage` values for `LegFailed`. Guard stages are pre-call views; the
+    // LIQUIDATE stage is the protocol call itself.
+    uint8 private constant ST_GUARD      = 1; // health / max-liquidation view reverted
+    uint8 private constant ST_NOT_LIQ    = 2; // guard succeeded, position is not liquidatable
+    uint8 private constant ST_LIQUIDATE  = 3; // the liquidation call reverted
+    uint8 private constant ST_SIZING     = 4; // pre-call sizing made the leg a no-op
+    uint8 private constant ST_TAIL       = 5; // the leg tail is malformed or unset
+
     constructor(
         address operator_, address profitSink_,
         address univ3Factory_, bytes32 univ3InitHash_,
@@ -455,6 +477,15 @@ contract Executor {
     // the call's gas would take the batch down with it — acceptable only
     // because that set is curated. Do not widen it to arbitrary input.
     // ──────────────────────────────────────────────────────────────────────
+    /// Cap revert data so a protocol returning a huge blob cannot make the
+    /// log dominate the gas cost of the leg it describes.
+    function _clip(bytes memory r) internal pure returns (bytes memory) {
+        if (r.length <= 256) return r;
+        bytes memory out = new bytes(256);
+        for (uint256 i; i < 256; ++i) out[i] = r[i];
+        return out;
+    }
+
     function _liquidateLeg(address debtAsset, LiqLeg memory l, bytes calldata plan)
         internal returns (bool)
     {
@@ -474,7 +505,10 @@ contract Executor {
     /// pin 8305565ae. Guard: `getUserAccountData(user).healthFactor < 1e18`.
     function _liquidateAaveV3(address debtAsset, LiqLeg memory l) internal returns (bool ok) {
         (,,,,, uint256 hf) = IAavePool(l.market).getUserAccountData(l.borrower);
-        if (hf >= HF_THRESHOLD) return false;
+        if (hf >= HF_THRESHOLD) {
+            emit LegFailed(PlanDecoder.A_AAVE_V3, l.market, l.borrower, ST_NOT_LIQ, "");
+            return false;
+        }
 
         debtAsset.safeApprove(l.market, l.repayAmount);
         try IAavePool(l.market).liquidationCall(
@@ -482,7 +516,9 @@ contract Executor {
             false   // never receive aTokens: profit must converge on WETH
         ) {
             ok = true;
-        } catch {}
+        } catch (bytes memory r) {
+            emit LegFailed(PlanDecoder.A_AAVE_V3, l.market, l.borrower, ST_LIQUIDATE, _clip(r));
+        }
         debtAsset.safeApprove(l.market, 0);
     }
 
@@ -498,7 +534,10 @@ contract Executor {
         internal returns (bool ok)
     {
         IAaveV4Spoke.UserAccountData memory d = IAaveV4Spoke(l.market).getUserAccountData(l.borrower);
-        if (d.healthFactor >= HF_THRESHOLD) return false;
+        if (d.healthFactor >= HF_THRESHOLD) {
+            emit LegFailed(PlanDecoder.A_AAVE_V4, l.market, l.borrower, ST_NOT_LIQ, "");
+            return false;
+        }
 
         (uint16 collId, uint16 debtId) = plan.tailV4(l.tailOffset);
         debtAsset.safeApprove(l.market, l.repayAmount);
@@ -507,7 +546,9 @@ contract Executor {
             false   // never receive shares
         ) {
             ok = true;
-        } catch {}
+        } catch (bytes memory r) {
+            emit LegFailed(PlanDecoder.A_AAVE_V4, l.market, l.borrower, ST_LIQUIDATE, _clip(r));
+        }
         debtAsset.safeApprove(l.market, 0);
     }
 
@@ -537,29 +578,40 @@ contract Executor {
         try morpho.accrueInterest(mp) {
             try morpho.market(id) returns (IMorpho.Market memory m_) {
                 m = m_;
-            } catch {
+            } catch (bytes memory r) {
+                emit LegFailed(PlanDecoder.A_MORPHO, l.market, l.borrower, ST_GUARD, _clip(r));
                 return false;
             }
             try morpho.position(id, l.borrower) returns (IMorpho.Position memory p_) {
                 pos = p_;
-            } catch {
+            } catch (bytes memory r) {
+                emit LegFailed(PlanDecoder.A_MORPHO, l.market, l.borrower, ST_GUARD, _clip(r));
                 return false;
             }
-        } catch {
+        } catch (bytes memory r) {
+            emit LegFailed(PlanDecoder.A_MORPHO, l.market, l.borrower, ST_GUARD, _clip(r));
             return false;
         }
-        if (pos.borrowShares == 0) return false;
+        if (pos.borrowShares == 0) {
+            emit LegFailed(PlanDecoder.A_MORPHO, l.market, l.borrower, ST_NOT_LIQ, "");
+            return false;
+        }
 
         // SharesMathLib.toSharesDown: same expression, same operands as Morpho.
         uint256 shares = (uint256(l.repayAmount) * (uint256(m.totalBorrowShares) + MORPHO_VIRTUAL_SHARES))
             / (uint256(m.totalBorrowAssets) + MORPHO_VIRTUAL_ASSETS);
         if (shares > pos.borrowShares) shares = pos.borrowShares;
-        if (shares == 0) return false;
+        if (shares == 0) {
+            emit LegFailed(PlanDecoder.A_MORPHO, l.market, l.borrower, ST_SIZING, "");
+            return false;
+        }
 
         debtAsset.safeApprove(l.market, l.repayAmount);
         try morpho.liquidate(mp, l.borrower, 0, shares, "") returns (uint256, uint256) {
             ok = true;
-        } catch {}
+        } catch (bytes memory r) {
+            emit LegFailed(PlanDecoder.A_MORPHO, l.market, l.borrower, ST_LIQUIDATE, _clip(r));
+        }
         debtAsset.safeApprove(l.market, 0);
     }
 
@@ -573,31 +625,49 @@ contract Executor {
         internal returns (bool ok)
     {
         (uint256 minYield, address vault) = plan.tailEuler(l.tailOffset);
-        if (vault == address(0)) return false;
+        if (vault == address(0)) {
+            emit LegFailed(PlanDecoder.A_EULER, l.market, l.borrower, ST_TAIL, "");
+            return false;
+        }
         try IEVault(l.market).checkLiquidation(address(this), l.borrower, vault)
             returns (uint256 maxRepay, uint256)
         {
-            if (maxRepay == 0) return false;
-        } catch {
+            if (maxRepay == 0) {
+                emit LegFailed(PlanDecoder.A_EULER, l.market, l.borrower, ST_NOT_LIQ, "");
+                return false;
+            }
+        } catch (bytes memory r) {
+            emit LegFailed(PlanDecoder.A_EULER, l.market, l.borrower, ST_GUARD, _clip(r));
             return false;
         }
 
         address connector;
         try IEVault(l.market).EVC() returns (address e) {
             connector = e;
-        } catch {
+        } catch (bytes memory r) {
+            emit LegFailed(PlanDecoder.A_EULER, l.market, l.borrower, ST_GUARD, _clip(r));
             return false;
         }
-        if (connector == address(0)) return false;
+        if (connector == address(0)) {
+            emit LegFailed(PlanDecoder.A_EULER, l.market, l.borrower, ST_GUARD, "");
+            return false;
+        }
 
         // `liquidate` transfers the violator's debt onto the caller and seizes
-        // shares (`transferBorrow`). The caller's account check at the end of
-        // the batch reverts `E_AccountLiquidity` unless that debt is repaid
-        // first. `repay(uint256.max)` pulls the underlying and clears it.
-        // `redeem(uint256.max)` is the vault's full-balance flag. The
-        // controller is released in the same batch so a later debt vault can
-        // be enabled.
-        IEVC.BatchItem[] memory items = new IEVC.BatchItem[](5);
+        // shares (`transferBorrow`). `enableCollateral` puts the seized vault
+        // into the account's collateral set BEFORE `liquidate` runs, so the
+        // controller's deferred account-status check (fired by
+        // `enableController` and resolved at the end of the batch) sees it.
+        // The caller's account check reverts `E_AccountLiquidity` unless the
+        // assumed debt is repaid first — `repay(uint256.max)` pulls the
+        // underlying and clears it. The controller is released in the same
+        // batch so a later debt vault can be enabled, and `disableController`
+        // itself reverts `E_OutstandingDebt` if the repay left anything open,
+        // so the transaction cannot end holding Euler debt. `redeem` last:
+        // it only needs the shares this contract already holds, not
+        // controller/collateral state, and running it after `disableController`
+        // keeps the batch in the sequence the mechanism was verified against.
+        IEVC.BatchItem[] memory items = new IEVC.BatchItem[](6);
         items[0] = IEVC.BatchItem({
             targetContract: connector,
             onBehalfOfAccount: address(0),
@@ -605,22 +675,22 @@ contract Executor {
             data: abi.encodeCall(IEVC.enableController, (address(this), l.market))
         });
         items[1] = IEVC.BatchItem({
-            targetContract: l.market,
-            onBehalfOfAccount: address(this),
+            targetContract: connector,
+            onBehalfOfAccount: address(0),
             value: 0,
-            data: abi.encodeCall(IEVault.liquidate, (l.borrower, vault, l.repayAmount, minYield))
+            data: abi.encodeCall(IEVC.enableCollateral, (address(this), vault))
         });
         items[2] = IEVC.BatchItem({
             targetContract: l.market,
             onBehalfOfAccount: address(this),
             value: 0,
-            data: abi.encodeCall(IEVault.repay, (type(uint256).max, address(this)))
+            data: abi.encodeCall(IEVault.liquidate, (l.borrower, vault, l.repayAmount, minYield))
         });
         items[3] = IEVC.BatchItem({
-            targetContract: vault,
+            targetContract: l.market,
             onBehalfOfAccount: address(this),
             value: 0,
-            data: abi.encodeCall(IEVault.redeem, (type(uint256).max, address(this), address(this)))
+            data: abi.encodeCall(IEVault.repay, (type(uint256).max, address(this)))
         });
         items[4] = IEVC.BatchItem({
             targetContract: l.market,
@@ -628,12 +698,20 @@ contract Executor {
             value: 0,
             data: abi.encodeCall(IEVault.disableController, ())
         });
+        items[5] = IEVC.BatchItem({
+            targetContract: vault,
+            onBehalfOfAccount: address(this),
+            value: 0,
+            data: abi.encodeCall(IEVault.redeem, (type(uint256).max, address(this), address(this)))
+        });
 
         uint256 sharesBefore = IERC20(vault).balanceOf(address(this));
         debtAsset.safeApprove(l.market, l.repayAmount);
         try IEVC(connector).batch(items) {
             ok = true;
-        } catch {}
+        } catch (bytes memory r) {
+            emit LegFailed(PlanDecoder.A_EULER, l.market, l.borrower, ST_LIQUIDATE, _clip(r));
+        }
         debtAsset.safeApprove(l.market, 0);
         if (ok) {
             uint256 sharesNow = IERC20(vault).balanceOf(address(this));
@@ -644,14 +722,33 @@ contract Executor {
     }
 
     /// Silo V2 `IPartialLiquidation.liquidationCall` pin `570a668a` topic0
-    /// `0x3a84f644…`. Target = hook receiver. `_receiveSToken = false`.
-    /// Guard: `maxLiquidation` `debtToRepay == 0`.
+    /// `0x3a84f644…`. Target = hook receiver. Guard: `maxLiquidation`
+    /// `debtToRepay == 0`.
+    ///
+    /// S3. `maxLiquidation` names whether the withdraw must land as sTokens
+    /// (insufficient underlying liquidity in the collateral silo) via its
+    /// third return, `sTokenRequired`. Calling `liquidationCall` with
+    /// `_receiveSToken = false` when the protocol requires `true` reverts the
+    /// leg; passing `true` back would "succeed" but leave the Executor
+    /// holding Silo shares this contract has no redeem path for, and the
+    /// downstream swap is built to sell the underlying it does not have —
+    /// stuck funds, not a skipped opportunity. Reading the flag and skipping
+    /// the leg when it is set is the fail-closed choice until an sToken
+    /// redeem path exists.
     function _liquidateSiloV2(address debtAsset, LiqLeg memory l) internal returns (bool ok) {
         try ISiloHook(l.market).maxLiquidation(l.borrower)
-            returns (uint256, uint256 debtToRepay, bool)
+            returns (uint256, uint256 debtToRepay, bool sTokenRequired)
         {
-            if (debtToRepay == 0) return false;
-        } catch {
+            if (debtToRepay == 0) {
+                emit LegFailed(PlanDecoder.A_SILO, l.market, l.borrower, ST_NOT_LIQ, "");
+                return false;
+            }
+            if (sTokenRequired) {
+                emit LegFailed(PlanDecoder.A_SILO, l.market, l.borrower, ST_SIZING, "");
+                return false;
+            }
+        } catch (bytes memory r) {
+            emit LegFailed(PlanDecoder.A_SILO, l.market, l.borrower, ST_GUARD, _clip(r));
             return false;
         }
 
@@ -660,7 +757,9 @@ contract Executor {
             l.collateralAsset, debtAsset, l.borrower, l.repayAmount, false
         ) returns (uint256, uint256) {
             ok = true;
-        } catch {}
+        } catch (bytes memory r) {
+            emit LegFailed(PlanDecoder.A_SILO, l.market, l.borrower, ST_LIQUIDATE, _clip(r));
+        }
         debtAsset.safeApprove(l.market, 0);
     }
 
@@ -673,10 +772,17 @@ contract Executor {
     /// wrapped; the WETH transfer is already in the WETH balance `gross` reads.
     function _liquidateLiquityV2(LiqLeg memory l, bytes calldata plan) internal returns (bool ok) {
         uint256 id = plan.tailU256(l.tailOffset);
-        if (id == 0) return false;
+        if (id == 0) {
+            emit LegFailed(PlanDecoder.A_LIQUITY, l.market, l.borrower, ST_TAIL, "");
+            return false;
+        }
         try ITroveManager(l.market).getTroveStatus(id) returns (uint8 status) {
-            if (status != 1 && status != 4) return false;
-        } catch {
+            if (status != 1 && status != 4) {
+                emit LegFailed(PlanDecoder.A_LIQUITY, l.market, l.borrower, ST_NOT_LIQ, "");
+                return false;
+            }
+        } catch (bytes memory r) {
+            emit LegFailed(PlanDecoder.A_LIQUITY, l.market, l.borrower, ST_GUARD, _clip(r));
             return false;
         }
 
@@ -687,7 +793,9 @@ contract Executor {
             ok = true;
             uint256 ethNow = address(this).balance;
             if (ethNow > ethBefore) IWETH(WETH).deposit{value: ethNow - ethBefore}();
-        } catch {}
+        } catch (bytes memory r) {
+            emit LegFailed(PlanDecoder.A_LIQUITY, l.market, l.borrower, ST_LIQUIDATE, _clip(r));
+        }
     }
 
     /// Fluid T1 `liquidate(debtAmt_, colPerUnitDebt_, to_, absorb_)` pin
@@ -704,7 +812,9 @@ contract Executor {
             returns (uint256, uint256)
         {
             ok = true;
-        } catch {}
+        } catch (bytes memory r) {
+            emit LegFailed(PlanDecoder.A_FLUID, l.market, l.borrower, ST_LIQUIDATE, _clip(r));
+        }
         debtAsset.safeApprove(l.market, 0);
     }
 
@@ -712,18 +822,39 @@ contract Executor {
     /// CreditFacadeV3. `priceUpdates` empty — do not invent PriceUpdate
     /// payloads. Full MultiCall close is unwired off-chain. No facade health
     /// view used here; the call is the guard.
+    ///
+    /// **The approval goes to the credit manager, not the facade.** The facade
+    /// only forwards; `CreditManagerV3.partiallyLiquidateCreditAccount`
+    /// (pin `510fc654`) executes `IERC20(underlying).safeTransferFrom(source,
+    /// pool, amount)` with the *manager* as `msg.sender`. An allowance held by
+    /// the facade is never touched and every leg reverts on the pull.
     function _liquidateGearbox(address debtAsset, LiqLeg memory l, bytes calldata plan)
         internal returns (bool ok)
     {
         uint256 minSeized = plan.tailU256(l.tailOffset);
+
+        address puller;
+        try ICreditFacadeV3(l.market).creditManager() returns (address m) {
+            puller = m;
+        } catch (bytes memory r) {
+            emit LegFailed(PlanDecoder.A_GEARBOX, l.market, l.borrower, ST_GUARD, _clip(r));
+            return false;
+        }
+        if (puller == address(0)) {
+            emit LegFailed(PlanDecoder.A_GEARBOX, l.market, l.borrower, ST_GUARD, "");
+            return false;
+        }
+
         PriceUpdate[] memory none;
-        debtAsset.safeApprove(l.market, l.repayAmount);
+        debtAsset.safeApprove(puller, l.repayAmount);
         try ICreditFacadeV3(l.market).partiallyLiquidateCreditAccount(
             l.borrower, l.collateralAsset, l.repayAmount, minSeized, address(this), none
         ) returns (uint256) {
             ok = true;
-        } catch {}
-        debtAsset.safeApprove(l.market, 0);
+        } catch (bytes memory r) {
+            emit LegFailed(PlanDecoder.A_GEARBOX, l.market, l.borrower, ST_LIQUIDATE, _clip(r));
+        }
+        debtAsset.safeApprove(puller, 0);
     }
 
     /// Compound V2 official Unitroller pin `a3214f67`. `market` = debt
@@ -738,39 +869,59 @@ contract Executor {
         internal returns (bool ok)
     {
         (address cTokenColl, uint8 isCEther) = plan.tailCompound(l.tailOffset);
-        if (isCEther > 1) return false;
+        if (isCEther > 1) {
+            emit LegFailed(PlanDecoder.A_COMPOUND, l.market, l.borrower, ST_TAIL, "");
+            return false;
+        }
 
         address unitroller;
         try ICToken(l.market).comptroller() returns (address c) {
             unitroller = c;
-        } catch {
+        } catch (bytes memory r) {
+            emit LegFailed(PlanDecoder.A_COMPOUND, l.market, l.borrower, ST_GUARD, _clip(r));
             return false;
         }
         try IComptroller(unitroller).getAccountLiquidity(l.borrower)
             returns (uint256 err, uint256, uint256 shortfall)
         {
-            if (err != 0) return false;
+            if (err != 0) {
+                emit LegFailed(PlanDecoder.A_COMPOUND, l.market, l.borrower, ST_GUARD, "");
+                return false;
+            }
             bool deprecated;
             try IComptroller(unitroller).isDeprecated(l.market) returns (bool d) {
                 deprecated = d;
             } catch {}
-            if (shortfall == 0 && !deprecated) return false;
-        } catch {
+            if (shortfall == 0 && !deprecated) {
+                emit LegFailed(PlanDecoder.A_COMPOUND, l.market, l.borrower, ST_NOT_LIQ, "");
+                return false;
+            }
+        } catch (bytes memory r) {
+            emit LegFailed(PlanDecoder.A_COMPOUND, l.market, l.borrower, ST_GUARD, _clip(r));
             return false;
         }
 
         uint256 seizedBefore = IERC20(cTokenColl).balanceOf(address(this));
         if (isCEther != 0) {
-            if (debtAsset != WETH) return false;
+            if (debtAsset != WETH) {
+                emit LegFailed(PlanDecoder.A_COMPOUND, l.market, l.borrower, ST_TAIL, "");
+                return false;
+            }
             uint256 need = l.repayAmount;
-            if (IERC20(WETH).balanceOf(address(this)) < need) return false;
+            if (IERC20(WETH).balanceOf(address(this)) < need) {
+                emit LegFailed(PlanDecoder.A_COMPOUND, l.market, l.borrower, ST_SIZING, "");
+                return false;
+            }
             uint256 ethBefore = address(this).balance;
-            try IWETH(WETH).withdraw(need) {} catch {
+            try IWETH(WETH).withdraw(need) {} catch (bytes memory r) {
+                emit LegFailed(PlanDecoder.A_COMPOUND, l.market, l.borrower, ST_SIZING, _clip(r));
                 return false;
             }
             try ICEther(l.market).liquidateBorrow{value: need}(l.borrower, cTokenColl) {
                 ok = true;
-            } catch {}
+            } catch (bytes memory r) {
+                emit LegFailed(PlanDecoder.A_COMPOUND, l.market, l.borrower, ST_LIQUIDATE, _clip(r));
+            }
             uint256 ethNow = address(this).balance;
             if (ethNow > ethBefore) IWETH(WETH).deposit{value: ethNow - ethBefore}();
         } else {
@@ -779,7 +930,16 @@ contract Executor {
                 returns (uint256 errCode)
             {
                 ok = errCode == 0;
-            } catch {}
+                if (!ok) {
+                    // Compound signals failure by return code, not revert.
+                    emit LegFailed(
+                        PlanDecoder.A_COMPOUND, l.market, l.borrower,
+                        ST_LIQUIDATE, abi.encode(errCode)
+                    );
+                }
+            } catch (bytes memory r) {
+                emit LegFailed(PlanDecoder.A_COMPOUND, l.market, l.borrower, ST_LIQUIDATE, _clip(r));
+            }
             debtAsset.safeApprove(l.market, 0);
         }
         if (ok) _redeemSeizedCToken(cTokenColl, seizedBefore);

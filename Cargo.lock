@@ -3987,6 +3987,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "liq-exec",
+ "liq-flash",
  "liq-protocol",
  "liq-types",
  "proptest",

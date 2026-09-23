@@ -22,6 +22,63 @@ pub struct RepayOption {
     /// depends on the seized reserve (V4: its liquidation threshold and
     /// bonus), it is evaluated against `seize_options[0]`.
     pub max_repay: U256,
+    /// Which of the protocol's own reserves/markets this leg names, when
+    /// `asset` alone does not identify it. See [`SlotRef`].
+    pub slot: SlotRef,
+}
+
+/// The protocol-native identifier of the reserve, market or token contract an
+/// option refers to.
+///
+/// `AssetId` is a GLOBAL token id: one `AssetId` for WETH across every
+/// protocol. That is the right key for prices and routing, and the wrong one
+/// for naming a leg to the chain, because the mapping back is not injective:
+///
+/// * Compound V2 lists cWBTC **and** cWBTC2 against the same WBTC underlying.
+///   Resolving WBTC by `.find()` always returned the first — the deprecated
+///   cWBTC — so a plan repaid against a market where the borrower had no debt
+///   (P6).
+/// * Aave V4 names reserves by `reserveId`, which the adapter knows (it is
+///   `store slot − 1`) and dropped at this boundary, leaving nothing in
+///   production able to build the V4 leg tail at all (V1).
+///
+/// Carrying the adapter's own identifier alongside the global one closes both.
+/// It is opaque to the engine and the router: only the adapter that produced
+/// the quote interprets it, in `encode`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum SlotRef {
+    /// `asset` identifies the leg on its own. Every adapter with one reserve
+    /// per token.
+    #[default]
+    ByAsset,
+    /// The row's slot in the adapter's own market store. Aave V4 derives
+    /// `reserveId = slot - 1` from it; Compound V2 uses it to pick between
+    /// two cTokens over one underlying.
+    Slot(u16),
+    /// A contract address the liquidation call names directly.
+    Contract(Address),
+}
+
+impl SlotRef {
+    /// The store slot, when this reference carries one.
+    #[must_use]
+    #[inline]
+    pub const fn slot(self) -> Option<u16> {
+        match self {
+            Self::Slot(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The named contract, when this reference carries one.
+    #[must_use]
+    #[inline]
+    pub const fn contract(self) -> Option<Address> {
+        match self {
+            Self::Contract(a) => Some(a),
+            _ => None,
+        }
+    }
 }
 
 /// One seizable collateral leg. Bonus is per reserve and e-mode dependent
@@ -44,6 +101,9 @@ pub struct SeizeOption {
     /// Zero except Euler V2, where it is the collateral vault. The plan's
     /// collateral asset stays the underlying the swaps sell.
     pub call_target: Address,
+    /// Which of the protocol's own reserves/markets this leg names, when
+    /// `asset` alone does not identify it. See [`SlotRef`].
+    pub slot: SlotRef,
 }
 
 /// Full economics of liquidating one position at one price vector.

@@ -455,9 +455,16 @@ fn ctoken_log(
             b.total_supply = add_u128(b.total_supply, ev.mintTokens, true)?;
             recompute_exrate(b)
         })?;
+        // P2. `mintFresh` emits BOTH `Mint` and
+        // `Transfer(address(this), minter, mintTokens)`. The cToken contract
+        // is neither party zero, so the `Transfer` handler also credits the
+        // minter and every supplier's balance came out exactly 2x — doubling
+        // collateral, so shortfall never tripped and nothing ever liquidated.
+        //
+        // `Transfer` is emitted for every balance movement Compound makes and
+        // is exact, so it is the single writer of per-user balances. This
+        // handler keeps the market-level aggregates and nothing else.
         let pos = intern_user(cfg, st, market, ev.minter)?;
-        let cur = st.supply(pos, slot)?;
-        st.set_supply(pos, slot, add_u128(cur, ev.mintTokens, true)?)?;
         return Ok(positions(&[pos]));
     }
     if topic0 == ctoken::Redeem::SIGNATURE_HASH {
@@ -467,9 +474,10 @@ fn ctoken_log(
             b.total_supply = add_u128(b.total_supply, ev.redeemTokens, false)?;
             recompute_exrate(b)
         })?;
+        // P2. `redeemFresh` emits `Transfer(redeemer, address(this), ...)`
+        // alongside `Redeem`. Subtracting here too underflowed and errored the
+        // whole `apply_log`. Balances are the `Transfer` handler's job.
         let pos = intern_user(cfg, st, market, ev.redeemer)?;
-        let cur = st.supply(pos, slot)?;
-        st.set_supply(pos, slot, add_u128(cur, ev.redeemTokens, false)?)?;
         return Ok(positions(&[pos]));
     }
     if topic0 == ctoken::Borrow::SIGNATURE_HASH {
@@ -511,15 +519,19 @@ fn ctoken_log(
         let coll_slot = find_ctoken(st, market, ev.cTokenCollateral)?;
         let borrower = intern_user(cfg, st, market, ev.borrower)?;
         let liquidator = intern_user(cfg, st, market, ev.liquidator)?;
-        let seize = u128_of(ev.seizeTokens)?;
-        let cur = st.supply(borrower, coll_slot)?;
-        if cur >= seize {
-            st.set_supply(
-                borrower,
-                coll_slot,
-                cur.checked_sub(seize).ok_or(FixedError::Underflow)?,
-            )?;
-        }
+        // P3. `seizeInternal` on the COLLATERAL cToken already emitted
+        //     Transfer(borrower,      address(this), seizeTokens)
+        //     Transfer(address(this), liquidator,    liquidatorSeizeTokens)
+        // which between them move the borrower's and the liquidator's whole
+        // balances. Decrementing the borrower again here took the collateral
+        // down twice.
+        //
+        // P5 falls out of the same correction: the gap between the two
+        // transfers is `protocolSeizeTokens` (2.8% of the seize on mainnet),
+        // which stays with the cToken as reserves. Crediting the liquidator
+        // from `Transfer` rather than from `seizeTokens` books that share on
+        // the right side of the ledger instead of overstating the payout.
+        let _ = coll_slot;
         return Ok(positions(&[borrower, liquidator]));
     }
     if topic0 == ctoken::NewReserveFactor::SIGNATURE_HASH {
@@ -532,21 +544,35 @@ fn ctoken_log(
         return Ok(row_dirty(market, slot));
     }
     if topic0 == ctoken::Transfer::SIGNATURE_HASH {
+        // The ONLY writer of per-user cToken balances. Compound emits a
+        // `Transfer` for every movement it makes — mint, redeem, seize (both
+        // halves) and ordinary user transfers — so this handler alone is both
+        // complete and exact, and `Mint`/`Redeem`/`LiquidateBorrow` must not
+        // touch balances as well. See P2/P3/P5 above.
         let ev = decode::<ctoken::Transfer>(log)?;
-        if ev.from == Address::ZERO || ev.to == Address::ZERO {
-            return Ok(DirtySet::None);
-        }
         let amt = u128_of(ev.amount)?;
+        // The cToken contract is the counterparty on the mint, redeem and
+        // seize transfers. It is not a position and holds the protocol's own
+        // seize share; interning it would invent a borrower out of the market
+        // contract itself.
+        let self_addr = {
+            let row = st.market(MarketSlot { market, slot })?;
+            let b: &CTokenRow = row.body()?;
+            addr_from(b.ctoken)
+        };
+        let skip = |a: Address| a == Address::ZERO || a == self_addr;
         let mut ids = DirtyPositions::new();
-        if ev.from != Address::ZERO {
+        if !skip(ev.from) {
             let p = intern_user(cfg, st, market, ev.from)?;
             let cur = st.supply(p, slot)?;
-            if cur >= amt {
-                st.set_supply(p, slot, cur.checked_sub(amt).ok_or(FixedError::Underflow)?)?;
-                ids.push(p);
-            }
+            // Saturating: a fold that started mid-history can see a debit for
+            // a balance it never saw credited. Clamping to zero converges;
+            // the previous `if cur >= amt` skip left the stale balance in
+            // place forever.
+            st.set_supply(p, slot, cur.saturating_sub(amt))?;
+            ids.push(p);
         }
-        if ev.to != Address::ZERO {
+        if !skip(ev.to) {
             let p = intern_user(cfg, st, market, ev.to)?;
             let cur = st.supply(p, slot)?;
             st.set_supply(p, slot, add_u128(cur, ev.amount, true)?)?;

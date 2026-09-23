@@ -7,7 +7,7 @@ import {PlanBuilder as PB} from "./PlanBuilder.sol";
 import {ExecutorTestBase} from "./Base.sol";
 import {
     MockEulerVault, MockSiloHook, MockTroveManager, MockFluidT1,
-    MockCreditFacade, MockComptroller, MockCErc20, MockCEther
+    MockCreditFacade, MockCreditManager, MockComptroller, MockCErc20, MockCEther
 } from "./Mocks.sol";
 
 /// 10E dispatch / approve / zero-allowance / unknown-adapter. V3/V4/Morpho
@@ -19,6 +19,7 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
     MockTroveManager liquity;
     MockFluidT1 fluid;
     MockCreditFacade gearbox;
+    MockCreditManager gearboxMgr;
     MockComptroller comptroller;
     MockCErc20 cDebt;
     MockCEther cEther;
@@ -30,6 +31,8 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
         liquity = new MockTroveManager();
         fluid = new MockFluidT1();
         gearbox = new MockCreditFacade();
+        gearboxMgr = new MockCreditManager(address(gearbox));
+        gearbox.setCreditManager(address(gearboxMgr));
         comptroller = new MockComptroller();
         cDebt = new MockCErc20(comptroller);
         cEther = new MockCEther(comptroller);
@@ -73,6 +76,8 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
         assertEq(debt.allowance(address(ex), address(euler)), 0);
         assertEq(debt.allowance(address(ex), address(silo)), 0);
         assertEq(debt.allowance(address(ex), address(fluid)), 0);
+        // Gearbox's allowance is held by the MANAGER, not the facade.
+        assertEq(debt.allowance(address(ex), address(gearboxMgr)), 0);
         assertEq(debt.allowance(address(ex), address(gearbox)), 0);
         assertEq(debt.allowance(address(ex), address(cDebt)), 0);
     }
@@ -161,6 +166,7 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
         gearbox.setRevertOnLiquidate(true);
         vm.expectRevert(Executor.AllLegsFailed.selector);
         _exec(_plan(PB.F_SWEEP, 0, GAS_COST, 0, 1, PB.legGearbox(address(gearbox), borrower, address(coll), REPAY, 1)));
+        assertEq(debt.allowance(address(ex), address(gearboxMgr)), 0);
         assertEq(debt.allowance(address(ex), address(gearbox)), 0);
     }
 

@@ -400,7 +400,11 @@ fn morpho_to_config(t: &MorphoBlueToml) -> liq_adapters_morpho_blue::Config {
         price_sources: t
             .price_sources
             .iter()
-            .map(|s| liq_adapters_morpho_blue::SourcePin { oracle: s.oracle })
+            .map(|s| liq_adapters_morpho_blue::SourcePin {
+                oracle: s.oracle,
+                collateral: AssetId(s.collateral),
+                loan: AssetId(s.loan),
+            })
             .collect(),
         pinned_through: t.pinned_through,
     }
@@ -596,7 +600,18 @@ fn push_liquity(dir: &Path, out: &mut ProtocolLoad) {
         }
     };
     match liq_adapters_liquity_v2::LiquityV2::new(cfg) {
-        Ok(_) => tracing::error!("liquity-v2 constructed without live registry — refuse to keep"),
+        // T13 L2. `new` cannot return `Ok` without `live_registry_asserted`,
+        // which `from_toml` never sets — this path has no live-RPC step, so
+        // this branch stays unreachable by construction today. It was
+        // logging via `tracing::error!` alone and never recording itself in
+        // `out.omitted`, so a validly-constructed adapter dropped here left
+        // no diagnostic trail distinguishing it from every other omission
+        // reason. `omit` is the house idiom; use it here too.
+        Ok(_) => omit(
+            out,
+            "liquity-v2",
+            "constructed without live registry — refuse to keep",
+        ),
         Err(e) => omit(out, "liquity-v2", e),
     }
 }
@@ -614,7 +629,13 @@ fn push_fluid(dir: &Path, out: &mut ProtocolLoad) {
         }
     };
     match liq_adapters_fluid::Fluid::new(cfg) {
-        Ok(_) => tracing::error!("fluid constructed without live factory — refuse to keep"),
+        // Same fix as `push_liquity` above (T13 L2): record the omission
+        // instead of only logging it.
+        Ok(_) => omit(
+            out,
+            "fluid",
+            "constructed without live factory — refuse to keep",
+        ),
         Err(e) => omit(out, "fluid", e),
     }
 }
@@ -632,7 +653,13 @@ fn push_gearbox(dir: &Path, out: &mut ProtocolLoad) {
         }
     };
     match liq_adapters_gearbox::GearboxV3::new(cfg) {
-        Ok(_) => tracing::error!("gearbox constructed without live fees — refuse to keep"),
+        // Same fix as `push_liquity` above (T13 L2): record the omission
+        // instead of only logging it.
+        Ok(_) => omit(
+            out,
+            "gearbox",
+            "constructed without live fees — refuse to keep",
+        ),
         Err(e) => omit(out, "gearbox", e),
     }
 }

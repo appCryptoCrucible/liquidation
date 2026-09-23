@@ -3,6 +3,7 @@
 //! swap profits). Expired-but-healthy still quotes when a seizable token exists.
 
 use alloy_primitives::U256;
+use liq_protocol::SlotRef;
 use liq_protocol::{
     BonusCurve, Constraints, HealthState, PositionRef, ProtocolError, Quote, RepayOption, Result,
     SeizeOption,
@@ -94,6 +95,7 @@ pub(crate) fn quote(
                 bonus,
                 curve,
                 call_target: alloy_primitives::Address::ZERO,
+                slot: SlotRef::ByAsset,
             },
             amount,
             seize_value,
@@ -134,6 +136,7 @@ pub(crate) fn quote(
     repay_options.push(RepayOption {
         asset: t.debt_row.asset,
         max_repay: amount,
+        slot: SlotRef::ByAsset,
     });
     let mut seize_options = SmallVec::new();
     seize_options.push(seize);

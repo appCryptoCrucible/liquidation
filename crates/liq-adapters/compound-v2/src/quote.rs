@@ -2,6 +2,7 @@
 //! come from the comptroller store (admin file), not a `1.08` constant.
 
 use alloy_primitives::U256;
+use liq_protocol::SlotRef;
 use liq_protocol::{
     BonusCurve, Constraints, HealthState, MarketRow, PositionRef, ProtocolError, Quote,
     RepayOption, Result, SeizeOption,
@@ -107,6 +108,14 @@ pub(crate) fn quote(
                 repay_options.push(RepayOption {
                     asset: row.asset,
                     max_repay,
+                    // P6. cWBTC and cWBTC2 are both listed against WBTC, so
+                    // the global `AssetId` does not pick out a market and
+                    // resolving it by underlying always returned the first —
+                    // the deprecated cWBTC — producing a repay against a
+                    // market where the borrower has no debt at all. This loop
+                    // already knows which cToken the balance came from; name
+                    // it, and `encode` stops guessing.
+                    slot: SlotRef::Contract(crate::math::addr_from(body.ctoken)),
                 });
             }
         }
@@ -124,6 +133,11 @@ pub(crate) fn quote(
                     bonus,
                     curve,
                     call_target: alloy_primitives::Address::ZERO,
+                    // Same as the repay side (P6), and additionally this is
+                    // the `cTokenCollateral` argument the liquidation call
+                    // takes and the token the seize actually lands in, so the
+                    // leg tail is built from it rather than re-derived.
+                    slot: SlotRef::Contract(crate::math::addr_from(body.ctoken)),
                 });
             }
         }

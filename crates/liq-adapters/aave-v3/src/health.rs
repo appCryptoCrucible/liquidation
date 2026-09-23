@@ -54,13 +54,41 @@ impl SlotTerms<'_> {
     pub(crate) fn paused(&self) -> bool {
         self.reserve.flags & Reserve::PAUSED != 0
     }
+    /// Usable as the COLLATERAL side of a liquidation call at `ts`.
+    ///
+    /// A8. `LiquidationLogic._validateLiquidationCall` (pin 8305565ae) gates
+    /// on the grace period of the two reserves named in *that call*:
+    ///
+    /// ```solidity
+    /// require(
+    ///   block.timestamp > collateralReserve.getLiquidationGracePeriod() &&
+    ///   block.timestamp > debtReserve.getLiquidationGracePeriod(),
+    ///   Errors.LIQUIDATION_GRACE_SENTINEL_CHECK_FAILED
+    /// );
+    /// ```
+    ///
+    /// It is not a position-wide veto. Treating it as one — the previous
+    /// `any_grace` fold — made one freshly-unpaused reserve block every other
+    /// collateral and debt on the position, for the whole grace window.
     #[inline]
-    pub(crate) fn seizable(&self) -> bool {
-        self.collateral.is_some() && !self.paused()
+    pub(crate) fn seizable(&self, ts: u64) -> bool {
+        self.collateral.is_some() && !self.paused() && !self.in_grace(ts)
+    }
+    /// Usable as the DEBT side of a liquidation call at `ts`. Same gate.
+    #[inline]
+    pub(crate) fn repayable(&self, ts: u64) -> bool {
+        self.debt.is_some() && !self.paused() && !self.in_grace(ts)
+    }
+    /// Ignores grace: "would be usable but for the grace window", so the
+    /// health state can name grace as the reason rather than reporting a
+    /// misleading `Paused`.
+    #[inline]
+    pub(crate) fn seizable_but_for_grace(&self, ts: u64) -> bool {
+        self.collateral.is_some() && !self.paused() && self.in_grace(ts)
     }
     #[inline]
-    pub(crate) fn repayable(&self) -> bool {
-        self.debt.is_some() && !self.paused()
+    pub(crate) fn repayable_but_for_grace(&self, ts: u64) -> bool {
+        self.debt.is_some() && !self.paused() && self.in_grace(ts)
     }
     #[inline]
     pub(crate) fn in_grace(&self, ts: u64) -> bool {
@@ -87,11 +115,7 @@ fn risk_params(meta: &PoolMeta, r: &Reserve, slot: u16, emode: u8) -> (u16, u16,
     let cat = meta.emode(emode);
     let bit = match emode {
         0 => None,
-        id => cat.and_then(|c| {
-            let i = meta.emode.iter().position(|e| e.id == id)?;
-            let mask = 1u8.checked_shl(i as u32)?;
-            Some((c, mask))
-        }),
+        id => cat.and_then(|c| Some((c, PoolMeta::emode_mask(meta.emode_index(id)?)?))),
     };
     if let Some((c, mask)) = bit {
         let in_coll = r.emode_coll & mask != 0;
@@ -221,7 +245,10 @@ pub(crate) struct Account {
     pub debt_value: U256,
     pub any_seizable: bool,
     pub any_repayable: bool,
-    pub any_grace: bool,
+    /// A collateral (resp. debt) that is only held back by its reserve's
+    /// grace window. Used to attribute the block reason, never to veto.
+    pub grace_seizable: bool,
+    pub grace_repayable: bool,
     pub sentinel_ok: bool,
     pub oracle_decimals: u8,
     pub sensitivity: AssetMask,
@@ -236,7 +263,8 @@ impl Account {
             debt_value: U256::ZERO,
             any_seizable: false,
             any_repayable: false,
-            any_grace: false,
+            grace_seizable: false,
+            grace_repayable: false,
             sentinel_ok,
             oracle_decimals,
             sensitivity: AssetMask::EMPTY,
@@ -251,16 +279,17 @@ impl Account {
                 .ok_or(FixedError::Overflow)?;
             let w = c.value.checked_mul(c.lt).ok_or(FixedError::Overflow)?;
             self.weighted = self.weighted.checked_add(w).ok_or(FixedError::Overflow)?;
-            self.any_seizable |= t.seizable();
+            self.any_seizable |= t.seizable(ts);
+            self.grace_seizable |= t.seizable_but_for_grace(ts);
         }
         if let Some(d) = t.debt {
             self.debt_value = self
                 .debt_value
                 .checked_add(d.value)
                 .ok_or(FixedError::Overflow)?;
-            self.any_repayable |= t.repayable();
+            self.any_repayable |= t.repayable(ts);
+            self.grace_repayable |= t.repayable_but_for_grace(ts);
         }
-        self.any_grace |= t.in_grace(ts);
         self.sensitivity = self
             .sensitivity
             .with(t.slot)
@@ -337,19 +366,28 @@ pub(crate) fn finish(acc: &Account) -> Result<Health> {
         HealthState::BadDebt {
             deficit: debt_value,
         }
-    } else if !acc.sentinel_ok || acc.any_grace {
-        HealthState::Blocked {
-            reason: if !acc.sentinel_ok {
-                BlockReason::Paused
-            } else {
-                BlockReason::GracePeriod
-            },
-        }
-    } else if acc.any_seizable && acc.any_repayable {
-        HealthState::Liquidatable
-    } else {
+    } else if !acc.sentinel_ok {
         HealthState::Blocked {
             reason: BlockReason::Paused,
+        }
+    } else if acc.any_seizable && acc.any_repayable {
+        // At least one (collateral, debt) pair clears both grace gates, so
+        // the pool will accept a call — even if some OTHER reserve on this
+        // position is still inside its window.
+        HealthState::Liquidatable
+    } else {
+        // Nothing is callable. Name grace as the reason only when lifting the
+        // grace windows would actually make a pair available; otherwise the
+        // position is short a side for the ordinary paused/absent reason.
+        let grace_would_unblock = (acc.any_seizable || acc.grace_seizable)
+            && (acc.any_repayable || acc.grace_repayable)
+            && (acc.grace_seizable || acc.grace_repayable);
+        HealthState::Blocked {
+            reason: if grace_would_unblock {
+                BlockReason::GracePeriod
+            } else {
+                BlockReason::Paused
+            },
         }
     };
     Ok(Health {
@@ -360,3 +398,4 @@ pub(crate) fn finish(acc: &Account) -> Result<Health> {
         state,
     })
 }
+

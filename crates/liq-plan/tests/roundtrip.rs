@@ -178,6 +178,7 @@ fn group(
         flash_source: src,
         debt_asset: debt,
         flash_amount: flash,
+        fee_bps: 0,
         liqs,
         repay_swaps: repay,
     }
@@ -437,6 +438,7 @@ fn encode_decode_10e_tails() {
                 flash_source: AAVE_V3,
                 debt_asset: DAI,
                 flash_amount: asked,
+                fee_bps: 0,
                 liqs: vec![leg.clone()],
                 repay_swaps: vec![exact_out(WETH, DAI, asked)],
             }],
@@ -466,6 +468,7 @@ fn one_leg_plan(leg: LiqLeg) -> BatchPlan {
             flash_source: AAVE_V3,
             debt_asset: DAI,
             flash_amount: asked,
+            fee_bps: 0,
             liqs: vec![leg],
             repay_swaps: vec![exact_out(WETH, DAI, asked)],
         }],
@@ -660,15 +663,121 @@ fn under_seizure_exact_out_is_rejected() {
         profit_swaps: vec![profit_tb(WETH)],
     };
     match EncodedPlan::encode(&p, &c) {
-        Err(liq_plan::EncodeError::UnderSeizure {
-            exact_out,
-            pull: pl,
-        }) => {
+        Err(liq_plan::EncodeError::UnderSeizure { exact_out, owed }) => {
             assert_eq!(exact_out, pull + 1);
-            assert_eq!(pl, pull);
+            assert_eq!(owed, pull);
         }
         other => panic!("expected UnderSeizure, got {other:?}"),
     }
+}
+
+/// Aave charges the premium on the borrowed amount. `exact_out == pull`
+/// is short by that premium; `exact_out == pull + fee` is the repay.
+#[test]
+fn aave_exact_out_must_include_premium() {
+    let c = ctx();
+    let pull = 2_000_000u128;
+    let bps = 5u16;
+    let fee = liq_flash::fee_amount(FlashProvider::Aave, U256::from(pull), bps).unwrap();
+    let fee_u = u128::try_from(fee).unwrap();
+    assert_eq!(fee_u, 1_000);
+    let mut short = group(
+        FlashProvider::Aave,
+        AAVE_V3,
+        DAI,
+        pull,
+        vec![v3_leg(WETH, pull, pull)],
+        vec![exact_out(WETH, DAI, pull)],
+    );
+    short.fee_bps = bps;
+    let short_plan = BatchPlan {
+        flags: 0,
+        bid_bps: 1,
+        gas_cost_wei: 1,
+        min_profit_wei: 1,
+        groups: vec![short],
+        profit_swaps: vec![profit_tb(WETH)],
+    };
+    match EncodedPlan::encode(&short_plan, &c) {
+        Err(liq_plan::EncodeError::RepayNotSizedToPull { exact_out, owed }) => {
+            assert_eq!(exact_out, pull);
+            assert_eq!(owed, pull + fee_u);
+        }
+        other => panic!("expected RepayNotSizedToPull, got {other:?}"),
+    }
+    let mut ok = group(
+        FlashProvider::Aave,
+        AAVE_V3,
+        DAI,
+        pull,
+        vec![v3_leg(WETH, pull, pull)],
+        vec![exact_out(WETH, DAI, pull + fee_u)],
+    );
+    ok.fee_bps = bps;
+    let ok_plan = BatchPlan {
+        flags: 0,
+        bid_bps: 1,
+        gas_cost_wei: 1,
+        min_profit_wei: 1,
+        groups: vec![ok],
+        profit_swaps: vec![profit_tb(WETH)],
+    };
+    EncodedPlan::encode(&ok_plan, &c).unwrap();
+    let mut over = group(
+        FlashProvider::Aave,
+        AAVE_V3,
+        DAI,
+        pull,
+        vec![v3_leg(WETH, pull, pull)],
+        vec![exact_out(WETH, DAI, pull + fee_u + 1)],
+    );
+    over.fee_bps = bps;
+    let over_plan = BatchPlan {
+        flags: 0,
+        bid_bps: 1,
+        gas_cost_wei: 1,
+        min_profit_wei: 1,
+        groups: vec![over],
+        profit_swaps: vec![profit_tb(WETH)],
+    };
+    match EncodedPlan::encode(&over_plan, &c) {
+        Err(liq_plan::EncodeError::UnderSeizure { exact_out, owed }) => {
+            assert_eq!(exact_out, pull + fee_u + 1);
+            assert_eq!(owed, pull + fee_u);
+        }
+        other => panic!("expected UnderSeizure, got {other:?}"),
+    }
+}
+
+/// Morpho and UniV4 have no fee. A nonzero bps must not be treated as zero.
+#[test]
+fn fee_free_provider_rejects_nonzero_bps() {
+    let c = ctx();
+    let pull = 10u128;
+    let mut g = group(
+        FlashProvider::Morpho,
+        MORPHO,
+        WETH,
+        pull,
+        vec![morpho_leg(pull, pull, &c)],
+        vec![exact_out(WSTETH, WETH, pull)],
+    );
+    g.fee_bps = 5;
+    let p = BatchPlan {
+        flags: 0,
+        bid_bps: 1,
+        gas_cost_wei: 1,
+        min_profit_wei: 1,
+        groups: vec![g],
+        profit_swaps: vec![profit_tb(WSTETH)],
+    };
+    assert!(matches!(
+        EncodedPlan::encode(&p, &c),
+        Err(liq_plan::EncodeError::UnpriceableFee {
+            provider: FlashProvider::Morpho,
+            fee_bps: 5
+        })
+    ));
 }
 
 #[test]
@@ -828,6 +937,7 @@ proptest! {
             let mut p = back;
             // restore pulls from original (not on wire)
             for (g, og) in p.groups.iter_mut().zip(plan.groups.iter()) {
+                g.fee_bps = og.fee_bps;
                 for (l, ol) in g.liqs.iter_mut().zip(og.liqs.iter()) {
                     l.protocol_pull = ol.protocol_pull;
                 }
@@ -869,18 +979,14 @@ fn varied_case(i: u32) -> BatchPlan {
             UNIV4_PM,
             USDC,
             WETH,
-            (0..liq_n)
-                .map(|_| v4_leg(WETH, 0, 1, pull, pull))
-                .collect(),
+            (0..liq_n).map(|_| v4_leg(WETH, 0, 1, pull, pull)).collect(),
         ),
         _ => (
             FlashProvider::Morpho,
             MORPHO,
             WETH,
             WSTETH,
-            (0..liq_n)
-                .map(|_| morpho_leg(pull, pull, &c))
-                .collect(),
+            (0..liq_n).map(|_| morpho_leg(pull, pull, &c)).collect(),
         ),
     };
     let mut repay = Vec::with_capacity(usize::from(repay_n));
@@ -982,8 +1088,14 @@ fn varied_cases_move_counts_independently() {
         EncodedPlan::encode(&p, &ctx()).unwrap();
     }
     assert!(liq.len() > 1 && repay.len() > 1 && profit.len() > 1 && data.len() > 1);
-    assert!(v4_liq.contains(&2), "V4 tail stride must be reached at liq index ≥ 1");
-    assert!(morpho_liq.contains(&2), "Morpho tail stride must be reached at liq index ≥ 1");
+    assert!(
+        v4_liq.contains(&2),
+        "V4 tail stride must be reached at liq index ≥ 1"
+    );
+    assert!(
+        morpho_liq.contains(&2),
+        "Morpho tail stride must be reached at liq index ≥ 1"
+    );
 }
 
 #[test]

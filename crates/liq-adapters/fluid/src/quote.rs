@@ -2,6 +2,7 @@
 //! Partials / tick-walk are fail-closed. T1 `encode` is 10E; T2/T3/T4 stay Unwired.
 
 use alloy_primitives::U256;
+use liq_protocol::SlotRef;
 use liq_protocol::{
     BonusCurve, Constraints, HealthState, LegChoice, PositionRef, ProtocolError, Quote,
     RepayOption, Result, SeizeOption,
@@ -90,9 +91,25 @@ pub(crate) fn quote(
             t.p_debt,
             Rounding::Down,
         )?;
+        // F1. The cap scales the WHOLE liquidation, so the seize has to come
+        // down with the repay. Clamping only the repay left `seize/repay`
+        // inflated by exactly `repay_before/repay_after`, and that ratio is
+        // the `colPerUnitDebt_` slip bound handed straight to Fluid — so
+        // `Vault__ExcessSlippageLiquidation` reverted every capped leg.
+        //
+        // Fluid liquidates proportionally, so scaling down is exact rather
+        // than an approximation. Round DOWN: the wire value is a minimum
+        // collateral-per-debt and must stay reachable.
+        let uncapped = repay;
         repay = repay.min(raw_cap);
         if repay.is_zero() {
             return Err(ProtocolError::EmptyQuote);
+        }
+        if repay < uncapped {
+            seize = mul_div(seize, repay, uncapped, Rounding::Down)?;
+            if seize.is_zero() {
+                return Err(ProtocolError::EmptyQuote);
+            }
         }
     }
 
@@ -100,6 +117,7 @@ pub(crate) fn quote(
     repay_options.push(RepayOption {
         asset: t.debt_row.asset,
         max_repay: repay,
+        slot: SlotRef::ByAsset,
     });
     let mut seize_options = SmallVec::new();
     seize_options.push(SeizeOption {
@@ -108,6 +126,7 @@ pub(crate) fn quote(
         bonus,
         curve,
         call_target: alloy_primitives::Address::ZERO,
+        slot: SlotRef::ByAsset,
     });
     Ok(Some(Quote {
         position: pos.id,

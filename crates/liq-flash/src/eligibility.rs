@@ -190,7 +190,11 @@ mod tests {
     }
 
     fn repay(asset: AssetId, max_repay: U256) -> RepayOption {
-        RepayOption { asset, max_repay }
+        RepayOption {
+            asset,
+            max_repay,
+            slot: liq_protocol::SlotRef::ByAsset,
+        }
     }
 
     fn seize(asset: AssetId, max_seize: U256, bonus_bps: u64) -> SeizeOption {
@@ -202,6 +206,7 @@ mod tests {
                 bonus: bps(bonus_bps),
             },
             call_target: alloy_primitives::Address::ZERO,
+            slot: liq_protocol::SlotRef::ByAsset,
         }
     }
 

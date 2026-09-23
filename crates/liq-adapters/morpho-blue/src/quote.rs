@@ -1,6 +1,7 @@
 //! Morpho `liquidate` amounts — full close factor, LIF bonus.
 
 use alloy_primitives::U256;
+use liq_protocol::SlotRef;
 use liq_protocol::{
     BonusCurve, Constraints, HealthState, PositionRef, ProtocolError, Quote, RepayOption, Result,
     SeizeOption,
@@ -69,6 +70,7 @@ pub(crate) fn quote(
     repay_options.push(RepayOption {
         asset: t.loan_row.asset,
         max_repay: repay,
+        slot: SlotRef::ByAsset,
     });
     let mut seize_options = SmallVec::new();
     seize_options.push(SeizeOption {
@@ -77,6 +79,7 @@ pub(crate) fn quote(
         bonus,
         curve,
         call_target: alloy_primitives::Address::ZERO,
+        slot: SlotRef::ByAsset,
     });
     Ok(Some(Quote {
         position: pos.id,

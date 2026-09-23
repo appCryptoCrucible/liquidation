@@ -538,10 +538,27 @@ fn load_manager<R: RegistryRpc>(
             decimals,
         });
     }
-    let lt_underlying = tokens
-        .first()
-        .map(|t| t.lt_initial)
-        .ok_or(ConfigError::RegistryCall(manager))?;
+    // G2. `ltParams(underlying)` reads `collateralTokensData[1]`, a slot
+    // `CreditConfiguratorV3.setCollateralTokenData` (pin `510fc654`) reverts
+    // on ever writing for the underlying — so that slot is permanently zero,
+    // and `tokens.first().lt_initial` (the underlying's own listing entry)
+    // always read as 0 regardless of the deployment's real threshold.
+    //
+    // The live value is the immutable identity `CreditManagerV3.sol:184`:
+    //   ltUnderlying = PERCENTAGE_FACTOR - liquidationPremium - feeLiquidation
+    //                = liquidationDiscount - feeLiquidation
+    // (`liquidationDiscount = PERCENTAGE_FACTOR - liquidationPremium`, the
+    // field this adapter already reads as `fees.liquidation_discount`). The
+    // identity cannot drift: `CreditConfiguratorV3.sol:424` reverts
+    // `InconsistentLiquidationFeesException` on any `setFees` that would
+    // change it, so re-deriving it from a fresher `fees` reading is always
+    // exact, never a stale snapshot.
+    let lt_underlying = u16::try_from(
+        U256::from(fees.liquidation_discount)
+            .checked_sub(U256::from(fees.fee_liquidation))
+            .ok_or(ConfigError::RegistryCall(manager))?,
+    )
+    .map_err(|_| ConfigError::RegistryCall(manager))?;
     let quoted_raw = provider.eth_call(
         manager,
         &ICreditManagerV3::quotedTokensMaskCall {}.abi_encode(),

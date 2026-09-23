@@ -129,6 +129,11 @@ pub struct MorphoAssetToml {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct MorphoSourceToml {
     pub oracle: Address,
+    /// T16: the pair this oracle is pinned for. Morpho markets are isolated
+    /// including their oracle, so an address alone does not say which pair
+    /// it is safe to price.
+    pub collateral: u16,
+    pub loan: u16,
 }
 
 impl MorphoBlueToml {

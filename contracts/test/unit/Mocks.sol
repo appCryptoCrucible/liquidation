@@ -509,6 +509,7 @@ contract MockEVC {
         bytes data;
     }
     function enableController(address, address) external {}
+    function enableCollateral(address, address) external {}
     function batch(Item[] calldata items) external {
         for (uint256 i; i < items.length; ++i) {
             if (items[i].targetContract == address(this)) {
@@ -691,6 +692,22 @@ contract MockFluidT1 {
     function _coll() internal view returns (address) { return collToken; }
 }
 
+/// The manager is the address that actually pulls the repayment. Gearbox's
+/// `CreditFacadeV3` only forwards; `CreditManagerV3.partiallyLiquidateCredit/// Account` (pin `510fc654`) runs `underlying.safeTransferFrom(source, pool,
+/// amount)` with the *manager* as `msg.sender`. Splitting the mock in two is
+/// the point: a single contract acting as both cannot tell a correct
+/// approval from an approval to the wrong address.
+contract MockCreditManager {
+    address public facade;
+    constructor(address facade_) { facade = facade_; }
+    /// Only the facade may drive the pull, exactly as the real manager
+    /// restricts its entrypoints to its own facade.
+    function pullRepay(address token, address from, uint256 amount) external {
+        require(msg.sender == facade, "gearbox: not facade");
+        Tok.pull(token, from, address(this), amount);
+    }
+}
+
 contract MockCreditFacade {
     mapping(address => uint256) public maxRepay;
     mapping(address => uint256) public collOut;
@@ -700,7 +717,9 @@ contract MockCreditFacade {
     uint256 public lastMinSeized;
     address public lastTo;
     address public debtToken;
+    address public creditManager;
 
+    function setCreditManager(address m) external { creditManager = m; }
     function setDebtToken(address t) external { debtToken = t; }
     function setPosition(address u, uint256 maxRepay_, uint256 collOut_) external {
         maxRepay[u] = maxRepay_;
@@ -722,7 +741,10 @@ contract MockCreditFacade {
         lastRepaid = actual;
         lastMinSeized = minSeizedAmount;
         lastTo = to;
-        Tok.pull(debtToken, msg.sender, address(this), actual);
+        // The MANAGER pulls, not the facade. An Executor that approved the
+        // facade has no allowance here and this reverts — which is the
+        // behaviour the real Gearbox has and the previous mock hid.
+        MockCreditManager(creditManager).pullRepay(debtToken, msg.sender, actual);
         Tok.push(token, to, out);
         maxRepay[creditAccount] = 0;
         return out;

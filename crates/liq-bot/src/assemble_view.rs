@@ -94,25 +94,30 @@ impl ProcessAssembleView {
         quote: &Quote,
         repay: usize,
         seize: usize,
+        tol_bps: u16,
     ) -> Result<(), AssembleError> {
         let pins = self
             .pins
             .get_mut(&pos)
             .ok_or(AssembleError::Missing("pins"))?;
-        Self::apply_quote_derived(pins, quote, repay, seize)
+        Self::apply_quote_derived(pins, quote, repay, seize, tol_bps)
     }
 
     /// Fill quote-derived tail fields only. Does not invent `fluid_t1`,
     /// Compound `is_cether`, or Gearbox full MultiCall.
+    /// `tol_bps` is [`liq_router::select::SelectCfg::min_out_tolerance_bps`]:
+    /// the slack between the quoted seize and the minimum handed to the
+    /// protocol. Zero reproduces the old behaviour and reverts on any drift.
     pub fn apply_quote_derived(
         pins: &mut TailPins,
         quote: &Quote,
         repay: usize,
         seize: usize,
+        tol_bps: u16,
     ) -> Result<(), AssembleError> {
         match pins.adapter {
             ExecutorAdapter::EulerV2 => {
-                pins.euler_min_yield = Some(euler_min_yield_from_quote(quote, seize)?);
+                pins.euler_min_yield = Some(euler_min_yield_from_quote(quote, seize, tol_bps)?);
                 let target = quote
                     .seize_options
                     .get(seize)
@@ -128,7 +133,7 @@ impl ProcessAssembleView {
                     Some(fluid_col_per_unit_debt_from_quote(quote, repay, seize)?);
             }
             ExecutorAdapter::Gearbox => {
-                pins.gearbox_min_seized = Some(gearbox_min_seized_from_quote(quote, seize)?);
+                pins.gearbox_min_seized = Some(gearbox_min_seized_from_quote(quote, seize, tol_bps)?);
             }
             ExecutorAdapter::AaveV3
             | ExecutorAdapter::AaveV4
@@ -289,6 +294,7 @@ mod tests {
             repay_options: smallvec::SmallVec::from_slice(&[RepayOption {
                 asset: AssetId(1),
                 max_repay: U256::from(1u64),
+                slot: liq_protocol::SlotRef::ByAsset,
             }]),
             seize_options: smallvec::SmallVec::from_slice(&[SeizeOption {
                 asset: AssetId(0),
@@ -298,6 +304,7 @@ mod tests {
                     bonus: Ray::from_raw(RAY / U256::from(20u64)),
                 },
                 call_target: address!("0x00000000000000000000000000000000000000e1"),
+                slot: liq_protocol::SlotRef::ByAsset,
             }]),
         };
         let mut pins = empty_pins(ExecutorAdapter::EulerV2);
@@ -305,10 +312,10 @@ mod tests {
         let mut zero_q = zero;
         zero_q.seize_options[0].call_target = Address::ZERO;
         assert!(matches!(
-            ProcessAssembleView::apply_quote_derived(&mut pins, &zero_q, 0, 0),
+            ProcessAssembleView::apply_quote_derived(&mut pins, &zero_q, 0, 0, 0),
             Err(AssembleError::Missing("euler collateral vault"))
         ));
-        ProcessAssembleView::apply_quote_derived(&mut pins, &q, 0, 0).unwrap();
+        ProcessAssembleView::apply_quote_derived(&mut pins, &q, 0, 0, 0).unwrap();
         match leg_meta_from_pins(&pins).unwrap().tail {
             LegTail::Euler { min_yield, vault } => {
                 assert_eq!(min_yield, U256::from(9u64));

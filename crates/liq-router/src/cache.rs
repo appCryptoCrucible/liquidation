@@ -139,6 +139,7 @@ mod tests {
             repay_options: SmallVec::from_slice(&[RepayOption {
                 asset: A1,
                 max_repay: e18(50),
+                slot: liq_protocol::SlotRef::ByAsset,
             }]),
             seize_options: SmallVec::from_slice(&[SeizeOption {
                 asset: A0,
@@ -148,6 +149,7 @@ mod tests {
                     bonus: Ray::from_raw(RAY / U256::from(20u64)),
                 },
                 call_target: alloy_primitives::Address::ZERO,
+                slot: liq_protocol::SlotRef::ByAsset,
             }]),
         }
     }

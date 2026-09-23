@@ -85,6 +85,8 @@ impl Deploy {
             ],
             price_sources: vec![SourcePin {
                 oracle: self.oracle,
+                collateral: WETH,
+                loan: DAI,
             }],
             pinned_through: DEPLOY_BLOCK,
         }

@@ -385,8 +385,28 @@ fn apply_pool(
             Ok(positions(&[id]))
         }
         pool::DeficitCreated::SIGNATURE_HASH => {
+            // A7. `LiquidationLogic._burnBadDebt` (pin 8305565ae) burns the
+            // user's ENTIRE remaining debt on this reserve and books it as
+            // protocol deficit:
+            //
+            // ```solidity
+            // uint256 userDebt = IVariableDebtToken(...)
+            //     .scaledBalanceOf(user).rayMul(reserveCache.nextVariableBorrowIndex);
+            // _burnDebtTokens(..., userDebt, ...);
+            // reserve.deficit += userDebt.toUint128();
+            // emit DeficitCreated(user, reserveAddress, userDebt);
+            // ```
+            //
+            // Only the reserve side was recorded here, so the borrower kept a
+            // debt row the pool had already written off — phantom debt that
+            // made the position read liquidatable forever and produced quotes
+            // against a reserve with nothing left to repay. `amountCreated` is
+            // the whole balance by construction, so the user's scaled debt on
+            // this slot goes to zero.
             let ev: pool::DeficitCreated = decode(log)?;
             let slot = slot_by_underlying(cfg, st, market, ev.debtAsset)?;
+            let id = intern(cfg, st, market, ev.user)?;
+            st.set_debt(id, slot, 0)?;
             let rows = update_reserve(st, market, slot, None, |r| {
                 r.deficit = r
                     .deficit
@@ -394,6 +414,10 @@ fn apply_pool(
                     .ok_or(FixedError::Overflow)?;
                 Ok(())
             })?;
+            // `MarketAccrual` re-projects every position holding this slot,
+            // which includes `id` and so picks up the zeroed debt. It is the
+            // wider of the two scopes this log touches, so reporting it alone
+            // cannot under-report.
             Ok(DirtySet::MarketAccrual(rows))
         }
         pool::DeficitCovered::SIGNATURE_HASH => {
@@ -563,11 +587,12 @@ fn apply_cfg(
             let mut row = *st.market(at)?;
             {
                 let meta: &mut PoolMeta = row.body_mut()?;
-                let slot = meta
-                    .emode
-                    .iter()
-                    .position(|c| c.id == ev.categoryId || c.id == 0)
-                    .ok_or(ProtocolError::Internal)?;
+                let slot = meta.emode_slot_for(ev.categoryId).ok_or(
+                    ProtocolError::TableFull {
+                        table: "aave-v3 PoolMeta::emode",
+                        cap: PoolMeta::EMODE_CAP,
+                    },
+                )?;
                 if let Some(c) = meta.emode.get_mut(slot) {
                     *c = EModeCat {
                         id: ev.categoryId,
@@ -676,7 +701,7 @@ fn emode_bit(
     market: MarketId,
     log: &DecodedLog<'_>,
     topic0: alloy_primitives::B256,
-    set: impl FnOnce(&mut Reserve, u8, bool),
+    set: impl FnOnce(&mut Reserve, crate::layout::EModeBits, bool),
 ) -> Result<DirtySet> {
     let (asset, cat, on) = if topic0 == ccfg::AssetCollateralInEModeChanged::SIGNATURE_HASH {
         let ev: ccfg::AssetCollateralInEModeChanged = decode(log)?;
@@ -689,12 +714,13 @@ fn emode_bit(
         (ev.asset, ev.categoryId, ev.ltvzero)
     };
     let meta: PoolMeta = *st.market(MarketSlot { market, slot: 0 })?.body()?;
-    let i = meta
-        .emode
-        .iter()
-        .position(|c| c.id == cat)
-        .ok_or(ProtocolError::Internal)?;
-    let mask = 1u8.checked_shl(i as u32).ok_or(ProtocolError::Internal)?;
+    // The category must already be in the table: Aave emits
+    // `EModeCategoryAdded` before it can flag any asset into the category.
+    let i = meta.emode_index(cat).ok_or(ProtocolError::Internal)?;
+    let mask = PoolMeta::emode_mask(i).ok_or(ProtocolError::TableFull {
+        table: "aave-v3 PoolMeta::emode",
+        cap: PoolMeta::EMODE_CAP,
+    })?;
     let slot = slot_by_underlying(cfg, st, market, asset)?;
     let rows = update_reserve(st, market, slot, None, |r| {
         set(r, mask, on);
@@ -800,15 +826,15 @@ fn apply_atoken(
         return Ok(DirtySet::None);
     }
     let ev: token::BalanceTransfer = decode(log)?;
-    let idx = U256::from(
-        st.market(MarketSlot {
-            market: p.market,
-            slot,
-        })?
-        .body::<Reserve>()?
-        .liquidity_index,
-    );
-    let scaled = a_token_burn_scaled(ev.value, idx)?;
+    // `BalanceTransfer.value` IS the scaled amount. `AToken._transfer` emits
+    //     emit BalanceTransfer(from, to, amount.rayDiv(index), index);
+    // so the division by the liquidity index has already happened on-chain —
+    // `docs/coverage/aave-v3.md:43` records this as "scaledAmount param".
+    //
+    // Scaling it a second time moved a balance short by `index / RAY` on every
+    // aToken transfer, which silently drains supply from the sender's row and
+    // under-credits the receiver's on every collateral move.
+    let scaled = ev.value;
     let mut ids: SmallVec<[PositionId; 2]> = SmallVec::new();
     if ev.from != Address::ZERO {
         let id = intern(cfg, st, p.market, ev.from)?;

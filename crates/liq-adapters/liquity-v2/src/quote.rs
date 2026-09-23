@@ -3,6 +3,7 @@
 //! a flash-repay-seize incentive mantissa.
 
 use alloy_primitives::U256;
+use liq_protocol::SlotRef;
 use liq_protocol::{
     BonusCurve, Constraints, HealthState, PositionRef, Quote, RepayOption, Result, SeizeOption,
 };
@@ -57,6 +58,7 @@ pub(crate) fn quote(
             bonus,
             curve,
             call_target: alloy_primitives::Address::ZERO,
+            slot: SlotRef::ByAsset,
         });
     } else {
         let weth_first = eth_notional >= coll_notional;
@@ -66,6 +68,7 @@ pub(crate) fn quote(
             bonus,
             curve,
             call_target: alloy_primitives::Address::ZERO,
+            slot: SlotRef::ByAsset,
         };
         let coll_opt = SeizeOption {
             asset: t.coll_row.asset,
@@ -73,6 +76,7 @@ pub(crate) fn quote(
             bonus,
             curve,
             call_target: alloy_primitives::Address::ZERO,
+            slot: SlotRef::ByAsset,
         };
         if coll_gas.is_zero() {
             seize_options.push(weth_opt);
@@ -91,6 +95,7 @@ pub(crate) fn quote(
         // Liquidator does not repay BOLD. SP is the counterparty. Zero is the
         // protocol truth — not a flash size.
         max_repay: U256::ZERO,
+        slot: SlotRef::ByAsset,
     });
     Ok(Some(Quote {
         position: pos.id,

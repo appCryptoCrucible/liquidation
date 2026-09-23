@@ -292,68 +292,92 @@ pub fn listing_logs(d: &Deploy) -> Vec<OwnedLog> {
     ]
 }
 
-pub fn activity_logs(d: &Deploy, alice_debt: U256) -> Vec<OwnedLog> {
+/// `CTokenInterface.mintFresh` (pin `a3214f67`) emits BOTH of these, in this
+/// order:
+///
+/// ```solidity
+/// emit Mint(minter, actualMintAmount, mintTokens);
+/// emit Transfer(address(this), minter, mintTokens);
+/// ```
+///
+/// A fixture that emitted only `Mint` is what let the double-count (P2) live:
+/// the adapter credited the minter from `Mint` *and* from `Transfer`, so every
+/// supplier's balance was exactly 2x on chain while the fixture — seeing one
+/// event — agreed with it. Emitting the pair is the whole point; do not drop
+/// the `Transfer` to make a test simpler.
+fn mint_pair(ctoken: Address, minter: Address, amount: U256) -> Vec<OwnedLog> {
     let (b, t) = (DEPLOY_BLOCK + 1, T0);
     vec![
         log(
-            d.comptroller,
-            &cmp::MarketEntered {
-                cToken: d.ceth,
-                account: d.bob,
-            },
-            b,
-            t,
-        ),
-        log(
-            d.ceth,
+            ctoken,
             &ctoken::Mint {
-                minter: d.bob,
-                mintAmount: BOB_COLL,
-                mintTokens: BOB_COLL,
+                minter,
+                mintAmount: amount,
+                mintTokens: amount,
             },
             b,
             t,
         ),
         log(
-            d.comptroller,
-            &cmp::MarketEntered {
-                cToken: d.ceth,
-                account: d.alice,
-            },
-            b,
-            t,
-        ),
-        log(
-            d.comptroller,
-            &cmp::MarketEntered {
-                cToken: d.cusdc,
-                account: d.alice,
-            },
-            b,
-            t,
-        ),
-        log(
-            d.ceth,
-            &ctoken::Mint {
-                minter: d.alice,
-                mintAmount: ALICE_COLL,
-                mintTokens: ALICE_COLL,
-            },
-            b,
-            t,
-        ),
-        log(
-            d.cusdc,
-            &ctoken::Borrow {
-                borrower: d.alice,
-                borrowAmount: alice_debt,
-                accountBorrows: alice_debt,
-                totalBorrows: alice_debt,
+            ctoken,
+            &ctoken::Transfer {
+                from: ctoken,
+                to: minter,
+                amount,
             },
             b,
             t,
         ),
     ]
+}
+
+pub fn activity_logs(d: &Deploy, alice_debt: U256) -> Vec<OwnedLog> {
+    let (b, t) = (DEPLOY_BLOCK + 1, T0);
+    let mut out: Vec<OwnedLog> = Vec::new();
+
+    out.push(log(
+        d.comptroller,
+        &cmp::MarketEntered {
+            cToken: d.ceth,
+            account: d.bob,
+        },
+        b,
+        t,
+    ));
+    out.extend(mint_pair(d.ceth, d.bob, BOB_COLL));
+
+    out.push(log(
+        d.comptroller,
+        &cmp::MarketEntered {
+            cToken: d.ceth,
+            account: d.alice,
+        },
+        b,
+        t,
+    ));
+    out.push(log(
+        d.comptroller,
+        &cmp::MarketEntered {
+            cToken: d.cusdc,
+            account: d.alice,
+        },
+        b,
+        t,
+    ));
+    out.extend(mint_pair(d.ceth, d.alice, ALICE_COLL));
+
+    out.push(log(
+        d.cusdc,
+        &ctoken::Borrow {
+            borrower: d.alice,
+            borrowAmount: alice_debt,
+            accountBorrows: alice_debt,
+            totalBorrows: alice_debt,
+        },
+        b,
+        t,
+    ));
+    out
 }
 
 pub fn store_after(p: &CompoundV2, logs: &[OwnedLog]) -> JournalStore {

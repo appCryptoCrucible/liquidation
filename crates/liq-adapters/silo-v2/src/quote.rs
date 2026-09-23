@@ -2,6 +2,7 @@
 //! `FullLiquidationRequired` if a cover below the computed repay is offered.
 
 use alloy_primitives::U256;
+use liq_protocol::SlotRef;
 use liq_protocol::{
     BonusCurve, Constraints, HealthState, PositionRef, ProtocolError, Quote, RepayOption, Result,
     SeizeOption,
@@ -11,7 +12,7 @@ use liq_types::PriceVector;
 use smallvec::SmallVec;
 
 use crate::health::{finish, terms};
-use crate::math::{asset_unit, bonus_ray, full_liquidation_required, max_liquidation};
+use crate::math::{asset_unit, bonus_ray, max_liquidation};
 
 pub(crate) fn quote(
     pos: PositionRef<'_>,
@@ -50,6 +51,7 @@ pub(crate) fn quote(
     }
 
     let cap = cons.per_liquidation_notional_cap.raw();
+    let mut seize = seize;
     let repay = if cap == U256::MAX {
         repay
     } else {
@@ -59,13 +61,25 @@ pub(crate) fn quote(
             t.p_debt,
             Rounding::Down,
         )?;
-        if full_liquidation_required(repay, raw_cap) {
-            repay
-        } else {
-            repay.min(raw_cap)
+        // T9. This used to branch on `full_liquidation_required(repay,
+        // raw_cap)` (`repay > raw_cap`): that branch returned `repay`
+        // unclamped, and the other arm was `repay.min(raw_cap)`, which is
+        // also `repay` whenever `repay <= raw_cap`. Both arms returned
+        // `repay` — the operator's notional cap never bound on any Silo leg.
+        // `repay.min(raw_cap)` alone is the whole fix.
+        let capped = repay.min(raw_cap);
+        if capped < repay && !repay.is_zero() {
+            // Silo's collateral-to-liquidate scales linearly with the repay
+            // value (`max_liquidation`'s `calculate_collateral_to_liquidate`
+            // is applied to `repay_value`), so a capped repay must carry a
+            // proportionally smaller `max_seize` — otherwise the router sizes
+            // an exit for collateral that will not actually be seized at the
+            // reduced repay.
+            seize = mul_div(seize, capped, repay, Rounding::Down)?;
         }
+        capped
     };
-    if repay.is_zero() {
+    if repay.is_zero() || seize.is_zero() {
         return Err(ProtocolError::EmptyQuote);
     }
 
@@ -73,6 +87,7 @@ pub(crate) fn quote(
     repay_options.push(RepayOption {
         asset: t.debt_row.asset,
         max_repay: repay,
+        slot: SlotRef::ByAsset,
     });
     let mut seize_options = SmallVec::new();
     seize_options.push(SeizeOption {
@@ -81,6 +96,7 @@ pub(crate) fn quote(
         bonus,
         curve,
         call_target: alloy_primitives::Address::ZERO,
+        slot: SlotRef::ByAsset,
     });
     Ok(Some(Quote {
         position: pos.id,

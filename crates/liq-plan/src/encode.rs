@@ -203,6 +203,7 @@ pub fn decode_batch(bytes: &[u8]) -> Result<BatchPlan> {
             flash_source: head.flash_source,
             debt_asset: head.debt_asset,
             flash_amount: head.flash_amount,
+            fee_bps: 0,
             liqs,
             repay_swaps,
         });

@@ -178,7 +178,23 @@ pub(crate) fn terms(pos: PositionRef<'_>) -> Result<Terms<'_>> {
 
 pub(crate) fn finish<'a>(t: &Terms<'a>, px: &PriceVector) -> Result<(Terms<'a>, Health)> {
     let p_coll = price_ray(px, t.coll_row.asset)?;
-    let p_bold = price_ray(px, t.loan_row.asset)?;
+    // T13 L3. `_computeCR` (`LiquityMath.sol`, pin `c8a5a4ee`) is
+    // `coll * price / debt` — it never reads a BOLD price at all. Liquity's
+    // own ICR accounting treats 1 BOLD as worth exactly one unit of whatever
+    // numeraire the collateral price feed uses; there is no on-chain BOLD
+    // oracle for it to read instead. Requiring a live feed for it here
+    // (`price_ray(px, loan_row.asset)`) was requiring data the protocol
+    // itself does not have — `registry.meta.json` correctly records BOLD as
+    // unpriced, and this line, not the registry, was the bug: it turned
+    // "BOLD is unpriced" into `Err(MissingPrice)` on every single trove,
+    // which `engine.rs` gates on for every position, not just a cosmetic
+    // field.
+    //
+    // `RAY` (1.0) here reproduces that accounting exactly, not a market
+    // assumption of our own: `debt_value` becomes `entire_debt` in the same
+    // numeraire `collateral_value` is already expressed in, same as the
+    // protocol's own ICR treats it.
+    let p_bold = liq_types::fixed::RAY;
     let price_wad = price_wad_from_ray(p_coll)?;
     let icr = compute_cr(t.entire_coll, t.entire_debt, price_wad)?;
     let mcr = U256::from(t.branch.mcr);

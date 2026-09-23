@@ -186,7 +186,7 @@ fn create_market(cfg: &Config, st: &mut dyn StateWriter, log: &DecodedLog<'_>) -
     let coll_tok = cfg
         .asset_by_underlying(ev.marketParams.collateralToken)
         .ok_or(ProtocolError::OracleSourceMismatch)?;
-    let priced = cfg.oracle_pinned(ev.marketParams.oracle);
+    let priced = cfg.oracle_pinned(ev.marketParams.oracle, coll_tok.asset, loan_tok.asset);
     let mut cat = MarketRow::blank(CATALOG_ASSET, 0);
     {
         let e: &mut CatalogEntry = cat.body_mut()?;

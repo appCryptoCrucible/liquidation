@@ -10,6 +10,7 @@
 //! `floor(rayMulUp(d, idx) · RAY / idx) >= d`, so the `min` is unchanged.
 
 use alloy_primitives::U256;
+use liq_protocol::SlotRef;
 use liq_protocol::{
     BonusCurve, Constraints, HealthState, PositionRef, ProtocolError, Quote, RepayOption, Result,
     SeizeOption,
@@ -369,6 +370,7 @@ pub(crate) fn quote(
                 bonus,
                 curve,
                 call_target: alloy_primitives::Address::ZERO,
+                slot: SlotRef::ByAsset,
             },
             value,
             t.slot,
@@ -421,6 +423,7 @@ pub(crate) fn quote(
             RepayOption {
                 asset: t.row.asset,
                 max_repay: a.repay,
+                slot: SlotRef::ByAsset,
             },
             value,
         ));

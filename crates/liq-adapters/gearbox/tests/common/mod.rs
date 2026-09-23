@@ -416,7 +416,15 @@ pub fn mock_registry(d: &Deploy) -> MockRpc {
         ICreditManagerV3::collateralTokensCountCall {}.abi_encode(),
         Bytes::from(ICreditManagerV3::collateralTokensCountCall::abi_encode_returns(&2u8)),
     ));
-    for (mask, token, lt) in [(1u64, d.underlying, LT_UNDERLYING), (2u64, d.coll, LT_COLL)] {
+    // G2. `setCollateralTokenData` (pin `510fc654`) reverts for the
+    // underlying, so `ltParams(underlying)` reads an unwritten storage slot
+    // and is 0 on every real deployment — never `LT_UNDERLYING`. The mock
+    // used to hand back a plausible non-zero value here, which is exactly
+    // what let the config-loader's wrong derivation go unnoticed: it read a
+    // number that looked right. `lt_underlying` must come from `fees`
+    // (`liquidation_discount - fee_liquidation`) regardless of what this
+    // call returns; `underlying_lt_from_fees_not_dead_slot` below pins that.
+    for (mask, token, lt) in [(1u64, d.underlying, 0u16), (2u64, d.coll, LT_COLL)] {
         calls.push((
             d.manager,
             ICreditManagerV3::getTokenByMaskCall {

@@ -3,6 +3,7 @@
 use alloy_primitives::{keccak256, Address, B256, U256};
 use alloy_sol_types::sol;
 use liq_exec::wire::{LegTail, LEG_EXACT_OUT, LEG_TAKE_BALANCE, VENUE_ROUTER, VENUE_UNIV3_POOL};
+use liq_flash::fee_amount;
 use liq_protocol::ExecutorAdapter;
 use liq_types::fixed::{mul_div, Rounding, RAY, WAD};
 
@@ -39,7 +40,14 @@ pub fn validate(p: &BatchPlan, ctx: &ValidateCtx) -> Result<()> {
             nonzero(l.market, "market")?;
             nonzero(l.borrower, "borrower")?;
             nonzero(l.collateral_asset, "collateralAsset")?;
-            if l.protocol_pull == 0 {
+            // T13 L1. Liquity is paid by the Stability Pool, not by the
+            // liquidator — `batchLiquidateTroves` pulls no BOLD from
+            // `msg.sender` (`TroveManager.sol:417-475, 537-545`). The
+            // liquidator's compensation is gas comp only. `protocol_pull ==
+            // 0` for this adapter is the TRUTHFUL size of the repay leg, not
+            // a sizing bug; every other adapter's `0` really does mean
+            // nothing to fund.
+            if l.protocol_pull == 0 && l.adapter != ExecutorAdapter::LiquityV2 {
                 return Err(EncodeError::ZeroPull {
                     pull: l.protocol_pull,
                 });
@@ -61,7 +69,13 @@ pub fn validate(p: &BatchPlan, ctx: &ValidateCtx) -> Result<()> {
                     check_morpho(ctx, *market_id, l.market, g.debt_asset, l.collateral_asset)?;
                 }
                 (ExecutorAdapter::MorphoBlue, _) => return Err(EncodeError::MorphoTailShape),
-                (ExecutorAdapter::EulerV2, LegTail::Euler { min_yield: _, vault }) => {
+                (
+                    ExecutorAdapter::EulerV2,
+                    LegTail::Euler {
+                        min_yield: _,
+                        vault,
+                    },
+                ) => {
                     if vault.is_zero() {
                         return Err(EncodeError::EulerZeroVault);
                     }
@@ -336,20 +350,36 @@ fn size_repay_to_pull(g: &FlashGroup) -> Result<()> {
         a.checked_add(l.protocol_pull)
             .ok_or(EncodeError::TooManyLegs)
     })?;
+    // The protocol pulls `pull` before the repay swap. The flash lender then
+    // pulls `flash_amount + fee(flash_amount)`. Borrowing the fee as well
+    // raises both sides by the fee, so the swap has to buy `pull + fee`.
+    if g.flash_amount < pull {
+        return Err(EncodeError::FlashShort {
+            flash: g.flash_amount,
+            pull,
+        });
+    }
+    let fee = fee_amount(g.provider, U256::from(g.flash_amount), g.fee_bps).ok_or(
+        EncodeError::UnpriceableFee {
+            provider: g.provider,
+            fee_bps: g.fee_bps,
+        },
+    )?;
+    let fee_u = u128::try_from(fee).map_err(|_| EncodeError::PremiumOverflow)?;
+    let owed = pull
+        .checked_add(fee_u)
+        .ok_or(EncodeError::PremiumOverflow)?;
     let exact_out: u128 = g.repay_swaps.iter().try_fold(0u128, |a, s| {
         if s.flags & LEG_EXACT_OUT == 0 {
             return Ok(a);
         }
         a.checked_add(s.amount).ok_or(EncodeError::TooManyLegs)
     })?;
-    if exact_out > pull {
-        return Err(EncodeError::UnderSeizure { exact_out, pull });
+    if exact_out > owed {
+        return Err(EncodeError::UnderSeizure { exact_out, owed });
     }
-    if exact_out != pull {
-        // Dust: EXACT_OUT under-sized vs pull is also a revert on flash repay
-        // unless pull-exact_out is the share-rounding dust routed by sweep.
-        // The assembler must size EXACT_OUT to `protocol_pull`.
-        return Err(EncodeError::RepayNotSizedToPull { exact_out, pull });
+    if exact_out != owed {
+        return Err(EncodeError::RepayNotSizedToPull { exact_out, owed });
     }
     Ok(())
 }

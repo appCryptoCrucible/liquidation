@@ -17,6 +17,17 @@ pub struct AssetConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourcePin {
     pub oracle: Address,
+    /// T16. Morpho markets are isolated **including their oracle**: two
+    /// markets on the same pair can and do run different `IOracle`
+    /// implementations (`_isHealthy` reads `marketParams.oracle` directly,
+    /// never a shared per-pair feed). An oracle allowlisted for one pair is
+    /// not, by that fact, safe for another — pinning the pair alongside the
+    /// address is what makes a wrong pairing fail closed (`UNPRICED`)
+    /// instead of silently reusing that oracle's price for a different pair
+    /// (diverges for `MorphoChainlinkOracleV2` with a vault conversion leg,
+    /// hard-pegged oracles, and any oracle with its own `SCALE_FACTOR`).
+    pub collateral: AssetId,
+    pub loan: AssetId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,12 +68,20 @@ impl Config {
         if self.catalog == self.first_market {
             return Err(ConfigError::MarketCollision);
         }
-        let mut oracles: Vec<Address> = Vec::new();
+        // T16. The same oracle CONTRACT can legitimately back several
+        // markets on the same pair (different LLTVs sharing one price feed),
+        // so the duplicate check is over the `(oracle, collateral, loan)`
+        // TUPLE, not the address alone — that also makes a config that pins
+        // one oracle to two different pairs (implausible for a real Morpho
+        // oracle, which is deployed per-pair) fail loudly at load time
+        // rather than silently pick whichever entry `.any()` finds first.
+        let mut pins: Vec<(Address, AssetId, AssetId)> = Vec::new();
         for p in &self.price_sources {
-            if oracles.contains(&p.oracle) {
+            let key = (p.oracle, p.collateral, p.loan);
+            if pins.contains(&key) {
                 return Err(ConfigError::DuplicateAddress(p.oracle));
             }
-            oracles.push(p.oracle);
+            pins.push(key);
         }
         for (i, a) in self.assets.iter().enumerate() {
             if self
@@ -91,8 +110,10 @@ impl Config {
     }
 
     #[inline]
-    pub(crate) fn oracle_pinned(&self, oracle: Address) -> bool {
-        self.price_sources.iter().any(|p| p.oracle == oracle)
+    pub(crate) fn oracle_pinned(&self, oracle: Address, collateral: AssetId, loan: AssetId) -> bool {
+        self.price_sources
+            .iter()
+            .any(|p| p.oracle == oracle && p.collateral == collateral && p.loan == loan)
     }
 
     #[inline]

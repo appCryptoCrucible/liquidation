@@ -53,6 +53,9 @@ pub struct FlashGroup {
     pub flash_source: Address,
     pub debt_asset: Address,
     pub flash_amount: u128,
+    /// Off-wire, same as `protocol_pull`. Premium in bps of this group's
+    /// source. UniV4 and Morpho are 0; a nonzero bps there is unpriceable.
+    pub fee_bps: u16,
     pub liqs: Vec<LiqLeg>,
     pub repay_swaps: Vec<SwapLeg>,
 }
@@ -61,7 +64,7 @@ pub struct FlashGroup {
 ///
 /// `protocol_pull` is not on the wire. It is the amount the protocol will
 /// actually take (V3 close-factor / V4 target-HF clamp / Morpho share
-/// rounding). Validate sizes `EXACT_OUT` repay legs to it.
+/// rounding). The repay swap must buy it back plus the flash premium.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LiqLeg {
     pub adapter: ExecutorAdapter,

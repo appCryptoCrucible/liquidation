@@ -64,7 +64,7 @@ fn extra_logs(d: &Deploy) -> Vec<OwnedLog> {
         log(
             d.silo0,
             &silo::AccruedInterest {
-                hooksBefore: U256::ZERO,
+                accruedInterest: U256::ZERO,
             },
             b,
             t,
@@ -455,8 +455,13 @@ fn zero_collateral_with_debt_is_bad_debt() {
         .is_none());
 }
 
+/// T9. The notional cap must actually bind: a repay clamped to a tiny cap is
+/// strictly smaller than the uncapped repay, and `max_seize` shrinks with it
+/// (Silo's collateral-to-liquidate is linear in the repay value). Before the
+/// fix, both branches of the cap's conditional returned the uncapped
+/// `repay` — this test used to assert exactly that no-op and pass.
 #[test]
-fn full_liquidation_required_does_not_shrink_repay() {
+fn notional_cap_shrinks_repay_and_seize_together() {
     let d = Deploy::new();
     let (p, st) = full_store(&d, ALICE_DEBT_LIQ);
     let px = prices(RAY_ONE, RAY_ONE);
@@ -466,13 +471,51 @@ fn full_liquidation_required_does_not_shrink_repay() {
         .unwrap()
         .expect("liquidatable");
     let repay = full.repay_options[0].max_repay;
+    let seize = full.seize_options[0].max_seize;
     assert!(repay > U256::ZERO);
-    let tiny = Constraints {
-        per_liquidation_notional_cap: liq_types::Wad::from_raw(U256::from(1u8)),
+    assert!(seize > U256::ZERO);
+
+    // Binary search for the smallest cap that still produces a quote at all.
+    // `capped_repay = repay.min(raw_cap(cap))` is monotonically non-decreasing
+    // in the cap, and a cap under some threshold floors `raw_cap` to 0 (an
+    // `EmptyQuote`, not `Ok(None)` — repay/seize can't both be zero and still
+    // quote). Right at that threshold `raw_cap` is the smallest positive
+    // value the conversion can produce, so `capped_repay` there is far below
+    // `repay` — this avoids hand-deriving the Wad-to-raw conversion, which
+    // depends on this fixture's price and debt decimals.
+    let mut lo = U256::ZERO; // known: quote fails (repay clamped to 0)
+    let mut hi = U256::from(1u128) << 100u32; // known: quote succeeds (unclamped)
+    for _ in 0..128 {
+        if hi - lo <= U256::ONE {
+            break;
+        }
+        let mid = lo + (hi - lo) / U256::from(2u8);
+        let cap = Constraints {
+            per_liquidation_notional_cap: liq_types::Wad::from_raw(mid),
+        };
+        // A cap too small to bind returns `Err(EmptyQuote)`, not `Ok(None)` —
+        // treat any non-`Ok(Some(_))` result as "does not yet quote".
+        if matches!(p.quote(pos, &px, &cap), Ok(Some(_))) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    let cap = Constraints {
+        per_liquidation_notional_cap: liq_types::Wad::from_raw(hi),
     };
-    let capped = p.quote(pos, &px, &tiny).unwrap().expect("still quotes");
-    assert_eq!(capped.repay_options[0].max_repay, repay);
-    assert!(math::full_liquidation_required(repay, U256::from(1u8)));
+    let capped = p
+        .quote(pos, &px, &cap)
+        .unwrap()
+        .expect("hi is chosen to still quote");
+    assert!(
+        capped.repay_options[0].max_repay < repay,
+        "the notional cap must bind, not be a no-op"
+    );
+    assert!(
+        capped.seize_options[0].max_seize < seize,
+        "seize must shrink with a capped repay"
+    );
 }
 
 #[test]

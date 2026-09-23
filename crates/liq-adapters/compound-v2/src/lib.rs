@@ -231,14 +231,38 @@ impl Protocol for CompoundV2 {
             .cfg
             .fork_by_market(q.key.market)
             .ok_or(ProtocolError::UnknownMarket(q.key.market))?;
-        let debt_pin = self
+        // P6. Prefer the cToken the QUOTE named. `ctoken_for_asset` resolves
+        // by underlying, and cWBTC/cWBTC2 share one — so it silently picks
+        // the deprecated market. The quote walked the borrower's actual rows
+        // and knows which cToken the balance is in; the config lookup stays
+        // only as the fallback for a quote that did not name one.
+        let debt_ctoken = match repay.slot.contract() {
+            Some(a) if !a.is_zero() => a,
+            _ => {
+                self.cfg
+                    .ctoken_for_asset(fork, repay.asset)
+                    .ok_or(ProtocolError::OracleSourceMismatch)?
+                    .ctoken
+            }
+        };
+        let coll_ctoken = match seize.slot.contract() {
+            Some(a) if !a.is_zero() => a,
+            _ => {
+                self.cfg
+                    .ctoken_for_asset(fork, seize.asset)
+                    .ok_or(ProtocolError::OracleSourceMismatch)?
+                    .ctoken
+            }
+        };
+        // The collateral cToken is what the 21-byte tail carries; it must be
+        // a market this deployment actually lists, whichever way it was
+        // resolved.
+        let coll_pin = self
             .cfg
-            .ctoken_for_asset(fork, repay.asset)
+            .ctoken_seed(coll_ctoken)
+            .map(|(_, c)| c)
             .ok_or(ProtocolError::OracleSourceMismatch)?;
-        let _coll_pin = self
-            .cfg
-            .ctoken_for_asset(fork, seize.asset)
-            .ok_or(ProtocolError::OracleSourceMismatch)?;
+        let _ = coll_pin;
         let debt_asset = self
             .cfg
             .underlying_of(repay.asset)
@@ -255,7 +279,7 @@ impl Protocol for CompoundV2 {
             flash_amount: wire(funding.amount)?,
             leg: LiquidationLeg {
                 adapter: ExecutorAdapter::CompoundV2,
-                market: debt_pin.ctoken,
+                market: debt_ctoken,
                 borrower: q.key.user,
                 collateral_asset,
                 repay_amount: wire(repay.max_repay)?,

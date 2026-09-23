@@ -263,6 +263,7 @@ mod tests {
             repay_options: SmallVec::from_slice(&[liq_protocol::RepayOption {
                 asset: debt,
                 max_repay: e18(1),
+                slot: liq_protocol::SlotRef::ByAsset,
             }]),
             seize_options: SmallVec::from_slice(&[SeizeOption {
                 asset: coll,
@@ -272,6 +273,7 @@ mod tests {
                     bonus: Ray::from_raw(RAY / U256::from(20u64)),
                 },
                 call_target: alloy_primitives::Address::ZERO,
+                slot: liq_protocol::SlotRef::ByAsset,
             }]),
         };
         let h = Haircut::from_bps(10_000).unwrap();

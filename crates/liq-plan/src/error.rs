@@ -118,10 +118,19 @@ pub enum EncodeError {
     ZeroPull { pull: u128 },
     #[error("minProfit is zero (dust / multi-leg floor refused)")]
     ZeroMinProfit,
-    #[error("EXACT_OUT repay {exact_out} exceeds protocol pull {pull} (under-seizure)")]
-    UnderSeizure { exact_out: u128, pull: u128 },
-    #[error("EXACT_OUT repay {exact_out} != protocol pull {pull}")]
-    RepayNotSizedToPull { exact_out: u128, pull: u128 },
+    #[error("EXACT_OUT repay {exact_out} exceeds pull + flash premium {owed}")]
+    UnderSeizure { exact_out: u128, owed: u128 },
+    #[error("EXACT_OUT repay {exact_out} != pull + flash premium {owed}")]
+    RepayNotSizedToPull { exact_out: u128, owed: u128 },
+    #[error("flash {flash} is below protocol pull {pull}")]
+    FlashShort { flash: u128, pull: u128 },
+    #[error("no pool fee for {provider:?} at {fee_bps} bps")]
+    UnpriceableFee {
+        provider: FlashProvider,
+        fee_bps: u16,
+    },
+    #[error("flash premium does not fit u128")]
+    PremiumOverflow,
     #[error("surplus debt {debt} (flash {flash} > pull {pull}) has no TAKE_BALANCE profit leg")]
     SurplusDebtUnrouted {
         debt: Address,

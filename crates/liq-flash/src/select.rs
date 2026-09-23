@@ -69,7 +69,8 @@ pub fn fee_amount(provider: FlashProvider, amount: U256, fee_bps: u16) -> Option
         // executes `INVALID` and burns the rest of the gas.
         FlashProvider::Aave => {
             // `percentMulCeil` reverts when `amount > type(uint256).max / bps`.
-            if amount > U256::MAX / bps {
+            let bound = U256::MAX.checked_div(bps)?;
+            if amount > bound {
                 return None;
             }
             mul_div(amount, bps, BPS, Rounding::Up).ok()

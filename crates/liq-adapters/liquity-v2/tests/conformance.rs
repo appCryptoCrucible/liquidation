@@ -27,7 +27,7 @@ use liq_protocol::{
     BonusCurve, CallbackShape, Constraints, DirtySet, ExecutorAdapter, FlashRoute, HealthState,
     LegChoice, Protocol, ProtocolError, StateWriter,
 };
-use liq_types::{AssetId, LogSubscriber, MarketId, ProtocolId, Ray, Wad};
+use liq_types::{AssetId, LogSubscriber, MarketId, PriceVector, ProtocolId, Ray, Wad};
 
 fn full_store(d: &Deploy) -> (LiquityV2, liq_protocol::conformance::JournalStore) {
     let p = d.adapter();
@@ -468,15 +468,45 @@ fn probe_unavailable() {
     );
 }
 
+/// T13 L3. `_computeCR` (`LiquityMath.sol`, pin `c8a5a4ee`) is
+/// `coll * price / debt` — it never reads a BOLD price, so there is nothing
+/// for the adapter to require one for either. A zero (or absent) BOLD entry
+/// in the price vector must not fail `health()`; `debt_value` is derived by
+/// treating 1 BOLD as one unit of the collateral price's own numeraire,
+/// exactly as the protocol's own ICR math does.
 #[test]
-fn missing_bold_price_fails_closed() {
+fn bold_price_is_never_required() {
     let d = Deploy::new();
     let (p, st) = full_store(&d);
-    let px = prices(ETH_USD_WAD, U256::ZERO);
-    assert_eq!(
-        p.health(st.view(ALICE_ID, T0).unwrap(), &px),
-        Err(ProtocolError::MissingPrice(BOLD))
+    let pos = st.view(ALICE_ID, T0).unwrap();
+
+    // A zero BOLD entry — what the old failing case supplied — succeeds now.
+    let px_zero = prices(ETH_USD_WAD, U256::ZERO);
+    let h_zero = p.health(pos, &px_zero).unwrap();
+
+    // No BOLD entry in the vector at all still succeeds.
+    let px_absent = PriceVector(
+        prices(ETH_USD_WAD, U256::ZERO)
+            .0
+            .into_iter()
+            .filter(|pr| pr.asset != BOLD)
+            .collect(),
     );
+    let h_absent = p.health(pos, &px_absent).unwrap();
+
+    // A real (peg-consistent) BOLD price gives the identical result: the
+    // synthetic peg is not a special case, it is what BOLD == 1.0 already
+    // computed to in every other test in this file.
+    let h_priced = p.health(pos, &prices(ETH_USD_WAD, BOLD_USD_WAD)).unwrap();
+
+    assert_eq!(h_zero.state, h_priced.state);
+    assert_eq!(h_zero.debt_value, h_priced.debt_value);
+    assert_eq!(h_absent.state, h_priced.state);
+    assert_eq!(h_absent.debt_value, h_priced.debt_value);
+
+    // debt_value is entire_debt at a 1:1 peg (BOLD is 18-decimal WAD), not
+    // zero and not an error.
+    assert_eq!(h_priced.debt_value, Wad::from_raw(ALICE_DEBT));
 }
 
 #[test]
