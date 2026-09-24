@@ -32,6 +32,12 @@ sol! {
         function token1() external view returns (address);
         function fee() external view returns (uint24);
     }
+    interface IUniswapV2Pair {
+        function factory() external view returns (address);
+    }
+    interface ICurvePool {
+        function coins(uint256 i) external view returns (address);
+    }
     interface AggregatorV3Interface {
         function decimals() external view returns (uint8);
     }
@@ -73,6 +79,15 @@ enum Expect<'a> {
     Fee {
         pool: Address,
         expected: u32,
+    },
+    Factory {
+        pool: Address,
+        expected: Address,
+    },
+    CurveCoin {
+        pool: Address,
+        index: usize,
+        expected: Address,
     },
     OracleDecimals {
         proxy: Address,
@@ -136,8 +151,34 @@ pub(crate) async fn assert_registry_views<R: ChainRpc + Sync>(
     }
 
     for (addr, pool) in &reg.pools {
-        match pool.venue {
-            PoolVenue::Univ3 => {}
+        if pool.venue == PoolVenue::Curve {
+            for (index, coin) in pool.coins.iter().enumerate() {
+                calls.push(call3(
+                    *addr,
+                    Bytes::from(
+                        ICurvePool::coinsCall {
+                            i: alloy_primitives::U256::from(index),
+                        }
+                        .abi_encode(),
+                    ),
+                ));
+                expect.push(Expect::CurveCoin {
+                    pool: *addr,
+                    index,
+                    expected: *coin,
+                });
+            }
+            continue;
+        }
+        if pool.venue == PoolVenue::Univ2 {
+            calls.push(call3(
+                *addr,
+                Bytes::from(IUniswapV2Pair::factoryCall {}.abi_encode()),
+            ));
+            expect.push(Expect::Factory {
+                pool: *addr,
+                expected: pool.factory,
+            });
         }
         calls.push(call3(
             *addr,
@@ -155,14 +196,16 @@ pub(crate) async fn assert_registry_views<R: ChainRpc + Sync>(
             pool: *addr,
             expected: pool.token1,
         });
-        calls.push(call3(
-            *addr,
-            Bytes::from(IUniswapV3Pool::feeCall {}.abi_encode()),
-        ));
-        expect.push(Expect::Fee {
-            pool: *addr,
-            expected: pool.fee,
-        });
+        if pool.venue == PoolVenue::Univ3 {
+            calls.push(call3(
+                *addr,
+                Bytes::from(IUniswapV3Pool::feeCall {}.abi_encode()),
+            ));
+            expect.push(Expect::Fee {
+                pool: *addr,
+                expected: pool.fee,
+            });
+        }
     }
 
     for (addr, oracle) in &reg.oracles {
@@ -250,13 +293,21 @@ async fn aggregate3<R: ChainRpc + Sync>(
 fn check_one(exp: &Expect<'_>, row: &IMulticall3::Result) -> Result<()> {
     let (address, what) = match exp {
         Expect::Decimals { token, .. } | Expect::Symbol { token, .. } => (*token, "token view"),
-        Expect::Token0 { pool, .. } | Expect::Token1 { pool, .. } | Expect::Fee { pool, .. } => {
-            (*pool, "pool view")
-        }
+        Expect::Token0 { pool, .. }
+        | Expect::Token1 { pool, .. }
+        | Expect::Fee { pool, .. }
+        | Expect::Factory { pool, .. }
+        | Expect::CurveCoin { pool, .. } => (*pool, "pool view"),
         Expect::OracleDecimals { proxy, .. } | Expect::Aggregator { proxy, .. } => {
             (*proxy, "oracle view")
         }
     };
+    // A registry `null` symbol records a token whose `symbol()` reverts:
+    // the chain agreeing is a match, and a symbol appearing is refused
+    // below (`SymbolMissing`) — the registry is then out of date.
+    if !row.success && matches!(exp, Expect::Symbol { expected: None, .. }) {
+        return Ok(());
+    }
     if !row.success {
         return Err(ConfigError::CallFailed { address, what });
     }
@@ -328,6 +379,39 @@ fn check_one(exp: &Expect<'_>, row: &IMulticall3::Result) -> Result<()> {
             if found != *expected {
                 return Err(ConfigError::Token1Mismatch {
                     pool: *pool,
+                    expected: *expected,
+                    found,
+                });
+            }
+        }
+        Expect::Factory { pool, expected } => {
+            let found = IUniswapV2Pair::factoryCall::abi_decode_returns_validate(&row.returnData)
+                .map_err(|_| ConfigError::CallFailed {
+                address: *pool,
+                what: "factory decode",
+            })?;
+            if found != *expected {
+                return Err(ConfigError::PoolFactoryMismatch {
+                    pool: *pool,
+                    expected: *expected,
+                    found,
+                });
+            }
+        }
+        Expect::CurveCoin {
+            pool,
+            index,
+            expected,
+        } => {
+            let found = ICurvePool::coinsCall::abi_decode_returns_validate(&row.returnData)
+                .map_err(|_| ConfigError::CallFailed {
+                    address: *pool,
+                    what: "coins decode",
+                })?;
+            if found != *expected {
+                return Err(ConfigError::CurveCoinMismatch {
+                    pool: *pool,
+                    index: *index,
                     expected: *expected,
                     found,
                 });
@@ -520,6 +604,7 @@ mod tests {
                 factory: UNI_FACTORY,
                 deployed_block: 0,
                 derived_via: "factory.getPool".into(),
+                coins: Vec::new(),
             },
         );
         Registry {
@@ -549,11 +634,11 @@ mod tests {
             .unwrap();
     }
 
-    /// Oracle: committed registry records `symbol: null` on two tokens (discovery
-    /// gap, not a guess). Boot must refuse rather than skip the field. One of
-    /// those tokens also reverts a metadata view (`CallFailed`) — same outcome.
+    /// Oracle: `symbol: null` records a token whose `symbol()` reverts. The
+    /// committed null row boots (the chain still reverts). Negative: a token
+    /// that does have a symbol, recorded as null, refuses (`SymbolMissing`).
     #[tokio::test(flavor = "current_thread")]
-    async fn committed_null_symbol_fails_startup() {
+    async fn null_symbol_means_symbol_reverts() {
         let committed =
             crate::registry::Registry::from_path(&workspace_root().join("registry/registry.json"))
                 .unwrap();
@@ -563,11 +648,16 @@ mod tests {
             .filter(|(_, t)| t.symbol.is_none())
             .map(|(a, t)| (*a, t.clone()))
             .collect();
-        assert_eq!(
-            tokens.len(),
-            2,
-            "committed file currently has two null symbols"
-        );
+        assert_eq!(tokens.len(), 1, "committed file has one null symbol");
+        let mut reg = tiny_registry(tokens);
+        reg.pools.clear();
+        tokio::time::timeout(Duration::from_secs(45), assert_registry(&reg, &live_rpc()))
+            .await
+            .expect("rpc timed out — fail closed")
+            .unwrap();
+
+        let mut tokens = tokens_weth_usdc_usdt_mkr();
+        tokens.get_mut(&USDC).unwrap().symbol = None;
         let mut reg = tiny_registry(tokens);
         reg.pools.clear();
         let err = tokio::time::timeout(Duration::from_secs(45), assert_registry(&reg, &live_rpc()))
@@ -575,11 +665,8 @@ mod tests {
             .expect("rpc timed out — fail closed")
             .unwrap_err();
         assert!(
-            matches!(
-                err,
-                ConfigError::SymbolMissing { .. } | ConfigError::CallFailed { .. }
-            ),
-            "null-symbol rows must refuse to start; got {err:?}"
+            matches!(err, ConfigError::SymbolMissing { .. }),
+            "a real symbol recorded as null must refuse to start; got {err:?}"
         );
     }
 

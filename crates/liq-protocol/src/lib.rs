@@ -54,6 +54,6 @@ pub use mask::{AssetMask, SetSlots};
 pub use plan::{ExecutorAdapter, LiquidationLeg, LiquidationPlan, ProbeCall};
 pub use posref::PositionRef;
 pub use protocol::Protocol;
-pub use quote::{Constraints, LegChoice, Quote, RepayOption, SeizeOption, SlotRef};
+pub use quote::{LegChoice, Quote, RepayOption, SeizeOption, SlotRef};
 pub use routecache::RouteCache;
 pub use statewriter::StateWriter;

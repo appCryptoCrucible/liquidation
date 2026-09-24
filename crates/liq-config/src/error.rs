@@ -54,6 +54,21 @@ pub enum ConfigError {
         expected: Address,
         found: Address,
     },
+    /// V2 pair `factory()` disagrees with the committed registry.
+    #[error("pool {pool}: factory() {found}, registry pins {expected}")]
+    PoolFactoryMismatch {
+        pool: Address,
+        expected: Address,
+        found: Address,
+    },
+    /// Curve pool `coins(index)` disagrees with the committed registry.
+    #[error("curve pool {pool}: coins({index}) {found}, registry pins {expected}")]
+    CurveCoinMismatch {
+        pool: Address,
+        index: usize,
+        expected: Address,
+        found: Address,
+    },
     /// Oracle proxy `decimals()` disagrees with the committed registry.
     #[error("oracle decimals mismatch for {proxy:#x}: registry {expected}, chain {found}")]
     OracleDecimalsMismatch {

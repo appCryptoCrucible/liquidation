@@ -223,7 +223,7 @@ impl WarmBuilder {
         for (coll, debt) in book.pairs() {
             let (Some(sizes), Some(per_eth)) = (inputs.bucket_sizes(coll), inputs.per_eth(debt))
             else {
-                tracing::warn!(
+                tracing::debug!(
                     ?coll,
                     ?debt,
                     "warm: bucket ladder or price missing; pair skipped"

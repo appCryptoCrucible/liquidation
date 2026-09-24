@@ -13,7 +13,7 @@ mod common;
 
 use common::*;
 use criterion::{criterion_group, criterion_main, Criterion};
-use liq_protocol::{Constraints, Protocol};
+use liq_protocol::Protocol;
 use std::hint::black_box;
 
 fn bench(c: &mut Criterion) {
@@ -29,12 +29,7 @@ fn bench(c: &mut Criterion) {
         b.iter(|| black_box(p.health(black_box(pos), black_box(&px)).unwrap()))
     });
     c.bench_function("quote_liquity_v2_unbounded", |b| {
-        b.iter(|| {
-            black_box(
-                p.quote(black_box(pos), black_box(&px), &Constraints::UNBOUNDED)
-                    .unwrap(),
-            )
-        })
+        b.iter(|| black_box(p.quote(black_box(pos), black_box(&px)).unwrap()))
     });
 }
 

@@ -4,9 +4,7 @@
 
 use alloy_primitives::U256;
 use liq_protocol::SlotRef;
-use liq_protocol::{
-    BonusCurve, Constraints, HealthState, PositionRef, Quote, RepayOption, Result, SeizeOption,
-};
+use liq_protocol::{BonusCurve, HealthState, PositionRef, Quote, RepayOption, Result, SeizeOption};
 use liq_types::{AssetId, PriceVector, Ray};
 use smallvec::SmallVec;
 
@@ -16,7 +14,6 @@ use crate::math::{coll_gas_from_offset, value_wad, ETH_GAS_COMPENSATION};
 pub(crate) fn quote(
     pos: PositionRef<'_>,
     px: &PriceVector,
-    cons: &Constraints,
     weth: AssetId,
     weth_decimals: u8,
 ) -> Result<Option<Quote>> {
@@ -41,7 +38,9 @@ pub(crate) fn quote(
     let notional = eth_notional
         .checked_add(coll_notional)
         .ok_or(liq_types::fixed::FixedError::Overflow)?;
-    if notional.is_zero() || notional > cons.per_liquidation_notional_cap.raw() {
+    // No caller-side notional cap (GUIDE 12 §4b): gas compensation is fixed
+    // by the protocol, not something to size below a stored threshold.
+    if notional.is_zero() {
         return Ok(None);
     }
 
@@ -91,6 +90,8 @@ pub(crate) fn quote(
 
     let mut repay_options = SmallVec::new();
     repay_options.push(RepayOption {
+        min_repay: alloy_primitives::U256::ZERO,
+        pair_seize: None,
         asset: t.loan_row.asset,
         // Liquidator does not repay BOLD. SP is the counterparty. Zero is the
         // protocol truth — not a flash size.

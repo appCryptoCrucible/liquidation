@@ -587,12 +587,12 @@ fn apply_cfg(
             let mut row = *st.market(at)?;
             {
                 let meta: &mut PoolMeta = row.body_mut()?;
-                let slot = meta.emode_slot_for(ev.categoryId).ok_or(
-                    ProtocolError::TableFull {
+                let slot = meta
+                    .emode_slot_for(ev.categoryId)
+                    .ok_or(ProtocolError::TableFull {
                         table: "aave-v3 PoolMeta::emode",
                         cap: PoolMeta::EMODE_CAP,
-                    },
-                )?;
+                    })?;
                 if let Some(c) = meta.emode.get_mut(slot) {
                     *c = EModeCat {
                         id: ev.categoryId,

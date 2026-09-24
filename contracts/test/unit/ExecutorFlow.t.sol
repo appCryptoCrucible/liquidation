@@ -21,32 +21,32 @@ contract ExecutorFlowTest is ExecutorTestBase {
     function test_constructor_rejects_zero_operator() public {
         bytes32 h = factory.initHash();
         vm.expectRevert(Executor.ZeroAddress.selector);
-        new Executor(address(0), sink, address(factory), h, address(routerA), address(routerB), address(weth));
+        new Executor(address(0), sink, address(factory), h, address(routerA), address(routerB), address(weth), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
     }
     function test_constructor_rejects_zero_sink() public {
         bytes32 h = factory.initHash();
         vm.expectRevert(Executor.ZeroAddress.selector);
-        new Executor(operator, address(0), address(factory), h, address(routerA), address(routerB), address(weth));
+        new Executor(operator, address(0), address(factory), h, address(routerA), address(routerB), address(weth), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
     }
     function test_constructor_rejects_zero_factory() public {
         bytes32 h = factory.initHash();
         vm.expectRevert(Executor.ZeroAddress.selector);
-        new Executor(operator, sink, address(0), h, address(routerA), address(routerB), address(weth));
+        new Executor(operator, sink, address(0), h, address(routerA), address(routerB), address(weth), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
     }
     function test_constructor_rejects_zero_router_a() public {
         bytes32 h = factory.initHash();
         vm.expectRevert(Executor.ZeroAddress.selector);
-        new Executor(operator, sink, address(factory), h, address(0), address(routerB), address(weth));
+        new Executor(operator, sink, address(factory), h, address(0), address(routerB), address(weth), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
     }
     function test_constructor_rejects_zero_router_b() public {
         bytes32 h = factory.initHash();
         vm.expectRevert(Executor.ZeroAddress.selector);
-        new Executor(operator, sink, address(factory), h, address(routerA), address(0), address(weth));
+        new Executor(operator, sink, address(factory), h, address(routerA), address(0), address(weth), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
     }
     function test_constructor_rejects_zero_weth() public {
         bytes32 h = factory.initHash();
         vm.expectRevert(Executor.ZeroAddress.selector);
-        new Executor(operator, sink, address(factory), h, address(routerA), address(routerB), address(0));
+        new Executor(operator, sink, address(factory), h, address(routerA), address(routerB), address(0), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
     }
 
     function test_zero_address_router_target_reverts() public {
@@ -291,7 +291,7 @@ contract ExecutorFlowTest is ExecutorTestBase {
             address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
             relay = new OperatorRelay(Executor(payable(predicted)));
             ex2 = new Executor(address(relay), sink, address(factory), factory.initHash(),
-                               address(routerA), address(routerB), address(weth));
+                               address(routerA), address(routerB), address(weth), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
             assertEq(address(ex2), predicted);
         }
         ReentrantFlashProvider re = new ReentrantFlashProvider(IRelay(address(relay)));

@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use alloy_primitives::{B256, U256};
 use common::*;
 use liq_engine::{classify, EngineError, TriggerCause};
-use liq_protocol::{Constraints, DirtySet, MarketSlot, Protocol};
+use liq_protocol::{DirtySet, MarketSlot, Protocol};
 use liq_types::{
     Band, Confidence, FlashProvider, MevShareHint, PositionId, Ray, SourceKind, TriggerKind,
 };
@@ -472,11 +472,7 @@ fn candidate_carries_quote_intact_with_fundable_legs() {
     assert_eq!(cands.len(), 4);
     for c in &cands {
         let pos = view.position(c.position).unwrap();
-        let want = rig
-            .p
-            .quote(pos, &px, &Constraints::UNBOUNDED)
-            .unwrap()
-            .expect("liquidatable quotes");
+        let want = rig.p.quote(pos, &px).unwrap().expect("liquidatable quotes");
         assert_eq!(c.quote, want, "quote passed through untouched");
         assert!(!c.quote.repay_options.is_empty());
         assert!(!c.quote.seize_options.is_empty());

@@ -30,8 +30,8 @@ use liq_adapters_aave_v4::events::{halt, hub, oracle, spoke};
 use liq_adapters_aave_v4::{alloc_meter, math};
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
-    CallbackShape, Constraints, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice,
-    Protocol, ProtocolError,
+    CallbackShape, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice, Protocol,
+    ProtocolError,
 };
 use liq_types::fixed::{mul_div, Rounding, RAY};
 use liq_types::{LogSubscriber, Ray, Wad};
@@ -468,10 +468,7 @@ fn quote_reproduces_calculate_liquidation_amounts() {
     let h = p.health(pos, &px).unwrap();
     let hf = uint!(992_000_000_000_000_000_U256);
     assert_eq!(h.hf, Ray::from_raw(hf * uint!(1_000_000_000_U256)));
-    let q = p
-        .quote(pos, &px, &Constraints::UNBOUNDED)
-        .unwrap()
-        .expect("liquidatable");
+    let q = p.quote(pos, &px).unwrap().expect("liquidatable");
     assert_eq!(q.repay_options.len(), 1);
     assert_eq!(q.seize_options.len(), 1);
     let repay = &q.repay_options[0];
@@ -568,10 +565,7 @@ fn quote_applies_the_debt_dust_rule() {
     let (p, st) = full_store(&d);
     let px = prices(1800_0000_0000, DAI_P8);
     let pos = st.view(ALICE_ID, T0).unwrap();
-    let q = p
-        .quote(pos, &px, &Constraints::UNBOUNDED)
-        .unwrap()
-        .expect("liquidatable");
+    let q = p.quote(pos, &px).unwrap().expect("liquidatable");
     // bonus at 0.96: min 10_100 + ⌊400·4e16/3e17⌋ = 10_153.
     assert_eq!(
         q.seize_options[0].bonus,
@@ -580,31 +574,18 @@ fn quote_applies_the_debt_dust_rule() {
     assert_eq!(q.repay_options[0].max_repay, ALICE_DAI_DEBT);
 }
 
+/// No caller-side notional cap (GUIDE 12 §4b): `quote` no longer takes a
+/// `Constraints` argument, so the only thing left to check here is V4's own
+/// dust-forcing rule.
 #[test]
-fn quote_honours_notional_cap_and_dust() {
+fn quote_forces_full_close_under_dust_threshold() {
     let d = Deploy::new();
     let (p, st) = full_store(&d);
-    let px = prices(1800_0000_0000, DAI_P8);
     let pos = st.view(ALICE_ID, T0).unwrap();
-    let full = p.quote(pos, &px, &Constraints::UNBOUNDED).unwrap().unwrap();
-    // Cap at 100 USD (WAD numeraire): 100 DAI raw at price 1.
-    let cons = Constraints {
-        per_liquidation_notional_cap: Wad::from_raw(uint!(100_000_000_000_000_000_000_U256)),
-        ..Constraints::UNBOUNDED
-    };
-    let capped = p.quote(pos, &px, &cons).unwrap().unwrap();
-    assert_eq!(
-        capped.repay_options[0].max_repay,
-        uint!(100_000_000_000_000_000_000_U256)
-    );
-    assert!(capped.repay_options[0].max_repay < full.repay_options[0].max_repay);
-    // A cap that leaves less than the 1000-unit dust threshold of debt forces
-    // the full close: max_repay is then the entire debt.
+    // Below the 1000-unit dust threshold of debt forces the full close:
+    // max_repay is then the entire debt.
     let px_deep = prices(1000_0000_0000, DAI_P8);
-    let deep = p
-        .quote(pos, &px_deep, &Constraints::UNBOUNDED)
-        .unwrap()
-        .unwrap();
+    let deep = p.quote(pos, &px_deep).unwrap().unwrap();
     // hf = 0.5333: collateral is worth 1000 < 1500 debt; all of it goes.
     assert_eq!(deep.seize_options[0].max_seize, ALICE_WETH);
 }
@@ -614,19 +595,11 @@ fn healthy_and_no_debt_positions_do_not_quote() {
     let d = Deploy::new();
     let (p, st) = full_store(&d);
     let px = prices(WETH_P8, DAI_P8);
-    assert_eq!(
-        p.quote(st.view(ALICE_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
-            .unwrap(),
-        None
-    );
+    assert_eq!(p.quote(st.view(ALICE_ID, T0).unwrap(), &px).unwrap(), None);
     let bob = p.health(st.view(BOB_ID, T0).unwrap(), &px).unwrap();
     assert_eq!(bob.hf, liq_protocol::Health::NO_DEBT_HF);
     assert_eq!(bob.state, HealthState::Healthy);
-    assert_eq!(
-        p.quote(st.view(BOB_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
-            .unwrap(),
-        None
-    );
+    assert_eq!(p.quote(st.view(BOB_ID, T0).unwrap(), &px).unwrap(), None);
 }
 
 #[test]
@@ -654,11 +627,7 @@ fn paused_collateral_blocks_and_bad_debt_classifies() {
     assert!(matches!(dirty, DirtySet::MarketReprice(_)));
     let h = p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap();
     assert!(matches!(h.state, HealthState::Blocked { .. }));
-    assert_eq!(
-        p.quote(st.view(ALICE_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
-            .unwrap(),
-        None
-    );
+    assert_eq!(p.quote(st.view(ALICE_ID, T0).unwrap(), &px).unwrap(), None);
     // Disable the collateral flag: nothing counted → BadDebt with the debt.
     let off = log(
         d.spoke,
@@ -710,7 +679,7 @@ fn oracle_source_swap_fails_closed_and_restores() {
         Err(ProtocolError::OracleSourceMismatch)
     );
     assert_eq!(
-        p.quote(st.view(ALICE_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED),
+        p.quote(st.view(ALICE_ID, T0).unwrap(), &px),
         Err(ProtocolError::OracleSourceMismatch)
     );
     // The spoke-side log for the same swap is the same rule.

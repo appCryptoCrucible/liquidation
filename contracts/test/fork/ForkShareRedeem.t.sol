@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {Test, Vm} from "forge-std/Test.sol";
 import {Executor} from "../../src/Executor.sol";
+import {MainnetVenues} from "../../src/lib/MainnetVenues.sol";
 import {PlanBuilder as PB} from "../unit/PlanBuilder.sol";
 
 interface IERC20B {
@@ -470,7 +471,7 @@ contract ForkShareRedeemTest is Test {
     }
 
     function _deploy() internal returns (Executor) {
-        return new Executor(operator, sink, UNIV3_FACTORY, UNIV3_INIT_HASH, SWAP_ROUTER02, makeAddr("routerB"), WETH);
+        return new Executor(operator, sink, UNIV3_FACTORY, UNIV3_INIT_HASH, SWAP_ROUTER02, makeAddr("routerB"), WETH, MainnetVenues.UNIV2_FACTORY, MainnetVenues.UNIV2_INIT_HASH, MainnetVenues.SUSHI_FACTORY, MainnetVenues.SUSHI_INIT_HASH, MainnetVenues.CURVE_META_REGISTRY);
     }
 
     /// What `flashLoanSimple` pulls on top of `amount` at the fork block.

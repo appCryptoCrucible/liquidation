@@ -692,11 +692,12 @@ contract MockFluidT1 {
     function _coll() internal view returns (address) { return collToken; }
 }
 
-/// The manager is the address that actually pulls the repayment. Gearbox's
-/// `CreditFacadeV3` only forwards; `CreditManagerV3.partiallyLiquidateCredit/// Account` (pin `510fc654`) runs `underlying.safeTransferFrom(source, pool,
-/// amount)` with the *manager* as `msg.sender`. Splitting the mock in two is
-/// the point: a single contract acting as both cannot tell a correct
-/// approval from an approval to the wrong address.
+/// The manager is the address that actually pulls. Gearbox's
+/// `CreditFacadeV3.addCollateral` forwards to `CreditManagerV3.addCollateral
+/// (payer, …)`, which runs `token.safeTransferFrom(payer, account, amount)`
+/// with the *manager* as `msg.sender`. Splitting the mock in two is the
+/// point: a single contract acting as both cannot tell a correct approval
+/// from an approval to the wrong address.
 contract MockCreditManager {
     address public facade;
     constructor(address facade_) { facade = facade_; }
@@ -704,50 +705,107 @@ contract MockCreditManager {
     /// restricts its entrypoints to its own facade.
     function pullRepay(address token, address from, uint256 amount) external {
         require(msg.sender == facade, "gearbox: not facade");
-        Tok.pull(token, from, address(this), amount);
+        Tok.pull(token, from, facade, amount);
     }
 }
 
+/// Gearbox V3 facade (v3.1 has both paths; v3.0 only the full one), reduced to
+/// what the Executor can observe: the facade runs the liquidator's
+/// multicall (only `addCollateral` / `withdrawCollateral` modelled), then
+/// the account must hold `need` underlying (`amountToPool` + the borrower's
+/// share) and any underlying beyond that goes to `to`. The facade's own
+/// balances stand in for the credit account's.
 contract MockCreditFacade {
-    mapping(address => uint256) public maxRepay;
-    mapping(address => uint256) public collOut;
+    bytes4 constant ADD = bytes4(keccak256("addCollateral(address,uint256)"));
+    bytes4 constant WITHDRAW = bytes4(keccak256("withdrawCollateral(address,uint256,address)"));
+
+    mapping(address => uint256) public need;
+    mapping(address => uint256) public collBal;
+    mapping(address => uint256) public underlyingBal;
     bool public revertOnLiquidate;
     address public lastAccount;
-    uint256 public lastRepaid;
-    uint256 public lastMinSeized;
     address public lastTo;
+    uint256 public lastAdded;
+    uint256 public lastRefund;
     address public debtToken;
+    address public collToken;
     address public creditManager;
 
     function setCreditManager(address m) external { creditManager = m; }
     function setDebtToken(address t) external { debtToken = t; }
-    function setPosition(address u, uint256 maxRepay_, uint256 collOut_) external {
-        maxRepay[u] = maxRepay_;
-        collOut[u] = collOut_;
+    function setCollToken(address t) external { collToken = t; }
+    /// `need_`: underlying the account must end with (0 = healthy).
+    function setPosition(address account, uint256 need_, uint256 coll_) external {
+        need[account] = need_;
+        collBal[account] = coll_;
     }
     function setRevertOnLiquidate(bool v) external { revertOnLiquidate = v; }
+
+    // ── partial (v3.1) ──
+    mapping(address => uint256) public partialMax;
+    mapping(address => uint256) public partialColl;
+    uint256 public lastRepaid;
+    uint256 public lastMinSeized;
+    function setPartial(address account, uint256 maxRepay_, uint256 collOut_) external {
+        partialMax[account] = maxRepay_;
+        partialColl[account] = collOut_;
+    }
 
     function partiallyLiquidateCreditAccount(
         address creditAccount, address token, uint256 repaidAmount,
         uint256 minSeizedAmount, address to, PriceUpdate[] calldata
     ) external returns (uint256) {
         require(!revertOnLiquidate, "gearbox: revert");
-        uint256 maxR = maxRepay[creditAccount];
-        require(maxR != 0, "gearbox: healthy");
-        uint256 actual = repaidAmount < maxR ? repaidAmount : maxR;
-        uint256 out = collOut[creditAccount] * actual / maxR;
-        require(out >= minSeizedAmount, "gearbox: min");
-        lastAccount = creditAccount;
-        lastRepaid = actual;
-        lastMinSeized = minSeizedAmount;
-        lastTo = to;
-        // The MANAGER pulls, not the facade. An Executor that approved the
-        // facade has no allowance here and this reverts — which is the
-        // behaviour the real Gearbox has and the previous mock hid.
-        MockCreditManager(creditManager).pullRepay(debtToken, msg.sender, actual);
+        uint256 maxR = partialMax[creditAccount];
+        require(maxR != 0, "CreditAccountNotLiquidatableException");
+        require(repaidAmount <= maxR, "gearbox: account not healthy after");
+        uint256 out = partialColl[creditAccount] * repaidAmount / maxR;
+        require(out >= minSeizedAmount, "SeizedLessThanRequiredException");
+        MockCreditManager(creditManager).pullRepay(debtToken, msg.sender, repaidAmount);
         Tok.push(token, to, out);
-        maxRepay[creditAccount] = 0;
+        lastAccount = creditAccount;
+        lastTo = to;
+        lastRepaid = repaidAmount;
+        lastMinSeized = minSeizedAmount;
+        partialMax[creditAccount] = 0;
         return out;
+    }
+
+    // ── full (v3.0 / v3.1 3-arg) ──
+    struct Call { address target; bytes callData; }
+
+    function liquidateCreditAccount(address creditAccount, address to, Call[] calldata calls) external {
+        require(!revertOnLiquidate, "gearbox: revert");
+        require(need[creditAccount] != 0, "CreditAccountNotLiquidatableException");
+        uint256 und = underlyingBal[creditAccount];
+        for (uint256 i; i < calls.length; ++i) {
+            require(calls[i].target == address(this), "gearbox: adapter calls not modelled");
+            bytes4 sel = bytes4(calls[i].callData[:4]);
+            if (sel == ADD) {
+                (address token, uint256 amount) = abi.decode(calls[i].callData[4:], (address, uint256));
+                require(token == debtToken, "RemainingTokenBalanceIncreasedException");
+                MockCreditManager(creditManager).pullRepay(token, msg.sender, amount);
+                und += amount;
+                lastAdded = amount;
+            } else if (sel == WITHDRAW) {
+                (address token, uint256 amount, address recipient) =
+                    abi.decode(calls[i].callData[4:], (address, uint256, address));
+                require(token == collToken, "TokenNotAllowedException");
+                if (amount == type(uint256).max) amount = collBal[creditAccount] - 1;
+                collBal[creditAccount] -= amount;
+                Tok.push(token, recipient, amount);
+            } else {
+                revert("NoPermissionException");
+            }
+        }
+        require(und >= need[creditAccount], "InsufficientRemainingFundsException");
+        uint256 refund = und - need[creditAccount];
+        if (refund != 0) Tok.push(debtToken, to, refund);
+        lastAccount = creditAccount;
+        lastTo = to;
+        lastRefund = refund;
+        need[creditAccount] = 0;
+        underlyingBal[creditAccount] = 0;
     }
 }
 
@@ -851,5 +909,83 @@ contract ExpensiveCoinbase {
     receive() external payable {
         received += msg.value;
         log.push(msg.value); // SSTORE: > 2300 gas
+    }
+}
+
+// ──────────────────────────── V2 / Curve venues ────────────────────────────
+
+/// Uniswap V2 pair with the real settlement idiom: tokens are transferred in
+/// first, `swap` pays out and enforces the 0.30 %-fee constant product on
+/// the resulting balances. Deploy with `vm.etch` at the CREATE2 address the
+/// Executor derives, then `init`.
+contract MockV2Pair {
+    address public token0;
+    address public token1;
+    uint112 internal r0;
+    uint112 internal r1;
+
+    function init(address a, address b) external {
+        (token0, token1) = a < b ? (a, b) : (b, a);
+    }
+
+    function sync() external {
+        r0 = uint112(Tok.bal(token0, address(this)));
+        r1 = uint112(Tok.bal(token1, address(this)));
+    }
+
+    function getReserves() external view returns (uint112, uint112, uint32) {
+        return (r0, r1, 0);
+    }
+
+    function swap(uint256 a0Out, uint256 a1Out, address to, bytes calldata) external {
+        require(a0Out < r0 && a1Out < r1, "v2: liquidity");
+        if (a0Out > 0) Tok.push(token0, to, a0Out);
+        if (a1Out > 0) Tok.push(token1, to, a1Out);
+        uint256 b0 = Tok.bal(token0, address(this));
+        uint256 b1 = Tok.bal(token1, address(this));
+        uint256 in0 = b0 > r0 - a0Out ? b0 - (r0 - a0Out) : 0;
+        uint256 in1 = b1 > r1 - a1Out ? b1 - (r1 - a1Out) : 0;
+        require(in0 > 0 || in1 > 0, "v2: input");
+        uint256 adj0 = b0 * 1000 - in0 * 3;
+        uint256 adj1 = b1 * 1000 - in1 * 3;
+        require(adj0 * adj1 >= uint256(r0) * uint256(r1) * 1_000_000, "v2: K");
+        r0 = uint112(b0);
+        r1 = uint112(b1);
+    }
+}
+
+/// Curve plain pool: pulls `dx` of coin `i`, pays `dx · num / den` of coin `j`.
+contract MockCurvePool {
+    address[] public coinList;
+    uint256 public num = 1;
+    uint256 public den = 1;
+
+    constructor(address[] memory c) { coinList = c; }
+
+    function setRate(uint256 n, uint256 d) external { num = n; den = d; }
+
+    function coins(uint256 i) external view returns (address) { return coinList[i]; }
+
+    function exchange(int128 i, int128 j, uint256 dx, uint256 minDy) external {
+        // forge-lint: disable-next-line(unsafe-typecast)
+        address a = coinList[uint256(uint128(i))];
+        // forge-lint: disable-next-line(unsafe-typecast)
+        address b = coinList[uint256(uint128(j))];
+        Tok.pull(a, msg.sender, address(this), dx);
+        uint256 dy = dx * num / den;
+        require(dy >= minDy, "curve: min_dy");
+        Tok.push(b, msg.sender, dy);
+    }
+}
+
+/// MetaRegistry double: an unregistered pool reverts, as the real one does.
+contract MockCurveRegistry {
+    mapping(address => bool) internal registered;
+
+    function register(address p) external { registered[p] = true; }
+
+    function is_registered(address p) external view returns (bool) {
+        require(registered[p], "no registry");
+        return true;
     }
 }

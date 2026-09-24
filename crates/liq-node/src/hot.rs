@@ -60,16 +60,10 @@ pub fn drain(
     while let Some(notif) = ingress.pop() {
         n = n.saturating_add(1);
         let last_meta = match &notif {
-            Notification::Committed { new } | Notification::Reorged { new, .. } => {
-                new.blocks.last().map(|b| {
-                    (
-                        b.timestamp,
-                        b.gas_limit,
-                        b.gas_used,
-                        b.base_fee_per_gas,
-                    )
-                })
-            }
+            Notification::Committed { new } | Notification::Reorged { new, .. } => new
+                .blocks
+                .last()
+                .map(|b| (b.timestamp, b.gas_limit, b.gas_used, b.base_fee_per_gas)),
             Notification::Reverted { .. } => None,
         };
         let outcome = handle_notification(ctx, &notif, sink, protocols);
@@ -207,7 +201,9 @@ pub fn spawn(cfg: HotSpawn) -> Result<HotHandle> {
                         sink,
                         &protocols,
                         height.as_ref(),
-                        after_block.as_mut().map(|h| h.as_mut() as &mut dyn AfterBlock),
+                        after_block
+                            .as_mut()
+                            .map(|h| h.as_mut() as &mut dyn AfterBlock),
                     )?;
                 }
                 std::hint::spin_loop();
@@ -620,7 +616,8 @@ mod tests {
             self.last_block.store(n, Ordering::Relaxed);
             self.last_gas.store(ctx.gas_limit, Ordering::Relaxed);
             self.last_used.store(ctx.gas_used, Ordering::Relaxed);
-            self.last_base.store(ctx.base_fee_per_gas, Ordering::Relaxed);
+            self.last_base
+                .store(ctx.base_fee_per_gas, Ordering::Relaxed);
             let _ = ctx.dirty;
             let _ = ctx.store;
             let _ = ctx.timestamp;
@@ -676,15 +673,7 @@ mod tests {
                 arena: &mut arena,
                 dirty: &mut dirty,
             };
-            drain(
-                &mut hot,
-                &mut ctx,
-                &sink,
-                &ids,
-                &height,
-                Some(&mut hook),
-            )
-            .unwrap();
+            drain(&mut hot, &mut ctx, &sink, &ids, &height, Some(&mut hook)).unwrap();
         }
         assert_eq!(hook.hits.load(Ordering::Relaxed), 1);
         assert_eq!(hook.last_block.load(Ordering::Relaxed), 1);

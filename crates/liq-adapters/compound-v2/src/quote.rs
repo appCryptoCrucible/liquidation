@@ -4,10 +4,9 @@
 use alloy_primitives::U256;
 use liq_protocol::SlotRef;
 use liq_protocol::{
-    BonusCurve, Constraints, HealthState, MarketRow, PositionRef, ProtocolError, Quote,
-    RepayOption, Result, SeizeOption,
+    BonusCurve, HealthState, MarketRow, PositionRef, ProtocolError, Quote, RepayOption, Result,
+    SeizeOption,
 };
-use liq_types::fixed::{mul_div, FixedError, Rounding, WAD_RAY_RATIO};
 use liq_types::PriceVector;
 use smallvec::SmallVec;
 
@@ -43,11 +42,7 @@ fn borrow_now(pos: PositionRef<'_>, slot: u16, body: &CTokenRow) -> Result<U256>
     )
 }
 
-pub(crate) fn quote(
-    pos: PositionRef<'_>,
-    px: &PriceVector,
-    cons: &Constraints,
-) -> Result<Option<Quote>> {
+pub(crate) fn quote(pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quote>> {
     let (t, health) = finish(pos, px, None)?;
     if health.state != HealthState::Liquidatable {
         return Ok(None);
@@ -62,7 +57,6 @@ pub(crate) fn quote(
         return Err(ProtocolError::Internal);
     }
     let close = U256::from(t.meta.close_factor_mantissa);
-    let cap = cons.per_liquidation_notional_cap.raw();
 
     let mut repay_options = SmallVec::<[RepayOption; 4]>::new();
     let mut seize_options = SmallVec::<[SeizeOption; 8]>::new();
@@ -89,23 +83,17 @@ pub(crate) fn quote(
                 body.flags & CTokenRow::BORROW_PAUSED != 0,
                 U256::from(body.reserve_factor_mantissa),
             );
-            let mut max_repay = if deprecated {
+            // No caller-side notional cap (GUIDE 12 §4b): `max_repay` is the
+            // protocol's own close-factor ceiling, full stop.
+            let max_repay = if deprecated {
                 borrow
             } else {
                 mul_scalar_truncate(close, borrow)?
             };
-            if cap != U256::MAX {
-                let p = price_ray(px, row.asset, None)?;
-                let raw_cap = mul_div(
-                    cap.checked_mul(WAD_RAY_RATIO).ok_or(FixedError::Overflow)?,
-                    crate::math::asset_unit(row.decimals)?,
-                    p,
-                    Rounding::Down,
-                )?;
-                max_repay = max_repay.min(raw_cap);
-            }
             if !max_repay.is_zero() {
                 repay_options.push(RepayOption {
+                    min_repay: alloy_primitives::U256::ZERO,
+                    pair_seize: None,
                     asset: row.asset,
                     max_repay,
                     // P6. cWBTC and cWBTC2 are both listed against WBTC, so

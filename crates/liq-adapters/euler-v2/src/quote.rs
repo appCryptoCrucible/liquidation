@@ -5,16 +5,15 @@
 use alloy_primitives::U256;
 use liq_protocol::SlotRef;
 use liq_protocol::{
-    BonusCurve, Constraints, HealthState, PositionRef, ProtocolError, Quote, RepayOption, Result,
-    SeizeOption,
+    BonusCurve, HealthState, PositionRef, ProtocolError, Quote, RepayOption, Result, SeizeOption,
 };
-use liq_types::fixed::{mul_div, FixedError, Rounding, WAD_RAY_RATIO};
+use liq_types::fixed::{mul_div, FixedError, Rounding};
 use liq_types::PriceVector;
 use smallvec::SmallVec;
 
 use crate::health::{finish, terms};
 use crate::layout::{CollRow, UserExtra, DEBT_SLOT, UNMAPPED_ASSET};
-use crate::math::{addr_from, asset_unit, bonus_ray, max_liquidation, value_wad};
+use crate::math::{addr_from, bonus_ray, max_liquidation, value_wad};
 
 /// Basis points of `max_repay` given back so one block of interest accrual
 /// between quote and inclusion cannot trip `E_ExcessiveRepayAmount` (E3).
@@ -36,11 +35,7 @@ fn cell(v: &[u128], slot: u16) -> u128 {
     v.get(usize::from(slot)).copied().unwrap_or(0)
 }
 
-pub(crate) fn quote(
-    pos: PositionRef<'_>,
-    px: &PriceVector,
-    cons: &Constraints,
-) -> Result<Option<Quote>> {
+pub(crate) fn quote(pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quote>> {
     let t0 = terms(pos)?;
     let (t, health) = finish(&t0, pos, px, None)?;
     if health.state != HealthState::Liquidatable {
@@ -136,27 +131,10 @@ pub(crate) fn quote(
     let Some((mut seize, mut max_repay, _)) = best else {
         return Err(ProtocolError::EmptyQuote);
     };
-    let cap = cons.per_liquidation_notional_cap.raw();
-    if cap != U256::MAX {
-        let p_debt = crate::health::price_ray(px, t.debt_row.asset, None)?;
-        let raw_cap = mul_div(
-            cap.checked_mul(WAD_RAY_RATIO).ok_or(FixedError::Overflow)?,
-            asset_unit(t.debt_row.decimals)?,
-            p_debt,
-            Rounding::Down,
-        )?;
-        // E2. `Liquidation.sol` pays
-        //     yieldBalance = maxYieldBalance * repayAssets / maxRepay
-        // so a repay clamped by the cap seizes proportionally less. Leaving
-        // `max_seize` at the UNCLAMPED yield made `minYieldBalance`
-        // unreachable by construction and every capped liquidation reverted
-        // with `E_MinYield`.
-        let uncapped = max_repay;
-        max_repay = max_repay.min(raw_cap);
-        if max_repay < uncapped && !uncapped.is_zero() {
-            seize.max_seize = mul_div(seize.max_seize, max_repay, uncapped, Rounding::Down)?;
-        }
-    }
+    // No caller-side notional cap (GUIDE 12 §4b): `max_repay` is bounded
+    // only by the protocol rule (`max_liquidation` above) and the accrual
+    // headroom below.
+    //
     // E3. `repay` has zero headroom: Euler rejects `repayAssets` above the
     // current maximum with `E_ExcessiveRepayAmount`, and in the
     // collateral-capped regime that maximum strictly DECREASES as debt
@@ -165,9 +143,12 @@ pub(crate) fn quote(
     // `minYieldBalance` bound consistent with the repay actually sent.
     if !max_repay.is_zero() {
         let before = max_repay;
+        let keep_bps = 10_000u32
+            .checked_sub(u32::from(REPAY_HEADROOM_BPS))
+            .ok_or(FixedError::Underflow)?;
         max_repay = mul_div(
             max_repay,
-            U256::from(10_000u32 - u32::from(REPAY_HEADROOM_BPS)),
+            U256::from(keep_bps),
             U256::from(10_000u32),
             Rounding::Down,
         )?;
@@ -180,6 +161,8 @@ pub(crate) fn quote(
     }
     let mut repay_options = SmallVec::new();
     repay_options.push(RepayOption {
+        min_repay: alloy_primitives::U256::ZERO,
+        pair_seize: None,
         asset: t.debt_row.asset,
         max_repay,
         slot: SlotRef::ByAsset,

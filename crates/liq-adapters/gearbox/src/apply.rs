@@ -178,6 +178,7 @@ fn ensure_listed(
                 b.expiration_date =
                     u32::try_from(m.expiration_date).map_err(|_| ProtocolError::Internal)?;
                 b.quoted_tokens_mask = m.quoted_tokens_mask;
+                b.min_debt = m.min_debt.to_be_bytes();
                 b.flags = ManagerRow::FEES;
                 if t.asset != UNMAPPED_ASSET {
                     b.flags |= ManagerRow::PRICED;
@@ -471,6 +472,15 @@ fn configurator_log(
         })?;
         return Ok(DirtySet::MarketReprice(rows));
     }
+    if topic0 == configurator::SetBorrowingLimits::SIGNATURE_HASH {
+        let ev = decode::<configurator::SetBorrowingLimits>(log)?;
+        let min = u128::try_from(ev.minDebt).map_err(|_| ProtocolError::MalformedLog)?;
+        let rows = patch_manager(st, m.market, Some(ts), |b| {
+            b.min_debt = min.to_be_bytes();
+            Ok(())
+        })?;
+        return Ok(DirtySet::MarketReprice(rows));
+    }
     if topic0 == configurator::SetTokenLiquidationThreshold::SIGNATURE_HASH {
         let ev = decode::<configurator::SetTokenLiquidationThreshold>(log)?;
         let Some(tok) = m.token(ev.token) else {
@@ -554,7 +564,6 @@ fn configurator_log(
         || topic0 == configurator::AllowToken::SIGNATURE_HASH
         || topic0 == configurator::AllowAdapter::SIGNATURE_HASH
         || topic0 == configurator::ForbidAdapter::SIGNATURE_HASH
-        || topic0 == configurator::SetBorrowingLimits::SIGNATURE_HASH
         || topic0 == configurator::SetMaxDebtPerBlockMultiplier::SIGNATURE_HASH
         || topic0 == configurator::SetLossPolicy::SIGNATURE_HASH
     {

@@ -23,6 +23,8 @@ pub(crate) struct Terms<'a> {
     pub manager: &'a ManagerRow,
     pub debt_row: &'a MarketRow,
     pub debt: U256,
+    /// `debt + accruedInterest` (no fees) — `_hasBadDebt`'s right side.
+    pub debt_with_interest: U256,
     pub total_debt: U256,
     pub twv: U256,
     pub total_value: U256,
@@ -116,7 +118,7 @@ fn quota_usd(pos: PositionRef<'_>, slot: u16, p_underlying: U256, und_dec: u8) -
     value_wad(U256::from(q.quota), p_underlying, und_dec)
 }
 
-fn token_lt(row: &MarketRow, slot: u16, now: u64, mgr: &ManagerRow) -> Result<u16> {
+pub(crate) fn token_lt(row: &MarketRow, slot: u16, now: u64, mgr: &ManagerRow) -> Result<u16> {
     if slot == UNDERLYING_SLOT {
         return Ok(mgr.lt_underlying);
     }
@@ -153,6 +155,9 @@ pub(crate) fn terms<'a>(
     let quota_fee = interest_fee(quota_interest, U256::from(manager.fee_interest))?;
     let accrued_interest = accrued_interest
         .checked_add(quota_interest)
+        .ok_or(FixedError::Overflow)?;
+    let debt_with_interest = debt
+        .checked_add(accrued_interest)
         .ok_or(FixedError::Overflow)?;
     let accrued_fees = U256::from(extra.quota_fees)
         .checked_add(base_fee)
@@ -206,6 +211,7 @@ pub(crate) fn terms<'a>(
         manager,
         debt_row,
         debt,
+        debt_with_interest,
         total_debt,
         twv,
         total_value,

@@ -19,8 +19,8 @@ use liq_adapters_aave_v3::events::{halt, oracle, pool, token};
 use liq_adapters_aave_v3::{alloc_meter, math};
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
-    CallbackShape, Constraints, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice,
-    Protocol, ProtocolError,
+    CallbackShape, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice, Protocol,
+    ProtocolError,
 };
 use liq_types::fixed::RAY;
 use liq_types::{LogSubscriber, Ray, Wad};
@@ -225,10 +225,7 @@ fn quote_static_bonus_and_encode() {
     let (p, st) = full_store(&d);
     let px = prices(1800_0000_0000, DAI_P8);
     let pos = st.view(ALICE_ID, T0).unwrap();
-    let q = p
-        .quote(pos, &px, &Constraints::UNBOUNDED)
-        .unwrap()
-        .expect("liquidatable");
+    let q = p.quote(pos, &px).unwrap().expect("liquidatable");
     assert_eq!(q.repay_options[0].asset, DAI);
     assert_eq!(q.seize_options[0].asset, WETH);
     assert_eq!(
@@ -383,7 +380,7 @@ fn encode_rejects_cross_protocol_quote() {
     let (p, st) = full_store(&d);
     let px = prices(1800_0000_0000, DAI_P8);
     let q = p
-        .quote(st.view(ALICE_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
+        .quote(st.view(ALICE_ID, T0).unwrap(), &px)
         .unwrap()
         .unwrap();
     let route = FlashRoute {

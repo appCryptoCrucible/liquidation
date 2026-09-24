@@ -24,7 +24,7 @@ use crate::health::Health;
 use crate::log::DecodedLog;
 use crate::plan::{LiquidationPlan, ProbeCall};
 use crate::posref::PositionRef;
-use crate::quote::{Constraints, LegChoice, Quote};
+use crate::quote::{LegChoice, Quote};
 use crate::statewriter::StateWriter;
 use crate::{BlockNum, Timestamp};
 
@@ -79,12 +79,14 @@ pub trait Protocol: LogSubscriber + Send + Sync + 'static {
     /// liquidatable now (`Healthy`, `Blocked` and `SoftLiquidating` never
     /// quote — conformance check 10). Called repeatedly by the timing
     /// optimiser (GUIDE 12), so it must be cheap and pure.
-    fn quote(
-        &self,
-        pos: PositionRef<'_>,
-        px: &PriceVector,
-        cons: &Constraints,
-    ) -> Result<Option<Quote>>;
+    ///
+    /// No caller-side size cap: `RepayOption::max_repay` /
+    /// `SeizeOption::max_seize` are the protocol rule's own ceiling, full
+    /// stop. Sizing below that ceiling is the viability band's job (GUIDE 12
+    /// §4b), downstream in `liq-router`, not this call — a per-call cap
+    /// here would be a second, adapter-shaped copy of exactly the derived
+    /// threshold that section exists to retire.
+    fn quote(&self, pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quote>>;
 
     /// Turn a chosen `(repay, seize)` pair of `q` and a chosen flash route
     /// into the concrete leg. `funding` is the only place funding enters the

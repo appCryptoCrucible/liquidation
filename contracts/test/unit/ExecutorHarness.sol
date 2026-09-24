@@ -15,7 +15,11 @@ contract ExecutorHarness is Executor {
         address operator_, address profitSink_,
         address univ3Factory_, bytes32 univ3InitHash_,
         address routerA_, address routerB_, address weth_
-    ) Executor(operator_, profitSink_, univ3Factory_, univ3InitHash_, routerA_, routerB_, weth_) {}
+    ) Executor(
+        operator_, profitSink_, univ3Factory_, univ3InitHash_, routerA_, routerB_, weth_,
+        // Decode-only harness: the V2/Curve anchors are never exercised here.
+        address(0x21), bytes32(0), address(0x22), bytes32(0), address(0x23)
+    ) {}
 
     function debugHeader(bytes calldata plan) external pure returns (Plan memory) {
         return plan.header();

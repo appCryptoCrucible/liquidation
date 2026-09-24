@@ -167,6 +167,9 @@ pub struct V3State {
 pub struct V2State {
     pub reserve0: U256,
     pub reserve1: U256,
+    /// Which factory deployed the pair (`liq_wire` `V2_FACTORY_*`): the
+    /// Executor re-derives the pair address from it. Both are 0.30 %.
+    pub factory: u8,
 }
 
 /// Curve StableSwap plain pool (`StableSwap*.vy`, `A_PRECISION` ∈ {1, 100}).
@@ -186,6 +189,9 @@ pub struct CurveState {
     /// Set by any pool log; cleared by [`CurveState::reseed`]. A stale pool
     /// is excluded from routing rather than quoted from a guess.
     pub stale: bool,
+    /// Block of the newest log that set `stale`. A reseed read at an older
+    /// block cannot clear it ([`CurveState::reseed_at`]).
+    pub stale_block: u64,
 }
 
 impl CurveState {
@@ -199,6 +205,23 @@ impl CurveState {
         self.fee = fee;
         self.stale = false;
         Ok(())
+    }
+
+    /// [`CurveState::reseed`] from a read pinned at `block`. Refused (state
+    /// untouched, returns `false`) when a pool log newer than `block` made
+    /// the pool stale — that read already misses the trade.
+    pub fn reseed_at(
+        &mut self,
+        balances: &[U256],
+        a: U256,
+        fee: U256,
+        block: u64,
+    ) -> Result<bool, RouteError> {
+        if self.stale && self.stale_block > block {
+            return Ok(false);
+        }
+        self.reseed(balances, a, fee)?;
+        Ok(true)
     }
 }
 
@@ -529,11 +552,13 @@ pub(crate) fn v2_swap(
         V2State {
             reserve0: new_in,
             reserve1: new_out,
+            ..*s
         }
     } else {
         V2State {
             reserve0: new_out,
             reserve1: new_in,
+            ..*s
         }
     };
     Ok((out, next))
@@ -981,6 +1006,34 @@ impl PoolBook {
         self.generation
     }
 
+    /// Apply a Curve read pinned at `block` to pool `id` (off the hot path).
+    /// `Ok(false)` when a newer pool log already made that read obsolete or
+    /// `id` is not a Curve pool; bumps [`PoolBook::generation`] on success.
+    pub fn reseed_curve(
+        &mut self,
+        id: PoolId,
+        balances: &[U256],
+        a: U256,
+        a_precision: U256,
+        fee: U256,
+        block: u64,
+    ) -> Result<bool, RouteError> {
+        let Some(PoolState::Curve(c)) = self.get_mut(id).map(|p| &mut p.state) else {
+            return Ok(false);
+        };
+        let prev = c.a_precision;
+        c.a_precision = a_precision;
+        match c.reseed_at(balances, a, fee, block) {
+            Ok(true) => {}
+            other => {
+                c.a_precision = prev;
+                return other;
+            }
+        }
+        self.generation = self.generation.wrapping_add(1);
+        Ok(true)
+    }
+
     /// Pools added by `PoolCreated` since start (each needs a filter
     /// re-subscribe at the 03A router).
     #[inline]
@@ -1017,6 +1070,7 @@ impl PoolBook {
             PoolState::Curve(s) => {
                 if CURVE_STALE_TOPICS.contains(&t0) {
                     s.stale = true;
+                    s.stale_block = s.stale_block.max(log.block);
                     true
                 } else {
                     false

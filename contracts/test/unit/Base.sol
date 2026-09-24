@@ -6,7 +6,7 @@ import {Executor} from "../../src/Executor.sol";
 import {PlanBuilder as PB} from "./PlanBuilder.sol";
 import {
     MockERC20, MockWETH, MockAavePool, MockV4Spoke, MockMorpho, MockUniV3Factory, MockUniV3Pool,
-    MockPoolManager, MockDssFlash, MockRouter, ExpensiveCoinbase
+    MockPoolManager, MockDssFlash, MockRouter, ExpensiveCoinbase, MockCurveRegistry
 } from "./Mocks.sol";
 
 /// Relays `execute` so a counterparty can attempt re-entry as the operator.
@@ -45,6 +45,11 @@ abstract contract ExecutorTestBase is Test {
     MockAavePool public pool; MockV4Spoke public spoke; MockMorpho public morpho; MockPoolManager public pm;
     MockUniV3Factory public factory; MockUniV3Pool public pCollDebt; MockUniV3Pool public pCollWeth; MockUniV3Pool public pDebtWeth;
     MockRouter public routerA; MockRouter public routerB;
+    address public v2Factory = makeAddr("v2Factory");
+    bytes32 constant V2_HASH = keccak256("v2-pair-code");
+    address public sushiFactory = makeAddr("sushiFactory");
+    bytes32 constant SUSHI_HASH = keccak256("sushi-pair-code");
+    MockCurveRegistry public curveRegistry;
     ExpensiveCoinbase public coinbase;
     Executor public ex;
 
@@ -65,11 +70,12 @@ abstract contract ExecutorTestBase is Test {
         routerA = new MockRouter(); routerB = new MockRouter();
         coinbase = new ExpensiveCoinbase();
         vm.coinbase(address(coinbase));
+        curveRegistry = new MockCurveRegistry();
 
         ex = new Executor(
             operator, sink, address(factory), factory.initHash(),
             address(routerA), address(routerB), address(weth)
-        );
+        , v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
 
         // Liquidity everywhere a counterparty must pay out.
         debt.mint(address(pool), 1e15); debt.mint(address(pCollDebt), 1e15); debt.mint(address(pDebtWeth), 1e15);
@@ -79,6 +85,14 @@ abstract contract ExecutorTestBase is Test {
         vm.deal(address(weth), 3e24); // backs the minted WETH so withdraw() can pay
 
         pool.setPosition(borrower, 0.95e18, REPAY, COLL_OUT);
+    }
+
+    /// The pair address the Executor derives for `(a, b)` under `factory`.
+    function _v2PairAddr(address factory_, bytes32 hash_, address a, address b) internal pure returns (address) {
+        (address t0, address t1) = a < b ? (a, b) : (b, a);
+        return address(uint160(uint256(keccak256(abi.encodePacked(
+            hex"ff", factory_, keccak256(abi.encodePacked(t0, t1)), hash_
+        )))));
     }
 
     /// raw `b` per raw `a` = num/den, whatever the token ordering.

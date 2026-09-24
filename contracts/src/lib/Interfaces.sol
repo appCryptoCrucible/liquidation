@@ -117,6 +117,24 @@ interface IPoolManager {
 // ───────────────────────────── Sky DSS Flash ────────────────────────────
 /// ERC-3156 Dai flash-mint. Mainnet 0x60744434d6339a6B27d73d9Eda62b6F66a0a04FA.
 /// DAI only; the off-chain encoder enforces `debtAsset == dai()`.
+/// Uniswap V2 pair (and forks sharing the pair ABI, e.g. SushiSwap).
+interface IUniV2Pair {
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external;
+}
+
+/// Curve StableSwap plain pool (int128 coin indices).
+interface ICurvePool {
+    function coins(uint256 i) external view returns (address);
+    function exchange(int128 i, int128 j, uint256 dx, uint256 min_dy) external;
+}
+
+/// Curve MetaRegistry. `is_registered` reverts ("no registry") for an
+/// unknown pool, so an unregistered pool fails closed either way.
+interface ICurveMetaRegistry {
+    function is_registered(address pool) external view returns (bool);
+}
+
 interface IDssFlash {
     function flashLoan(
         address receiver, address token, uint256 amount, bytes calldata data
@@ -192,23 +210,48 @@ interface IFluidT1 {
 }
 
 // ───────────────────────────── Gearbox V3 ───────────────────────────────
-/// `ICreditFacadeV3` pin `510fc654`. Call the **facade**, never the manager.
-/// Partial only; full `liquidateCreditAccount` + MultiCall is unwired.
+/// `CreditFacadeV3`. Live debt is on v3.1 facades (`version() == 310`,
+/// core-v3 `510fc654`, enumerated from the v3.1 address provider), which
+/// have both paths. The v3.0 facades (`version() == 301`, Sourcify-verified)
+/// have only the 3-arg full liquidation, which v3.1 keeps as a wrapper with
+/// empty loss-policy data. Call the **facade**, never the manager.
 struct PriceUpdate {
     address priceFeed;
     bytes data;
 }
 
+struct MultiCall {
+    address target;
+    bytes callData;
+}
+
 interface ICreditFacadeV3 {
+    /// Reverts unless `debt != 0` and (`twvUSD < totalDebtUSD` or expired).
+    /// `calls` may only add collateral, withdraw collateral and call
+    /// adapters (`LIQUIDATE_CREDIT_ACCOUNT_FLAGS`); non-underlying balances
+    /// must not increase. The manager then pays the pool from the account's
+    /// underlying, requires the account to keep the borrower's share, and
+    /// sends the rest of its underlying to `to`.
+    function liquidateCreditAccount(address creditAccount, address to, MultiCall[] calldata calls) external;
+    /// v3.1 only. Pulls `repaidAmount` underlying (manager as spender),
+    /// seizes `token` at the liquidation discount, then runs a full
+    /// collateral check — so it only succeeds when the account ends healthy.
     function partiallyLiquidateCreditAccount(
         address creditAccount, address token, uint256 repaidAmount,
         uint256 minSeizedAmount, address to, PriceUpdate[] calldata priceUpdates
     ) external returns (uint256 seizedAmount);
-    /// `CreditFacadeV3.creditManager` pin `510fc654`. The facade forwards to
-    /// the manager, and `CreditManagerV3.partiallyLiquidateCreditAccount`
-    /// does the `safeTransferFrom` **as the manager** — so the repay
-    /// allowance belongs to this address, not to the facade.
+    /// `addCollateral` pulls with the **manager** as spender
+    /// (`CreditManagerV3.addCollateral(payer, …)` → `safeTransferFrom`), so
+    /// the allowance belongs to this address, not to the facade.
     function creditManager() external view returns (address);
+}
+
+/// Facade multicall selectors (`ICreditFacadeV3Multicall`, v3.0). Targets
+/// are the facade itself.
+interface ICreditFacadeV3Multicall {
+    function addCollateral(address token, uint256 amount) external;
+    /// `amount == type(uint256).max` withdraws the balance less 1 wei.
+    function withdrawCollateral(address token, uint256 amount, address to) external;
 }
 
 // ───────────────────────────── Compound V2 ──────────────────────────────

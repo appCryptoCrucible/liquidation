@@ -1,17 +1,23 @@
 # Gearbox V3 mainnet (not in registry.json).
-# Fills `liq_adapters_gearbox::Config` after live `getCreditManagers()` +
-# per-manager `fees()`. Never a hand list of 34 managers.
+# Fills `liq_adapters_gearbox::Config` after live discovery + per-manager
+# `fees()`. Never a hand list of managers.
 #
 # Pin: Gearbox-protocol/core-v3 @ 510fc6541c3767ce825929b4c311826fe81d6fa5
-# Register D15: 0xA50d4E7D8946a7c90652339CDBd262c375d54D99 (cardinality 34).
+# (v3.1, facade/manager `version() == 310`).
 # Intern: ProtocolId 11; catalog MarketId 4200; managers 4201..=4299.
 # Underlyings are on-chain. Do not invent a USDC/WETH list.
 # FeedId(0) is the first interned Aave oracle, not unset. Gearbox oracles are
 # not joined via row.price_feed; health prices via AssetId / PriceVector.
 
 protocol = 11
-register = "0xA50d4E7D8946a7c90652339CDBd262c375d54D99"
+# Gearbox v3.1 AddressProviderV3_1 (version 310, contractType ADDRESS_PROVIDER).
+# Managers: MARKET_CONFIGURATOR_FACTORY -> getMarketConfigurators() ->
+# contractsRegister() -> getCreditManagers(), version 310..=399. At block
+# 26_048_000: 17 configurators, 70 v3.1 managers, 8 with debt (~92k USDC,
+# ~911 WETH, ~2_986 wstETH, ~2.5 WBTC). The v3.0 register
+# 0xA50d4E7D8946a7c90652339CDBd262c375d54D99 lists 34 managers (v1..v3.0),
+# every v3.0 one with zero debt — not enumerated.
+address_provider = "0xF7f0a609BfAb9a0A98786951ef10e5FE26cC1E38"
 catalog = 4200
 first_market = 4201
-expected_managers = 34
-pinned_through = 26014442
+pinned_through = 26048000

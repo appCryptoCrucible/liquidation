@@ -11,6 +11,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use liq_config::rpc::ChainRpc;
 use liq_config::{boot, BotConfig, Loaded};
 use liq_exec::path::{ExecInbox, ExecPath};
 use liq_exec::submit::SubmitEnabled;
@@ -177,6 +178,39 @@ fn profit_sink_from_env() -> Option<alloy_primitives::Address> {
     }
 }
 
+/// Read every configured aggregator's `latestRoundData` so the engine starts
+/// with prices. Without this each slot stays empty until that feed's next
+/// `AnswerUpdated`, which on a heartbeat-only feed can be hours.
+async fn seed_canonical(load: &mut crate::index::IndexLoad, rpc_url: &str) {
+    let Some(book) = load.canonical.as_mut() else {
+        return;
+    };
+    let rpc = match liq_config::rpc::HttpRpc::connect(rpc_url) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "price seed skipped — RPC connect failed");
+            return;
+        }
+    };
+    match book.seed(&rpc).await {
+        Ok(()) => tracing::info!("canonical prices seeded from latestRoundData"),
+        Err(e) => tracing::error!(
+            error = %e,
+            "price seed failed — slots fill only as each feed next updates"
+        ),
+    }
+}
+
+/// `PNL_LEDGER_PATH` is the operational PnL ledger's SQLite file. Unset
+/// leaves resolved outcomes logged (tracing) but not persisted to disk.
+fn ledger_path_from_env() -> Option<String> {
+    match std::env::var("PNL_LEDGER_PATH") {
+        Ok(v) if !v.is_empty() => Some(v),
+        Ok(_) => None,
+        Err(_) => None,
+    }
+}
+
 /// Full production order. RPC/registry failure refuses. Lease gates submit.
 pub async fn run(
     config_dir: &Path,
@@ -194,16 +228,35 @@ pub async fn run(
     };
     let (warm_builder, routes) = warm_handles();
     let shared = leak_shared(&loaded.config, lease, routes, loaded.intern.assets().len());
-    let index = crate::index::leak_index(crate::index::load_index(
-        config_dir,
-        &loaded.intern,
-        &loaded.registry,
-    ));
+    let mut index_load = crate::index::load_index(config_dir, &loaded.intern, &loaded.registry);
+    seed_canonical(&mut index_load, &loaded.config.rpc_url).await;
+    match liq_config::rpc::HttpRpc::connect(&loaded.config.rpc_url) {
+        Ok(rpc) => {
+            crate::pool_seed::seed_v3(&mut index_load.book, &rpc).await;
+            crate::pool_seed::seed_v2(&mut index_load.book, &rpc).await;
+            crate::pool_seed::seed_curve(&mut index_load.book, &rpc).await;
+        }
+        Err(e) => tracing::error!(error = %e, "pool seed skipped — RPC connect failed"),
+    }
+    let index = crate::index::leak_index(index_load);
+    if let Err(e) = crate::pool_seed::spawn_curve_reseed(
+        Arc::clone(&index.book),
+        loaded.config.rpc_url.clone(),
+        Arc::new(AtomicBool::new(false)),
+    ) {
+        tracing::error!(
+            ?e,
+            "curve reseed thread not started — traded Curve pools stay unrouted"
+        );
+    }
+    let engine_positions = store.len().saturating_mul(2);
+    let band_shared = crate::bands::BandShared::new();
     let stop_warm = Arc::new(AtomicBool::new(false));
     if let Err(e) = spawn_warm_thread(
         warm_builder,
         Arc::clone(&stop_warm),
         Arc::clone(&index.book),
+        Some(Arc::clone(&band_shared)),
     ) {
         tracing::error!(
             ?e,
@@ -233,16 +286,48 @@ pub async fn run(
     } else {
         tracing::error!("ExecPath unbound — ingest/lease continue; no invented key");
     }
-    let mut assemble = bind::intern_view(&loaded.intern);
-    let loaded_proto = bind::load_protocols(config_dir, &loaded.intern);
+    let mut assemble = bind::intern_view(&loaded.intern).with_bands(band_shared);
+    // Live RPC for the four adapters (Liquity/Fluid/Gearbox/Compound V2)
+    // whose `Config::new` refuses without a live-registry assertion. Reuses
+    // `loaded.config.rpc_url` — the same node `boot()` already asserted the
+    // token registry against. A connect/block-number failure here omits
+    // just those four (named reason), the same fail-closed shape as every
+    // other adapter-load failure; it does not fail the whole boot.
+    let live_rpc = match liq_config::rpc::HttpRpc::connect(&loaded.config.rpc_url) {
+        Ok(rpc) => match rpc.block_number().await {
+            Ok(block) => Some((crate::live_rpc::LiveRpc::new(rpc), block)),
+            Err(e) => {
+                tracing::error!(error = %e, "live RPC block number unavailable — Liquity/Fluid/Gearbox/Compound omitted");
+                None
+            }
+        },
+        Err(e) => {
+            tracing::error!(error = %e, "live RPC connect failed — Liquity/Fluid/Gearbox/Compound omitted");
+            None
+        }
+    };
+    let loaded_proto = bind::load_protocols(
+        config_dir,
+        &loaded.intern,
+        live_rpc.as_ref().map(|(rpc, block)| (rpc, *block)),
+    );
     let adapters = bind::leak_protocols(loaded_proto);
     bind::intern_adapter_tokens(&mut assemble, adapters);
-    let wrap = bind::load_wrap_gas(&config_dir.join("flash-gas.toml"));
+    let gas_model = crate::gas_model::GasModel::load(&config_dir.join("liq-gas.toml"));
+    let wrap = gas_model.as_ref().map_or_else(
+        bind::WrapGas::default,
+        crate::gas_model::GasModel::select_wrap,
+    );
     let weth = bind::registry_weth(&loaded.intern).unwrap_or_else(|| {
         tracing::error!("registry WETH missing — SelectReady stays None");
         alloy_primitives::Address::ZERO
     });
-    let select_bind = bind::select_bind(wrap, weth, loaded.intern.protocol("aave-v4"));
+    let mut select_bind = bind::select_bind(wrap, weth, loaded.intern.protocol("aave-v4"));
+    if let Some(sb) = select_bind.as_mut() {
+        for pin in bind::compound_validate_pins(adapters) {
+            sb.validate.add_compound(pin);
+        }
+    }
     let bid_cfg = bind::load_bid_config(&config_dir.join("bid.toml"), &loaded.intern);
     let oracle = liq_router::GasOracle::with_priority_cap(liq_router::gas::DEFAULT_PRIORITY_CAP);
     let fee = match oracle.as_ref() {
@@ -261,6 +346,7 @@ pub async fn run(
             &loaded.registry,
             loaded.intern.clone(),
             profit_sink_from_env(),
+            ledger_path_from_env().as_deref(),
         )
     } else {
         tracing::error!("inclusion feed not started — ExecPath unbound");
@@ -309,6 +395,11 @@ pub async fn run(
         fee,
         oracle,
     )
+    .with_engine_capacity(loaded.intern.assets().len(), engine_positions)
+    .with_assets(&loaded.intern)
+    .with_gas_model(gas_model.as_ref(), &|f: &str| {
+        bind::resolve_family(&loaded.intern, adapters, f)
+    })
     .with_index(index)
     .with_bid_cfg(bid_cfg)
     .with_header_clock(clock);

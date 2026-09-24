@@ -253,7 +253,7 @@ contract PlanDecodeTest is Test {
         assertEq(PlanDecoder.tailLen(4), 0);
         assertEq(PlanDecoder.tailLen(5), 32);
         assertEq(PlanDecoder.tailLen(6), 32);
-        assertEq(PlanDecoder.tailLen(7), 32);
+        assertEq(PlanDecoder.tailLen(7), 33);
         assertEq(PlanDecoder.tailLen(8), 21);
         vm.expectRevert(abi.encodeWithSelector(PlanDecoder.UnknownAdapter.selector, uint8(9)));
         this.tailLen9();

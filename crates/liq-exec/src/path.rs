@@ -502,7 +502,7 @@ fn bundle_txs(job: &ExecJob, signed: &SignedTx) -> Result<Vec<Bytes>> {
 /// Channels + thread for [`start_inclusion_watch`].
 pub struct InclusionIo {
     pub cmds: Sender<WatchCmd>,
-    pub outcomes: Receiver<(TraceId, crate::inclusion::Terminal)>,
+    pub outcomes: Receiver<(Tracked, crate::inclusion::Terminal)>,
     pub thread: std::thread::JoinHandle<()>,
     pub outcome_full: Arc<AtomicU64>,
 }

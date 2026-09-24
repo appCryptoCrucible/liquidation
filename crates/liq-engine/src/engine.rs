@@ -33,8 +33,8 @@ use alloy_primitives::U256;
 use fixedbitset::FixedBitSet;
 use liq_flash::{is_eligible, Eligibility, FlashIndex, Haircut};
 use liq_protocol::{
-    BlockNum, Constraints, DirtyRows, DirtySet, FlashRoute, Health, LegChoice, PositionRef,
-    Protocol, ProtocolError, Quote, RouteCache,
+    BlockNum, DirtyRows, DirtySet, FlashRoute, Health, LegChoice, PositionRef, Protocol,
+    ProtocolError, Quote, RouteCache,
 };
 use liq_state::StateView;
 use liq_types::fixed::{mul_div, Rounding, RAY};
@@ -88,7 +88,6 @@ pub struct World<'a> {
     pub flash: &'a FlashIndex,
     pub routes: &'a dyn RouteCache,
     pub haircut: Haircut,
-    pub cons: &'a Constraints,
 }
 
 impl World<'_> {
@@ -588,14 +587,13 @@ fn has_debt(h: &Health) -> bool {
 /// Health, and the quote when below the boundary.
 #[inline]
 fn evaluate(
-    w: &World<'_>,
     p: &dyn Protocol,
     pos: PositionRef<'_>,
     px: &PriceVector,
 ) -> Result<(Health, Option<Quote>), EngineError> {
     let h = p.health(pos, px)?;
     let q = if h.hf < Ray::ONE {
-        p.quote(pos, px, w.cons)?
+        p.quote(pos, px)?
     } else {
         None
     };
@@ -634,7 +632,7 @@ fn fold(
     t.stats.folds = t.stats.folds.saturating_add(1);
     let pos = w.view.position(id)?;
     let p = w.protocol(pos.key.protocol)?;
-    let (h, q) = evaluate(w, p, pos, px)?;
+    let (h, q) = evaluate(p, pos, px)?;
     let debt = has_debt(&h);
     let mut band = classify(h.hf, debt);
     let i = id.0 as usize;
@@ -731,7 +729,7 @@ fn shadow_fold(
     };
     let pos = w.view.position(id)?;
     let p = w.protocol(pos.key.protocol)?;
-    let (h, q) = evaluate(w, p, pos, px)?;
+    let (h, q) = evaluate(p, pos, px)?;
     if let Some(q) = q {
         if let Some((legs, route)) = is_eligible(&q, w.flash, w.routes, w.haircut) {
             emit(

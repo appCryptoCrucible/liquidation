@@ -4,7 +4,7 @@
 //! that names one asset throws away liquidatable positions (GUIDE 07 §5).
 
 use alloy_primitives::{Address, U256};
-use liq_types::{AssetId, PositionId, PositionKey, Ray, Wad};
+use liq_types::{AssetId, PositionId, PositionKey, Ray};
 use smallvec::SmallVec;
 
 use crate::bonus::BonusCurve;
@@ -17,14 +17,36 @@ pub struct RepayOption {
     /// Maximum repayable **right now** in this asset's raw underlying units,
     /// after the protocol's close-factor rule (V3: `close_factor × debt`;
     /// V4: enough to restore the target HF, raised to clear the reserve when
-    /// the remainder would fall below dust), capped by this reserve's debt
-    /// and by [`Constraints::per_liquidation_notional_cap`]. Where the rule
-    /// depends on the seized reserve (V4: its liquidation threshold and
-    /// bonus), it is evaluated against `seize_options[0]`.
+    /// the remainder would fall below dust), capped by this reserve's debt.
+    /// No caller-side notional cap: sizing below this ceiling is the
+    /// viability band's job (GUIDE 12 §4b — `liq_router::band`), not the
+    /// adapter's; a stored per-call cap here would be exactly the derived,
+    /// wrongly-keyed, cross-asset-meaningless threshold that section retired.
+    /// Where the rule depends on the seized reserve (V4: its liquidation
+    /// threshold and bonus), it is evaluated against `seize_options[0]`.
     pub max_repay: U256,
+    /// Smallest repay the protocol accepts for this leg. `0` for every
+    /// repay-what-you-like leg; equal to `max_repay` for an all-or-nothing
+    /// leg (Gearbox full liquidation: the account is closed as a whole, so
+    /// sizing below it would revert, not shrink). The engine skips the leg
+    /// rather than size under it.
+    pub min_repay: U256,
+    /// `Some(k)`: this repay leg is only valid with `seize_options[k]` (its
+    /// amounts and bonus were computed together — Gearbox partial vs full
+    /// on the same token). `None`: pairs with every seize option.
+    pub pair_seize: Option<u8>,
     /// Which of the protocol's own reserves/markets this leg names, when
     /// `asset` alone does not identify it. See [`SlotRef`].
     pub slot: SlotRef,
+}
+
+impl RepayOption {
+    /// Whether this repay leg may be combined with `seize_options[seize]`.
+    #[inline]
+    #[must_use]
+    pub fn pairs_with(&self, seize: u8) -> bool {
+        self.pair_seize.is_none_or(|k| k == seize)
+    }
 }
 
 /// The protocol-native identifier of the reserve, market or token contract an
@@ -139,20 +161,4 @@ pub struct LegChoice {
 impl LegChoice {
     /// The adapter's preferred pair: `[0]` of each set.
     pub const PREFERRED: Self = Self { repay: 0, seize: 0 };
-}
-
-/// Caller-side limits passed to `Protocol::quote` (GUIDE 12 §1).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Constraints {
-    /// Cap on one liquidation's repay value, in the price vector's numeraire
-    /// (WAD). The adapter converts it into each repay asset's raw units and
-    /// clamps `RepayOption::max_repay`. [`Constraints::UNBOUNDED`] ≙ no cap.
-    pub per_liquidation_notional_cap: Wad,
-}
-
-impl Constraints {
-    /// No caller-side limit; the protocol rule alone bounds `max_repay`.
-    pub const UNBOUNDED: Self = Self {
-        per_liquidation_notional_cap: Wad::from_raw(U256::MAX),
-    };
 }

@@ -103,16 +103,19 @@ impl InclusionWatch {
         self.map.values().cloned().collect()
     }
 
-    /// Apply one block. Resolved traces are removed and returned.
-    pub fn observe(&mut self, obs: &BlockObs) -> Result<Vec<(TraceId, Terminal)>> {
+    /// Apply one block. Resolved traces are removed and returned, each
+    /// paired with its full [`Tracked`] record (not just the trace id) so a
+    /// downstream consumer — e.g. the operational PnL ledger — still has
+    /// `position.protocol` once the entry leaves this map.
+    pub fn observe(&mut self, obs: &BlockObs) -> Result<Vec<(Tracked, Terminal)>> {
         let mut out = Vec::new();
         let mut resolved = Vec::new();
         for (trace, t) in &self.map {
             if let Some(term) = resolve_one(t, obs)? {
-                out.push((*trace, term));
+                out.push((t.clone(), term));
                 resolved.push(*trace);
             } else if !obs.incomplete && obs.block > t.max_block {
-                out.push((*trace, Terminal::Dropped));
+                out.push((t.clone(), Terminal::Dropped));
                 resolved.push(*trace);
             }
         }
@@ -200,7 +203,7 @@ pub trait BlockSource: Send {
 /// Single watcher thread. Outcomes are `try_send`; a full channel is counted.
 pub fn spawn_watch(
     cmds: Receiver<WatchCmd>,
-    outcomes: Sender<(TraceId, Terminal)>,
+    outcomes: Sender<(Tracked, Terminal)>,
     outcome_full: std::sync::Arc<AtomicU64>,
 ) -> Result<std::thread::JoinHandle<()>> {
     spawn_sourced(cmds, outcomes, outcome_full, None)
@@ -210,7 +213,7 @@ pub fn spawn_watch(
 /// A source that returns `None` does not resolve anything.
 pub fn spawn_sourced(
     cmds: Receiver<WatchCmd>,
-    outcomes: Sender<(TraceId, Terminal)>,
+    outcomes: Sender<(Tracked, Terminal)>,
     outcome_full: std::sync::Arc<AtomicU64>,
     mut source: Option<Box<dyn BlockSource>>,
 ) -> Result<std::thread::JoinHandle<()>> {
@@ -248,7 +251,7 @@ pub fn spawn_sourced(
 fn emit(
     watch: &mut InclusionWatch,
     obs: &BlockObs,
-    outcomes: &Sender<(TraceId, Terminal)>,
+    outcomes: &Sender<(Tracked, Terminal)>,
     outcome_full: &std::sync::Arc<AtomicU64>,
 ) {
     match watch.observe(obs) {

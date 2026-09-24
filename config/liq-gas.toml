@@ -1,0 +1,93 @@
+# Measured gas model for one liquidation through our Executor.
+# Loaded by crates/liq-bot/src/gas_model.rs; methodology in tools/gas-measure.
+#
+#   plan gas = [tx].base                         once per transaction
+#            + [wrap].<flash provider>            once per flash group
+#            + Σ legs ([liquidation].<protocol>   per liquidation leg
+#                      + exit swap hops)          sized per plan from the pool book
+#
+# A protocol or provider missing here is NOT MEASURED: `select` skips its
+# legs and the viability band refuses its pairs. Nothing is sized at 0 gas.
+#
+# Sources (measured 2026-09, head ~26_047_000)
+#   fork     `forge test --isolate -vvvv` on ForkLiveLiquidations.t.sol
+#            (test_fork_* and test_gas_*) and ForkShareRedeem.t.sol at block
+#            26_019_284 (Compound at 22_000_000), decomposed by
+#            tools/gas-measure/fork_decompose.py into swap frames and the
+#            rest ("fixed").
+#   mainnet  tools/gas-measure/measure.py: 71 real liquidations in the last
+#            150k blocks replayed with `cast run --quick`; gas of the call
+#            frame into the protocol contract that emitted the liquidation
+#            event (median / p75 / p90 per protocol below).
+#   wrap     = min over fork-measured protocols of (fixed − protocol frame)
+#              for that provider: executor + flash, no protocol call.
+#   leg      = mainnet p75 protocol frame + our Executor's guard reads for
+#              that adapter. p75, not median: the band is a pre-filter and
+#              under-charging gas passes losing sizes.
+
+[tx]
+# 21_000 intrinsic + ~6_000 calldata (plans measured at 333–385 bytes,
+# ~4.7–5.3k gas) + one profit swap ([swap].univ3).
+base = 109_100
+
+[wrap]
+aave = 198_065
+morpho = 128_189
+univ3 = 132_672
+univ4 = 105_901
+# DERIVED: Sky DSS was only measurable against Aave V3 (DAI debt):
+# 296_199 there, minus Aave V3's average guard excess over Morpho across the
+# providers measured on both (96_278).
+sky_dss = 199_921
+# Aave V3 flash wrapping an Aave V4 leg: same wrap as `aave`; the V4 leg's
+# extra cost is in [liquidation].aave-v4.
+aave_v4 = 198_065
+
+[liquidation]
+# mainnet frame p75 375_651 (median 273_221, n 14) + fork guard 105_091
+# (getUserAccountData; fork leg 347_231 − fork frame 242_140).
+aave-v3 = 480_742
+# Spark is an Aave V3 fork on the same adapter and Executor path.
+spark = 480_742
+# fork 623_074 − wrap 198_065 = 425_009 (frame 341_551 + guard 83_458);
+# mainnet frame p75 337_491 (n 15) + that guard = 420_949 — fork is higher.
+aave-v4 = 425_009
+# mainnet frame p75 191_343 (median 127_424, n 15). Morpho's guard reads are
+# inside the measured wraps (wrap was derived on Morpho).
+morpho-blue = 191_343
+# mainnet frame p75 255_683 (median 189_024, n 7). No Executor guard: the
+# call is the guard.
+fluid = 255_683
+# mainnet frame p75 234_040 (n 5) + fork guard and vault-share redeem
+# 347_284 (ForkShareRedeem at 26_019_284: fixed 778_933 − wrap 198_065 −
+# frame 233_584).
+euler-v2 = 581_324
+# mainnet frame p75 434_025 (median 326_395, n 15) + fork guard and cETH
+# redeem 219_422 (ForkShareRedeem at 22_000_000: fixed 666_620 − wrap
+# 198_065 − frame 249_133).
+compound-v2 = 653_447
+# fork frame 420_540 (ForkShareRedeem at 26_019_284: batchLiquidateTroves,
+# one trove offset against the Stability Pool, gas-comp transfer). No
+# mainnet liquidation in the window. The whole execute was 588_964, so
+# charging the full aave wrap on top over-counts by ~30k — conservative.
+liquity-v2 = 420_540
+# fork leg: fixed 623_948 − wrap 198_065 (ForkSiloGearbox at 26_019_284,
+# wstETH/WETH pair: hook liquidationCall frame 310_808 + maxLiquidation
+# guard and approvals). No mainnet liquidation in the window.
+silo-v2 = 425_883
+# fork leg (ForkSiloGearbox at 26_049_000, v3.1 kpk WETH manager, one
+# wstETH collateral): partial fixed 524_618 − wrap 198_065 = 326_553 (facade
+# frame 401_407); full 524_128 − 198_065 = 326_063 (frame 358_891). The
+# larger of the two. Accounts holding more collateral tokens cost more on
+# the full path (Gearbox values every enabled token). No mainnet window sample.
+gearbox = 326_553
+
+[swap]
+# mainnet UniV3 pool swap frames incl. payment callback: median 82_097
+# (p75 98_414, n 49); fork 49_821 … 118_695.
+univ3 = 82_100
+# mainnet pair `swap` frame median 34_825 (n 57) excludes the token
+# transfer into the pair, which a router leg also pays (~30k): 65_000.
+univ2 = 65_000
+# mainnet Curve `exchange` frames incl. transferFrom: median 104_986 (n 11).
+curve = 104_986

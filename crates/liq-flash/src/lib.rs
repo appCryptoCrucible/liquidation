@@ -42,7 +42,7 @@ pub use sources::{
 };
 
 /// Default wrapping gas when a source is constructed without a 10C snapshot.
-/// Production bind applies `config/flash-gas.toml` via `with_overhead`.
+/// Production bind applies `config/liq-gas.toml` `[wrap]` via `with_overhead`.
 pub const GAS_OVERHEAD_STUB: u64 = 0;
 
 /// One flash-loan venue. Built once at startup; `available` is the hot path.

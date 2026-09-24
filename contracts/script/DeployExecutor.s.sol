@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {Script} from "forge-std/Script.sol";
 import {Executor} from "../src/Executor.sol";
+import {MainnetVenues} from "../src/lib/MainnetVenues.sol";
 
 /// Constructor wiring for the human deploy (H3). This repository does not
 /// broadcast it. `forge script` without `--broadcast` only simulates;
@@ -30,7 +31,7 @@ contract DeployExecutor is Script {
             revert("zero env address");
         }
         vm.startBroadcast();
-        new Executor(operator, profitSink, UNIV3_FACTORY, UNIV3_INIT_HASH, routerA, routerB, WETH);
+        new Executor(operator, profitSink, UNIV3_FACTORY, UNIV3_INIT_HASH, routerA, routerB, WETH, MainnetVenues.UNIV2_FACTORY, MainnetVenues.UNIV2_INIT_HASH, MainnetVenues.SUSHI_FACTORY, MainnetVenues.SUSHI_INIT_HASH, MainnetVenues.CURVE_META_REGISTRY);
         vm.stopBroadcast();
     }
 }

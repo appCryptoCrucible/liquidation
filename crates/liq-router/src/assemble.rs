@@ -8,24 +8,25 @@
 //! allowlisted router **only** when the caller supplies calldata. Kyber is
 //! not a [`crate::Venue`] variant and is never emitted (05E N1).
 
-use alloy_primitives::{Address, U256};
-use liq_exec::wire::LegTail;
+use alloy_primitives::{Address, B256, U256};
 use liq_flash::fallback_chain;
 use liq_flash::{fee_amount, FlashIndex, Haircut};
 use liq_plan::{
     col_per_unit_debt_1e18, ensure_surplus_borrow_profit_legs, validate, BatchPlan, FlashGroup,
-    LiqLeg, SwapLeg, ValidateCtx, LEG_EXACT_OUT, LEG_TAKE_BALANCE, VENUE_ROUTER, VENUE_UNIV3_POOL,
+    LiqLeg, SwapLeg, ValidateCtx, LEG_EXACT_OUT, LEG_TAKE_BALANCE, VENUE_CURVE_POOL,
+    VENUE_UNIV2_POOL, VENUE_UNIV3_POOL,
 };
 use liq_protocol::{ExecutorAdapter, FlashRoute, Quote};
 use liq_types::fixed::{mul_div, Rounding, RAY};
 use liq_types::{AssetId, PositionId};
+use liq_wire::wire::LegTail;
 use smallvec::SmallVec;
 
 use crate::bid::{searcher_net, Bid};
 use crate::exact::{Allocation, ExitQuote, GasTerms};
 use crate::profit::ProfitError;
 use crate::select::{Scored, SelectCfg, SelectedPlan};
-use crate::solver::{PoolBook, PoolId, RouteError, Venue};
+use crate::solver::{PoolBook, PoolId, PoolState, RouteError, Venue};
 
 /// Adapter fields `Protocol::encode` would have supplied. Required per
 /// position; missing → the plan is not emitted.
@@ -45,16 +46,14 @@ pub trait AssembleView {
     fn token(&self, asset: AssetId) -> Option<Address>;
     fn meta(&self, pos: PositionId) -> Option<LegMeta>;
     fn per_eth(&self, asset: AssetId) -> Option<U256>;
-    /// `(router_target, calldata after the 20-byte target)` for a non-V3
-    /// pool. `None` → that pool cannot be encoded (fail closed).
-    fn router_leg(&self, pool: Address) -> Option<(Address, Vec<u8>)>;
 }
 
 /// Pins the 10E tails (ids 3–8). Missing required fields → do not assemble.
 ///
 /// Fluid T1 is `fluid_t1 == Some(true)` plus `col_per_unit_debt`. T2–T4
-/// (`Some(false)`) stay Unwired. Gearbox full MultiCall is Unwired — do
-/// not invent `PriceUpdate`. Compound `is_cether` is a config pin
+/// (`Some(false)`) stay Unwired. Gearbox `gearbox_full` picks the full
+/// add/withdraw liquidation over the partial one (no `PriceUpdate` either
+/// way). Compound `is_cether` is a config pin
 /// (`underlying == 0`), never a `decimals()` guess.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TailPins {
@@ -70,9 +69,19 @@ pub struct TailPins {
     pub fluid_t1: Option<bool>,
     pub fluid_col_per_unit_debt: Option<U256>,
     pub gearbox_min_seized: Option<U256>,
-    pub gearbox_full_multicall: bool,
+    /// Full liquidation (the quote's all-or-nothing repay option), not partial.
+    pub gearbox_full: bool,
     pub compound_ctoken_collateral: Option<Address>,
     pub compound_is_cether: Option<bool>,
+    /// Reserve id of the seized collateral, `slot - 1` in the spoke's market
+    /// (slot 0 is the spoke meta row — never a reserve).
+    pub aave_v4_collateral_reserve_id: Option<u16>,
+    /// Reserve id of the repaid debt, `slot - 1` in the spoke's market.
+    pub aave_v4_debt_reserve_id: Option<u16>,
+    /// Morpho `Id` — the market's own `LoanRow.morpho_id`, not derivable
+    /// from `MarketId` alone (Morpho assigns `Id`s on-chain at
+    /// `CreateMarket`, not from a static config pin).
+    pub morpho_market_id: Option<B256>,
 }
 
 /// Lower a quoted seize to the minimum we will accept on the wire.
@@ -130,9 +139,9 @@ pub fn fluid_col_per_unit_debt_from_quote(
         .map_err(|_| AssembleError::Missing("fluid col_per_unit_debt"))
 }
 
-/// Gearbox partial `min_seized` from the quoted seize, less
-/// [`crate::select::SelectCfg::min_out_tolerance_bps`]. Full MultiCall is
-/// Unwired.
+/// Gearbox `min_seized` (partial: the facade's check; full: the
+/// Executor's) from the quoted seize, less
+/// [`crate::select::SelectCfg::min_out_tolerance_bps`].
 ///
 /// G6. This is an exact on-chain minimum on a quantity Gearbox derives from
 /// its own 8-decimal price feeds, which `config.rs` deliberately does not
@@ -201,16 +210,16 @@ pub fn leg_meta_from_pins(p: &TailPins) -> Result<LegMeta, AssembleError> {
             }
         },
         ExecutorAdapter::Gearbox => {
-            if p.gearbox_full_multicall {
-                return Err(AssembleError::Missing("gearbox full MultiCall unwired"));
-            }
             let min_seized = p
                 .gearbox_min_seized
                 .ok_or(AssembleError::Missing("gearbox min_seized"))?;
             if min_seized.is_zero() {
                 return Err(AssembleError::Missing("gearbox min_seized"));
             }
-            LegTail::Gearbox { min_seized }
+            LegTail::Gearbox {
+                min_seized,
+                full: p.gearbox_full,
+            }
         }
         ExecutorAdapter::CompoundV2 => {
             let ctoken_collateral = p
@@ -227,8 +236,26 @@ pub fn leg_meta_from_pins(p: &TailPins) -> Result<LegMeta, AssembleError> {
                 is_cether: u8::from(is_cether),
             }
         }
-        ExecutorAdapter::AaveV4 | ExecutorAdapter::MorphoBlue => {
-            return Err(AssembleError::Missing("tail pins 0-2 not via 10E helper"));
+        ExecutorAdapter::AaveV4 => {
+            let collateral_reserve_id = p
+                .aave_v4_collateral_reserve_id
+                .ok_or(AssembleError::Missing("aave v4 collateral_reserve_id"))?;
+            let debt_reserve_id = p
+                .aave_v4_debt_reserve_id
+                .ok_or(AssembleError::Missing("aave v4 debt_reserve_id"))?;
+            LegTail::AaveV4 {
+                collateral_reserve_id,
+                debt_reserve_id,
+            }
+        }
+        ExecutorAdapter::MorphoBlue => {
+            let market_id = p
+                .morpho_market_id
+                .ok_or(AssembleError::Missing("morpho market_id"))?;
+            if market_id.is_zero() {
+                return Err(AssembleError::Missing("morpho market_id"));
+            }
+            LegTail::Morpho { market_id }
         }
     };
     if p.market.is_zero() {
@@ -324,11 +351,14 @@ pub fn min_profit_floor(
             return Err(AssembleError::Missing("per_eth"));
         }
         for s in &g.legs {
-            let cost = U256::from(s.expected_gas)
+            // `gas_price_in_debt` comes from the plan-level WETH-numeraire
+            // terms, i.e. wei per gas; convert the debt-unit contribution to
+            // wei before subtracting it, never mix the two.
+            let cost_wei = U256::from(s.expected_gas)
                 .checked_mul(gas_price_in_debt)
                 .ok_or(RouteError::Math)?;
-            let net_debt = s.leg.contribution.saturating_sub(cost);
-            let wei = crate::solver::mul_div_512(net_debt, WEI, per_eth)?;
+            let contribution_wei = crate::solver::mul_div_512(s.leg.contribution, WEI, per_eth)?;
+            let wei = contribution_wei.saturating_sub(cost_wei);
             let keep = searcher_net(wei, bid.coinbase_bps)
                 .ok_or(AssembleError::Missing("searcher_net"))?;
             worst = Some(match worst {
@@ -343,27 +373,27 @@ pub fn min_profit_floor(
     u128_of(w)
 }
 
+/// Pool-direct wire data for a swap through `pool_id` from coin `i` to coin
+/// `j`. Every venue is pool-direct and verified on chain by the Executor:
+/// V3 by the callback's CREATE2 check, V2 by CREATE2 against the pair's
+/// factory, Curve by MetaRegistry + coin indices.
 fn venue_bytes(
     book: &PoolBook,
-    alloc_pool: PoolId,
-    view: &dyn AssembleView,
+    pool_id: PoolId,
+    i: u8,
+    j: u8,
 ) -> Result<(u8, Vec<u8>), AssembleError> {
-    let pool = book.get(alloc_pool).ok_or(AssembleError::Missing("pool"))?;
-    match pool.venue() {
-        Venue::UniV3 => Ok((VENUE_UNIV3_POOL, pool.address.to_vec())),
-        Venue::UniV2 | Venue::CurveStable => {
-            let (target, call) = view
-                .router_leg(pool.address)
-                .ok_or(AssembleError::NoEncodableVenue(pool.address))?;
-            if target.is_zero() {
-                return Err(AssembleError::Missing("router"));
-            }
-            let mut d = target.to_vec();
-            d.extend_from_slice(&call);
-            if d.len() < 20 {
-                return Err(AssembleError::Missing("router data"));
-            }
-            Ok((VENUE_ROUTER, d))
+    let pool = book.get(pool_id).ok_or(AssembleError::Missing("pool"))?;
+    let mut d = pool.address.to_vec();
+    match &pool.state {
+        PoolState::V3(_) => Ok((VENUE_UNIV3_POOL, d)),
+        PoolState::V2(v2) => {
+            d.push(v2.factory);
+            Ok((VENUE_UNIV2_POOL, d))
+        }
+        PoolState::Curve(_) => {
+            d.extend_from_slice(&[i, j]);
+            Ok((VENUE_CURVE_POOL, d))
         }
     }
 }
@@ -426,31 +456,42 @@ fn shares_of_pull(
 
 /// Encode **every** nonzero allocation. `amount` on each EXACT_OUT swap is
 /// that pool's share of `pull`. One TAKE_BALANCE closer per collateral.
+///
+/// A Curve share cannot be exact-output: it sells the collateral that buys
+/// its share at the quoted rate, raised by `overshoot_bps` (flash fee +
+/// min-out tolerance), and the surplus debt is swept to WETH
+/// ([`route_surplus_debt`]). The lender's pull enforces the total on chain.
+#[allow(clippy::too_many_arguments)] // each input is a distinct plan term
 fn swaps_for_leg(
     s: &Scored,
     book: &PoolBook,
-    view: &dyn AssembleView,
     weth: Address,
     pull: u128,
     debt_addr: Address,
     coll_addr: Address,
+    overshoot_bps: u16,
 ) -> Result<(Vec<SwapLeg>, SwapLeg), AssembleError> {
     let shares = shares_of_pull(&s.leg.exit, pull)?;
     let mut repay = Vec::with_capacity(shares.len());
     let mut last: Option<(u8, Vec<u8>)> = None;
     for (a, amount) in &shares {
-        let (venue, data) = venue_bytes(book, a.leg.pool, view)?;
+        let (venue, data) = venue_bytes(book, a.leg.pool, a.leg.i, a.leg.j)?;
+        let (flags, amount) = if venue == VENUE_CURVE_POOL {
+            (0, curve_exact_in(a, *amount, overshoot_bps)?)
+        } else {
+            (LEG_EXACT_OUT, *amount)
+        };
         repay.push(SwapLeg {
             venue,
             token_in: coll_addr,
             token_out: debt_addr,
-            flags: LEG_EXACT_OUT,
-            amount: *amount,
+            flags,
+            amount,
             data: data.clone(),
         });
         last = Some((venue, data));
     }
-    let (venue, data) = match closer_pair(book, view, coll_addr, weth) {
+    let (venue, data) = match closer_pair(book, coll_addr, weth) {
         Ok(v) => v,
         Err(_) => last.ok_or(AssembleError::Missing("allocation"))?,
     };
@@ -465,36 +506,48 @@ fn swaps_for_leg(
     Ok((repay, profit))
 }
 
-/// UniV3 pool-direct, else allowlisted router, for a token pair present in
-/// the book. Fail closed when neither exists — do not invent a pool.
+/// Collateral sold exact-in on Curve to buy `share` of debt: the quoted
+/// input for that share, rounded up, plus `overshoot_bps`.
+fn curve_exact_in(a: &Allocation, share: u128, overshoot_bps: u16) -> Result<u128, AssembleError> {
+    if a.amount_out.is_zero() {
+        return Err(AssembleError::Missing("curve quote"));
+    }
+    let base = mul_div(a.amount_in, U256::from(share), a.amount_out, Rounding::Up)
+        .map_err(|_| RouteError::Math)?;
+    let keep = U256::from(10_000u32.saturating_add(u32::from(overshoot_bps)));
+    let with =
+        mul_div(base, keep, U256::from(10_000u32), Rounding::Up).map_err(|_| RouteError::Math)?;
+    u128_of(with)
+}
+
+/// A live pool holding both tokens, for a take-balance closer: UniV3 first,
+/// then V2, then Curve. Fail closed when none exists — do not invent a pool.
 fn closer_pair(
     book: &PoolBook,
-    view: &dyn AssembleView,
     token_in: Address,
     token_out: Address,
 ) -> Result<(u8, Vec<u8>), AssembleError> {
-    let mut router_err: Option<AssembleError> = None;
-    for p in book.pools() {
-        if !p.tokens.contains(&token_in) || !p.tokens.contains(&token_out) || !p.is_live() {
-            continue;
-        }
-        match p.venue() {
-            Venue::UniV3 => return Ok((VENUE_UNIV3_POOL, p.address.to_vec())),
-            Venue::UniV2 | Venue::CurveStable => {
-                let Some(id) = book.by_address(p.address) else {
-                    continue;
-                };
-                match venue_bytes(book, id, view) {
-                    Ok(v) => return Ok(v),
-                    Err(e) => router_err = Some(e),
-                }
+    for want in [Venue::UniV3, Venue::UniV2, Venue::CurveStable] {
+        for p in book.pools() {
+            if p.venue() != want || !p.is_live() {
+                continue;
             }
+            let (Some(i), Some(j)) = (
+                p.tokens.iter().position(|t| *t == token_in),
+                p.tokens.iter().position(|t| *t == token_out),
+            ) else {
+                continue;
+            };
+            let (Ok(i), Ok(j)) = (u8::try_from(i), u8::try_from(j)) else {
+                continue;
+            };
+            let Some(id) = book.by_address(p.address) else {
+                continue;
+            };
+            return venue_bytes(book, id, i, j);
         }
     }
-    match router_err {
-        Some(e) => Err(e),
-        None => Err(AssembleError::Missing("pair pool")),
-    }
+    Err(AssembleError::Missing("pair pool"))
 }
 
 fn univ3_addr_for(book: &PoolBook, a: Address, b: Address) -> Option<Address> {
@@ -538,6 +591,13 @@ fn fund_premium(swaps: &mut [SwapLeg], premium: u128) -> Result<(), AssembleErro
             .ok_or(AssembleError::AmountTooLarge)?;
     }
     if n == 0 || total.is_zero() {
+        // Exact-in (Curve) repay legs carry the premium in their overshoot.
+        if swaps
+            .iter()
+            .any(|s| s.flags & (LEG_EXACT_OUT | LEG_TAKE_BALANCE) == 0)
+        {
+            return Ok(());
+        }
         return Err(AssembleError::Missing("repay swap"));
     }
     let prem = U256::from(premium);
@@ -707,8 +767,9 @@ fn assemble_one(
                     tail: meta.tail,
                     protocol_pull: pull,
                 });
+                let overshoot = cfg.min_out_tolerance_bps.saturating_add(cg.fee_bps);
                 let (repay, profit) =
-                    swaps_for_leg(s, book, view, weth, pull, debt_addr, coll_addr)?;
+                    swaps_for_leg(s, book, weth, pull, debt_addr, coll_addr, overshoot)?;
                 repay_swaps.extend(repay);
                 // One TAKE_BALANCE closer per collateral across the whole plan.
                 if !profit_swaps
@@ -773,7 +834,7 @@ fn assemble_one(
         groups,
         profit_swaps,
     };
-    route_surplus_debt(&mut plan, book, view, weth)?;
+    route_surplus_debt(&mut plan, book, weth)?;
     validate(&plan, validate_ctx)?;
     Ok(Assembled {
         plan,
@@ -787,7 +848,6 @@ fn assemble_one(
 fn route_surplus_debt(
     plan: &mut BatchPlan,
     book: &PoolBook,
-    view: &dyn AssembleView,
     weth: Address,
 ) -> Result<(), AssembleError> {
     let mut need_pool: Option<(Address, Address)> = None;
@@ -797,7 +857,10 @@ fn route_surplus_debt(
             .iter()
             .try_fold(0u128, |a, l| a.checked_add(l.protocol_pull))
             .ok_or(AssembleError::AmountTooLarge)?;
-        if g.debt_asset == weth || g.flash_amount <= pull {
+        let exact_in = g.repay_swaps.iter().any(|s| {
+            s.token_out == g.debt_asset && s.flags & (LEG_EXACT_OUT | LEG_TAKE_BALANCE) == 0
+        });
+        if g.debt_asset == weth || (g.flash_amount <= pull && !exact_in) {
             continue;
         }
         let has = plan.profit_swaps.iter().any(|s| {
@@ -806,7 +869,7 @@ fn route_surplus_debt(
         if has {
             continue;
         }
-        match closer_pair(book, view, g.debt_asset, weth) {
+        match closer_pair(book, g.debt_asset, weth) {
             Ok((venue, data)) => {
                 plan.profit_swaps.push(SwapLeg {
                     venue,
@@ -929,7 +992,7 @@ mod tests {
     use crate::profit::{gas_price_in_debt, MarketView};
     use crate::select::{learning_p, select, PositionInput, SelectCfg};
     use crate::solver::Pool;
-    use alloy_primitives::{Address, U256};
+    use alloy_primitives::{Address, B256, U256};
     use liq_flash::{
         AavePool, AaveReserve, CostModel, FlashIndex, FlashSource, HeldAsset, MorphoBlue,
     };
@@ -976,8 +1039,18 @@ mod tests {
         fn per_eth(&self, _: AssetId) -> Option<U256> {
             Some(e18(1))
         }
-        fn notional_cap_raw(&self, _: AssetId) -> Option<U256> {
-            Some(U256::MAX)
+        fn band(
+            &self,
+            _: ProtocolId,
+            _: AssetId,
+            _: AssetId,
+        ) -> Option<crate::band::ViabilityBand> {
+            Some(crate::band::ViabilityBand {
+                min_size: U256::ZERO,
+                max_size: U256::MAX,
+                base_fee: 0,
+                block: 0,
+            })
         }
     }
     impl AssembleView for World {
@@ -989,9 +1062,6 @@ mod tests {
         }
         fn per_eth(&self, _: AssetId) -> Option<U256> {
             Some(e18(1))
-        }
-        fn router_leg(&self, _: Address) -> Option<(Address, Vec<u8>)> {
-            Some((addr(0x91), Vec::new()))
         }
     }
 
@@ -1040,6 +1110,8 @@ mod tests {
                 user: addr(0xB0 + u64::from(pos)),
             },
             repay_options: smallvec::SmallVec::from_slice(&[RepayOption {
+                min_repay: alloy_primitives::U256::ZERO,
+                pair_seize: None,
                 asset: A1,
                 max_repay: e18(10),
                 slot: liq_protocol::SlotRef::ByAsset,
@@ -1075,7 +1147,7 @@ mod tests {
             wrap_gas: [366_332, 355_632, 460_032, 370_435, 384_134],
             wrap_aave_v4: 496_704,
             aave_v4: None,
-            liq_gas: 80_000,
+            liq_gas: crate::select::LiqGas::uniform(80_000),
             over_borrow: U256::from(1u64),
             min_out_tolerance_bps: crate::select::MIN_OUT_TOLERANCE_BPS,
             budget: B,
@@ -1219,6 +1291,138 @@ mod tests {
             gas_success: None,
             gas_failed: 50_000,
         }
+    }
+
+    /// Units regression: `contribution` is in debt units, gas cost is in
+    /// wei. A non-WETH debt (here priced like USDC: 3000e6 raw per ETH)
+    /// must be converted to wei *before* gas is subtracted.
+    #[test]
+    fn profit_floor_converts_debt_contribution_before_subtracting_wei_gas() {
+        struct Usdc<'a>(&'a World);
+        impl AssembleView for Usdc<'_> {
+            fn token(&self, a: AssetId) -> Option<Address> {
+                self.0.token(a)
+            }
+            fn meta(&self, p: PositionId) -> Option<LegMeta> {
+                self.0.meta(p)
+            }
+            fn per_eth(&self, _: AssetId) -> Option<U256> {
+                Some(U256::from(3_000_000_000u64))
+            }
+        }
+        let bk = book(vec![deep()]);
+        let (_s, flash) = idx();
+        let quote = q(1);
+        let input = PositionInput {
+            position: quote.position,
+            protocol: PROTO,
+            health: health(),
+            quote: &quote,
+            cause: TriggerKind::Stale,
+            p: learning_p(),
+            gas_success: None,
+            gas_failed: 50_000,
+        };
+        let world = World {
+            tokens: HashMap::new(),
+            metas: HashMap::new(),
+        };
+        let plans = select(&[input], &cfg(), &flash, H, &bk, None, &world, &GAS).unwrap();
+        let leg = &plans[0].groups[0].legs[0];
+        let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
+        let wei_per_gas = U256::from(10_000_000_000u64);
+        let floor = min_profit_floor(&plans[0], &bd, &Usdc(&world), wei_per_gas).unwrap();
+        let contribution_wei = leg.leg.contribution * WEI / U256::from(3_000_000_000u64);
+        let cost_wei = U256::from(leg.expected_gas) * wei_per_gas;
+        let want =
+            searcher_net(contribution_wei.saturating_sub(cost_wei), bd.coinbase_bps).unwrap();
+        assert_eq!(U256::from(floor), want);
+    }
+
+    /// Curve-only exit: the repay share is sold exact-in (Curve has no exact
+    /// output) with the overshoot, the collateral closer is a take-balance
+    /// Curve leg, and the plan still validates.
+    #[test]
+    fn curve_exit_repays_exact_in_with_overshoot() {
+        use liq_plan::VENUE_CURVE_POOL;
+        let bk = book(vec![crate::fixtures::curve(
+            7,
+            &[e18(10_000_000), e18(10_000_000)],
+            100_000,
+            4_000_000,
+        )]);
+        let (_s, flash) = idx();
+        let quote = q(1);
+        let input = PositionInput {
+            position: quote.position,
+            protocol: PROTO,
+            health: health(),
+            quote: &quote,
+            cause: TriggerKind::Stale,
+            p: learning_p(),
+            gas_success: None,
+            gas_failed: 50_000,
+        };
+        let mut world = World {
+            tokens: HashMap::new(),
+            metas: HashMap::new(),
+        };
+        world.tokens.insert(A0, tok(0));
+        world.tokens.insert(A1, tok(1));
+        world.metas.insert(
+            PositionId(1),
+            LegMeta {
+                adapter: ExecutorAdapter::AaveV3,
+                market: addr(0x51),
+                borrower: quote.key.user,
+                tail: LegTail::None,
+                protocol_pull: None,
+            },
+        );
+        let plans = select(&[input], &cfg(), &flash, H, &bk, None, &world, &GAS).unwrap();
+        assert_eq!(plans.len(), 1);
+        let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
+        let price = gas_price_in_debt(&GAS).unwrap();
+        let assembled = assemble(
+            &plans,
+            &cfg(),
+            &bk,
+            &world,
+            &vctx(tok(1)),
+            &bd,
+            price,
+            &GAS,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let plan = &assembled[0].plan;
+        validate(plan, &vctx(tok(1))).unwrap();
+        let repay = &plan.groups[0].repay_swaps;
+        assert_eq!(repay.len(), 1);
+        assert_eq!(repay[0].venue, VENUE_CURVE_POOL);
+        assert_eq!(repay[0].flags & LEG_EXACT_OUT, 0, "curve is exact-in");
+        assert_eq!(&repay[0].data[20..], &[0u8, 1u8], "coin i = coll, j = debt");
+        // Sells the collateral that buys the pull at the quoted rate, plus the
+        // overshoot (min-out tolerance + the Morpho source's 0 bps fee); the
+        // take-balance closer sells the rest.
+        let leg = &plans[0].groups[0].legs[0].leg;
+        let alloc = &leg.exit.allocs[0];
+        let base = mul_div(alloc.amount_in, leg.s, alloc.amount_out, Rounding::Up).unwrap();
+        let want = mul_div(
+            base,
+            U256::from(10_000u32 + u32::from(cfg().min_out_tolerance_bps)),
+            U256::from(10_000u32),
+            Rounding::Up,
+        )
+        .unwrap();
+        assert_eq!(U256::from(repay[0].amount), want);
+        assert!(want > base && want < alloc.amount_in);
+        assert!(plan
+            .profit_swaps
+            .iter()
+            .any(|s| s.venue == VENUE_CURVE_POOL && s.flags & LEG_TAKE_BALANCE != 0));
     }
 
     /// Assembled plan satisfies `liq-plan::validate`. Debt = WETH (A1)
@@ -1736,9 +1940,12 @@ mod tests {
             fluid_t1: None,
             fluid_col_per_unit_debt: None,
             gearbox_min_seized: None,
-            gearbox_full_multicall: false,
+            gearbox_full: false,
             compound_ctoken_collateral: None,
             compound_is_cether: None,
+            aave_v4_collateral_reserve_id: None,
+            aave_v4_debt_reserve_id: None,
+            morpho_market_id: None,
         }
     }
 
@@ -1773,11 +1980,14 @@ mod tests {
         ));
         let mut full = pins_base(ExecutorAdapter::Gearbox);
         full.gearbox_min_seized = Some(U256::from(1u64));
-        full.gearbox_full_multicall = true;
-        assert!(matches!(
-            leg_meta_from_pins(&full),
-            Err(AssembleError::Missing("gearbox full MultiCall unwired"))
-        ));
+        full.gearbox_full = true;
+        assert_eq!(
+            leg_meta_from_pins(&full).unwrap().tail,
+            LegTail::Gearbox {
+                min_seized: U256::from(1u64),
+                full: true
+            }
+        );
         assert!(matches!(
             leg_meta_from_pins(&pins_base(ExecutorAdapter::CompoundV2)),
             Err(AssembleError::Missing("compound ctoken_collateral"))
@@ -1787,6 +1997,26 @@ mod tests {
         assert!(matches!(
             leg_meta_from_pins(&c),
             Err(AssembleError::Missing("compound is_cether"))
+        ));
+        assert!(matches!(
+            leg_meta_from_pins(&pins_base(ExecutorAdapter::AaveV4)),
+            Err(AssembleError::Missing("aave v4 collateral_reserve_id"))
+        ));
+        let mut v4 = pins_base(ExecutorAdapter::AaveV4);
+        v4.aave_v4_collateral_reserve_id = Some(1);
+        assert!(matches!(
+            leg_meta_from_pins(&v4),
+            Err(AssembleError::Missing("aave v4 debt_reserve_id"))
+        ));
+        assert!(matches!(
+            leg_meta_from_pins(&pins_base(ExecutorAdapter::MorphoBlue)),
+            Err(AssembleError::Missing("morpho market_id"))
+        ));
+        let mut morpho_zero = pins_base(ExecutorAdapter::MorphoBlue);
+        morpho_zero.morpho_market_id = Some(B256::ZERO);
+        assert!(matches!(
+            leg_meta_from_pins(&morpho_zero),
+            Err(AssembleError::Missing("morpho market_id"))
         ));
     }
 
@@ -1835,7 +2065,8 @@ mod tests {
         assert_eq!(
             leg_meta_from_pins(&g).unwrap().tail,
             LegTail::Gearbox {
-                min_seized: U256::from(9u64)
+                min_seized: U256::from(9u64),
+                full: false
             }
         );
         let mut c = pins_base(ExecutorAdapter::CompoundV2);
@@ -1851,6 +2082,24 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+        let mut v4 = pins_base(ExecutorAdapter::AaveV4);
+        v4.aave_v4_collateral_reserve_id = Some(3);
+        v4.aave_v4_debt_reserve_id = Some(5);
+        assert_eq!(
+            leg_meta_from_pins(&v4).unwrap().tail,
+            LegTail::AaveV4 {
+                collateral_reserve_id: 3,
+                debt_reserve_id: 5,
+            }
+        );
+        let mut morpho = pins_base(ExecutorAdapter::MorphoBlue);
+        morpho.morpho_market_id = Some(B256::repeat_byte(0x11));
+        assert_eq!(
+            leg_meta_from_pins(&morpho).unwrap().tail,
+            LegTail::Morpho {
+                market_id: B256::repeat_byte(0x11)
+            }
+        );
         let q = Quote {
             position: PositionId(1),
             key: PositionKey {
@@ -1859,6 +2108,8 @@ mod tests {
                 user: addr(0xB1),
             },
             repay_options: smallvec::SmallVec::from_slice(&[RepayOption {
+                min_repay: alloy_primitives::U256::ZERO,
+                pair_seize: None,
                 asset: A1,
                 max_repay: e18(1),
                 slot: liq_protocol::SlotRef::ByAsset,

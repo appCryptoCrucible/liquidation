@@ -28,7 +28,10 @@ pub struct ManagerRow {
     pub flags: u8,
     pub expirable: u8,
     pub token_count: u8,
-    pub _pad: [u8; 21],
+    /// Facade `debtLimits().minDebt`, u128 big-endian (unaligned so the row
+    /// stays 128 bytes). A partial liquidation must leave at least this.
+    pub min_debt: [u8; 16],
+    pub _pad: [u8; 5],
 }
 
 impl ManagerRow {

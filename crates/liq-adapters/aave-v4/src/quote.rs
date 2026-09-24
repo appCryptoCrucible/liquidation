@@ -12,8 +12,7 @@
 use alloy_primitives::U256;
 use liq_protocol::SlotRef;
 use liq_protocol::{
-    BonusCurve, Constraints, HealthState, PositionRef, ProtocolError, Quote, RepayOption, Result,
-    SeizeOption,
+    BonusCurve, HealthState, PositionRef, ProtocolError, Quote, RepayOption, Result, SeizeOption,
 };
 use liq_types::fixed::{mul_div, FixedError, Rounding, RAY, WAD_RAY_RATIO};
 use liq_types::{AssetId, PriceVector, Ray};
@@ -304,11 +303,7 @@ pub(crate) fn amounts(p: &AmountsIn<'_>) -> Result<Option<Amounts>> {
 type Terms<'a> = SmallVec<[SlotTerms<'a>; 16]>;
 
 /// `Protocol::quote` body.
-pub(crate) fn quote(
-    pos: PositionRef<'_>,
-    px: &PriceVector,
-    cons: &Constraints,
-) -> Result<Option<Quote>> {
+pub(crate) fn quote(pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quote>> {
     let mut acc = Account::new(pos.key.market);
     let mut terms: Terms<'_> = SmallVec::new();
     walk(
@@ -391,21 +386,6 @@ pub(crate) fn quote(
     let mut repay: SmallVec<[(RepayOption, U256); 4]> = SmallVec::new();
     for t in terms.iter().filter(|t| t.repayable()) {
         let price = price_ray(t.row.asset)?;
-        let cap = cons.per_liquidation_notional_cap.raw();
-        let debt_to_cover = if cap == U256::MAX {
-            U256::MAX
-        } else {
-            // cap (WAD numeraire) → raw units: cap · 1e9 · 10^d / price_ray.
-            mul_div(
-                cap.checked_mul(WAD_RAY_RATIO).ok_or(FixedError::Overflow)?,
-                asset_unit(t.row.decimals)?,
-                price.raw(),
-                Rounding::Down,
-            )?
-        };
-        if debt_to_cover.is_zero() {
-            continue;
-        }
         let Some(a) = amounts(&AmountsIn {
             coll,
             debt: t,
@@ -413,7 +393,9 @@ pub(crate) fn quote(
             hf_wad,
             meta,
             bonus_bps,
-            debt_to_cover,
+            // No caller-side notional cap (GUIDE 12 §4b): `amounts` bounds
+            // `max_repay` on its own via the target-HF rule.
+            debt_to_cover: U256::MAX,
         })?
         else {
             continue;
@@ -421,6 +403,8 @@ pub(crate) fn quote(
         let value = value_ray_of(a.repay, price, t.row.decimals)?;
         repay.push((
             RepayOption {
+                min_repay: alloy_primitives::U256::ZERO,
+                pair_seize: None,
                 asset: t.row.asset,
                 max_repay: a.repay,
                 slot: SlotRef::ByAsset,

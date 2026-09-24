@@ -20,8 +20,8 @@ use liq_adapters_silo_v2::events::{factory, hook, silo};
 use liq_adapters_silo_v2::{alloc_meter, math};
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
-    CallbackShape, Constraints, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice,
-    MarketFlags, MarketRow, Protocol, ProtocolError, StateWriter,
+    CallbackShape, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice, MarketFlags,
+    MarketRow, Protocol, ProtocolError, StateWriter,
 };
 use liq_types::{LogSubscriber, PositionKey, Ray};
 
@@ -266,11 +266,7 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
     let h_u = p_u.health(st_u.view(ALICE_ID, T0).unwrap(), &px_u).unwrap();
     assert_eq!(h_u.state, HealthState::Liquidatable, "check 10 class");
     let q_u = p_u
-        .quote(
-            st_u.view(ALICE_ID, T0).unwrap(),
-            &px_u,
-            &Constraints::UNBOUNDED,
-        )
+        .quote(st_u.view(ALICE_ID, T0).unwrap(), &px_u)
         .unwrap()
         .expect("check 10: Liquidatable quotes");
     let from_curve = q_u.seize_options[0].curve.bonus_at_hf(h_u.hf).unwrap();
@@ -320,7 +316,7 @@ fn quote_static_bonus_and_encode_ok() {
     let (p, st) = full_store(&d, ALICE_DEBT_LIQ);
     let px = prices(RAY_ONE, RAY_ONE);
     let q = p
-        .quote(st.view(ALICE_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
+        .quote(st.view(ALICE_ID, T0).unwrap(), &px)
         .unwrap()
         .expect("liquidatable");
     assert_eq!(q.repay_options[0].asset, DEBT);
@@ -424,7 +420,7 @@ fn ltv_ge_one_with_remaining_collateral_is_liquidatable() {
         uint!(52_U256)
     );
     let q = p
-        .quote(pos, &px, &Constraints::UNBOUNDED)
+        .quote(pos, &px)
         .unwrap()
         .expect("maxLiquidation quotes when LTV >= 1e18 with coll remaining");
     let (seize, repay) = math::max_liquidation(
@@ -450,72 +446,9 @@ fn zero_collateral_with_debt_is_bad_debt() {
     let h = p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap();
     assert!(matches!(h.state, HealthState::BadDebt { .. }));
     assert!(p
-        .quote(st.view(ALICE_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
+        .quote(st.view(ALICE_ID, T0).unwrap(), &px)
         .unwrap()
         .is_none());
-}
-
-/// T9. The notional cap must actually bind: a repay clamped to a tiny cap is
-/// strictly smaller than the uncapped repay, and `max_seize` shrinks with it
-/// (Silo's collateral-to-liquidate is linear in the repay value). Before the
-/// fix, both branches of the cap's conditional returned the uncapped
-/// `repay` — this test used to assert exactly that no-op and pass.
-#[test]
-fn notional_cap_shrinks_repay_and_seize_together() {
-    let d = Deploy::new();
-    let (p, st) = full_store(&d, ALICE_DEBT_LIQ);
-    let px = prices(RAY_ONE, RAY_ONE);
-    let pos = st.view(ALICE_ID, T0).unwrap();
-    let full = p
-        .quote(pos, &px, &Constraints::UNBOUNDED)
-        .unwrap()
-        .expect("liquidatable");
-    let repay = full.repay_options[0].max_repay;
-    let seize = full.seize_options[0].max_seize;
-    assert!(repay > U256::ZERO);
-    assert!(seize > U256::ZERO);
-
-    // Binary search for the smallest cap that still produces a quote at all.
-    // `capped_repay = repay.min(raw_cap(cap))` is monotonically non-decreasing
-    // in the cap, and a cap under some threshold floors `raw_cap` to 0 (an
-    // `EmptyQuote`, not `Ok(None)` — repay/seize can't both be zero and still
-    // quote). Right at that threshold `raw_cap` is the smallest positive
-    // value the conversion can produce, so `capped_repay` there is far below
-    // `repay` — this avoids hand-deriving the Wad-to-raw conversion, which
-    // depends on this fixture's price and debt decimals.
-    let mut lo = U256::ZERO; // known: quote fails (repay clamped to 0)
-    let mut hi = U256::from(1u128) << 100u32; // known: quote succeeds (unclamped)
-    for _ in 0..128 {
-        if hi - lo <= U256::ONE {
-            break;
-        }
-        let mid = lo + (hi - lo) / U256::from(2u8);
-        let cap = Constraints {
-            per_liquidation_notional_cap: liq_types::Wad::from_raw(mid),
-        };
-        // A cap too small to bind returns `Err(EmptyQuote)`, not `Ok(None)` —
-        // treat any non-`Ok(Some(_))` result as "does not yet quote".
-        if matches!(p.quote(pos, &px, &cap), Ok(Some(_))) {
-            hi = mid;
-        } else {
-            lo = mid;
-        }
-    }
-    let cap = Constraints {
-        per_liquidation_notional_cap: liq_types::Wad::from_raw(hi),
-    };
-    let capped = p
-        .quote(pos, &px, &cap)
-        .unwrap()
-        .expect("hi is chosen to still quote");
-    assert!(
-        capped.repay_options[0].max_repay < repay,
-        "the notional cap must bind, not be a no-op"
-    );
-    assert!(
-        capped.seize_options[0].max_seize < seize,
-        "seize must shrink with a capped repay"
-    );
 }
 
 #[test]

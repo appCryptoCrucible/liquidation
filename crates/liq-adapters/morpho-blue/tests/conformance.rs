@@ -19,8 +19,8 @@ use liq_adapters_morpho_blue::events::{self as ev, halt};
 use liq_adapters_morpho_blue::{alloc_meter, math};
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
-    CallbackShape, Constraints, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice,
-    Protocol, ProtocolError,
+    CallbackShape, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice, Protocol,
+    ProtocolError,
 };
 use liq_types::{LogSubscriber, Ray, Wad};
 
@@ -260,7 +260,7 @@ fn quote_static_bonus_and_encode() {
     let (p, st) = full_store(&d);
     let px = prices(1000_0000_0000, DAI_P8);
     let q = p
-        .quote(st.view(ALICE_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
+        .quote(st.view(ALICE_ID, T0).unwrap(), &px)
         .unwrap()
         .expect("liquidatable");
     assert_eq!(q.repay_options[0].asset, DAI);

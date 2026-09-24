@@ -30,7 +30,7 @@ use crate::market::{MarketRow, MarketSlot};
 use crate::mask::AssetMask;
 use crate::posref::PositionRef;
 use crate::protocol::Protocol;
-use crate::quote::{Constraints, LegChoice, Quote};
+use crate::quote::{LegChoice, Quote};
 use crate::statewriter::StateWriter;
 
 // ---------------------------------------------------------------------------
@@ -226,7 +226,7 @@ pub fn run<P: Protocol>(
         check_2_monotone(p, f, &h, &mut rep)?;
         check_3_liquidation_price_round_trip(p, f, &mut rep)?;
         let q = p
-            .quote(f.pos, f.px, &Constraints::UNBOUNDED)
+            .quote(f.pos, f.px)
             .map_err(|e| In(10, Some(f.pos.id)).err(e))?;
         check_10_state_gates_quote(&h, q.as_ref(), f.pos.id, &mut rep)?;
         if let Some(q) = q.as_ref() {
@@ -593,6 +593,12 @@ fn check_6_7_apply_undo_dirty<P: Protocol>(
 /// Check 8 — `repay_options` names every debt asset exactly once; `seize_options`
 /// names held collateral, each once; both are in the documented preference
 /// order (`Quote` docs), not storage order.
+///
+/// Paired legs (`RepayOption::pair_seize`) are alternatives computed together
+/// — Gearbox partial vs full on one token — so a debt asset may carry several
+/// paired repay options (and no unpaired one), each naming a distinct seize
+/// option, and that seize asset may repeat once per pairing. Ordering is
+/// checked over the unpaired options.
 fn check_8_options_complete_and_ordered(
     f: &PositionFixture<'_>,
     q: &Quote,
@@ -610,8 +616,33 @@ fn check_8_options_complete_and_ordered(
         .filter(|&s| balance(f.pos.debt, s) > 0)
         .filter_map(|s| f.pos.markets.get(usize::from(s)).map(|r| r.asset))
         .collect();
+    let mut claimed: Vec<u8> = Vec::new();
+    for o in &q.repay_options {
+        if let Some(k) = o.pair_seize {
+            if usize::from(k) >= q.seize_options.len() || claimed.contains(&k) {
+                return Err(fail(
+                    8,
+                    Some(f.pos.id),
+                    format!(
+                        "repay option {:?} pairs with seize {k}: missing or taken",
+                        o.asset
+                    ),
+                ));
+            }
+            claimed.push(k);
+        }
+    }
     for a in &debt_assets {
-        let n = q.repay_options.iter().filter(|o| o.asset == *a).count();
+        let unpaired = q
+            .repay_options
+            .iter()
+            .filter(|o| o.asset == *a && o.pair_seize.is_none())
+            .count();
+        let paired = q
+            .repay_options
+            .iter()
+            .any(|o| o.asset == *a && o.pair_seize.is_some());
+        let n = unpaired.saturating_add(usize::from(paired));
         if n != 1 {
             return Err(fail(
                 8,
@@ -646,12 +677,17 @@ fn check_8_options_complete_and_ordered(
                 format!("seize option {:?} is not held as collateral", s.asset),
             ));
         }
-        if q.seize_options
+        let same: Vec<usize> = q
+            .seize_options
             .iter()
-            .filter(|o| o.asset == s.asset)
-            .count()
-            != 1
-        {
+            .enumerate()
+            .filter(|(_, o)| o.asset == s.asset)
+            .map(|(i, _)| i)
+            .collect();
+        let all_paired = same
+            .iter()
+            .all(|i| u8::try_from(*i).is_ok_and(|i| claimed.contains(&i)));
+        if same.len() != 1 && !all_paired {
             return Err(fail(
                 8,
                 Some(f.pos.id),
@@ -672,7 +708,7 @@ fn check_8_options_complete_and_ordered(
         .map_err(|e| c.err(e))
     };
     let mut prev: Option<U256> = None;
-    for o in &q.repay_options {
+    for o in q.repay_options.iter().filter(|o| o.pair_seize.is_none()) {
         let v = value(o.asset, o.max_repay)?;
         if prev.is_some_and(|pv| v > pv) {
             return Err(fail(
@@ -684,7 +720,10 @@ fn check_8_options_complete_and_ordered(
         prev = Some(v);
     }
     let mut prev: Option<(Ray, U256)> = None;
-    for s in &q.seize_options {
+    for (i, s) in q.seize_options.iter().enumerate() {
+        if u8::try_from(i).is_ok_and(|i| claimed.contains(&i)) {
+            continue;
+        }
         let key = (s.bonus, value(s.asset, s.max_seize)?);
         if prev.is_some_and(|pk| key > pk) {
             return Err(fail(

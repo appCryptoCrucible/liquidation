@@ -1,4 +1,4 @@
-//! WP 10B: encode ⇄ `liq_exec::wire` decode, ≥256 cases.
+//! WP 10B: encode ⇄ `liq_wire::wire` decode, ≥256 cases.
 //! Solidity decode is `contracts/test/encoding/RoundTrip.t.sol` (local forge,
 //! no MAINNET_RPC_URL). This crate also writes generated.bin for that test.
 
@@ -11,16 +11,18 @@
 )]
 
 use alloy_primitives::{address, b256, Address, U256};
-use liq_exec::wire::LegTail;
+use liq_plan::EncodeError;
 use liq_plan::{
     col_per_unit_debt_1e18, decode_batch, ensure_surplus_borrow_profit_legs, BatchPlan,
     CompoundMarketPin, EncodedPlan, FlashGroup, LiqLeg, LiquityTrovePin, MorphoMarketPin, SwapLeg,
     V4ReservePin, ValidateCtx, FLAG_SWEEP, HEADER_LEN, LEG_EXACT_OUT, LEG_TAKE_BALANCE,
-    LIQ_LEG_LEN, SWAP_LEG_HEAD_LEN, VENUE_ROUTER, VENUE_UNIV3_POOL,
+    LIQ_LEG_LEN, SWAP_LEG_HEAD_LEN, VENUE_CURVE_POOL, VENUE_ROUTER, VENUE_UNIV2_POOL,
+    VENUE_UNIV3_POOL,
 };
 use liq_protocol::ExecutorAdapter;
 use liq_types::fixed::{RAY, WAD};
 use liq_types::FlashProvider;
+use liq_wire::wire::LegTail;
 use proptest::prelude::*;
 
 /// Canonical WETH9.
@@ -411,6 +413,7 @@ fn encode_decode_10e_tails() {
             repay_amount: asked,
             tail: LegTail::Gearbox {
                 min_seized: U256::from(9u64),
+                full: true,
             },
             protocol_pull: asked,
         },
@@ -952,7 +955,7 @@ proptest! {
 
 fn router_data_padded(extra: usize) -> Vec<u8> {
     let mut d = ROUTER_A.to_vec();
-    d.extend(std::iter::repeat(0x11u8).take(extra));
+    d.extend(std::iter::repeat_n(0x11u8, extra));
     d
 }
 
@@ -1106,5 +1109,92 @@ fn zero_min_profit_is_refused() {
     assert!(matches!(
         EncodedPlan::encode(&p, &c),
         Err(liq_plan::EncodeError::ZeroMinProfit)
+    ));
+}
+
+const UNIV2_DAI_WETH: Address = address!("A478c2975Ab1Ea89e8196811F51A7B7Ade33eB11");
+const CURVE_3POOL: Address = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
+
+fn v2_data(fid: u8) -> Vec<u8> {
+    let mut d = UNIV2_DAI_WETH.to_vec();
+    d.push(fid);
+    d
+}
+
+fn curve_data(i: u8, j: u8) -> Vec<u8> {
+    let mut d = CURVE_3POOL.to_vec();
+    d.extend_from_slice(&[i, j]);
+    d
+}
+
+/// A V2 pair-direct exact-out repay validates and round-trips.
+#[test]
+fn univ2_exact_out_repay_round_trips() {
+    let c = ctx();
+    let mut p = plan_v3();
+    let r = &mut p.groups[0].repay_swaps[0];
+    r.venue = VENUE_UNIV2_POOL;
+    r.data = v2_data(0);
+    let bytes = EncodedPlan::encode(&p, &c).expect("validate").into_bytes();
+    assert!(wire_eq(&p, &decode_batch(&bytes).unwrap()));
+
+    p.groups[0].repay_swaps[0].data = v2_data(2);
+    assert!(matches!(
+        EncodedPlan::encode(&p, &c),
+        Err(EncodeError::BadV2Factory(2))
+    ));
+    p.groups[0].repay_swaps[0].data = UNIV2_DAI_WETH.to_vec();
+    assert!(matches!(
+        EncodedPlan::encode(&p, &c),
+        Err(EncodeError::BadV2DataLen(20))
+    ));
+}
+
+/// Curve repays exact-in with an overshoot. The exact-out sum may then be
+/// below what is owed, but only if the surplus debt is swept to WETH.
+#[test]
+fn curve_exact_in_repay_requires_surplus_sweep() {
+    let c = ctx();
+    let mut p = plan_v3();
+    let owed = p.groups[0].repay_swaps[0].amount;
+    p.groups[0].repay_swaps[0] = SwapLeg {
+        venue: VENUE_CURVE_POOL,
+        token_in: WETH,
+        token_out: DAI,
+        flags: 0,
+        amount: owed,
+        data: curve_data(1, 0),
+    };
+    assert!(matches!(
+        EncodedPlan::encode(&p, &c),
+        Err(EncodeError::SurplusDebtUnrouted { .. })
+    ));
+    p.profit_swaps.push(profit_tb(DAI));
+    let bytes = EncodedPlan::encode(&p, &c).expect("validate").into_bytes();
+    assert!(wire_eq(&p, &decode_batch(&bytes).unwrap()));
+
+    p.groups[0].repay_swaps[0].flags = LEG_EXACT_OUT;
+    assert!(matches!(
+        EncodedPlan::encode(&p, &c),
+        Err(EncodeError::CurveExactOut)
+    ));
+    p.groups[0].repay_swaps[0].flags = 0;
+    p.groups[0].repay_swaps[0].data = curve_data(1, 0)[..21].to_vec();
+    assert!(matches!(
+        EncodedPlan::encode(&p, &c),
+        Err(EncodeError::BadCurveDataLen(21))
+    ));
+}
+
+/// Without an exact-in leg the old rule stands: exact-out buys exactly owed.
+#[test]
+fn exact_out_short_without_exact_in_leg_is_refused() {
+    let c = ctx();
+    let mut p = plan_v3();
+    p.groups[0].repay_swaps[0].amount -= 1;
+    p.profit_swaps.push(profit_tb(DAI));
+    assert!(matches!(
+        EncodedPlan::encode(&p, &c),
+        Err(EncodeError::RepayNotSizedToPull { .. })
     ));
 }

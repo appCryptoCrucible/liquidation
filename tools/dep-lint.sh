@@ -5,6 +5,12 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
 while read -r from to; do
+  # A CRLF-checked-out forbid.txt (Windows `core.autocrlf=true`) leaves a
+  # trailing \r on `to`, so `grep -qx "$to"` never matches anything and this
+  # loop silently passes with every forbidden edge still present. The blob
+  # itself is LF (this strip is a no-op there); it only fires on a CRLF
+  # working copy, on any platform.
+  to="${to%$'\r'}"
   [[ -z "${from:-}" || "${from:0:1}" == "#" ]] && continue
   if cargo tree -p "$from" -e normal --prefix none | awk '{print $1}' | grep -qx "$to"; then
     echo "forbidden dependency: $from -> $to"

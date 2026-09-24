@@ -1,23 +1,28 @@
 //! `BatchPlan` — the off-chain value the encoder packs (PLAN-ENCODING §2).
 
 use alloy_primitives::{Address, B256, U256};
-use liq_exec::wire::LegTail;
 use liq_protocol::ExecutorAdapter;
 use liq_types::FlashProvider;
+use liq_wire::wire::LegTail;
 
 /// Header flag bit 0 — sweep WETH to `PROFIT_SINK` after this plan.
-pub const FLAG_SWEEP: u8 = liq_exec::wire::FLAG_SWEEP;
+pub const FLAG_SWEEP: u8 = liq_wire::wire::FLAG_SWEEP;
 /// Swap-leg flag bit 0 — spend the whole `tokenIn` balance.
-pub const LEG_TAKE_BALANCE: u8 = liq_exec::wire::LEG_TAKE_BALANCE;
+pub const LEG_TAKE_BALANCE: u8 = liq_wire::wire::LEG_TAKE_BALANCE;
 /// Swap-leg flag bit 1 — `amount` is an exact output.
-pub const LEG_EXACT_OUT: u8 = liq_exec::wire::LEG_EXACT_OUT;
-pub const VENUE_UNIV3_POOL: u8 = liq_exec::wire::VENUE_UNIV3_POOL;
-pub const VENUE_ROUTER: u8 = liq_exec::wire::VENUE_ROUTER;
+pub const LEG_EXACT_OUT: u8 = liq_wire::wire::LEG_EXACT_OUT;
+pub const VENUE_UNIV3_POOL: u8 = liq_wire::wire::VENUE_UNIV3_POOL;
+pub const VENUE_ROUTER: u8 = liq_wire::wire::VENUE_ROUTER;
+pub const VENUE_UNIV2_POOL: u8 = liq_wire::wire::VENUE_UNIV2_POOL;
+pub const VENUE_CURVE_POOL: u8 = liq_wire::wire::VENUE_CURVE_POOL;
+/// V2 pair factory ids carried in a `VENUE_UNIV2_POOL` leg's data.
+pub const V2_FACTORY_UNISWAP: u8 = liq_wire::wire::V2_FACTORY_UNISWAP;
+pub const V2_FACTORY_SUSHI: u8 = liq_wire::wire::V2_FACTORY_SUSHI;
 
-pub const HEADER_LEN: usize = liq_exec::wire::HEADER_LEN;
-pub const GROUP_HEAD_LEN: usize = liq_exec::wire::GROUP_HEAD_LEN;
-pub const LIQ_LEG_LEN: usize = liq_exec::wire::LIQ_LEG_LEN;
-pub const SWAP_LEG_HEAD_LEN: usize = liq_exec::wire::SWAP_LEG_HEAD_LEN;
+pub const HEADER_LEN: usize = liq_wire::wire::HEADER_LEN;
+pub const GROUP_HEAD_LEN: usize = liq_wire::wire::GROUP_HEAD_LEN;
+pub const LIQ_LEG_LEN: usize = liq_wire::wire::LIQ_LEG_LEN;
+pub const SWAP_LEG_HEAD_LEN: usize = liq_wire::wire::SWAP_LEG_HEAD_LEN;
 
 /// One packed plan ready for `Executor.execute(bytes)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -170,5 +175,83 @@ impl ValidateCtx {
     #[must_use]
     pub fn liquity_pin(&self, trove_id: U256) -> Option<&LiquityTrovePin> {
         self.liquity.iter().find(|p| p.trove_id == trove_id)
+    }
+
+    /// Add a pin unless an identical one is present. Returns whether it
+    /// was added. A *conflicting* pin for the same key is not replaced: the
+    /// first one stands and `validate` refuses the other shape.
+    pub fn add_v4(&mut self, pin: V4ReservePin) -> bool {
+        if self.v4_pin(pin.spoke, pin.reserve_id).is_some() {
+            return false;
+        }
+        self.v4_underlying.push(pin);
+        true
+    }
+
+    pub fn add_morpho(&mut self, pin: MorphoMarketPin) -> bool {
+        if self.morpho_pin(pin.id).is_some() {
+            return false;
+        }
+        self.morpho.push(pin);
+        true
+    }
+
+    pub fn add_compound(&mut self, pin: CompoundMarketPin) -> bool {
+        if self
+            .compound_pin(pin.debt_ctoken, pin.ctoken_collateral)
+            .is_some()
+        {
+            return false;
+        }
+        self.compound.push(pin);
+        true
+    }
+
+    pub fn add_liquity(&mut self, pin: LiquityTrovePin) -> bool {
+        if self.liquity_pin(pin.trove_id).is_some() {
+            return false;
+        }
+        self.liquity.push(pin);
+        true
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+
+    #[test]
+    fn add_pin_dedupes_and_first_pin_stands() {
+        let mut ctx = ValidateCtx::default();
+        let spoke = Address::repeat_byte(0x51);
+        let pin = V4ReservePin {
+            spoke,
+            reserve_id: 3,
+            underlying: Address::repeat_byte(0xA1),
+        };
+        assert!(ctx.add_v4(pin));
+        assert!(!ctx.add_v4(pin), "identical pin not duplicated");
+        let conflicting = V4ReservePin {
+            underlying: Address::repeat_byte(0xB2),
+            ..pin
+        };
+        assert!(!ctx.add_v4(conflicting), "conflict does not replace");
+        assert_eq!(ctx.v4_pin(spoke, 3), Some(Address::repeat_byte(0xA1)));
+        assert_eq!(ctx.v4_underlying.len(), 1);
+
+        let c = CompoundMarketPin {
+            debt_ctoken: Address::repeat_byte(0xC1),
+            ctoken_collateral: Address::repeat_byte(0xC2),
+            is_cether: 0,
+        };
+        assert!(ctx.add_compound(c));
+        assert!(!ctx.add_compound(c));
+        let t = LiquityTrovePin {
+            trove_manager: Address::repeat_byte(0x7A),
+            trove_id: U256::from(42u64),
+            borrower: Address::repeat_byte(0xB0),
+        };
+        assert!(ctx.add_liquity(t));
+        assert!(!ctx.add_liquity(t));
     }
 }

@@ -39,7 +39,7 @@ use liq_adapters_aave_v4::events::{hub, spoke};
 use liq_adapters_aave_v4::AaveV4;
 use liq_engine::{Engine, EngineConfig, World};
 use liq_flash::{AavePool, AaveReserve, DepthOnlyRouteCache, FlashIndex, FlashSource, Haircut};
-use liq_protocol::{Constraints, Protocol};
+use liq_protocol::Protocol;
 use liq_state::{StateStore, StoreConfig, UndoCapacity};
 use liq_types::fixed::RAY;
 use liq_types::{AssetId, PositionId, Price, PriceVector, SourceKind};
@@ -423,7 +423,6 @@ impl Rig {
             flash: &self.flash,
             routes: &routes,
             haircut: Haircut::NONE,
-            cons: &Constraints::UNBOUNDED,
         };
         self.engine.resync(&w).unwrap();
     }
@@ -438,7 +437,6 @@ impl Rig {
             flash: &self.flash,
             routes: &routes,
             haircut: Haircut::NONE,
-            cons: &Constraints::UNBOUNDED,
         };
         f(&mut self.engine, &w)
     }
@@ -474,7 +472,7 @@ impl Rig {
                 if h.hf >= liq_types::Ray::ONE {
                     return false;
                 }
-                match self.p.quote(pos, px, &Constraints::UNBOUNDED).unwrap() {
+                match self.p.quote(pos, px).unwrap() {
                     Some(q) => {
                         liq_flash::is_eligible(&q, &self.flash, &routes, Haircut::NONE).is_some()
                     }

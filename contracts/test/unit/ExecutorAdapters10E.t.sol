@@ -42,6 +42,7 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
         fluid.setDebtToken(address(debt));
         fluid.setCollToken(address(coll));
         gearbox.setDebtToken(address(debt));
+        gearbox.setCollToken(address(coll));
         cDebt.setDebtToken(address(debt));
         cEther.setCollToken(address(coll));
         liquity.setCollToken(address(coll));
@@ -157,15 +158,72 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
     }
 
     function test_gearbox_dispatch_approve_zero() public {
-        _execLeg(PB.legGearbox(address(gearbox), borrower, address(coll), REPAY, 1));
+        _execLeg(PB.legGearbox(address(gearbox), borrower, address(coll), REPAY, 1, PB.GB_FULL));
         assertEq(gearbox.lastAccount(), borrower);
         assertEq(gearbox.lastTo(), address(ex));
+    }
+
+    /// Over-adding underlying is safe: the manager keeps what the pool and
+    /// the borrower are owed and sends the rest back, which the plan sweeps.
+    function test_gearbox_over_add_is_refunded_and_swept() public {
+        gearbox.setPosition(borrower, REPAY - 1_000e6, COLL_OUT);
+        _exec(bytes.concat(
+            PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
+            PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 1),
+            PB.legGearbox(address(gearbox), borrower, address(coll), REPAY, 1, PB.GB_FULL),
+            _repayLeg(),
+            PB.profit(2, bytes.concat(
+                _profitLeg(),
+                PB.poolSwap(address(pDebtWeth), address(debt), address(weth), PB.L_TAKE_BALANCE, 0)
+            ))
+        ));
+        assertEq(gearbox.lastAdded(), REPAY);
+        assertEq(gearbox.lastRefund(), 1_000e6);
+        assertEq(debt.balanceOf(address(ex)), 0, "refund swept");
+        _assertClean();
+    }
+
+    /// Adding less than the account must keep reverts inside Gearbox: the
+    /// leg fails, nothing is left approved.
+    function test_gearbox_short_add_fails_the_leg() public {
+        gearbox.setPosition(borrower, uint256(REPAY) + 1, COLL_OUT);
+        vm.expectRevert(Executor.AllLegsFailed.selector);
+        _exec(_plan(PB.F_SWEEP, 0, GAS_COST, 0, 1, PB.legGearbox(address(gearbox), borrower, address(coll), REPAY, 1, PB.GB_FULL)));
+        assertEq(debt.allowance(address(ex), address(gearboxMgr)), 0);
+    }
+
+    /// The facade has no slip check on the withdrawn collateral; the tail
+    /// minimum is enforced after the call (withdraw-all leaves 1 wei).
+    function test_gearbox_seized_below_min_reverts_the_plan() public {
+        vm.expectRevert(abi.encodeWithSelector(Executor.SeizedBelowMin.selector, uint256(COLL_OUT) - 1, uint256(COLL_OUT)));
+        _exec(_plan(PB.F_SWEEP, 0, GAS_COST, 0, 1, PB.legGearbox(address(gearbox), borrower, address(coll), REPAY, COLL_OUT, PB.GB_FULL)));
+    }
+
+    function test_gearbox_partial_dispatch_approve_zero() public {
+        gearbox.setPartial(borrower, REPAY, COLL_OUT);
+        _execLeg(PB.legGearbox(address(gearbox), borrower, address(coll), REPAY, 7, PB.GB_PARTIAL));
+        assertEq(gearbox.lastRepaid(), REPAY);
+        assertEq(gearbox.lastMinSeized(), 7);
+        assertEq(gearbox.lastTo(), address(ex));
+    }
+
+    function test_gearbox_partial_revert_zeros_allowance() public {
+        gearbox.setPartial(borrower, REPAY, COLL_OUT);
+        gearbox.setRevertOnLiquidate(true);
+        vm.expectRevert(Executor.AllLegsFailed.selector);
+        _exec(_plan(PB.F_SWEEP, 0, GAS_COST, 0, 1, PB.legGearbox(address(gearbox), borrower, address(coll), REPAY, 1, PB.GB_PARTIAL)));
+        assertEq(debt.allowance(address(ex), address(gearboxMgr)), 0);
+    }
+
+    function test_gearbox_unknown_mode_skips_the_leg() public {
+        vm.expectRevert(Executor.AllLegsFailed.selector);
+        _exec(_plan(PB.F_SWEEP, 0, GAS_COST, 0, 1, PB.legGearbox(address(gearbox), borrower, address(coll), REPAY, 1, 2)));
     }
 
     function test_gearbox_reject_zeros_allowance() public {
         gearbox.setRevertOnLiquidate(true);
         vm.expectRevert(Executor.AllLegsFailed.selector);
-        _exec(_plan(PB.F_SWEEP, 0, GAS_COST, 0, 1, PB.legGearbox(address(gearbox), borrower, address(coll), REPAY, 1)));
+        _exec(_plan(PB.F_SWEEP, 0, GAS_COST, 0, 1, PB.legGearbox(address(gearbox), borrower, address(coll), REPAY, 1, PB.GB_FULL)));
         assertEq(debt.allowance(address(ex), address(gearboxMgr)), 0);
         assertEq(debt.allowance(address(ex), address(gearbox)), 0);
     }

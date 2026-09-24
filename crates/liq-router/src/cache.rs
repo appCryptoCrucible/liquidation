@@ -137,6 +137,8 @@ mod tests {
                 user: Address::ZERO,
             },
             repay_options: SmallVec::from_slice(&[RepayOption {
+                min_repay: alloy_primitives::U256::ZERO,
+                pair_seize: None,
                 asset: A1,
                 max_repay: e18(50),
                 slot: liq_protocol::SlotRef::ByAsset,

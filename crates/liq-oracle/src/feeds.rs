@@ -463,8 +463,9 @@ impl FeedSet {
             .iter()
             .map(|f| (f.spec.protocol.as_str(), f.spec.market))
             .collect();
-        let (source_oracles, providers, deferred_subs) = match source_and_provider_subs(reg, &markets)
-        {
+        let (source_oracles, providers, deferred_subs) = match source_and_provider_subs(
+            reg, &markets,
+        ) {
             Ok(t) => t,
             Err(e) => {
                 tracing::error!(error = %e, "feed source/provider subs refused — AnswerUpdated only");
@@ -500,9 +501,10 @@ fn resolve_available_row(
     if spec.deviation_bps == 0 {
         return Err(fail("deviation_bps is 0".into()));
     }
-    let entry = reg.oracles.get(&spec.proxy).ok_or_else(|| {
-        fail("proxy not in registry".into())
-    })?;
+    let entry = reg
+        .oracles
+        .get(&spec.proxy)
+        .ok_or_else(|| fail("proxy not in registry".into()))?;
     let found = spec
         .configured_aggregator()
         .map_err(|e| fail(e.to_string()))?;

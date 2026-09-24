@@ -211,13 +211,8 @@ impl Protocol for AaveV3 {
         solve::time_to_cross(&self.cfg, pos, px)
     }
 
-    fn quote(
-        &self,
-        pos: PositionRef<'_>,
-        px: &PriceVector,
-        cons: &liq_protocol::Constraints,
-    ) -> Result<Option<Quote>> {
-        quote::quote(&self.cfg, pos, px, cons)
+    fn quote(&self, pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quote>> {
+        quote::quote(&self.cfg, pos, px)
     }
 
     fn encode(

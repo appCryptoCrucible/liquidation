@@ -100,6 +100,7 @@ fn v2(n: u64, r0: U256, r1: U256, assets: [AssetId; 2]) -> Pool {
         state: PoolState::V2(V2State {
             reserve0: r0,
             reserve1: r1,
+            factory: 0,
         }),
     }
 }
@@ -117,6 +118,7 @@ fn curve(n: u64, bal: U256) -> Pool {
             a_precision: U256::from(100u64),
             fee: U256::from(4_000_000u64),
             stale: false,
+            stale_block: 0,
         }),
     }
 }

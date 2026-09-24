@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use alloy_primitives::{Address, I256, U256};
 use alloy_provider::{Provider, ProviderBuilder, RootProvider};
@@ -17,7 +18,7 @@ use crossbeam_channel::{Receiver, Sender};
 use liq_config::{Intern, Registry};
 use liq_exec::inclusion::Terminal;
 use liq_exec::inclusion::{spawn_sourced, BlockObs, BlockSource, InclusionObs, Tracked, WatchCmd};
-use liq_types::TraceId;
+use liq_risk::{OutcomeRow, PnlLedger};
 use liq_watch::batch::attested_inferred_bid;
 use liq_watch::source::{LogSource, OwnedBlock, Poll, RpcPoll};
 use liq_watch::WatchDecoder;
@@ -225,11 +226,18 @@ fn weth_to_sink(receipt: &alloy_rpc_types_eth::TransactionReceipt, sink: Address
 
 /// `None` when the decoder or the runtime cannot be built. The caller then
 /// leaves the watch channel unset.
+///
+/// `ledger_path`: SQLite file the resolved-outcome rows are appended to,
+/// off the hot path (this fn's own `liq-bot-inclusion` thread, never
+/// `liq-node-hot`). `None` — including a path that fails to open — logs and
+/// runs the watcher without a ledger; a missing ledger never blocks
+/// inclusion tracking.
 pub fn start(
     rpc_url: &str,
     reg: &Registry,
     intern: Intern,
     profit_sink: Option<Address>,
+    ledger_path: Option<&str>,
 ) -> Option<InclusionJoin> {
     if rpc_url.is_empty() {
         tracing::error!("inclusion feed refused — empty rpc_url");
@@ -283,9 +291,16 @@ pub fn start(
             return None;
         }
     };
+    let ledger = ledger_path.and_then(|p| match PnlLedger::open(p) {
+        Ok(l) => Some(l),
+        Err(e) => {
+            tracing::error!(error = %e, path = p, "PnL ledger not opened — outcomes logged only");
+            None
+        }
+    });
     let outcomes = match std::thread::Builder::new()
         .name("liq-bot-inclusion".into())
-        .spawn(move || log_outcomes(out_rx, full))
+        .spawn(move || log_outcomes(out_rx, full, ledger))
     {
         Ok(h) => h,
         Err(e) => {
@@ -300,20 +315,49 @@ pub fn start(
     })
 }
 
-fn log_outcomes(rx: Receiver<(TraceId, Terminal)>, full: Arc<std::sync::atomic::AtomicU64>) {
-    while let Ok((trace, term)) = rx.recv() {
-        match term {
+/// Runs off the hot path on its own thread (`liq-bot-inclusion`) — the
+/// SQLite write below never touches `liq-node-hot`.
+fn log_outcomes(
+    rx: Receiver<(Tracked, Terminal)>,
+    full: Arc<std::sync::atomic::AtomicU64>,
+    ledger: Option<PnlLedger>,
+) {
+    let ts_unix = || {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+            .unwrap_or(0)
+    };
+    while let Ok((tracked, term)) = rx.recv() {
+        let trace = tracked.trace;
+        let (outcome, net_wei, gas_used) = match &term {
             Terminal::Included { profit, gas } => {
                 tracing::info!(trace = trace.raw(), %profit, gas, "inclusion WON");
+                ("Won", Some(*profit), Some(*gas))
             }
             Terminal::Dropped => {
                 tracing::info!(trace = trace.raw(), "inclusion DROPPED");
+                ("Dropped", None, None)
             }
             Terminal::Reverted { .. } => {
                 tracing::info!(trace = trace.raw(), "inclusion REVERTED");
+                ("Reverted", None, None)
             }
             Terminal::LostToCompetitor { tx, their_bid } => {
                 tracing::info!(trace = trace.raw(), %tx, ?their_bid, "inclusion LOST");
+                ("LostToCompetitor", None, None)
+            }
+        };
+        if let Some(l) = &ledger {
+            if let Err(e) = l.insert_outcome(&OutcomeRow {
+                trace,
+                ts_unix: ts_unix(),
+                protocol: tracked.position.protocol,
+                outcome: outcome.into(),
+                net_wei,
+                gas_used,
+            }) {
+                tracing::error!(error = %e, trace = trace.raw(), "PnL outcome row not written");
             }
         }
         let n = full.load(std::sync::atomic::Ordering::Relaxed);

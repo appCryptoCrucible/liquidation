@@ -183,13 +183,8 @@ impl Protocol for LiquityV2 {
         solve::time_to_cross(pos, px)
     }
 
-    fn quote(
-        &self,
-        pos: PositionRef<'_>,
-        px: &PriceVector,
-        cons: &liq_protocol::Constraints,
-    ) -> Result<Option<Quote>> {
-        quote::quote(pos, px, cons, self.cfg.weth.asset, self.cfg.weth.decimals)
+    fn quote(&self, pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quote>> {
+        quote::quote(pos, px, self.cfg.weth.asset, self.cfg.weth.decimals)
     }
 
     /// 10E ABI: `TroveManager.batchLiquidateTroves(uint256[] _troveArray)`.

@@ -110,7 +110,12 @@ impl Config {
     }
 
     #[inline]
-    pub(crate) fn oracle_pinned(&self, oracle: Address, collateral: AssetId, loan: AssetId) -> bool {
+    pub(crate) fn oracle_pinned(
+        &self,
+        oracle: Address,
+        collateral: AssetId,
+        loan: AssetId,
+    ) -> bool {
         self.price_sources
             .iter()
             .any(|p| p.oracle == oracle && p.collateral == collateral && p.loan == loan)

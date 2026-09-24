@@ -96,11 +96,12 @@ pub use profit::{
     seized_for, MarketView, ProfitCtx, ProfitError, SizedLeg, LEARNING_P_RAY,
 };
 pub use select::{
-    admit, is_liquidatable, select, Eligible, PositionInput, SelectCfg, SelectedPlan, EXACT_K,
-    NONCE_SLOTS,
+    admit, is_liquidatable, select, Eligible, LiqGas, PositionInput, SelectCfg, SelectedPlan,
+    EXACT_K, NONCE_SLOTS,
 };
 pub use solver::{
     CurveState, Leg, Pool, PoolBook, PoolId, PoolState, RouteError, Tick, V2State, V3State, Venue,
+    MAX_COINS,
 };
 pub use warm::{Bucket, RouteEntry, RouteTable, WarmBuilder, WarmConfig, WarmInputs};
 

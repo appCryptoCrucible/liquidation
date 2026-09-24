@@ -34,8 +34,11 @@ use liq_types::{AssetId, LogFilter, LogSubscriber, Price, PriceVector, ProtocolI
 
 pub use config::{
     AssetConfig, Config, ConfigError, Fees, ManagerConfig, RegistryRpc, TokenConfig,
-    CATALOG_MARKET, D15_MANAGER_COUNT, FIRST_MANAGER_MARKET, LAST_MANAGER_MARKET, PROTOCOL,
+    CATALOG_MARKET, D15_MANAGER_COUNT, FIRST_MANAGER_MARKET, LAST_MANAGER_MARKET,
+    MAX_MANAGER_VERSION, MIN_MANAGER_VERSION, PROTOCOL,
 };
+/// Token not in the intern: health on an account holding it fails closed.
+pub use layout::UNMAPPED_ASSET;
 
 use crate::events::{
     configurator, facade, factory, halt, manager, pool, quota, views::ICreditManagerV3,
@@ -137,7 +140,9 @@ fn encode_validate(
 impl LogSubscriber for GearboxV3 {
     fn subscriptions(&self) -> Vec<LogFilter> {
         let mut out = Vec::new();
-        halt_topics(&mut out, self.cfg.register);
+        for r in &self.cfg.registers {
+            halt_topics(&mut out, *r);
+        }
         for m in &self.cfg.managers {
             for t0 in [
                 facade::OpenCreditAccount::SIGNATURE_HASH,
@@ -257,13 +262,8 @@ impl Protocol for GearboxV3 {
         solve::time_to_cross(pos, px)
     }
 
-    fn quote(
-        &self,
-        pos: PositionRef<'_>,
-        px: &PriceVector,
-        cons: &liq_protocol::Constraints,
-    ) -> Result<Option<Quote>> {
-        quote::quote(pos, px, cons)
+    fn quote(&self, pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quote>> {
+        quote::quote(pos, px)
     }
 
     fn encode(

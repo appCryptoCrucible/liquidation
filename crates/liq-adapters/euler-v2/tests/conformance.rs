@@ -22,8 +22,8 @@ use liq_adapters_euler_v2::{
 };
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
-    BlockReason, CallbackShape, Constraints, DirtySet, ExecutorAdapter, FlashRoute, HealthState,
-    LegChoice, MarketSlot, Protocol, ProtocolError, StateWriter,
+    BlockReason, CallbackShape, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice,
+    MarketSlot, Protocol, ProtocolError, StateWriter,
 };
 use liq_types::fixed::WAD;
 use liq_types::{LogSubscriber, MarketId};
@@ -331,9 +331,7 @@ fn check_liquidation_zero_when_healthy() {
     let d = Deploy::new();
     let (p, st) = full_store(&d);
     let px = prices(WETH_P8, USDC_P8);
-    let q = p
-        .quote(st.view(ALICE_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
-        .unwrap();
+    let q = p.quote(st.view(ALICE_ID, T0).unwrap(), &px).unwrap();
     assert!(q.is_none());
 }
 
@@ -353,7 +351,7 @@ fn liquidatable_when_coll_adj_not_greater_than_liability() {
     assert_eq!(min_df, uint!(850_000000000000000_U256));
     let df = math::discount_factor(coll_adj, liab, min_df).unwrap();
     let q = p
-        .quote(st.view(ALICE_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
+        .quote(st.view(ALICE_ID, T0).unwrap(), &px)
         .unwrap()
         .expect("liquidatable");
     assert_eq!(q.repay_options[0].asset, USDC);
@@ -378,10 +376,7 @@ fn liquidatable_when_coll_adj_not_greater_than_liability() {
         .bonus_at_hf(deeper)
         .unwrap()
         .unwrap();
-    assert!(
-        at_deeper >= bonus,
-        "bonus must not shrink as health falls"
-    );
+    assert!(at_deeper >= bonus, "bonus must not shrink as health falls");
     let (repay, yield_bal) = math::max_liquidation(
         ALICE_DEBT_LIQ,
         liab,
@@ -410,7 +405,7 @@ fn encode_validates_then_ok() {
     let (p, st) = liq_store(&d);
     let px = prices(WETH_P8, USDC_P8);
     let q = p
-        .quote(st.view(ALICE_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
+        .quote(st.view(ALICE_ID, T0).unwrap(), &px)
         .unwrap()
         .expect("liquidatable");
     let route = FlashRoute {
@@ -786,7 +781,7 @@ fn cool_off_blocks_liquidation() {
         }
     );
     assert!(p
-        .quote(st.view(ALICE_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
+        .quote(st.view(ALICE_ID, T0).unwrap(), &px)
         .unwrap()
         .is_none());
     let later = p
@@ -900,7 +895,7 @@ fn quote_pairs_repay_to_preferred_collateral() {
         ts: T0,
     });
     let q = p
-        .quote(st.view(ALICE_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
+        .quote(st.view(ALICE_ID, T0).unwrap(), &px)
         .unwrap()
         .expect("liquidatable");
     assert_eq!(q.repay_options.len(), 1);

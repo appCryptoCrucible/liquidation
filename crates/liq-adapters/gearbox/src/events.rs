@@ -157,6 +157,23 @@ pub mod views {
             function getCreditManagers() external view returns (address[] memory);
         }
 
+        /// Gearbox v3.1 `AddressProviderV3_1` (`version() == 310`).
+        interface IAddressProviderV31 {
+            function getAddressOrRevert(bytes32 key, uint256 ver) external view returns (address);
+        }
+
+        interface IMarketConfiguratorFactory {
+            function getMarketConfigurators() external view returns (address[] memory);
+        }
+
+        interface IMarketConfigurator {
+            function contractsRegister() external view returns (address);
+        }
+
+        interface IVersion {
+            function version() external view returns (uint256);
+        }
+
         interface ICreditManagerV3 {
             function pool() external view returns (address);
             function underlying() external view returns (address);
@@ -195,6 +212,7 @@ pub mod views {
         interface ICreditFacadeV3 {
             function expirable() external view returns (bool);
             function expirationDate() external view returns (uint40);
+            function debtLimits() external view returns (uint128 minDebt, uint128 maxDebt);
         }
 
         interface IPoolV3 {

@@ -62,7 +62,7 @@ impl ExecutorAdapter {
             Self::SiloV2 => 0,
             Self::LiquityV2 => 32,
             Self::Fluid => 32,
-            Self::Gearbox => 32,
+            Self::Gearbox => 33,
             Self::CompoundV2 => 21,
         }
     }

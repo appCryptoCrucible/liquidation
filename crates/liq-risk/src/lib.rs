@@ -18,7 +18,7 @@ pub mod treasury;
 
 pub use caps::{CapConfig, CapError, CapGuard, Caps};
 pub use gate::{ActionRequired, Allow, AllowQuery, RiskGate};
-pub use ledger::{LedgerError, LiquidationRow, PnlLedger, RECONCILE_MAX_BPS};
+pub use ledger::{LedgerError, LiquidationRow, OutcomeRow, PnlLedger, RECONCILE_MAX_BPS};
 pub use matrix::{class_of, HaltClass, MatrixRow, MATRIX};
 pub use proxy::{
     assert_watch_covers_config, implementation_address, ProxyWatcher, SlotError, SlotReader,

@@ -151,14 +151,27 @@
       "type": "object",
       "required": ["venue", "token0", "token1", "fee", "factory", "deployed_block"],
       "properties": {
-        "venue": { "type": "string", "const": "univ3" },
+        "venue": { "type": "string", "enum": ["univ3", "univ2", "curve"] },
         "token0": { "$ref": "#/$defs/address" },
         "token1": { "$ref": "#/$defs/address" },
-        "fee": { "type": "integer", "minimum": 0, "maximum": 16777215 },
+        "fee": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
         "factory": { "$ref": "#/$defs/address" },
         "deployed_block": { "type": "integer", "minimum": 0 },
-        "derived_via": { "type": "string" }
+        "derived_via": { "type": "string" },
+        "coins": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/address" },
+          "minItems": 2,
+          "maxItems": 4
+        }
       },
+      "allOf": [
+        {
+          "if": { "properties": { "venue": { "const": "curve" } } },
+          "then": { "required": ["coins"] },
+          "else": { "not": { "required": ["coins"] } }
+        }
+      ],
       "additionalProperties": false
     }
   }

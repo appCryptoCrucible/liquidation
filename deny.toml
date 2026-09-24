@@ -3,7 +3,17 @@
 [advisories]
 version = 2
 yanked = "warn"
-ignore = []
+ignore = [
+  # Transitive via alloy-primitives (workspace-pinned `=1.6.0`); no safe
+  # upgrade exists short of bumping the alloy pin, which is a deliberate,
+  # separate decision. The crate is archived, not exploitable via any
+  # attacker-controlled input this workspace passes it (compile-time macro).
+  "RUSTSEC-2024-0436", # paste — unmaintained
+  # Transitive via alloy-sol-macro (workspace-pinned `=1.6.0`); same
+  # rationale as RUSTSEC-2024-0436 — compile-time only, no safe upgrade
+  # without an alloy version bump.
+  "RUSTSEC-2026-0173", # proc-macro-error2 — unmaintained
+]
 
 [licenses]
 version = 2
@@ -20,6 +30,11 @@ allow = [
   "CC0-1.0",
   "MPL-2.0",
   "Unicode-DFS-2016",
+  # webpki-root-certs (transitive via rustls-platform-verifier -> reqwest):
+  # Mozilla's CA root bundle repackaged as a crate, under the Community Data
+  # License Agreement — Permissive. A data license for a public root store,
+  # not a code license; no copyleft/attribution obligation on this codebase.
+  "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 

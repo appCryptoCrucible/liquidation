@@ -3,6 +3,7 @@
 
 use crate::error::ConfigError;
 use crate::Result;
+use alloy_eips::BlockId;
 use alloy_primitives::{Address, Bytes};
 use alloy_provider::transport::RpcError;
 use alloy_provider::{Provider, ProviderBuilder, RootProvider};
@@ -17,6 +18,13 @@ pub trait ChainRpc: Send {
     /// `eth_call` to `to` with calldata `data`. Transport failure →
     /// [`ConfigError::RpcUnavailable`]. A revert is [`ConfigError::CallFailed`].
     async fn call(&self, to: Address, data: Bytes) -> Result<Bytes>;
+
+    /// `eth_call` at a pinned block — the per-adapter live-registry
+    /// assertions (`assert_live_registry` / `assert_live_fees` /
+    /// `assert_live_factory`) read every view at the same block so a
+    /// mid-assertion reorg cannot make two reads disagree about the chain's
+    /// state at one instant. Same failure mapping as [`Self::call`].
+    async fn call_at(&self, to: Address, data: Bytes, block: u64) -> Result<Bytes>;
 
     /// `eth_blockNumber`. Transport failure → [`ConfigError::RpcUnavailable`].
     async fn block_number(&self) -> Result<u64>;
@@ -64,6 +72,33 @@ impl ChainRpc for HttpRpc {
             ..Default::default()
         };
         match self.provider.call(tx).await {
+            Ok(bytes) => {
+                if bytes.is_empty() {
+                    Err(ConfigError::CallFailed {
+                        address: to,
+                        what: "empty eth_call return",
+                    })
+                } else {
+                    Ok(bytes)
+                }
+            }
+            Err(RpcError::ErrorResp(_)) => Err(ConfigError::CallFailed {
+                address: to,
+                what: "eth_call reverted",
+            }),
+            Err(e) => Err(ConfigError::RpcUnavailable {
+                cause: e.to_string(),
+            }),
+        }
+    }
+
+    async fn call_at(&self, to: Address, data: Bytes, block: u64) -> Result<Bytes> {
+        let tx = TransactionRequest {
+            to: Some(to.into()),
+            input: TransactionInput::new(data),
+            ..Default::default()
+        };
+        match self.provider.call(tx).block(BlockId::number(block)).await {
             Ok(bytes) => {
                 if bytes.is_empty() {
                     Err(ConfigError::CallFailed {

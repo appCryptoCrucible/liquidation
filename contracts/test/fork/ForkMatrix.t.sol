@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {Executor} from "../../src/Executor.sol";
+import {MainnetVenues} from "../../src/lib/MainnetVenues.sol";
 import {IAavePool, IAaveV4Spoke, IMorpho, MarketParams} from "../../src/lib/Interfaces.sol";
 import {PlanBuilder as PB} from "../unit/PlanBuilder.sol";
 
@@ -62,7 +63,7 @@ contract ForkMatrixTest is Test {
         ex = new Executor(
             operator, sink, UNIV3_FACTORY, UNIV3_INIT_HASH,
             makeAddr("routerA"), makeAddr("routerB"), WETH
-        );
+        , MainnetVenues.UNIV2_FACTORY, MainnetVenues.UNIV2_INIT_HASH, MainnetVenues.SUSHI_FACTORY, MainnetVenues.SUSHI_INIT_HASH, MainnetVenues.CURVE_META_REGISTRY);
     }
 
     modifier onFork() {

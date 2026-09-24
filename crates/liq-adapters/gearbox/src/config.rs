@@ -1,7 +1,12 @@
-//! Deployment pin: ContractsRegister only. Managers are discovered via
-//! `getCreditManagers()`, never a hand list of 34. `fees()` is live-asserted;
-//! [`crate::GearboxV3::new`] refuses a config that has not passed
-//! [`Config::assert_live_registry`].
+//! Deployment pin: the Gearbox v3.1 `AddressProviderV3_1`. Managers are
+//! discovered live — `MARKET_CONFIGURATOR_FACTORY` → every market
+//! configurator → its `contractsRegister()` → `getCreditManagers()`, keeping
+//! `version()` 310..=399 — never a hand list. (The v3.0 register
+//! `0xA50d…4D99` still answers, but every v3.0 manager has zero debt: Gearbox
+//! lends through v3.1 markets now.) A bare `register` (no address provider)
+//! is the single-register path the conformance fixtures use. `fees()` is
+//! live-asserted; [`crate::GearboxV3::new`] refuses a config that has not
+//! passed [`Config::assert_live_registry`].
 //!
 //! # MarketId allocator (intern-global)
 //!
@@ -21,7 +26,8 @@ use liq_protocol::{BlockNum, FeedId};
 use liq_types::{AssetId, MarketId, ProtocolId};
 
 use crate::events::views::{
-    IContractsRegister, ICreditFacadeV3, ICreditManagerV3, IPoolV3, IERC20,
+    IAddressProviderV31, IContractsRegister, ICreditFacadeV3, ICreditManagerV3,
+    IMarketConfigurator, IMarketConfiguratorFactory, IPoolV3, IVersion, IERC20,
 };
 use crate::layout::UNMAPPED_ASSET;
 use crate::math::PERCENTAGE_FACTOR;
@@ -34,8 +40,11 @@ pub const CATALOG_MARKET: MarketId = MarketId(4200);
 pub const FIRST_MANAGER_MARKET: MarketId = MarketId(4201);
 /// Inclusive end of the Gearbox band.
 pub const LAST_MANAGER_MARKET: MarketId = MarketId(4299);
-/// D15 cardinality on the register (not the universe — confirm live).
+/// D15 cardinality on the v3.0 register (historical; v3.0 holds no debt).
 pub const D15_MANAGER_COUNT: u32 = 34;
+/// Manager versions discovered through the v3.1 address provider.
+pub const MIN_MANAGER_VERSION: u64 = 310;
+pub const MAX_MANAGER_VERSION: u64 = 399;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AssetConfig {
@@ -83,13 +92,22 @@ pub struct ManagerConfig {
     pub expirable: bool,
     pub expiration_date: u64,
     pub quoted_tokens_mask: u64,
+    /// Facade `debtLimits().minDebt` (underlying units).
+    pub min_debt: u128,
     pub tokens: Vec<TokenConfig>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub protocol: ProtocolId,
+    /// Gearbox v3.1 address provider. Non-zero → discover every market
+    /// configurator's register; zero → the single `register` below.
+    pub address_provider: Address,
+    /// Single-register path (fixtures), or zero when `address_provider` is set.
     pub register: Address,
+    /// Every register discovered (v3.1) or `[register]`. Log halts subscribe
+    /// to each.
+    pub registers: Vec<Address>,
     pub catalog: MarketId,
     pub first_market: MarketId,
     pub expected_managers: u32,
@@ -98,6 +116,8 @@ pub struct Config {
     pub pinned_through: BlockNum,
     /// False until [`Self::assert_live_registry`] succeeds.
     pub live_fees_asserted: bool,
+    /// v3.1 managers discovery skipped, with why (the binder logs them).
+    pub skipped: Vec<(Address, ConfigError)>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -158,7 +178,7 @@ impl Config {
         if self.protocol != PROTOCOL {
             return Err(ConfigError::ProtocolMismatch);
         }
-        if self.register == Address::ZERO {
+        if self.register == Address::ZERO && self.address_provider == Address::ZERO {
             return Err(ConfigError::ZeroRegister);
         }
         if !in_band(self.catalog) || !in_band(self.first_market) {
@@ -167,7 +187,7 @@ impl Config {
         if self.catalog != CATALOG_MARKET || self.first_market != FIRST_MANAGER_MARKET {
             return Err(ConfigError::MarketOutOfRange);
         }
-        let mut unique: Vec<Address> = vec![self.register];
+        let mut unique: Vec<Address> = vec![self.register, self.address_provider];
         let mut markets: Vec<MarketId> = Vec::new();
         for m in &self.managers {
             if !in_band(m.market) || m.market == CATALOG_MARKET {
@@ -226,21 +246,24 @@ impl Config {
     ) -> core::result::Result<(), ConfigError> {
         self.live_fees_asserted = false;
         self.managers.clear();
+        self.registers.clear();
+        self.skipped.clear();
         self.validate_shape()?;
-        let raw = provider.eth_call(
-            self.register,
-            &IContractsRegister::getCreditManagersCall {}.abi_encode(),
-            block,
-        )?;
-        let managers = IContractsRegister::getCreditManagersCall::abi_decode_returns(&raw)
-            .map_err(|_| ConfigError::RegistryCall(self.register))?;
+        let managers: Vec<(Address, Address)> = if self.address_provider == Address::ZERO {
+            let list = register_managers(provider, self.register, block)?;
+            let found = u32::try_from(list.len()).map_err(|_| ConfigError::TooManyManagers)?;
+            if found != self.expected_managers {
+                return Err(ConfigError::ManagerCount {
+                    expected: self.expected_managers,
+                    found,
+                });
+            }
+            self.registers.push(self.register);
+            list.into_iter().map(|m| (self.register, m)).collect()
+        } else {
+            self.discover_v31(provider, block)?
+        };
         let found = u32::try_from(managers.len()).map_err(|_| ConfigError::TooManyManagers)?;
-        if found != self.expected_managers {
-            return Err(ConfigError::ManagerCount {
-                expected: self.expected_managers,
-                found,
-            });
-        }
         if found == 0 {
             return Err(ConfigError::ManagerCount {
                 expected: self.expected_managers,
@@ -254,36 +277,106 @@ impl Config {
         if last > u64::from(LAST_MANAGER_MARKET.0) {
             return Err(ConfigError::TooManyManagers);
         }
-        for (i, manager) in managers.into_iter().enumerate() {
+        let lenient = self.address_provider != Address::ZERO;
+        for (register, manager) in managers {
             if manager == Address::ZERO {
-                return Err(ConfigError::RegistryCall(self.register));
+                return Err(ConfigError::RegistryCall(register));
             }
             let is_cm = decode_bool(
                 provider,
-                self.register,
+                register,
                 block,
                 &IContractsRegister::isCreditManagerCall(manager).abi_encode(),
             )?;
             if !is_cm {
                 return Err(ConfigError::RegistryCall(manager));
             }
+            let loaded =
+                u32::try_from(self.managers.len()).map_err(|_| ConfigError::TooManyManagers)?;
             let market = MarketId(
                 self.first_market
                     .0
-                    .checked_add(u32::try_from(i).map_err(|_| ConfigError::TooManyManagers)?)
+                    .checked_add(loaded)
                     .ok_or(ConfigError::TooManyManagers)?,
             );
-            self.managers.push(load_manager(
-                provider,
-                block,
-                manager,
-                market,
-                &self.assets,
-            )?);
+            if market > LAST_MANAGER_MARKET {
+                return Err(ConfigError::TooManyManagers);
+            }
+            match load_manager(provider, block, manager, market, &self.assets) {
+                Ok(m) => self.managers.push(m),
+                // v3.1 discovery: one manager this store cannot hold (e.g.
+                // > 64 collateral tokens) is skipped, not the whole family.
+                Err(e) if lenient => self.skipped.push((manager, e)),
+                Err(e) => return Err(e),
+            }
         }
         self.validate_shape()?;
         self.live_fees_asserted = true;
         Ok(())
+    }
+
+    /// v3.1: every `(register, manager)` with `version()` in
+    /// [`MIN_MANAGER_VERSION`]..=[`MAX_MANAGER_VERSION`], in configurator
+    /// then register order. Records each register in [`Self::registers`].
+    fn discover_v31<R: RegistryRpc>(
+        &mut self,
+        provider: &R,
+        block: BlockNum,
+    ) -> core::result::Result<Vec<(Address, Address)>, ConfigError> {
+        let mut key = [0u8; 32];
+        let name = b"MARKET_CONFIGURATOR_FACTORY";
+        key.get_mut(..name.len())
+            .ok_or(ConfigError::MalformedToml)?
+            .copy_from_slice(name);
+        let factory = decode_addr(
+            provider,
+            self.address_provider,
+            block,
+            &IAddressProviderV31::getAddressOrRevertCall {
+                key: key.into(),
+                ver: U256::ZERO,
+            }
+            .abi_encode(),
+        )?;
+        let raw = provider.eth_call(
+            factory,
+            &IMarketConfiguratorFactory::getMarketConfiguratorsCall {}.abi_encode(),
+            block,
+        )?;
+        let configurators =
+            IMarketConfiguratorFactory::getMarketConfiguratorsCall::abi_decode_returns(&raw)
+                .map_err(|_| ConfigError::RegistryCall(factory))?;
+        let mut out = Vec::new();
+        for mc in configurators {
+            let register = decode_addr(
+                provider,
+                mc,
+                block,
+                &IMarketConfigurator::contractsRegisterCall {}.abi_encode(),
+            )?;
+            if register == Address::ZERO || self.registers.contains(&register) {
+                continue;
+            }
+            self.registers.push(register);
+            for manager in register_managers(provider, register, block)? {
+                let ver = decode_u64(
+                    provider,
+                    manager,
+                    block,
+                    &IVersion::versionCall {}.abi_encode(),
+                )?;
+                if (MIN_MANAGER_VERSION..=MAX_MANAGER_VERSION).contains(&ver) {
+                    out.push((register, manager));
+                }
+            }
+        }
+        if out.is_empty() {
+            return Err(ConfigError::ManagerCount {
+                expected: 1,
+                found: 0,
+            });
+        }
+        Ok(out)
     }
 
     /// Fill [`Self::assets`] from intern by on-chain token address. Missing
@@ -310,6 +403,17 @@ impl Config {
                         feed: FeedId(0),
                         decimals: rec.decimals,
                     });
+                }
+            }
+        }
+        // Tokens were loaded before the intern join: map them now, so health
+        // prices them instead of failing closed as unmapped.
+        for m in &mut self.managers {
+            for t in &mut m.tokens {
+                if let Some(a) = assets.iter().find(|a| a.underlying == t.token) {
+                    t.asset = a.asset;
+                    t.feed = a.feed;
+                    t.decimals = a.decimals;
                 }
             }
         }
@@ -347,7 +451,7 @@ impl Config {
     }
 
     pub(crate) fn emitter(&self, address: Address) -> Option<Emitter> {
-        if address == self.register {
+        if address == self.register || self.registers.contains(&address) {
             return Some(Emitter::Register);
         }
         for (i, m) in self.managers.iter().enumerate() {
@@ -377,9 +481,12 @@ impl Config {
     /// [`Self::assert_live_registry`] before [`crate::GearboxV3::new`].
     pub fn from_toml(raw: &str) -> core::result::Result<Self, ConfigError> {
         let f: TomlFile = toml::from_str(raw).map_err(|_| ConfigError::MalformedToml)?;
+        let opt = |s: &Option<String>| s.as_deref().map_or(Ok(Address::ZERO), parse_addr);
         let cfg = Self {
             protocol: ProtocolId(f.protocol),
-            register: parse_addr(&f.register)?,
+            address_provider: opt(&f.address_provider)?,
+            register: opt(&f.register)?,
+            registers: Vec::new(),
             catalog: MarketId(f.catalog),
             first_market: MarketId(f.first_market),
             expected_managers: f.expected_managers,
@@ -387,6 +494,7 @@ impl Config {
             assets: Vec::new(),
             pinned_through: f.pinned_through,
             live_fees_asserted: false,
+            skipped: Vec::new(),
         };
         cfg.validate_shape()?;
         Ok(cfg)
@@ -486,6 +594,10 @@ fn load_manager<R: RegistryRpc>(
     if count == 0 {
         return Err(ConfigError::RegistryCall(manager));
     }
+    // Token masks are stored as u64.
+    if count > 64 {
+        return Err(ConfigError::TruncatingParam);
+    }
     let mut tokens = Vec::with_capacity(usize::from(count));
     for i in 0u8..count {
         let mask = 1u64
@@ -566,7 +678,15 @@ fn load_manager<R: RegistryRpc>(
     )?;
     let quoted_u = ICreditManagerV3::quotedTokensMaskCall::abi_decode_returns(&quoted_raw)
         .map_err(|_| ConfigError::RegistryCall(manager))?;
-    let quoted_tokens_mask = u64::try_from(quoted_u).map_err(|_| ConfigError::TruncatingParam)?;
+    // v3.1 marks every non-underlying token quoted (`quotedTokensMask` =
+    // 2^256 − 2); only this manager's `count` bits are meaningful.
+    let width = if count == 64 {
+        U256::from(u64::MAX)
+    } else {
+        U256::from((1u64 << count).wrapping_sub(1))
+    };
+    let quoted_tokens_mask =
+        u64::try_from(quoted_u & width).map_err(|_| ConfigError::TruncatingParam)?;
     let expirable = decode_bool(
         provider,
         facade,
@@ -582,6 +702,14 @@ fn load_manager<R: RegistryRpc>(
     if expiration_date > u64::from(u32::MAX) {
         return Err(ConfigError::TruncatingParam);
     }
+    let limits_raw = provider.eth_call(
+        facade,
+        &ICreditFacadeV3::debtLimitsCall {}.abi_encode(),
+        block,
+    )?;
+    let min_debt = ICreditFacadeV3::debtLimitsCall::abi_decode_returns(&limits_raw)
+        .map_err(|_| ConfigError::RegistryCall(facade))?
+        .minDebt;
     Ok(ManagerConfig {
         market,
         manager,
@@ -596,6 +724,7 @@ fn load_manager<R: RegistryRpc>(
         expirable,
         expiration_date,
         quoted_tokens_mask,
+        min_debt,
         tokens,
     })
 }
@@ -659,9 +788,27 @@ fn decode_u64<R: RegistryRpc>(
 #[derive(serde::Deserialize)]
 struct TomlFile {
     protocol: u16,
-    register: String,
+    #[serde(default)]
+    address_provider: Option<String>,
+    #[serde(default)]
+    register: Option<String>,
     catalog: u32,
     first_market: u32,
+    #[serde(default)]
     expected_managers: u32,
     pinned_through: u64,
+}
+
+fn register_managers<R: RegistryRpc>(
+    provider: &R,
+    register: Address,
+    block: BlockNum,
+) -> core::result::Result<Vec<Address>, ConfigError> {
+    let raw = provider.eth_call(
+        register,
+        &IContractsRegister::getCreditManagersCall {}.abi_encode(),
+        block,
+    )?;
+    IContractsRegister::getCreditManagersCall::abi_decode_returns(&raw)
+        .map_err(|_| ConfigError::RegistryCall(register))
 }

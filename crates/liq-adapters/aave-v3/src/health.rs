@@ -398,4 +398,3 @@ pub(crate) fn finish(acc: &Account) -> Result<Health> {
         state,
     })
 }
-

@@ -30,6 +30,17 @@ pub const LEG_EXACT_OUT: u8 = 1 << 1;
 pub const VENUE_UNIV3_POOL: u8 = 0;
 /// Swap venue 1 — allowlisted router (`data` = 20-byte target + calldata).
 pub const VENUE_ROUTER: u8 = 1;
+/// Swap venue 2 — pair-direct Uniswap V2 / SushiSwap (`data` = 20-byte pair
+/// ‖ 1-byte factory id: 0 = Uniswap V2, 1 = SushiSwap). The Executor
+/// verifies the pair by CREATE2 against that factory.
+pub const VENUE_UNIV2_POOL: u8 = 2;
+/// Swap venue 3 — pool-direct Curve StableSwap plain pool (`data` = 20-byte
+/// pool ‖ 1-byte i ‖ 1-byte j). Exact input only; the Executor verifies the
+/// pool in Curve's MetaRegistry and the coin indices.
+pub const VENUE_CURVE_POOL: u8 = 3;
+/// UniV2 factory ids in venue-2 data.
+pub const V2_FACTORY_UNISWAP: u8 = 0;
+pub const V2_FACTORY_SUSHI: u8 = 1;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum WireError {
@@ -50,6 +61,10 @@ pub enum WireError {
     BadPlanLength { walked: usize, actual: usize },
     #[error("offset arithmetic overflow")]
     Overflow,
+    /// Gearbox tail mode byte other than 0 (partial) / 1 (full); the
+    /// Executor skips such a leg (`ST_TAIL`).
+    #[error("gearbox tail mode {0} is not 0 or 1")]
+    BadGearboxMode(u8),
 }
 
 pub type Result<T> = core::result::Result<T, WireError>;
@@ -103,8 +118,10 @@ pub enum LegTail {
     /// collateral per debt (pin `9496626f` slip). Not internal `colPerDebt` (1e27).
     /// `absorb_` is hardcoded `true` on-chain (matches the absorb-inclusive quote).
     Fluid { col_per_unit_debt: U256 },
-    /// Gearbox V3 `partiallyLiquidateCreditAccount` — quoted min seized.
-    Gearbox { min_seized: U256 },
+    /// Gearbox V3: minimum collateral received, then the path — `false`
+    /// `partiallyLiquidateCreditAccount` (v3.1), `true` full
+    /// `liquidateCreditAccount` with add/withdraw multicall. Wire byte 0 / 1.
+    Gearbox { min_seized: U256, full: bool },
     /// Compound V2: debt cToken is `market`; tail is the seize cToken + CEther flag.
     CompoundV2 {
         ctoken_collateral: Address,
@@ -261,6 +278,11 @@ pub fn decode_liq_leg(b: &[u8], o: usize) -> Result<(LiqLeg, usize)> {
         },
         ExecutorAdapter::Gearbox => LegTail::Gearbox {
             min_seized: u256_at(b, tail_offset)?,
+            full: match u8_at(b, add(tail_offset, 32)?)? {
+                0 => false,
+                1 => true,
+                m => return Err(WireError::BadGearboxMode(m)),
+            },
         },
         ExecutorAdapter::CompoundV2 => LegTail::CompoundV2 {
             ctoken_collateral: addr_at(b, tail_offset)?,
@@ -565,7 +587,7 @@ mod tests {
         assert_eq!(tail_len(4).unwrap(), 0);
         assert_eq!(tail_len(5).unwrap(), 32);
         assert_eq!(tail_len(6).unwrap(), 32);
-        assert_eq!(tail_len(7).unwrap(), 32);
+        assert_eq!(tail_len(7).unwrap(), 33);
         assert_eq!(tail_len(8).unwrap(), 21);
         assert_eq!(tail_len(9), Err(WireError::UnknownAdapter(9)));
     }

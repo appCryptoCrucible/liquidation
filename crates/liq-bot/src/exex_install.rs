@@ -9,8 +9,8 @@ use std::sync::atomic::Ordering;
 use std::thread::{Builder, JoinHandle};
 
 use liq_node::{
-    pin_deferred, spawn_hot, split_exex, split_mempool, AfterBlock, ConsistentHeight, ExExForwarder,
-    HotHandle, HotIngress, HotSpawn, IngestError, MempoolProducer, HOT_THREAD_NAME,
+    pin_deferred, spawn_hot, split_exex, split_mempool, AfterBlock, ConsistentHeight,
+    ExExForwarder, HotHandle, HotIngress, HotSpawn, IngestError, MempoolProducer, HOT_THREAD_NAME,
 };
 use liq_types::PendingTx;
 use rtrb::Consumer;

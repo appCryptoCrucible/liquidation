@@ -18,6 +18,7 @@ library PlanBuilder {
     uint8 internal constant A_EULER = 3; uint8 internal constant A_SILO = 4; uint8 internal constant A_LIQUITY = 5;
     uint8 internal constant A_FLUID = 6; uint8 internal constant A_GEARBOX = 7; uint8 internal constant A_COMPOUND = 8;
     uint8 internal constant S_POOL = 0; uint8 internal constant S_ROUTER = 1;
+    uint8 internal constant S_V2 = 2; uint8 internal constant S_CURVE = 3;
 
     function header(uint8 flags, uint16 bidBps, uint128 gasCostWei, uint128 minProfit, uint8 groups)
         internal pure returns (bytes memory)
@@ -76,10 +77,12 @@ library PlanBuilder {
         return abi.encodePacked(A_FLUID, vault, borrower, coll, repay, colPer);
     }
 
-    function legGearbox(address facade, address borrower, address coll, uint128 repay, uint256 minSeized)
+    uint8 internal constant GB_PARTIAL = 0; uint8 internal constant GB_FULL = 1;
+
+    function legGearbox(address facade, address borrower, address coll, uint128 repay, uint256 minSeized, uint8 mode)
         internal pure returns (bytes memory)
     {
-        return abi.encodePacked(A_GEARBOX, facade, borrower, coll, repay, minSeized);
+        return abi.encodePacked(A_GEARBOX, facade, borrower, coll, repay, minSeized, mode);
     }
 
     function legCompound(address cDebt, address borrower, address coll, uint128 repay, address cColl, uint8 isCEther)
@@ -96,6 +99,20 @@ library PlanBuilder {
 
     function poolSwap(address pool, address tIn, address tOut, uint8 flags, uint128 amount) internal pure returns (bytes memory) {
         return swap(S_POOL, tIn, tOut, flags, amount, abi.encodePacked(pool));
+    }
+
+    /// Pair-direct V2 leg. `fid`: 0 = Uniswap V2, 1 = SushiSwap.
+    function v2Swap(address pair, uint8 fid, address tIn, address tOut, uint8 flags, uint128 amount)
+        internal pure returns (bytes memory)
+    {
+        return swap(S_V2, tIn, tOut, flags, amount, abi.encodePacked(pair, fid));
+    }
+
+    /// Pool-direct Curve leg (exact input only).
+    function curveSwap(address pool, uint8 i, uint8 j, address tIn, address tOut, uint8 flags, uint128 amount)
+        internal pure returns (bytes memory)
+    {
+        return swap(S_CURVE, tIn, tOut, flags, amount, abi.encodePacked(pool, i, j));
     }
 
     function routerSwap(address router, address tIn, address tOut, uint8 flags, uint128 amount, bytes memory call)

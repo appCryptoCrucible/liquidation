@@ -24,8 +24,7 @@ use liq_adapters_fluid::{
 };
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
-    CallbackShape, Constraints, ExecutorAdapter, FlashRoute, HealthState, LegChoice, Protocol,
-    ProtocolError,
+    CallbackShape, ExecutorAdapter, FlashRoute, HealthState, LegChoice, Protocol, ProtocolError,
 };
 use liq_types::fixed::RAY;
 use liq_types::{LogSubscriber, Ray};
@@ -175,11 +174,7 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
     let h_u = p_u.health(st_u.view(T1_ID, T0).unwrap(), &px_u).unwrap();
     assert_eq!(h_u.state, HealthState::Liquidatable, "check 10 class");
     let q_u = p_u
-        .quote(
-            st_u.view(T1_ID, T0).unwrap(),
-            &px_u,
-            &Constraints::UNBOUNDED,
-        )
+        .quote(st_u.view(T1_ID, T0).unwrap(), &px_u)
         .unwrap()
         .expect("check 10: Liquidatable quotes");
     let from_curve = q_u.seize_options[0].curve.bonus_at_hf(h_u.hf).unwrap();
@@ -301,7 +296,7 @@ fn t3_is_not_t1_cloned_and_selector_collides() {
         ProtocolError::OracleSourceMismatch
     );
     assert_eq!(
-        p.quote(pos, &px, &Constraints::UNBOUNDED).unwrap_err(),
+        p.quote(pos, &px).unwrap_err(),
         ProtocolError::OracleSourceMismatch
     );
 
@@ -337,7 +332,7 @@ fn quote_static_bonus_and_encode_ok() {
     let (p, st) = full_store(&d, ALICE_DEBT_LIQ);
     let px = prices(ETH_USD, RAY_ONE);
     let q = p
-        .quote(st.view(T1_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
+        .quote(st.view(T1_ID, T0).unwrap(), &px)
         .unwrap()
         .expect("liquidatable");
     assert_eq!(q.repay_options[0].asset, DEBT);

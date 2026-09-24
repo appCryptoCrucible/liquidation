@@ -36,4 +36,7 @@ pub mod nonce;
 pub mod path;
 pub mod submit;
 pub mod template;
-pub mod wire;
+/// Re-exported from `liq-wire` (moved there so a crate that only needs the
+/// wire format need not depend on `liq-exec`'s tokio/RPC machinery). Every
+/// existing `liq_exec::wire::X` call site is unaffected.
+pub use liq_wire::wire;

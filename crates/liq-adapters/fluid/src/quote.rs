@@ -4,19 +4,18 @@
 use alloy_primitives::U256;
 use liq_protocol::SlotRef;
 use liq_protocol::{
-    BonusCurve, Constraints, HealthState, LegChoice, PositionRef, ProtocolError, Quote,
-    RepayOption, Result, SeizeOption,
+    BonusCurve, HealthState, LegChoice, PositionRef, ProtocolError, Quote, RepayOption, Result,
+    SeizeOption,
 };
-use liq_types::fixed::{mul_div, FixedError, Rounding, WAD_RAY_RATIO};
+use liq_types::fixed::FixedError;
 use liq_types::PriceVector;
 use smallvec::SmallVec;
 
 use crate::health::{finish, terms};
 use crate::layout::VaultExtra;
 use crate::math::{
-    asset_unit, bonus_ray, col_liquidated_from_debt, col_per_debt_with_penalty,
-    col_per_unit_debt_1e18, debt_liquidated_to_ref, from_raw, get_ratio_at_tick,
-    TICK_STATUS_PERFECT,
+    bonus_ray, col_liquidated_from_debt, col_per_debt_with_penalty, col_per_unit_debt_1e18,
+    debt_liquidated_to_ref, from_raw, get_ratio_at_tick, TICK_STATUS_PERFECT,
 };
 
 /// Wire `colPerUnitDebt_` from the quoted seize/repay pair.
@@ -33,11 +32,7 @@ pub fn col_per_unit_debt_1e18_from_quote(q: &Quote, legs: LegChoice) -> Result<U
     col_per_unit_debt_1e18(seize.max_seize, repay.max_repay)
 }
 
-pub(crate) fn quote(
-    pos: PositionRef<'_>,
-    px: &PriceVector,
-    cons: &Constraints,
-) -> Result<Option<Quote>> {
+pub(crate) fn quote(pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quote>> {
     let t0 = terms(pos)?;
     let (t, health) = finish(&t0, px)?;
     if health.state != HealthState::Liquidatable {
@@ -83,38 +78,15 @@ pub(crate) fn quote(
         return Err(ProtocolError::EmptyQuote);
     }
 
-    let cap = cons.per_liquidation_notional_cap.raw();
-    if cap != U256::MAX {
-        let raw_cap = mul_div(
-            cap.checked_mul(WAD_RAY_RATIO).ok_or(FixedError::Overflow)?,
-            asset_unit(t.debt_row.decimals)?,
-            t.p_debt,
-            Rounding::Down,
-        )?;
-        // F1. The cap scales the WHOLE liquidation, so the seize has to come
-        // down with the repay. Clamping only the repay left `seize/repay`
-        // inflated by exactly `repay_before/repay_after`, and that ratio is
-        // the `colPerUnitDebt_` slip bound handed straight to Fluid — so
-        // `Vault__ExcessSlippageLiquidation` reverted every capped leg.
-        //
-        // Fluid liquidates proportionally, so scaling down is exact rather
-        // than an approximation. Round DOWN: the wire value is a minimum
-        // collateral-per-debt and must stay reachable.
-        let uncapped = repay;
-        repay = repay.min(raw_cap);
-        if repay.is_zero() {
-            return Err(ProtocolError::EmptyQuote);
-        }
-        if repay < uncapped {
-            seize = mul_div(seize, repay, uncapped, Rounding::Down)?;
-            if seize.is_zero() {
-                return Err(ProtocolError::EmptyQuote);
-            }
-        }
-    }
+    // No caller-side notional cap (GUIDE 12 §4b): `repay`/`seize` are the
+    // protocol's own ceiling — Fluid liquidates proportionally, and nothing
+    // downstream of this adapter needs a second, adapter-shaped copy of the
+    // viability band's sizing.
 
     let mut repay_options = SmallVec::new();
     repay_options.push(RepayOption {
+        min_repay: alloy_primitives::U256::ZERO,
+        pair_seize: None,
         asset: t.debt_row.asset,
         max_repay: repay,
         slot: SlotRef::ByAsset,

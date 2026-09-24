@@ -3,24 +3,18 @@
 use alloy_primitives::U256;
 use liq_protocol::SlotRef;
 use liq_protocol::{
-    BonusCurve, Constraints, HealthState, PositionRef, ProtocolError, Quote, RepayOption, Result,
-    SeizeOption,
+    BonusCurve, HealthState, PositionRef, ProtocolError, Quote, RepayOption, Result, SeizeOption,
 };
-use liq_types::fixed::{mul_div, FixedError, Rounding, WAD_RAY_RATIO};
 use liq_types::PriceVector;
 use smallvec::SmallVec;
 
 use crate::health::{finish, terms};
 use crate::math::{
-    asset_unit, bonus_ray, liquidation_incentive_factor, mul_div_down, mul_div_up, to_assets_down,
+    bonus_ray, liquidation_incentive_factor, mul_div_down, mul_div_up, to_assets_down,
     to_assets_up, to_shares_up, w_div_up, w_mul_down, ORACLE_PRICE_SCALE,
 };
 
-pub(crate) fn quote(
-    pos: PositionRef<'_>,
-    px: &PriceVector,
-    cons: &Constraints,
-) -> Result<Option<Quote>> {
+pub(crate) fn quote(pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quote>> {
     let t0 = terms(pos)?;
     let (t, health) = finish(&t0, px)?;
     if health.state != HealthState::Liquidatable {
@@ -50,24 +44,16 @@ pub(crate) fn quote(
         (full_repay, seized)
     };
 
-    let cap = cons.per_liquidation_notional_cap.raw();
-    let repay = if cap == U256::MAX {
-        repay
-    } else {
-        let raw_cap = mul_div(
-            cap.checked_mul(WAD_RAY_RATIO).ok_or(FixedError::Overflow)?,
-            asset_unit(t.loan_row.decimals)?,
-            t.p_loan,
-            Rounding::Down,
-        )?;
-        repay.min(raw_cap)
-    };
-    if repay.is_zero() {
+    // No caller-side notional cap (GUIDE 12 §4b): `repay`/`seize` are the
+    // protocol's own ceiling.
+    if repay.is_zero() || seize.is_zero() {
         return Err(ProtocolError::EmptyQuote);
     }
 
     let mut repay_options = SmallVec::new();
     repay_options.push(RepayOption {
+        min_repay: alloy_primitives::U256::ZERO,
+        pair_seize: None,
         asset: t.loan_row.asset,
         max_repay: repay,
         slot: SlotRef::ByAsset,

@@ -13,8 +13,8 @@ use liq_router::{
     CurveState, Pool, PoolBook, PoolState, RouteError, V3State, WarmBuilder, WarmConfig,
     WarmInputs, WarmRouteCache,
 };
-use parking_lot::RwLock;
 use liq_types::AssetId;
+use parking_lot::RwLock;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -71,7 +71,10 @@ impl WarmInputs for AbsentWarmInputs {
 pub fn warm_handles() -> (WarmBuilder, WarmRouteCache) {
     let builder = WarmBuilder::new(WarmConfig {
         max_impact_bps: 100,
-        twa_blocks: 1,
+        // min(spot, twa) over 8 blocks: a one-block liquidity spike cannot
+        // inflate the exit the band and sizing see (collapses still show at
+        // once — the min takes spot).
+        twa_blocks: 8,
         budget: liq_router::SolveBudget::default(),
     });
     let cache = WarmRouteCache::new(builder.slot());
@@ -79,27 +82,58 @@ pub fn warm_handles() -> (WarmBuilder, WarmRouteCache) {
 }
 
 /// Supervision thread. Reads the shared book (empty publish until logs).
+///
+/// Also owns the viability-band rebuild: it polls the hot thread's band
+/// inputs and rebuilds the whole [`liq_router::BandTable`] once per new
+/// block, off the hot path.
 pub fn spawn_warm_thread(
     mut builder: WarmBuilder,
     stop: Arc<AtomicBool>,
     book: Arc<RwLock<PoolBook>>,
+    bands: Option<Arc<crate::bands::BandShared>>,
 ) -> Result<JoinHandle<()>, std::io::Error> {
     Builder::new().name("liq-bot-warm".into()).spawn(move || {
         let inputs = AbsentWarmInputs;
+        let budget = liq_router::SolveBudget::default();
+        let mut band_block = 0u64;
+        let mut since_warm = Duration::ZERO;
         {
             let book = book.read();
             rebuild_warm(&mut builder, &book, &inputs);
         }
         while !stop.load(Ordering::Relaxed) {
-            std::thread::sleep(Duration::from_secs(1));
+            std::thread::sleep(BAND_POLL);
             if stop.load(Ordering::Relaxed) {
                 break;
             }
-            let book = book.read();
-            rebuild_warm(&mut builder, &book, &inputs);
+            // With bands: once per new block — band table first (on the
+            // previous warm haircut), then the warm table on the band's
+            // ladders, so the TWA ring advances one entry per block.
+            if let Some(shared) = bands.as_ref() {
+                let routes = builder.slot().load_full();
+                let book = book.read();
+                if crate::bands::rebuild(shared, &book, &routes, &budget, &mut band_block) {
+                    let snap = shared.inputs.lock().clone();
+                    let table = shared.table.load_full();
+                    let warm_in = crate::bands::BandWarmInputs::new(&snap, &table);
+                    rebuild_warm(&mut builder, &book, &warm_in);
+                }
+                continue;
+            }
+            since_warm = since_warm.saturating_add(BAND_POLL);
+            if since_warm >= WARM_PERIOD {
+                since_warm = Duration::ZERO;
+                let book = book.read();
+                rebuild_warm(&mut builder, &book, &inputs);
+            }
         }
     })
 }
+
+/// How often the warm thread checks for a new block's band inputs.
+const BAND_POLL: Duration = Duration::from_millis(200);
+/// How often the warm route table is rebuilt.
+const WARM_PERIOD: Duration = Duration::from_secs(1);
 
 /// Uniswap V3: `L = sum(net)` over initialized ticks with `tick <= current`.
 /// Empty ticks + L>0 fails. Mismatch fails. No invented L.
@@ -261,6 +295,8 @@ mod tests {
                 user: alloy_primitives::Address::repeat_byte(0xB0),
             },
             repay_options: SmallVec::from_slice(&[liq_protocol::RepayOption {
+                min_repay: alloy_primitives::U256::ZERO,
+                pair_seize: None,
                 asset: debt,
                 max_repay: e18(1),
                 slot: liq_protocol::SlotRef::ByAsset,
@@ -323,6 +359,7 @@ mod tests {
                 a_precision: U256::from(100u64),
                 fee: U256::from(4_000_000u64),
                 stale: true,
+                stale_block: 0,
             }),
         };
         assert!(reseed_curve(&mut p, &MissingCurve).is_err());

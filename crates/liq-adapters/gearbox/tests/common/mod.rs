@@ -47,7 +47,11 @@ pub const LT_COLL: u16 = 8_500;
 pub const ALICE_COLL: U256 = uint!(200_000_000_000_000_000_000_U256);
 pub const ALICE_DEBT_OK: U256 = uint!(50_000_000_U256);
 pub const ALICE_COLL_LIQ: U256 = uint!(100_000_000_000_000_000_000_U256);
-pub const ALICE_DEBT_LIQ: U256 = uint!(100_000_000_U256);
+/// 88 USDC against 100 COLL at LT 85 %: liquidatable (twv 85 < 88), not bad
+/// debt (100 · 0.95 ≥ 88), and a partial slice can restore health.
+pub const ALICE_DEBT_LIQ: U256 = uint!(88_000_000_U256);
+/// Too deep for a partial to restore health, and bad debt for a full one.
+pub const ALICE_DEBT_DEEP: U256 = uint!(100_000_000_U256);
 pub const QUOTA: i128 = 1_000_000_000_000_000;
 pub const ALICE_ID: PositionId = PositionId(0);
 
@@ -130,6 +134,7 @@ impl Deploy {
             expirable,
             expiration_date,
             quoted_tokens_mask: 2,
+            min_debt: 0,
             tokens: self.tokens(),
         }
     }
@@ -137,7 +142,9 @@ impl Deploy {
     pub fn config(&self) -> Config {
         Config {
             protocol: PROTOCOL,
+            address_provider: Address::ZERO,
             register: self.register,
+            registers: vec![self.register],
             catalog: CATALOG_MARKET,
             first_market: FIRST_MANAGER_MARKET,
             expected_managers: 1,
@@ -158,6 +165,7 @@ impl Deploy {
             ],
             pinned_through: DEPLOY_BLOCK,
             live_fees_asserted: true,
+            skipped: Vec::new(),
         }
     }
 
@@ -463,6 +471,16 @@ pub fn mock_registry(d: &Deploy) -> MockRpc {
         ICreditFacadeV3::expirationDateCall {}.abi_encode(),
         Bytes::from(ICreditFacadeV3::expirationDateCall::abi_encode_returns(
             &U40::ZERO,
+        )),
+    ));
+    calls.push((
+        d.facade,
+        ICreditFacadeV3::debtLimitsCall {}.abi_encode(),
+        Bytes::from(ICreditFacadeV3::debtLimitsCall::abi_encode_returns(
+            &ICreditFacadeV3::debtLimitsReturn {
+                minDebt: 0,
+                maxDebt: u128::MAX,
+            },
         )),
     ));
     MockRpc { calls }

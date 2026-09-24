@@ -15,13 +15,14 @@ use liq_flash::{
 use liq_node::LogHandler;
 use liq_oracle::{CanonicalBook, DerivedBook, FeedSet, FeedsConfig};
 use liq_protocol::{DecodedLog, DirtySet, ProtocolError};
-use liq_router::{Pool, PoolBook, PoolState, V3State};
+use liq_router::{CurveState, Pool, PoolBook, PoolState, V2State, V3State};
 use liq_types::{FlashProvider, HaltSink, LogFilter, LogSubscriber};
 use parking_lot::{Mutex, RwLock};
 use smallvec::SmallVec;
 
 /// Canonical DAI — lookup key into the committed intern, not a fabricated token.
-const REGISTRY_DAI: Address = alloy_primitives::address!("0x6B175474E89094C44Da98b954EedeAC495271d0F");
+const REGISTRY_DAI: Address =
+    alloy_primitives::address!("0x6B175474E89094C44Da98b954EedeAC495271d0F");
 
 /// Uniswap V3 factory `enableFeeAmount` mapping. Fee is committed on each
 /// `PoolEntry`; unknown fees are omitted (no guessed spacing).
@@ -103,7 +104,10 @@ fn spark_configurator(config_dir: &Path, pool: Address) -> Option<Address> {
 }
 
 fn nonzero_filters(filters: Vec<LogFilter>) -> Vec<LogFilter> {
-    filters.into_iter().filter(|f| !f.address.is_zero()).collect()
+    filters
+        .into_iter()
+        .filter(|f| !f.address.is_zero())
+        .collect()
 }
 
 fn univ3_factory(reg: &Registry) -> Option<Address> {
@@ -212,9 +216,7 @@ impl LogHandler for FeedHandler {
     ) -> core::result::Result<DirtySet, ProtocolError> {
         match self.book.lock().apply_log(log, self.sink) {
             Ok(_) => Ok(DirtySet::None),
-            Err(liq_oracle::OracleError::SourceMigrated { .. }) => {
-                Err(ProtocolError::HaltSignal)
-            }
+            Err(liq_oracle::OracleError::SourceMigrated { .. }) => Err(ProtocolError::HaltSignal),
             Err(liq_oracle::OracleError::BadAnswerUpdated)
             | Err(liq_oracle::OracleError::NonPositiveAnswer) => Err(ProtocolError::MalformedLog),
             Err(e) => {
@@ -263,9 +265,7 @@ impl LogHandler for DerivedHandler {
         };
         match self.book.lock().apply_log(log, &deps, self.sink) {
             Ok(_) => Ok(DirtySet::None),
-            Err(liq_oracle::OracleError::SourceMigrated { .. }) => {
-                Err(ProtocolError::HaltSignal)
-            }
+            Err(liq_oracle::OracleError::SourceMigrated { .. }) => Err(ProtocolError::HaltSignal),
             Err(liq_oracle::OracleError::BadRateLog) => Err(ProtocolError::MalformedLog),
             Err(e) => {
                 tracing::error!(error = %e, "derived apply_log refused");
@@ -348,7 +348,12 @@ impl BoundIndex {
 #[must_use]
 pub fn load_index(config_dir: &Path, intern: &Intern, registry: &Registry) -> IndexLoad {
     let mut omitted = Vec::new();
-    let wrap = crate::bind::load_wrap_gas(&config_dir.join("flash-gas.toml"));
+    let model = crate::gas_model::GasModel::load(&config_dir.join("liq-gas.toml"));
+    let wrap = model.as_ref().map_or_else(
+        crate::bind::WrapGas::default,
+        crate::gas_model::GasModel::select_wrap,
+    );
+    let hops = model.as_ref().map_or_else(Default::default, |m| m.hop);
     let sources = load_flash(
         config_dir,
         intern,
@@ -356,7 +361,7 @@ pub fn load_index(config_dir: &Path, intern: &Intern, registry: &Registry) -> In
         &wrap.by_provider,
         &mut omitted,
     );
-    let book = load_book(intern, registry, &mut omitted);
+    let book = load_book(intern, registry, hops, &mut omitted);
     let canonical = load_feeds(config_dir, intern, registry, &mut omitted);
     let derived = load_derived(&mut omitted);
     IndexLoad {
@@ -487,8 +492,8 @@ fn load_flash(
                 continue;
             }
         };
-        let configurator = extra_addr(proto, "configurator")
-            .or_else(|| spark_configurator(config_dir, pool));
+        let configurator =
+            extra_addr(proto, "configurator").or_else(|| spark_configurator(config_dir, pool));
         if configurator.is_none() {
             tracing::error!(
                 family = proto.family.as_str(),
@@ -497,13 +502,8 @@ fn load_flash(
             );
         }
         sources.push(Box::new(
-            AavePool::new(
-                pool,
-                configurator.unwrap_or(Address::ZERO),
-                0,
-                &[],
-            )
-            .with_overhead(wrap_of(wrap, FlashProvider::Aave)),
+            AavePool::new(pool, configurator.unwrap_or(Address::ZERO), 0, &[])
+                .with_overhead(wrap_of(wrap, FlashProvider::Aave)),
         ));
     }
 
@@ -552,8 +552,7 @@ fn load_flash(
         Some(pm) => {
             let held = intern_held(intern);
             sources.push(Box::new(
-                UniV4PoolManager::new(pm, &held)
-                    .with_overhead(wrap_of(wrap, FlashProvider::UniV4)),
+                UniV4PoolManager::new(pm, &held).with_overhead(wrap_of(wrap, FlashProvider::UniV4)),
             ));
         }
         None => omit(
@@ -563,9 +562,9 @@ fn load_flash(
         ),
     }
 
-    match flash_map_addr(registry, &["morpho", "singleton"]).or_else(|| {
-        first_extra(registry, &["morpho", "singleton"])
-    }) {
+    match flash_map_addr(registry, &["morpho", "singleton"])
+        .or_else(|| first_extra(registry, &["morpho", "singleton"]))
+    {
         Some(m) => {
             let held = intern_held(intern);
             sources.push(Box::new(
@@ -587,15 +586,8 @@ fn load_flash(
     match (sky, end, dai) {
         (Some(flash), Some(end), Some(dai)) => {
             sources.push(Box::new(
-                SkyDssFlash::new(
-                    flash,
-                    end,
-                    dai,
-                    U256::ZERO,
-                    U256::ZERO,
-                    false,
-                )
-                .with_overhead(wrap_of(wrap, FlashProvider::SkyDss)),
+                SkyDssFlash::new(flash, end, dai, U256::ZERO, U256::ZERO, false)
+                    .with_overhead(wrap_of(wrap, FlashProvider::SkyDss)),
             ));
         }
         _ => omit(
@@ -611,66 +603,160 @@ fn load_flash(
     sources
 }
 
+/// Uniswap V2 factory (pairs verified by the Executor's CREATE2 check).
+const UNIV2_FACTORY: Address =
+    alloy_primitives::address!("0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f");
+/// SushiSwap V2 factory.
+const SUSHI_FACTORY: Address =
+    alloy_primitives::address!("0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac");
+
+/// Executor factory id for a V2 pair's committed factory; `None` = a fork
+/// the Executor cannot verify (omitted).
+fn v2_factory_id(factory: Address) -> Option<u8> {
+    if factory == UNIV2_FACTORY {
+        Some(liq_plan::V2_FACTORY_UNISWAP)
+    } else if factory == SUSHI_FACTORY {
+        Some(liq_plan::V2_FACTORY_SUSHI)
+    } else {
+        None
+    }
+}
+
+/// Curve plain-pool `RATES[i]` = `10^(36 − decimals)`.
+fn curve_rate(decimals: u8) -> Option<U256> {
+    let exp = 36u64.checked_sub(u64::from(decimals))?;
+    Some(U256::from(10u64).pow(U256::from(exp)))
+}
+
+/// Registry pools → the routable [`PoolBook`]. State starts empty (not
+/// live): V3/V2 are seeded at startup and folded from logs; Curve starts
+/// stale and is read by the Curve reseed thread.
 fn load_book(
     intern: &Intern,
     registry: &Registry,
+    hops: crate::gas_model::HopGas,
     omitted: &mut Vec<(&'static str, String)>,
 ) -> PoolBook {
+    if hops.univ3 == 0 || hops.univ2 == 0 || hops.curve == 0 {
+        tracing::error!(
+            ?hops,
+            "swap hop gas unmeasured for a venue — priced at 0 until liq-gas.toml loads"
+        );
+    }
     let mut assets = HashMap::new();
     for rec in intern.assets() {
         if rec.address.is_zero() {
-            tracing::error!(asset = rec.id.0, "intern token is zero — skipped in book assets");
+            tracing::error!(
+                asset = rec.id.0,
+                "intern token is zero — skipped in book assets"
+            );
             continue;
         }
         assets.insert(rec.address, rec.id);
     }
     let factory = univ3_factory(registry);
-    let mut book = PoolBook::new(assets, factory, 0);
+    let mut book = PoolBook::new(assets, factory, hops.univ3);
     for (addr, entry) in &registry.pools {
-        if entry.venue != PoolVenue::Univ3 {
-            continue;
-        }
-        if addr.is_zero() || entry.token0.is_zero() || entry.token1.is_zero() {
+        let tokens: SmallVec<[Address; liq_router::MAX_COINS]> = match entry.venue {
+            PoolVenue::Curve => entry.coins.iter().copied().collect(),
+            PoolVenue::Univ3 | PoolVenue::Univ2 => {
+                SmallVec::from_slice(&[entry.token0, entry.token1])
+            }
+        };
+        if addr.is_zero()
+            || tokens.len() < 2
+            || tokens.len() > liq_router::MAX_COINS
+            || tokens.iter().any(|t| t.is_zero())
+        {
             omit(omitted, "book", format!("zero address on pool {addr:#x}"));
             continue;
         }
-        let Some(spacing) = univ3_tick_spacing(entry.fee) else {
+        let mut ids = SmallVec::new();
+        let mut rates = SmallVec::new();
+        for t in &tokens {
+            let Some(id) = intern.asset(*t) else {
+                break;
+            };
+            ids.push(id);
+            if entry.venue == PoolVenue::Curve {
+                match registry.tokens.get(t).and_then(|e| curve_rate(e.decimals)) {
+                    Some(r) => rates.push(r),
+                    None => break,
+                }
+            }
+        }
+        if ids.len() != tokens.len()
+            || (entry.venue == PoolVenue::Curve && rates.len() != tokens.len())
+        {
             omit(
                 omitted,
                 "book",
-                format!("unknown univ3 fee {} on {addr:#x}", entry.fee),
+                format!("pool {addr:#x} has a coin not interned / no decimals"),
             );
             continue;
-        };
-        let Some(a0) = intern.asset(entry.token0) else {
-            omit(
-                omitted,
-                "book",
-                format!("token0 {:#x} not interned", entry.token0),
-            );
-            continue;
-        };
-        let Some(a1) = intern.asset(entry.token1) else {
-            omit(
-                omitted,
-                "book",
-                format!("token1 {:#x} not interned", entry.token1),
-            );
-            continue;
+        }
+        let (hop_gas, state) = match entry.venue {
+            PoolVenue::Univ3 => {
+                let Some(spacing) = univ3_tick_spacing(entry.fee) else {
+                    omit(
+                        omitted,
+                        "book",
+                        format!("unknown univ3 fee {} on {addr:#x}", entry.fee),
+                    );
+                    continue;
+                };
+                (
+                    hops.univ3,
+                    PoolState::V3(V3State {
+                        sqrt_price_x96: U256::ZERO,
+                        tick: 0,
+                        liquidity: 0,
+                        fee_pips: entry.fee,
+                        tick_spacing: spacing,
+                        ticks: Vec::new(),
+                    }),
+                )
+            }
+            PoolVenue::Univ2 => {
+                let Some(factory) = v2_factory_id(entry.factory) else {
+                    omit(
+                        omitted,
+                        "book",
+                        format!(
+                            "v2 pair {addr:#x} factory {:#x} not verifiable",
+                            entry.factory
+                        ),
+                    );
+                    continue;
+                };
+                (
+                    hops.univ2,
+                    PoolState::V2(V2State {
+                        reserve0: U256::ZERO,
+                        reserve1: U256::ZERO,
+                        factory,
+                    }),
+                )
+            }
+            PoolVenue::Curve => (
+                hops.curve,
+                PoolState::Curve(CurveState {
+                    balances: tokens.iter().map(|_| U256::ZERO).collect(),
+                    rates,
+                    a: U256::ZERO,
+                    a_precision: U256::from(1u64),
+                    fee: U256::from(entry.fee),
+                    stale: true,
+                    stale_block: 0,
+                }),
+            ),
         };
         let pool = Pool {
             address: *addr,
-            assets: SmallVec::from_slice(&[a0, a1]),
-            tokens: SmallVec::from_slice(&[entry.token0, entry.token1]),
-            hop_gas: 0,
-            state: PoolState::V3(V3State {
-                sqrt_price_x96: U256::ZERO,
-                tick: 0,
-                liquidity: 0,
-                fee_pips: entry.fee,
-                tick_spacing: spacing,
-                ticks: Vec::new(),
-            }),
+            assets: ids,
+            tokens,
+            hop_gas,
+            state,
         };
         if let Err(e) = book.add(pool) {
             tracing::error!(error = ?e, pool = %addr, "pool address seed refused");
@@ -692,7 +778,11 @@ fn load_feeds(
         .parent()
         .map(|p| p.join("registry/feeds-mainnet.PIN"));
     let Some(pin) = pin else {
-        omit(omitted, "feeds", "config dir has no parent — PIN unresolved");
+        omit(
+            omitted,
+            "feeds",
+            "config dir has no parent — PIN unresolved",
+        );
         return None;
     };
     match std::fs::read_to_string(&pin) {
@@ -727,7 +817,10 @@ fn load_feeds(
         match CanonicalBook::new(set, intern, registry) {
             Ok((book, unfed)) => {
                 for id in unfed {
-                    tracing::error!(asset = id.0, "listed asset has no feed — price() stays None");
+                    tracing::error!(
+                        asset = id.0,
+                        "listed asset has no feed — price() stays None"
+                    );
                 }
                 return Some(book);
             }
@@ -912,8 +1005,9 @@ mod tests {
 
     #[test]
     fn empty_index_router_starts() {
-        let intern = Intern::from_registry(&Registry::from_slice(
-            br#"{
+        let intern = Intern::from_registry(
+            &Registry::from_slice(
+                br#"{
             "chain_id": 1,
             "generated_at_block": 0,
             "tokens": {},
@@ -923,8 +1017,9 @@ mod tests {
             "flash_sources": {},
             "routers": {}
         }"#,
+            )
+            .unwrap(),
         )
-        .unwrap())
         .unwrap();
         let reg = Registry::from_slice(
             br#"{
@@ -962,15 +1057,30 @@ mod tests {
     fn empty_book_still_empty_until_logs() {
         let (intern, reg) = committed();
         let load = load_index(&root().join("config"), &intern, &reg);
+        let mut venues = [0usize; 3];
         for p in load.book.pools() {
+            assert!(!p.is_live(), "{:#x} live before seed/logs", p.address);
             match &p.state {
                 PoolState::V3(s) => {
+                    venues[0] += 1;
                     assert_eq!(s.sqrt_price_x96, U256::ZERO);
                     assert_eq!(s.liquidity, 0);
                     assert!(s.ticks.is_empty());
                 }
-                other => panic!("C1 seed must be V3 zeros, got {other:?}"),
+                PoolState::V2(s) => {
+                    venues[1] += 1;
+                    assert!(s.reserve0.is_zero() && s.reserve1.is_zero());
+                }
+                PoolState::Curve(s) => {
+                    venues[2] += 1;
+                    assert!(s.stale, "curve starts stale until read");
+                    assert_eq!(s.rates.len(), p.tokens.len());
+                }
             }
         }
+        assert!(
+            venues.iter().all(|&n| n > 0),
+            "every venue loads: {venues:?}"
+        );
     }
 }

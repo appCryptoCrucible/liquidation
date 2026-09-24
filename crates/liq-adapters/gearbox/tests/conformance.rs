@@ -20,8 +20,8 @@ use liq_adapters_gearbox::layout::{TokenRow, UNDERLYING_SLOT, UNMAPPED_ASSET};
 use liq_adapters_gearbox::{alloc_meter, math, Config, GearboxV3, PROTOCOL};
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
-    CallbackShape, Constraints, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice,
-    MarketSlot, Protocol, ProtocolError, StateWriter,
+    CallbackShape, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice, MarketSlot,
+    Protocol, ProtocolError, StateWriter,
 };
 use liq_types::{LogSubscriber, PositionKey, PriceVector, Ray};
 
@@ -225,11 +225,7 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
     let h_u = p_u.health(st_u.view(ALICE_ID, T0).unwrap(), &px_u).unwrap();
     assert_eq!(h_u.state, HealthState::Liquidatable, "check 10 class");
     let q_u = p_u
-        .quote(
-            st_u.view(ALICE_ID, T0).unwrap(),
-            &px_u,
-            &Constraints::UNBOUNDED,
-        )
+        .quote(st_u.view(ALICE_ID, T0).unwrap(), &px_u)
         .unwrap()
         .expect("check 10: Liquidatable quotes");
     let from_curve = q_u.seize_options[0].curve.bonus_at_hf(h_u.hf).unwrap();
@@ -280,11 +276,7 @@ fn health_unhealthy_and_expired_but_healthy() {
     assert_eq!(he.state, HealthState::Liquidatable);
     assert!(he.hf >= Ray::ONE);
     let q = p_e
-        .quote(
-            st_e.view(ALICE_ID, T0).unwrap(),
-            &px,
-            &Constraints::UNBOUNDED,
-        )
+        .quote(st_e.view(ALICE_ID, T0).unwrap(), &px)
         .unwrap()
         .expect("expired-but-healthy still quotes partial");
     assert_eq!(q.repay_options[0].asset, UNDERLYING);
@@ -301,7 +293,7 @@ fn quote_partial_pin_math_and_full_unpriced() {
     let (p, st) = full_store(&d, ALICE_COLL_LIQ, ALICE_DEBT_LIQ);
     let px = prices(RAY_ONE, RAY_ONE);
     let q = p
-        .quote(st.view(ALICE_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
+        .quote(st.view(ALICE_ID, T0).unwrap(), &px)
         .unwrap()
         .expect("liquidatable");
     assert_eq!(q.repay_options[0].asset, UNDERLYING);
@@ -322,19 +314,76 @@ fn quote_partial_pin_math_and_full_unpriced() {
         q.seize_options[0].bonus,
         math::bonus_ray(U256::from(DISCOUNT)).unwrap()
     );
+    // Partial window: the lower edge restores health (TW 85, D 88,
+    // k = 0.985 − 0.85/0.95): ≈ 33.2 USDC, +1 % headroom.
+    let lo = q.repay_options[0].min_repay;
+    assert!(
+        lo > uint!(33_000_000_U256) && lo < uint!(34_000_000_U256),
+        "lo {lo}"
+    );
+    assert!(lo < amount);
+    assert_eq!(q.repay_options[0].pair_seize, Some(0));
+    // Full leg: all-or-nothing, pays totalValue · 0.95 + 0.5 % margin,
+    // withdraws the whole balance less the 1 wei `withdraw(max)` leaves.
+    assert_eq!(q.repay_options[1].min_repay, q.repay_options[1].max_repay);
+    assert_eq!(q.repay_options[1].max_repay, uint!(95_500_000_U256));
+    assert_eq!(q.repay_options[1].pair_seize, Some(1));
+    assert_eq!(
+        q.seize_options[1].max_seize,
+        ALICE_COLL_LIQ - U256::from(1u8)
+    );
 
     let (p0, st0) = full_store(&d, U256::ZERO, ALICE_DEBT_LIQ);
-    let q0 = p0
-        .quote(
-            st0.view(ALICE_ID, T0).unwrap(),
-            &px,
-            &Constraints::UNBOUNDED,
-        )
-        .unwrap();
+    let q0 = p0.quote(st0.view(ALICE_ID, T0).unwrap(), &px).unwrap();
     assert!(
         q0.is_none(),
         "full MultiCall unpriced when no seizable non-underlying"
     );
+}
+
+/// A deep account: no partial slice restores health and the full close is
+/// bad debt (loss policy) — no quote rather than a leg that reverts.
+#[test]
+fn quote_refuses_unrestorable_bad_debt_account() {
+    let d = Deploy::new();
+    let (p, st) = full_store(&d, ALICE_COLL_LIQ, ALICE_DEBT_DEEP);
+    let px = prices(RAY_ONE, RAY_ONE);
+    assert_eq!(
+        p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap().state,
+        HealthState::Liquidatable
+    );
+    assert!(p
+        .quote(st.view(ALICE_ID, T0).unwrap(), &px)
+        .unwrap()
+        .is_none());
+}
+
+/// `SetBorrowingLimits` raises `minDebt` to 60 USDC: a partial may leave
+/// no less, which caps the slice below what restoring health needs — only
+/// the full leg remains.
+#[test]
+fn min_debt_from_set_borrowing_limits_caps_partial() {
+    let d = Deploy::new();
+    let p = d.adapter();
+    let mut logs = listing_logs(&d);
+    logs.extend(activity_logs_pos(&d, ALICE_COLL_LIQ, ALICE_DEBT_LIQ));
+    logs.push(log(
+        d.configurator,
+        &configurator::SetBorrowingLimits {
+            minDebt: uint!(60_000_000_U256),
+            maxDebt: uint!(1_000_000_000_000_U256),
+        },
+        DEPLOY_BLOCK + 3,
+        T0,
+    ));
+    let st = store_after(&p, &logs);
+    let px = prices(RAY_ONE, RAY_ONE);
+    let q = p
+        .quote(st.view(ALICE_ID, T0).unwrap(), &px)
+        .unwrap()
+        .expect("full leg still quotes");
+    assert_eq!(q.repay_options.len(), 1, "partial dropped");
+    assert_eq!(q.repay_options[0].min_repay, q.repay_options[0].max_repay);
 }
 
 #[test]
@@ -343,7 +392,7 @@ fn quote_static_bonus_and_encode_ok() {
     let (p, st) = full_store(&d, ALICE_COLL_LIQ, ALICE_DEBT_LIQ);
     let px = prices(RAY_ONE, RAY_ONE);
     let q = p
-        .quote(st.view(ALICE_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
+        .quote(st.view(ALICE_ID, T0).unwrap(), &px)
         .unwrap()
         .expect("liquidatable");
     let rec = Address::repeat_byte(0x99);
@@ -445,7 +494,12 @@ fn new_refuses_unasserted_fees() {
     let cfg = Config::from_toml(raw).expect("gearbox.toml");
     assert!(!cfg.live_fees_asserted);
     assert_eq!(cfg.protocol, PROTOCOL);
-    assert_eq!(cfg.expected_managers, 34);
+    assert_eq!(
+        cfg.address_provider,
+        alloy_primitives::address!("0xF7f0a609BfAb9a0A98786951ef10e5FE26cC1E38"),
+        "managers come from the v3.1 address provider"
+    );
+    assert!(cfg.register.is_zero());
     assert_eq!(
         GearboxV3::new(cfg).unwrap_err(),
         ConfigError::LiveFeesUnasserted
@@ -464,7 +518,10 @@ fn assert_live_registry_refuses_count_mismatch_and_keeps_flag_false() {
     let d = Deploy::new();
     let raw = include_str!("../../../../config/protocols/gearbox.toml");
     let mut cfg = Config::from_toml(raw).expect("gearbox.toml");
+    // Single-register path with a pinned cardinality (the v3.0 D15 count).
+    cfg.address_provider = alloy_primitives::Address::ZERO;
     cfg.register = d.register;
+    cfg.expected_managers = 34;
     let rpc = mock_registry(&d);
     let err = cfg
         .assert_live_registry(&rpc, cfg.pinned_through)

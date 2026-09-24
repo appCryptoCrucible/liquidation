@@ -15,7 +15,7 @@ use liq_node::dirty::DirtyAccumulator;
 use liq_node::router::{LogRouter, Route};
 use liq_node::source::{OwnedBlock, OwnedLog};
 use liq_oracle::CanonicalBook;
-use liq_protocol::{Constraints, Protocol};
+use liq_protocol::Protocol;
 use liq_sim::{verify_historical, SimError};
 use liq_state::{StateStore, StoreConfig, UndoCapacity};
 use liq_types::{stage, HaltReason, HaltScope, HaltSink, LogSubscriber, Stage, TraceId};
@@ -180,7 +180,6 @@ pub(crate) fn process_segment(
         positions: 1_048_576,
         queue: 1024,
     });
-    let cons = Constraints::UNBOUNDED;
     let haircut = Haircut::NONE;
 
     let mut n = from;
@@ -255,7 +254,6 @@ pub(crate) fn process_segment(
                 flash: &flash,
                 routes: &routes,
                 haircut,
-                cons: &cons,
             };
             if first {
                 if let Some(c) = llc_counters.as_mut() {

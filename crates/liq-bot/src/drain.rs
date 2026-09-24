@@ -16,8 +16,9 @@ use liq_exec::fee::FeeQuote;
 use liq_exec::path::{ExecInbox, ExecJob};
 use liq_flash::{CostModel, FlashIndex, Haircut};
 use liq_node::{as_dirty_sets, AfterBlock, AfterBlockCtx};
+use liq_oracle::{CanonicalBook, DerivedBook};
 use liq_plan::{EncodedPlan, ValidateCtx, FLAG_SWEEP};
-use liq_protocol::{Constraints, DirtySet, Protocol};
+use liq_protocol::{DirtySet, Protocol};
 use liq_router::{
     assemble, bid, debt_notional_eth_wei, select, Bid, BidConfig, BidSchedule, GasTerms,
     MarketView, PoolBook, PositionInput, SelectCfg, SelectedPlan, SolveBudget, EXACT_K,
@@ -27,8 +28,9 @@ use liq_sim::{
     block_env_at, execute_calldata, verify, Bundle, MemoryFactory, SimError, SimOutcome, SimTx,
     Simulator, StateProviderFactory, Trigger, PLANNED_EXECUTOR,
 };
-use liq_types::{AssetId, FlashProvider, TriggerKind};
-use parking_lot::RwLock;
+use liq_state::StateView;
+use liq_types::{AssetId, FlashProvider, PriceTick, PriceVector, TriggerKind};
+use parking_lot::{Mutex, RwLock};
 
 use crate::assemble_view::{require_meta, require_token, ProcessAssembleView};
 use crate::bind::{BoundProtocol, SelectBind};
@@ -105,13 +107,246 @@ pub struct DrainJoin {
     pub sim: Option<Box<dyn DrainSim>>,
     pub operator: Option<Address>,
     pub chain_id: u64,
-    pub cons: Constraints,
     pub fee: Option<FeeQuote>,
     /// Kept for the process. `observe_parent` only when header base fee ≠ 0.
     pub oracle: Option<liq_router::GasOracle>,
     /// Committed `bid.toml` only. Missing → [`Self::select`] stays None.
     pub bid_cfg: Option<BidSchedule>,
     header_clock: Option<Arc<crate::stall::HeaderClock>>,
+    prices: PriceFeed,
+    /// Measured gas model for the band's non-swap `fixed_gas`.
+    pub band_gas: crate::gas_model::BandGas,
+    /// Measured per-leg liquidation gas (`config/liq-gas.toml`). Plan gas.
+    pub liq_gas: liq_router::LiqGas,
+    /// Block each band key was first seen; the warm table is trusted for a
+    /// key once it was built after that block.
+    band_registered: HashMap<crate::bands::BandKey, u64>,
+}
+
+/// The oracle books the ingest router writes, and the engine's view of them.
+/// Written on the hot thread by the feed/derived handlers during apply;
+/// read here after apply, same thread, so the locks never contend.
+struct PriceFeed {
+    canonical: Option<Arc<Mutex<CanonicalBook>>>,
+    derived: Option<Arc<Mutex<DerivedBook>>>,
+    /// Canonical slot where it has a price, else derived. Reused each block.
+    merged: PriceVector,
+    /// Changed slots this block. Reused each block.
+    ticks: Vec<PriceTick>,
+    /// The engine has taken a wholesale load and a full-universe fold.
+    loaded: bool,
+    /// Registry decimals by `AssetId` (prices are per whole token).
+    decimals: Vec<u8>,
+    weth: Option<AssetId>,
+}
+
+impl PriceFeed {
+    fn empty() -> Self {
+        Self {
+            canonical: None,
+            derived: None,
+            merged: PriceVector::zeroed(),
+            ticks: Vec::new(),
+            loaded: false,
+            decimals: Vec::new(),
+            weth: None,
+        }
+    }
+}
+
+/// Raw units of `asset` per 1e18 wei: `10^decimals · P(ETH) / P(asset)`,
+/// both prices per whole token in the same numeraire. `None` when either
+/// price or the decimals are unknown — never a guessed rate.
+fn per_eth_from_prices(
+    asset_price: &liq_types::Price,
+    eth_price: &liq_types::Price,
+    decimals: u8,
+) -> Option<U256> {
+    if asset_price.ts == 0 || eth_price.ts == 0 || asset_price.price.raw().is_zero() {
+        return None;
+    }
+    let unit = U256::from(10u64).checked_pow(U256::from(decimals))?;
+    liq_types::fixed::mul_div(
+        unit,
+        eth_price.price.raw(),
+        asset_price.price.raw(),
+        liq_types::fixed::Rounding::Down,
+    )
+    .ok()
+    .filter(|v| !v.is_zero())
+}
+
+/// Raw collateral units per raw debt unit, RAY, before bonus:
+/// `P(debt) · 10^dec(coll) / (P(coll) · 10^dec(debt))`, rounded down so the
+/// seized estimate never exceeds what the oracle ratio pays.
+///
+/// This is the canonical (Chainlink) ratio. It equals the protocol's own
+/// ratio where the protocol prices off the same feeds (Aave V3/Spark); for
+/// protocols with their own oracle it is an approximation of it.
+fn coll_per_debt_from_prices(
+    coll: &liq_types::Price,
+    debt: &liq_types::Price,
+    dec_coll: u8,
+    dec_debt: u8,
+) -> Option<liq_types::Ray> {
+    use liq_types::fixed::{mul_div, Rounding, RAY};
+    if coll.ts == 0 || debt.ts == 0 || coll.price.raw().is_zero() {
+        return None;
+    }
+    let ten = U256::from(10u64);
+    let uc = ten.checked_pow(U256::from(dec_coll))?;
+    let ud = ten.checked_pow(U256::from(dec_debt))?;
+    let x = mul_div(debt.price.raw(), uc, ud, Rounding::Down).ok()?;
+    mul_div(x, RAY, coll.price.raw(), Rounding::Down)
+        .ok()
+        .filter(|v| !v.is_zero())
+        .map(liq_types::Ray::from_raw)
+}
+
+/// Publish [`MarketView::pair_terms`] for every `(repay, seize)` leg of the
+/// candidates about to be selected. `bonus` is the quote's (sizing overlays
+/// it anyway); `flash_fee_bps` is the cheapest live source holding the debt;
+/// `fixed_gas` is the measured non-swap gas with that same source's wrap,
+/// `0` = not measured (the band refuses such a pair rather than
+/// under-charging gas).
+fn publish_pair_terms(
+    feed: &PriceFeed,
+    flash: &FlashIndex,
+    gas: &crate::gas_model::BandGas,
+    cands: &[&Candidate],
+    view: &mut ProcessAssembleView,
+) {
+    let bands = view.bands().cloned();
+    let mut shared = bands.as_ref().map(|b| b.inputs.lock());
+    for c in cands {
+        for r in &c.quote.repay_options {
+            let Some(dp) = feed.merged.0.get(usize::from(r.asset.0)) else {
+                continue;
+            };
+            let Some(&dd) = feed.decimals.get(usize::from(r.asset.0)) else {
+                continue;
+            };
+            let cheapest = flash.entries(r.asset).first();
+            let flash_fee_bps = cheapest.map_or(0, |e| e.fee_bps);
+            let fixed_gas = cheapest.map_or(0, |e| gas.fixed(c.protocol, e.provider));
+            for s in &c.quote.seize_options {
+                let (Some(cp), Some(&dc)) = (
+                    feed.merged.0.get(usize::from(s.asset.0)),
+                    feed.decimals.get(usize::from(s.asset.0)),
+                ) else {
+                    continue;
+                };
+                let Some(ratio) = coll_per_debt_from_prices(cp, dp, dc, dd) else {
+                    tracing::error!(
+                        coll = s.asset.0,
+                        debt = r.asset.0,
+                        "pair unpriced — pair_terms withheld, leg not sized"
+                    );
+                    continue;
+                };
+                let terms = liq_router::PairTerms {
+                    bonus: s.bonus,
+                    coll_per_debt: ratio,
+                    flash_fee_bps,
+                    fixed_gas,
+                };
+                view.insert_pair_terms(c.protocol, s.asset, r.asset, terms);
+                if let Some(i) = shared.as_mut() {
+                    i.terms.insert((c.protocol, s.asset, r.asset), terms);
+                }
+            }
+        }
+    }
+}
+
+/// Refresh [`MarketView::per_eth`] for every priced asset from this block's
+/// merged vector. Existing keys are overwritten in place (no allocation
+/// after the first block).
+fn publish_per_eth(feed: &PriceFeed, view: &mut ProcessAssembleView) {
+    let Some(weth) = feed.weth else {
+        return;
+    };
+    let Some(eth) = feed.merged.0.get(usize::from(weth.0)) else {
+        return;
+    };
+    let bands = view.bands().cloned();
+    let mut inputs = bands.as_ref().map(|b| b.inputs.lock());
+    for p in &feed.merged.0 {
+        let Some(&dec) = feed.decimals.get(usize::from(p.asset.0)) else {
+            continue;
+        };
+        if let Some(per) = per_eth_from_prices(p, eth, dec) {
+            view.insert_per_eth(p.asset, per);
+            if let Some(i) = inputs.as_mut() {
+                i.per_eth.insert(p.asset, per);
+            }
+        }
+    }
+}
+
+/// Stamp the band inputs with this block's fees. The warm thread rebuilds
+/// the table when this block number advances.
+fn publish_band_block(view: &ProcessAssembleView, fee: Option<&FeeQuote>, block: u64) {
+    let (Some(bands), Some(fee)) = (view.bands(), fee) else {
+        return;
+    };
+    let mut i = bands.inputs.lock();
+    i.base_fee = fee.next_base_fee;
+    i.priority_fee = fee.priority_wei;
+    i.block = block;
+}
+
+/// Make sure every leg about to be sized has a band decision this block.
+/// A pair the warm table has already evaluated (registered before the
+/// table's block) is left to the table — absent there means not viable.
+/// A pair it has not evaluated yet is computed here, once.
+#[allow(clippy::too_many_arguments)] // each input is a distinct band term
+fn ensure_bands(
+    view: &mut ProcessAssembleView,
+    registered: &mut HashMap<crate::bands::BandKey, u64>,
+    cands: &[&Candidate],
+    fee: Option<&FeeQuote>,
+    block: u64,
+    book: &PoolBook,
+    routes: &liq_router::RouteTable,
+    budget: &SolveBudget,
+) {
+    let Some(fee) = fee else {
+        return;
+    };
+    let published_block = view.published_block();
+    for c in cands {
+        for r in &c.quote.repay_options {
+            for s in &c.quote.seize_options {
+                let key = (c.protocol, s.asset, r.asset);
+                let first_seen = *registered.entry(key).or_insert(block);
+                if MarketView::band(view, key.0, key.1, key.2).is_some()
+                    || published_block > first_seen
+                {
+                    continue;
+                }
+                let (Some(terms), Some(per)) = (
+                    MarketView::pair_terms(view, key.0, key.1, key.2),
+                    MarketView::per_eth(view, key.2),
+                ) else {
+                    continue;
+                };
+                if let Some(b) = crate::bands::compute_one(
+                    key,
+                    &terms,
+                    per,
+                    fee.next_base_fee,
+                    fee.priority_wei,
+                    block,
+                    book,
+                    routes,
+                    budget,
+                ) {
+                    view.insert_local_band(key, b);
+                }
+            }
+        }
+    }
 }
 
 impl DrainJoin {
@@ -144,12 +379,62 @@ impl DrainJoin {
             sim: None,
             operator,
             chain_id,
-            cons: Constraints::UNBOUNDED,
             fee: None,
             oracle: None,
             bid_cfg: None,
             header_clock: None,
+            prices: PriceFeed::empty(),
+            band_gas: crate::gas_model::BandGas::none(),
+            liq_gas: liq_router::LiqGas::none(),
+            band_registered: HashMap::new(),
         }
+    }
+
+    /// Size the engine's per-position tables for the real universe so the
+    /// hot thread does not reallocate them as positions load. Growth past
+    /// this still works, it just allocates.
+    #[must_use]
+    pub fn with_engine_capacity(mut self, assets: usize, positions: usize) -> Self {
+        self.engine = Engine::new(EngineConfig {
+            assets: assets.max(1),
+            positions: positions.max(1024),
+            queue: 1024,
+        });
+        self
+    }
+
+    /// Measured gas model: per-protocol leg gas for `select`, and the
+    /// band's non-swap gas. `None` → nothing is measured → nothing sizes.
+    #[must_use]
+    pub fn with_gas_model(
+        mut self,
+        model: Option<&crate::gas_model::GasModel>,
+        resolve: &dyn Fn(&str) -> Option<liq_types::ProtocolId>,
+    ) -> Self {
+        if let Some(m) = model {
+            self.liq_gas = m.liq_gas(resolve);
+            self.band_gas = m.band_gas(resolve);
+        }
+        self
+    }
+
+    /// Registry decimals and the WETH id, for `per_eth` from live prices.
+    #[must_use]
+    pub fn with_assets(mut self, intern: &liq_config::Intern) -> Self {
+        let n = intern.assets().len();
+        self.prices.decimals = vec![0; n];
+        for a in intern.assets() {
+            if let Some(d) = self.prices.decimals.get_mut(usize::from(a.id.0)) {
+                *d = a.decimals;
+            }
+            if a.address == crate::bind::REGISTRY_WETH {
+                self.prices.weth = Some(a.id);
+            }
+        }
+        if self.prices.weth.is_none() {
+            tracing::error!("registry has no WETH — per_eth unpublished, nothing sizes");
+        }
+        self
     }
 
     /// Production join: leaked adapters / intern / wrap bind / live oracle.
@@ -195,6 +480,13 @@ impl DrainJoin {
         self.book = Arc::clone(&index.book);
         self.flash_sources = Some(Arc::clone(&index.sources));
         self.flash_scratch = FlashIndex::new(index.flash_assets);
+        self.prices.canonical = index.canonical.clone();
+        self.prices.derived = index.derived.clone();
+        if self.prices.canonical.is_none() {
+            tracing::error!(
+                "no canonical price book — engine has no prices, nothing is liquidatable"
+            );
+        }
         self
     }
 
@@ -290,7 +582,7 @@ impl DrainJoin {
                 wrap_gas: bind.wrap_gas,
                 wrap_aave_v4: bind.wrap_aave_v4,
                 aave_v4: bind.aave_v4,
-                liq_gas: 0,
+                liq_gas: self.liq_gas,
                 over_borrow: U256::ZERO,
                 min_out_tolerance_bps: liq_router::select::MIN_OUT_TOLERANCE_BPS,
                 budget: SolveBudget::default(),
@@ -355,8 +647,11 @@ impl DrainJoin {
             flash: flash.as_ref(),
             routes: &self.routes,
             haircut: self.world_haircut(),
-            cons: &self.cons,
         };
+        sync_prices(&mut self.engine, &world, &mut self.prices);
+        publish_per_eth(&self.prices, &mut self.assemble);
+        publish_band_block(&self.assemble, self.fee.as_ref(), ctx.block);
+        self.assemble.prune_local_bands();
         if proto_refs.is_empty() {
             tracing::error!("empty protocol list — on_dirty skipped (no invented adapter)");
         } else {
@@ -377,11 +672,16 @@ impl DrainJoin {
     }
 
     /// Drain the engine queue into the inbox. Tests inject candidates here.
+    ///
+    /// `view` sources tail-specific pin data (Liquity trove id, Compound
+    /// seized cToken, ...) from the position's `PositionExtraRepr` — `None`
+    /// in tests, `Some` at the real `after_block` call site.
     pub fn enqueue_candidates(
         &mut self,
         cands: &[Candidate],
         tip: u64,
         timestamp: u64,
+        view: Option<&StateView<'_>>,
     ) -> DrainStats {
         let mut stats = DrainStats::default();
         if self.inbox.is_none() {
@@ -412,7 +712,7 @@ impl DrainJoin {
                 stats.skipped_predicted = stats.skipped_predicted.saturating_add(1);
                 continue;
             }
-            if !self.ensure_pins(c) {
+            if !self.ensure_pins(c, view) {
                 stats.skipped_pins = stats.skipped_pins.saturating_add(1);
                 continue;
             }
@@ -446,6 +746,23 @@ impl DrainJoin {
             stats.skipped_select = stats.skipped_select.saturating_add(1);
             return stats;
         };
+        publish_pair_terms(
+            &self.prices,
+            &self.flash.load(),
+            &self.band_gas,
+            &kept,
+            &mut self.assemble,
+        );
+        ensure_bands(
+            &mut self.assemble,
+            &mut self.band_registered,
+            &kept,
+            self.fee.as_ref(),
+            tip,
+            &self.book.read(),
+            &self.routes.table(),
+            &SolveBudget::default(),
+        );
         let inputs: Vec<PositionInput<'_>> = kept
             .iter()
             .map(|c| PositionInput {
@@ -539,7 +856,7 @@ impl DrainJoin {
         stats
     }
 
-    fn ensure_pins(&mut self, c: &Candidate) -> bool {
+    fn ensure_pins(&mut self, c: &Candidate, view: Option<&StateView<'_>>) -> bool {
         if self.assemble.has_pins(c.position) {
             return true;
         }
@@ -550,8 +867,18 @@ impl DrainJoin {
             );
             return false;
         };
-        match p.pins_from_candidate(c, None) {
+        match p.pins_from_candidate(c, view) {
             Some(pins) => {
+                {
+                    let assemble = &self.assemble;
+                    let token = |a: AssetId| liq_router::AssembleView::token(assemble, a);
+                    if let Some(bind) = self.select_bind.as_mut() {
+                        p.validate_pins(c, &pins, view, &token, &mut bind.validate);
+                    }
+                    if let Some(ready) = self.select.as_mut() {
+                        p.validate_pins(c, &pins, view, &token, &mut ready.validate);
+                    }
+                }
                 self.assemble.insert_pins(c.position, pins);
                 true
             }
@@ -662,12 +989,14 @@ impl AfterBlock for DrainJoin {
         self.refresh_select(ctx.gas_limit);
         let tip = ctx.store.tip();
         let ts = ctx.timestamp;
+        let store = ctx.store;
         self.feed_engine(ctx);
         let cands: Vec<Candidate> = self.engine.candidates().collect();
         if cands.is_empty() {
             return;
         }
-        let _ = self.enqueue_candidates(&cands, tip, ts);
+        let view = store.view(ts);
+        let _ = self.enqueue_candidates(&cands, tip, ts, Some(&view));
     }
 }
 
@@ -677,6 +1006,97 @@ enum Finish {
     Job,
     Full,
     Exec,
+}
+
+/// Bring the engine's price vector up to the oracle books after this block's
+/// logs were applied. First call (or an asset gaining its first price): a
+/// wholesale load plus a full-universe fold, since positions holding a
+/// previously unpriced asset were never banded. Otherwise each changed slot
+/// is one `on_price_tick`, which sweeps only the positions whose thresholds
+/// it crossed.
+fn sync_prices(engine: &mut Engine, world: &World<'_>, feed: &mut PriceFeed) {
+    let Some(canonical) = feed.canonical.as_ref() else {
+        return;
+    };
+    let plan = {
+        let c = canonical.lock();
+        let d = feed.derived.as_ref().map(|d| d.lock());
+        plan_price_sync(
+            c.vector(),
+            d.as_ref().map(|d| d.vector()),
+            engine.prices(),
+            feed.loaded,
+            &mut feed.merged,
+            &mut feed.ticks,
+        )
+    };
+    if plan == PriceSync::Reload {
+        if let Err(e) = engine.load_prices(&feed.merged) {
+            tracing::error!(error = %e, "price load refused — engine keeps its old prices");
+            return;
+        }
+        feed.loaded = true;
+        let priced = feed.merged.0.iter().filter(|p| p.ts != 0).count();
+        tracing::info!(
+            priced,
+            assets = feed.merged.0.len(),
+            "engine price load + full resync"
+        );
+        if let Err(e) = engine.resync(world) {
+            tracing::error!(error = %e, "full resync after price load reported an error");
+        }
+        return;
+    }
+    for t in &feed.ticks {
+        if let Err(e) = engine.on_price_tick(world, t) {
+            tracing::error!(error = %e, asset = t.asset.0, "price tick refused");
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum PriceSync {
+    /// Wholesale load + full fold: first sync, a resized book, or an asset
+    /// that just got its first price.
+    Reload,
+    /// `ticks` holds the changed slots (possibly none).
+    Ticks,
+}
+
+/// Fill `merged` (canonical slot where priced, else derived) and decide how
+/// the engine takes it. `ticks` is filled only for [`PriceSync::Ticks`].
+fn plan_price_sync(
+    canonical: &PriceVector,
+    derived: Option<&PriceVector>,
+    engine_px: &PriceVector,
+    loaded: bool,
+    merged: &mut PriceVector,
+    ticks: &mut Vec<PriceTick>,
+) -> PriceSync {
+    merged.0.clear();
+    ticks.clear();
+    for (i, p) in canonical.0.iter().enumerate() {
+        let d = derived.and_then(|d| d.0.get(i)).filter(|dp| dp.ts != 0);
+        let chosen = match d {
+            Some(dp) if p.ts == 0 => dp,
+            _ => p,
+        };
+        merged.0.push(chosen.clone());
+    }
+    if !loaded || engine_px.0.len() != merged.0.len() {
+        return PriceSync::Reload;
+    }
+    for (p, old) in merged.0.iter().zip(engine_px.0.iter()) {
+        if p.ts == 0 || (p.price == old.price && p.ts == old.ts) {
+            continue;
+        }
+        if old.ts == 0 {
+            ticks.clear();
+            return PriceSync::Reload;
+        }
+        ticks.push(p.clone());
+    }
+    PriceSync::Ticks
 }
 
 fn cause_for(set: &DirtySet) -> Option<TriggerCause> {
@@ -1000,6 +1420,8 @@ mod tests {
                 user: addr(0xB0 + u64::from(pos)),
             },
             repay_options: SmallVec::from_slice(&[RepayOption {
+                min_repay: alloy_primitives::U256::ZERO,
+                pair_seize: None,
                 asset: A1,
                 max_repay: e18(10),
                 slot: liq_protocol::SlotRef::ByAsset,
@@ -1053,9 +1475,12 @@ mod tests {
             fluid_t1: None,
             fluid_col_per_unit_debt: None,
             gearbox_min_seized: None,
-            gearbox_full_multicall: false,
+            gearbox_full: false,
             compound_ctoken_collateral: None,
             compound_is_cether: None,
+            aave_v4_collateral_reserve_id: None,
+            aave_v4_debt_reserve_id: None,
+            morpho_market_id: None,
         }
     }
 
@@ -1095,7 +1520,7 @@ mod tests {
                 wrap_gas: wrap_gas(),
                 wrap_aave_v4: 496_704,
                 aave_v4: None,
-                liq_gas: 80_000,
+                liq_gas: liq_router::LiqGas::uniform(80_000),
                 over_borrow: U256::from(1u64),
                 min_out_tolerance_bps: liq_router::select::MIN_OUT_TOLERANCE_BPS,
                 budget: SolveBudget::default(),
@@ -1196,7 +1621,15 @@ mod tests {
                 fixed_gas: 50_000,
             },
         );
-        v.insert_notional_cap(A1, U256::MAX);
+        v.insert_local_band(
+            (PROTO, A0, A1),
+            liq_router::ViabilityBand {
+                min_size: U256::ZERO,
+                max_size: U256::MAX,
+                base_fee: 0,
+                block: 0,
+            },
+        );
         v
     }
 
@@ -1358,7 +1791,7 @@ mod tests {
                 conf: Confidence(9_000),
             },
         );
-        let st = j.enqueue_candidates(&[c], 0, 1);
+        let st = j.enqueue_candidates(&[c], 0, 1, None);
         assert_eq!(st.jobs_sent, 0);
         assert!(st.skipped_predicted >= 1);
         assert!(rx.try_recv().is_err());
@@ -1379,7 +1812,7 @@ mod tests {
         .with_select(select_ready(tok(1)))
         .with_fee(fee(0))
         .with_sim(Box::new(MemoryDrainSim::new(MemoryFactory::empty())));
-        let st = j.enqueue_candidates(&[fireable(1)], 0, 1);
+        let st = j.enqueue_candidates(&[fireable(1)], 0, 1, None);
         assert_eq!(st.jobs_sent, 0);
         assert!(st.skipped_pins >= 1);
         assert!(rx.try_recv().is_err());
@@ -1389,7 +1822,7 @@ mod tests {
     fn no_state_provider_zero_jobs() {
         let (inbox, rx) = ExecInbox::pair(4);
         let mut j = join_base(Some(inbox), false);
-        let st = j.enqueue_candidates(&[fireable(1)], 0, 1);
+        let st = j.enqueue_candidates(&[fireable(1)], 0, 1, None);
         assert_eq!(st.jobs_sent, 0);
         assert!(
             st.skipped_sim >= 1 || st.skipped_select >= 1 || st.skipped_pins >= 1,
@@ -1401,7 +1834,7 @@ mod tests {
     #[test]
     fn no_secrets_unbound_zero_jobs() {
         let mut j = join_base(None, true);
-        let st = j.enqueue_candidates(&[fireable(1)], 0, 1);
+        let st = j.enqueue_candidates(&[fireable(1)], 0, 1, None);
         assert_eq!(st.jobs_sent, 0);
         assert!(st.skipped_exec >= 1);
     }
@@ -1431,7 +1864,7 @@ mod tests {
         }));
         let mut c = fireable(1);
         c.quote.key.user = addr(0xB1);
-        let st = j.enqueue_candidates(&[c], 0, 1);
+        let st = j.enqueue_candidates(&[c], 0, 1, None);
         if st.jobs_sent == 0 {
             panic!("old unbound drain never enqueued; stats={st:?}");
         }
@@ -1453,7 +1886,7 @@ mod tests {
         assert!(j.select.is_some());
         j.refresh_select(0);
         assert!(j.select.is_none(), "gas_limit 0 must not default 30M");
-        let st = j.enqueue_candidates(&[fireable(1)], 0, 1);
+        let st = j.enqueue_candidates(&[fireable(1)], 0, 1, None);
         assert_eq!(st.jobs_sent, 0);
         assert!(st.skipped_select >= 1);
         assert!(rx.try_recv().is_err());
@@ -1489,7 +1922,11 @@ mod tests {
         assert_eq!(ready.cfg.exact_k, EXACT_K);
         assert_eq!(ready.cfg.nonce_slots, NONCE_SLOTS);
         assert_eq!(ready.gas_failed, 0);
-        assert_eq!(ready.cfg.liq_gas, 0);
+        assert_eq!(
+            ready.cfg.liq_gas,
+            liq_router::LiqGas::none(),
+            "unmeasured until liq-gas.toml loads"
+        );
         assert_eq!(ready.cfg.wrap_aave_v4, 496_704);
     }
 
@@ -1526,7 +1963,7 @@ mod tests {
         if let Some(s) = j.select.as_mut() {
             s.gas_failed = 0;
         }
-        let st = j.enqueue_candidates(&[fireable(1)], 0, 1);
+        let st = j.enqueue_candidates(&[fireable(1)], 0, 1, None);
         assert!(
             st.skipped_sim >= 1 || st.jobs_sent >= 1,
             "gas_failed=0 at learning p must reach select, not abort: {st:?}"
@@ -1550,7 +1987,7 @@ mod tests {
         assert!(j.fee.is_none());
         let oracle = liq_router::GasOracle::with_priority_cap(4).unwrap();
         assert!(crate::bind::fee_from_oracle(&oracle, 0).is_none());
-        let st = j.enqueue_candidates(&[fireable(1)], 0, 1);
+        let st = j.enqueue_candidates(&[fireable(1)], 0, 1, None);
         assert_eq!(st.jobs_sent, 0);
         assert!(rx.try_recv().is_err());
     }
@@ -1667,5 +2104,123 @@ mod tests {
         assert!(ProcessSecrets::from_hex("not-hex", "not-hex").is_none());
         let _ = SubmitLease::refused();
         let _ = bind;
+    }
+
+    fn px(asset: u16, price: u64, ts: u64) -> liq_types::Price {
+        liq_types::Price {
+            asset: AssetId(asset),
+            price: liq_types::Ray::from_raw(U256::from(price)),
+            source: liq_types::SourceKind::Canonical,
+            block: 1,
+            ts,
+        }
+    }
+
+    fn vec_of(ps: &[liq_types::Price]) -> PriceVector {
+        liq_types::PriceVector(ps.to_vec())
+    }
+
+    #[test]
+    fn price_sync_first_call_reloads_and_derived_fills_unpriced_slots() {
+        let canon = vec_of(&[px(0, 100, 5), px(1, 0, 0)]);
+        let derived = vec_of(&[px(0, 999, 9), px(1, 42, 7)]);
+        let (mut merged, mut ticks) = (PriceVector::zeroed(), Vec::new());
+        let plan = plan_price_sync(
+            &canon,
+            Some(&derived),
+            &PriceVector::zeroed(),
+            false,
+            &mut merged,
+            &mut ticks,
+        );
+        assert_eq!(plan, PriceSync::Reload);
+        assert_eq!(
+            merged.0[0].price, canon.0[0].price,
+            "canonical wins where priced"
+        );
+        assert_eq!(
+            merged.0[1].price, derived.0[1].price,
+            "derived fills an unpriced slot"
+        );
+    }
+
+    #[test]
+    fn price_sync_changed_slot_is_one_tick_unchanged_is_none() {
+        let engine_px = vec_of(&[px(0, 100, 5), px(1, 200, 5)]);
+        let canon = vec_of(&[px(0, 100, 5), px(1, 210, 6)]);
+        let (mut merged, mut ticks) = (PriceVector::zeroed(), Vec::new());
+        let plan = plan_price_sync(&canon, None, &engine_px, true, &mut merged, &mut ticks);
+        assert_eq!(plan, PriceSync::Ticks);
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(ticks[0].asset, AssetId(1));
+
+        let plan = plan_price_sync(&engine_px, None, &engine_px, true, &mut merged, &mut ticks);
+        assert_eq!(plan, PriceSync::Ticks);
+        assert!(ticks.is_empty(), "no change, no tick");
+    }
+
+    #[test]
+    fn per_eth_scales_by_decimals_and_price_ratio() {
+        let ray = |usd: u64| U256::from(usd) * liq_types::fixed::RAY;
+        let price = |asset: u16, usd: u64| liq_types::Price {
+            asset: AssetId(asset),
+            price: liq_types::Ray::from_raw(ray(usd)),
+            source: liq_types::SourceKind::Canonical,
+            block: 1,
+            ts: 1,
+        };
+        let eth = price(0, 3_000);
+        // USDC: 6 decimals, $1 → 3000e6 raw per ETH.
+        assert_eq!(
+            per_eth_from_prices(&price(1, 1), &eth, 6),
+            Some(U256::from(3_000_000_000u64))
+        );
+        // WETH itself: identity 1e18.
+        assert_eq!(per_eth_from_prices(&eth, &eth, 18), Some(e18(1)));
+        // An 18-dec $1,500 token: 2e18 raw per ETH.
+        assert_eq!(
+            per_eth_from_prices(&price(2, 1_500), &eth, 18),
+            Some(e18(2))
+        );
+        // Unpriced slot is None, never a guess.
+        let mut unpriced = price(3, 1);
+        unpriced.ts = 0;
+        assert_eq!(per_eth_from_prices(&unpriced, &eth, 18), None);
+    }
+
+    #[test]
+    fn coll_per_debt_is_raw_coll_per_raw_debt_ray() {
+        let ray = |usd: u64| U256::from(usd) * liq_types::fixed::RAY;
+        let price = |asset: u16, usd: u64| liq_types::Price {
+            asset: AssetId(asset),
+            price: liq_types::Ray::from_raw(ray(usd)),
+            source: liq_types::SourceKind::Canonical,
+            block: 1,
+            ts: 1,
+        };
+        // WETH coll at $3000 (18 dec) against USDC debt at $1 (6 dec):
+        // 1 raw USDC buys 1e-6/3000 ETH = 333_333_333 raw wei (floor).
+        let r = coll_per_debt_from_prices(&price(0, 3_000), &price(1, 1), 18, 6).unwrap();
+        assert_eq!(r.raw() / liq_types::fixed::RAY, U256::from(333_333_333u64));
+        // Same token both sides at equal decimals: exactly 1.
+        let one = coll_per_debt_from_prices(&price(0, 3_000), &price(0, 3_000), 18, 18).unwrap();
+        assert_eq!(one.raw(), liq_types::fixed::RAY);
+        let mut unpriced = price(2, 1);
+        unpriced.ts = 0;
+        assert!(coll_per_debt_from_prices(&unpriced, &price(1, 1), 18, 6).is_none());
+    }
+
+    #[test]
+    fn price_sync_first_price_for_an_asset_forces_reload() {
+        let engine_px = vec_of(&[px(0, 100, 5), px(1, 0, 0)]);
+        let canon = vec_of(&[px(0, 100, 5), px(1, 50, 8)]);
+        let (mut merged, mut ticks) = (PriceVector::zeroed(), Vec::new());
+        let plan = plan_price_sync(&canon, None, &engine_px, true, &mut merged, &mut ticks);
+        assert_eq!(
+            plan,
+            PriceSync::Reload,
+            "positions holding a newly priced asset were never banded"
+        );
+        assert!(ticks.is_empty());
     }
 }

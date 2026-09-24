@@ -30,3 +30,9 @@ data/archive/**/*.parquet
 *.key
 *.pem
 secrets/
+
+# gas measurement tool cache (traces, discovered txs)
+tools/gas-measure/cache/
+tools/gas-measure/run.log
+tools/gas-measure/report.out
+tools/gas-measure/fork-trace*.txt

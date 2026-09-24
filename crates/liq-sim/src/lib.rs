@@ -24,8 +24,8 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 pub use verify::{
-    block_env_at, execute_calldata, verify, verify_historical, verify_variants, Bundle, HealthProbe,
-    SimTx, Trigger,
+    block_env_at, execute_calldata, verify, verify_historical, verify_variants, Bundle,
+    HealthProbe, SimTx, Trigger,
 };
 pub use warm::{
     clear_except, insert_executor, load_executor_creation_bytecode, ExecutorSpec, Simulator,

@@ -199,6 +199,13 @@ pub fn value_ray_of(amount: U256, price: Ray, decimals: u8) -> Result<U256> {
     )?)
 }
 
+/// Silence unused half constants that document the chain's HALF_* (used via Rounding::HalfUp).
+const _: () = {
+    let _ = HALF_BPS.as_limbs();
+    let _ = HALF_RAY.as_limbs();
+    let _ = HALF_WAD.as_limbs();
+};
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
 mod rounding_direction {
@@ -220,10 +227,3 @@ mod rounding_direction {
         assert_eq!(v_token_balance(scaled, index).unwrap(), ceil);
     }
 }
-
-/// Silence unused half constants that document the chain's HALF_* (used via Rounding::HalfUp).
-const _: () = {
-    let _ = HALF_BPS.as_limbs();
-    let _ = HALF_RAY.as_limbs();
-    let _ = HALF_WAD.as_limbs();
-};

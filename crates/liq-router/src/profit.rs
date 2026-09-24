@@ -1,7 +1,9 @@
 //! Sizing and the profit model (GUIDE 12 §1, §2, §4; D45).
 //!
-//! `size = min4(max_repay, flash_after_haircut, route_depth, notional_cap)`.
-//! A binding flash or route ceiling is a **partial**, not a skip.
+//! `size = min4(max_repay, flash_after_haircut, route_depth, band.max_size)`.
+//! A binding flash or route ceiling is a **partial**, not a skip. The
+//! viability band (GUIDE 12 §4b) is the sole size filter: no band, or a
+//! fitted size below `band.min_size`, and the leg is not taken.
 //!
 //! Combinations are `repay × seize × source`, evaluated **serially** on
 //! the hot thread (GUIDE 12 §3b). 12A-1 forbids `thread::spawn` /
@@ -19,7 +21,7 @@ use liq_protocol::{FlashRoute, LegChoice, Quote};
 use liq_types::fixed::{mul_div, Rounding, RAY};
 use liq_types::{AssetId, ProtocolId};
 
-use crate::band::PairTerms;
+use crate::band::{PairTerms, ViabilityBand};
 use crate::exact::{solve_pair, ExitQuote, GasTerms, SolveBudget};
 use crate::solver::{mul_div_512, PoolBook, RouteError};
 use crate::warm::RouteTable;
@@ -47,11 +49,12 @@ pub trait MarketView {
     fn pair_terms(&self, protocol: ProtocolId, coll: AssetId, debt: AssetId) -> Option<PairTerms>;
     /// Raw units of `asset` per `1e18` wei (`WarmInputs::per_eth`).
     fn per_eth(&self, asset: AssetId) -> Option<U256>;
-    /// Per-liquidation notional cap in **debt raw units**. `U256::MAX` is
-    /// the explicit unbounded value (`Constraints::UNBOUNDED` already
-    /// folded into `max_repay` by the adapter is still passed here so a
-    /// forgotten cap cannot become a silent `MAX`).
-    fn notional_cap_raw(&self, debt: AssetId) -> Option<U256>;
+    /// The pair's viability band at this block (GUIDE 12 §4b): the debt
+    /// sizes, in raw debt units, for which `net ≥ 0`. The sole source of
+    /// truth for sizing — `None` means no viable size and the leg is not
+    /// taken. Keyed per `(protocol, coll, debt)`, never per debt alone:
+    /// one debt asset has a different band against every collateral.
+    fn band(&self, protocol: ProtocolId, coll: AssetId, debt: AssetId) -> Option<ViabilityBand>;
 }
 
 /// Inputs sized once per block / candidate drain.
@@ -222,18 +225,32 @@ pub fn evaluate(
         .seize_options
         .get(usize::from(choice.seize))
         .ok_or(ProfitError::Missing("seize option"))?;
+    if !repay.pairs_with(choice.seize) {
+        return Ok(None);
+    }
     let mut terms = ctx
         .market
         .pair_terms(ctx.protocol, seize.asset, repay.asset)
         .ok_or(ProfitError::Missing("pair_terms"))?;
+    // The exit solve outputs debt units, so hop gas must be priced in this
+    // leg's debt, not the plan's WETH numeraire: with the identity, a USDC
+    // leg would see hop gas ~1e12x too dear and a DAI leg ~3000x too cheap.
+    let per = ctx
+        .market
+        .per_eth(repay.asset)
+        .filter(|p| !p.is_zero())
+        .ok_or(ProfitError::Missing("per_eth"))?;
+    let leg_gas = GasTerms {
+        out_per_eth: per,
+        ..*ctx.gas
+    };
     // Seize-option bonus is authoritative (D26 / GUIDE 01). Overlay so two
     // seize legs of one pair with different e-mode bonuses stay distinct.
     terms.bonus = seize.bonus;
-    // Unset cap is unlimited. A published band is the size filter.
-    let cap = ctx
-        .market
-        .notional_cap_raw(repay.asset)
-        .unwrap_or(U256::MAX);
+    let Some(band) = ctx.market.band(ctx.protocol, seize.asset, repay.asset) else {
+        return Ok(None);
+    };
+    let cap = band.max_size;
     let flash_cap = available_after_haircut(entry, ctx.haircut);
     let route_cap = match ctx.warm {
         Some(w) => route_depth_repay(w, seize.asset, &terms)?,
@@ -251,10 +268,13 @@ pub fn evaluate(
         repay.asset,
         s0,
         &terms,
-        ctx.gas,
+        &leg_gas,
         ctx.budget,
     )?;
-    if s.is_zero() {
+    // Below the band's lower edge gas dominates: not a partial, a skip.
+    // Below the protocol's own minimum (an all-or-nothing leg) the call
+    // would revert: also a skip, never a shrunken size.
+    if s.is_zero() || s < band.min_size || s < repay.min_repay {
         return Ok(None);
     }
     let Some(exit) = try_quote(
@@ -263,7 +283,7 @@ pub fn evaluate(
         repay.asset,
         s,
         &terms,
-        ctx.gas,
+        &leg_gas,
         ctx.budget,
     )?
     else {
@@ -311,6 +331,9 @@ pub fn best_plan(ctx: &ProfitCtx<'_>, q: &Quote) -> Result<Option<SizedLeg>, Pro
             let Ok(si) = u8::try_from(si) else {
                 continue;
             };
+            if !repay.pairs_with(si) {
+                continue;
+            }
             let choice = LegChoice {
                 repay: ri,
                 seize: si,
@@ -488,6 +511,7 @@ mod tests {
     struct Mkt {
         terms: PairTerms,
         cap: U256,
+        min_size: U256,
         per_eth: U256,
     }
     impl MarketView for Mkt {
@@ -497,8 +521,18 @@ mod tests {
         fn per_eth(&self, _: AssetId) -> Option<U256> {
             Some(self.per_eth)
         }
-        fn notional_cap_raw(&self, _: AssetId) -> Option<U256> {
-            Some(self.cap)
+        fn band(
+            &self,
+            _: ProtocolId,
+            _: AssetId,
+            _: AssetId,
+        ) -> Option<crate::band::ViabilityBand> {
+            Some(crate::band::ViabilityBand {
+                min_size: self.min_size,
+                max_size: self.cap,
+                base_fee: 0,
+                block: 0,
+            })
         }
     }
 
@@ -515,6 +549,7 @@ mod tests {
         Mkt {
             terms: terms(),
             cap,
+            min_size: U256::ZERO,
             per_eth: e18(1),
         }
     }
@@ -566,6 +601,8 @@ mod tests {
             repay_options: repay
                 .iter()
                 .map(|&(asset, max_repay)| RepayOption {
+                    min_repay: alloy_primitives::U256::ZERO,
+                    pair_seize: None,
                     asset,
                     max_repay,
                     slot: liq_protocol::SlotRef::ByAsset,
@@ -603,7 +640,7 @@ mod tests {
     fn ctx<'a>(
         flash: &'a FlashIndex,
         book: &'a PoolBook,
-        market: &'a Mkt,
+        market: &'a dyn MarketView,
         gas: &'a GasTerms,
     ) -> ProfitCtx<'a> {
         ProfitCtx {
@@ -647,6 +684,97 @@ mod tests {
         assert_eq!(leg.s, e18(20), "took the flash-bound partial");
         assert!(leg.s < e18(100));
         assert!(!leg.contribution.is_zero());
+    }
+
+    /// The viability band is the sole size filter: `max_size` caps the
+    /// size, a fitted size below `min_size` is a skip, and a pair with no
+    /// band is not taken at all.
+    #[test]
+    fn band_caps_size_rejects_below_floor_and_is_required() {
+        let bk = book(vec![deep_v3()]);
+        let (_s, idx) = flash_morpho(e18(10_000));
+        let q = quote(&[(A1, e18(100))], &[(A0, e18(200), bonus_5())]);
+
+        let capped = mkt(e18(30));
+        let leg = best_plan(&ctx(&idx, &bk, &capped, &FREE), &q)
+            .unwrap()
+            .unwrap();
+        assert_eq!(leg.s, e18(30), "band max_size binds");
+
+        let mut floored = mkt(U256::MAX);
+        floored.min_size = e18(1_000);
+        assert!(
+            best_plan(&ctx(&idx, &bk, &floored, &FREE), &q)
+                .unwrap()
+                .is_none(),
+            "a size below the band floor is a skip, not a partial"
+        );
+
+        struct NoBand(Mkt);
+        impl MarketView for NoBand {
+            fn pair_terms(&self, p: ProtocolId, c: AssetId, d: AssetId) -> Option<PairTerms> {
+                self.0.pair_terms(p, c, d)
+            }
+            fn per_eth(&self, a: AssetId) -> Option<U256> {
+                self.0.per_eth(a)
+            }
+            fn band(&self, _: ProtocolId, _: AssetId, _: AssetId) -> Option<ViabilityBand> {
+                None
+            }
+        }
+        let none = NoBand(mkt(U256::MAX));
+        assert!(
+            best_plan(&ctx(&idx, &bk, &none, &FREE), &q)
+                .unwrap()
+                .is_none(),
+            "no band, no leg"
+        );
+    }
+
+    /// All-or-nothing legs (`min_repay == max_repay`, Gearbox full) are
+    /// skipped — never shrunk — when a ceiling binds below them; a repay
+    /// option only combines with its paired seize option.
+    #[test]
+    fn all_or_nothing_leg_is_skipped_not_shrunk_and_pairs_hold() {
+        let bk = book(vec![deep_v3()]);
+        let (_s, idx) = flash_morpho(e18(10_000));
+        let mut q = quote(&[(A1, e18(100))], &[(A0, e18(200), bonus_5())]);
+        q.repay_options[0].min_repay = e18(100);
+
+        let open = mkt(U256::MAX);
+        let leg = best_plan(&ctx(&idx, &bk, &open, &FREE), &q)
+            .unwrap()
+            .unwrap();
+        assert_eq!(leg.s, e18(100), "whole leg when nothing binds");
+
+        let capped = mkt(e18(30));
+        assert!(
+            best_plan(&ctx(&idx, &bk, &capped, &FREE), &q)
+                .unwrap()
+                .is_none(),
+            "band cap below the all-or-nothing size is a skip"
+        );
+
+        // Two seize options; the only repay option pairs with the second.
+        let mut p = quote(
+            &[(A1, e18(10))],
+            &[
+                (
+                    A0,
+                    e18(200),
+                    Ray::from_raw(bonus_5().raw() * U256::from(2u8)),
+                ),
+                (A0, e18(200), bonus_5()),
+            ],
+        );
+        p.repay_options[0].pair_seize = Some(1);
+        let leg = best_plan(&ctx(&idx, &bk, &open, &FREE), &p)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            leg.choice.seize, 1,
+            "paired seize option, not the richer one"
+        );
     }
 
     /// `SeizeOption.max_seize` binds when `max_repay` would seize more
@@ -841,8 +969,18 @@ mod tests {
             fn per_eth(&self, _: AssetId) -> Option<U256> {
                 None
             }
-            fn notional_cap_raw(&self, _: AssetId) -> Option<U256> {
-                None
+            fn band(
+                &self,
+                _: ProtocolId,
+                _: AssetId,
+                _: AssetId,
+            ) -> Option<crate::band::ViabilityBand> {
+                Some(crate::band::ViabilityBand {
+                    min_size: U256::ZERO,
+                    max_size: U256::MAX,
+                    base_fee: 0,
+                    block: 0,
+                })
             }
         }
         let bk = book(vec![deep_v3()]);

@@ -89,7 +89,7 @@ library PlanDecoder {
     uint256 internal constant TAIL_SILO     = 0;   // receiveSToken=false hardcoded
     uint256 internal constant TAIL_LIQUITY  = 32;  // uint256 troveId
     uint256 internal constant TAIL_FLUID    = 32;  // uint256 colPerUnitDebt 1e18 (absorb_=true)
-    uint256 internal constant TAIL_GEARBOX  = 32;  // uint256 minSeizedAmount
+    uint256 internal constant TAIL_GEARBOX  = 33;  // uint256 minSeizedAmount | uint8 mode (0 partial, 1 full)
     uint256 internal constant TAIL_COMPOUND = 21;  // address cTokenCollateral | uint8 isCEther
 
     error UnknownAdapter(uint8 a);
@@ -210,6 +210,14 @@ library PlanDecoder {
     {
         minYield = uint256(bytes32(plan[o : o + 32]));
         vault = address(bytes20(plan[o + 32 : o + 52]));
+    }
+
+    /// Gearbox tail: minimum collateral received, then the path.
+    function tailGearbox(bytes calldata plan, uint256 o)
+        internal pure returns (uint256 minSeized, uint8 mode)
+    {
+        minSeized = uint256(bytes32(plan[o : o + 32]));
+        mode = uint8(plan[o + 32]);
     }
 
     function tailCompound(bytes calldata plan, uint256 o)

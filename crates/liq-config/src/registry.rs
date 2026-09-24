@@ -116,6 +116,10 @@ pub struct PoolEntry {
     pub deployed_block: u64,
     #[serde(default)]
     pub derived_via: String,
+    /// Curve only: every coin in pool order (`coins(i)`); `token0`/`token1`
+    /// are `coins[0]`/`coins[1]`. Empty for V2/V3.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coins: Vec<Address>,
 }
 
 /// Pool family. Unknown venues fail serde — we must not call `token0`/`fee`
@@ -124,6 +128,10 @@ pub struct PoolEntry {
 #[serde(rename_all = "lowercase")]
 pub enum PoolVenue {
     Univ3,
+    /// Uniswap V2 or SushiSwap pair (0.30 %); `factory` says which.
+    Univ2,
+    /// Curve StableSwap plain pool; `fee` is `fee()` at discovery (1e10).
+    Curve,
 }
 
 /// Address (Family A markets, UniV3 pools) or 32-byte Morpho market id.
@@ -242,25 +250,30 @@ mod tests {
         assert!(!reg.tokens.is_empty());
         assert!(!reg.pools.is_empty());
         for (addr, p) in &reg.pools {
-            if p.venue != PoolVenue::Univ3 {
+            if p.venue == PoolVenue::Curve {
+                assert!(
+                    p.coins.len() >= 2 && p.coins[0] == p.token0 && p.coins[1] == p.token1,
+                    "curve {addr:#x}: token0/token1 must be coins[0]/coins[1]"
+                );
                 continue;
             }
             assert!(
                 p.token0 < p.token1,
-                "UniV3 factory order is token0 < token1; registry {addr:#x} has token0 {:#x} token1 {:#x}",
+                "V2/V3 factory order is token0 < token1; registry {addr:#x} has token0 {:#x} token1 {:#x}",
                 p.token0,
                 p.token1
             );
         }
-        // Discovery recorded JSON null rather than guessing a symbol. Load must
-        // accept that; boot assertion refuses to start on those rows.
+        // JSON null records a token whose `symbol()` reverts (not a guess).
+        // Load must accept that; boot assertion requires the chain to still
+        // revert there.
         let null_syms: Vec<_> = reg
             .tokens
             .iter()
             .filter(|(_, t)| t.symbol.is_none())
             .map(|(a, _)| *a)
             .collect();
-        assert_eq!(null_syms.len(), 2);
+        assert_eq!(null_syms.len(), 1);
     }
 
     /// Oracle: REGISTRY.md §5 + the committed file. USDT/MKR/stETH/WBTC quirks

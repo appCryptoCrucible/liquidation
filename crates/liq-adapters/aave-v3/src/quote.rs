@@ -3,10 +3,9 @@
 use alloy_primitives::U256;
 use liq_protocol::SlotRef;
 use liq_protocol::{
-    BonusCurve, Constraints, HealthState, PositionRef, ProtocolError, Quote, RepayOption, Result,
-    SeizeOption,
+    BonusCurve, HealthState, PositionRef, ProtocolError, Quote, RepayOption, Result, SeizeOption,
 };
-use liq_types::fixed::{mul_div, FixedError, Rounding, WAD_RAY_RATIO};
+use liq_types::fixed::{mul_div, FixedError, Rounding};
 use liq_types::{AssetId, PriceVector, Ray};
 use smallvec::SmallVec;
 
@@ -161,12 +160,7 @@ fn amounts(p: &AmountsIn<'_>) -> Result<Option<Amounts>> {
     Ok(Some(Amounts { repay, seize }))
 }
 
-pub(crate) fn quote(
-    cfg: &Config,
-    pos: PositionRef<'_>,
-    px: &PriceVector,
-    cons: &Constraints,
-) -> Result<Option<Quote>> {
+pub(crate) fn quote(cfg: &Config, pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quote>> {
     let scale = U256::from(cfg.oracle_scale());
     let meta: &PoolMeta = pos
         .markets
@@ -263,27 +257,15 @@ pub(crate) fn quote(
     let mut repay: SmallVec<[(RepayOption, U256); 4]> = SmallVec::new();
     for t in terms.iter().filter(|t| t.repayable(pos.timestamp)) {
         let price = price_ray(t.row.asset)?;
-        let cap = cons.per_liquidation_notional_cap.raw();
-        let debt_to_cover = if cap == U256::MAX {
-            U256::MAX
-        } else {
-            mul_div(
-                cap.checked_mul(WAD_RAY_RATIO).ok_or(FixedError::Overflow)?,
-                asset_unit(t.row.decimals)?,
-                price.raw(),
-                Rounding::Down,
-            )?
-        };
-        if debt_to_cover.is_zero() {
-            continue;
-        }
         let Some(a) = amounts(&AmountsIn {
             coll,
             debt: t,
             total_debt_base: acc.debt_value,
             hf_wad,
             bonus_bps,
-            debt_to_cover,
+            // No caller-side notional cap (GUIDE 12 §4b): `amounts` bounds
+            // `max_repay` on its own via the close-factor rule.
+            debt_to_cover: U256::MAX,
             close_factor_bps: U256::from(cfg.liquidation.close_factor_bps),
             close_hf: U256::from(cfg.liquidation.close_factor_hf_wad),
             min_base: U256::from(cfg.liquidation.min_base_max_close),
@@ -294,6 +276,8 @@ pub(crate) fn quote(
         let value = value_ray_of(a.repay, price, t.row.decimals)?;
         repay.push((
             RepayOption {
+                min_repay: alloy_primitives::U256::ZERO,
+                pair_seize: None,
                 asset: t.row.asset,
                 max_repay: a.repay,
                 slot: SlotRef::ByAsset,

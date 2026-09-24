@@ -962,7 +962,7 @@
    ]
   },
   "0xe11dbbce9d0bfbe919a8427c3ae5e04e9572cf68": {
-   "symbol": null,
+   "symbol": "",
    "decimals": 18,
    "quirks": []
   },
@@ -67850,6 +67850,926 @@
    "factory": "0x1f98431c8ad98523631ae4a59f267346ea31f984",
    "deployed_block": 26007375,
    "derived_via": "factory.getPool"
+  },
+  "0xf1f27db872b7f6e8b873c97f785fe4f9a6c92161": {
+   "venue": "univ2",
+   "token0": "0x0000000000085d4780b73119b644ae5ecd22b376",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xb4d0d9df2738abe81b87b66c80851292492d1404": {
+   "venue": "univ2",
+   "token0": "0x0000000000085d4780b73119b644ae5ecd22b376",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x4dd26482738be6c06c31467a19dcda9ad781e8c4": {
+   "venue": "univ2",
+   "token0": "0x0b38210ea11411557c13457d4da7dc6ea731b88a",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x2fdbadf3c4d5a8666bc06645b8358ab803996e28": {
+   "venue": "univ2",
+   "token0": "0x0bc529c00c6401aef6d220be8c6ea1667f6ad93e",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x23bff8ca20aac06efdf23cee3b8ae296a30dfd27": {
+   "venue": "univ2",
+   "token0": "0x0d438f3b5175bebc262bf23753c1e53d03432bde",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x4d5ef58aac27d99935e5b6b4a6778ff292059991": {
+   "venue": "univ2",
+   "token0": "0x1494ca1f11d487c2bbe4543e90080aeba4ba3c2b",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xf00e80f0de9aea0b33aa229a4014572777e422ee": {
+   "venue": "univ2",
+   "token0": "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984",
+   "token1": "0x6b175474e89094c44da98b954eedeac495271d0f",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xebfb684dd2b01e698ca6c14f10e4f289934a54d6": {
+   "venue": "univ2",
+   "token0": "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xd3d2e2692501a5c9ca623199d38826e513033a17": {
+   "venue": "univ2",
+   "token0": "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x5ac13261c181a9c3938bfe1b649e65d10f98566b": {
+   "venue": "univ2",
+   "token0": "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984",
+   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x231b7589426ffe1b75405526fc32ac09d44364c4": {
+   "venue": "univ2",
+   "token0": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+   "token1": "0x6b175474e89094c44da98b954eedeac495271d0f",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x16e5060779b75f2f9b748d0e1c0f89a13f35b2de": {
+   "venue": "univ2",
+   "token0": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+   "token1": "0x7a56e1c57c7475ccf742a1832b028f0456652f97",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x004375dff511095cc5a197a54140a24efef3a416": {
+   "venue": "univ2",
+   "token0": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xbb2b8038a1640196fbe3e38816f3e67cba72d940": {
+   "venue": "univ2",
+   "token0": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x3dd49f67e9d5bc4c5e6634b3f70bfd9dc1b6bd74": {
+   "venue": "univ2",
+   "token0": "0x3845badade8e6dff049820680d1f14bd3903a5d0",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x6d74443bb2d50785989a7212ebfd3a8dbabd1f60": {
+   "venue": "univ2",
+   "token0": "0x45804880de22913dafe09f4980848ece6ecbaf78",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x9c4fe5ffd9a9fc5678cfbd93aa2d4fd684b67c4c": {
+   "venue": "univ2",
+   "token0": "0x45804880de22913dafe09f4980848ece6ecbaf78",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x63243f3860fe085421883563e76ea1703d648155": {
+   "venue": "univ2",
+   "token0": "0x47d13fb0803409c7fe169a210d4e906165f1a432",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x1e496fae4613b4e9c4f8fc31826812cdcbd03a90": {
+   "venue": "univ2",
+   "token0": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xb011eeaab8bf0c6de75510128da95498e4b7e67f": {
+   "venue": "univ2",
+   "token0": "0x4d224452801aced8b2f0aebe155379bb5d594381",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xa2107fa5b38d9bbd2c461d6edf11b11a50f6b974": {
+   "venue": "univ2",
+   "token0": "0x514910771af9ca656af840dff83e8264ecf986ca",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x5ced44f03ff443bbe14d8ea23bc24425fb89e3ed": {
+   "venue": "univ2",
+   "token0": "0x594daad7d77592a2b97b725a7ad59d7e188b5bfa",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x454f11d58e27858926d7a4ece8bfea2c33e97b13": {
+   "venue": "univ2",
+   "token0": "0x5a98fcbea516cf06857215779fd812ca3bef1b32",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x9896bd979f9da57857322cc15e154222c4658a5a": {
+   "venue": "univ2",
+   "token0": "0x5d3a536e4d6dbd6114cc1ead35777bab948e3643",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x180efc1349a69390ade25667487a826164c9c6e4": {
+   "venue": "univ2",
+   "token0": "0x62d0a8458ed7719fdaf978fe5929c6d342b0bfce",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xa43fe16908251ee70ef74718545e4fe6c5ccec9f": {
+   "venue": "univ2",
+   "token0": "0x6982508145454ce325ddbe47a25d4ec3d2311933",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xae461ca67b15dc8dc81ce7615e0320da1a9ab8d5": {
+   "venue": "univ2",
+   "token0": "0x6b175474e89094c44da98b954eedeac495271d0f",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xa478c2975ab1ea89e8196811f51a7b7ade33eb11": {
+   "venue": "univ2",
+   "token0": "0x6b175474e89094c44da98b954eedeac495271d0f",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xb20bd5d04be54f870d5c0d3ca85d82b34b836405": {
+   "venue": "univ2",
+   "token0": "0x6b175474e89094c44da98b954eedeac495271d0f",
+   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xc97615bd41a6bcdb169bf71a3d7dcebb477e7266": {
+   "venue": "univ2",
+   "token0": "0x71f56060a5f61c1f06f46ffd892a5afa0848eb42",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x2cc846fff0b08fb3bffad71f53a60b4b6e6d6482": {
+   "venue": "univ2",
+   "token0": "0x72e4f9f808c49a2a61de9c5896298920dc4eeea9",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x7b73644935b8e68019ac6356c40661e1bc315860": {
+   "venue": "univ2",
+   "token0": "0x761d38e5ddf6ccf6cf7c55759d5210750b5d60f3",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x704ad8d95c12d7fea531738faa94402725acb035": {
+   "venue": "univ2",
+   "token0": "0x76e222b07c53d28b89b0bac18602810fc22b49a8",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xdfc14d2af169b0d36c4eff567ada9b2e0cae044f": {
+   "venue": "univ2",
+   "token0": "0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xc555d55279023e732ccd32d812114caf5838fd46": {
+   "venue": "univ2",
+   "token0": "0x812ba41e071c7b7fa4ebcfb62df5f45f6fa853ee",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x97c4adc5d28a86f9470c70dd91dc6cc2f20d2d4d": {
+   "venue": "univ2",
+   "token0": "0x853d955acef822db058eb8505911ed77f175b99e",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xfd0a40bc83c5fae4203dec7e5929b446b07d1c76": {
+   "venue": "univ2",
+   "token0": "0x853d955acef822db058eb8505911ed77f175b99e",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xecfbe9b182f6477a93065c1c11271232147838e5": {
+   "venue": "univ2",
+   "token0": "0x865377367054516e17014ccded1e7d814edc9ce4",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x69c7bd26512f52bf6f76fab834140d13dda673ca": {
+   "venue": "univ2",
+   "token0": "0x8ed97a637a790be1feff5e888d43629dc05408f6",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x811beed0119b4afce20d2583eb608c6f7af1954f": {
+   "venue": "univ2",
+   "token0": "0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x773dd321873fe70553acc295b1b49a104d968cc8": {
+   "venue": "univ2",
+   "token0": "0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce",
+   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x731ede3df84e27e610c2aeff52e05f5870643f8b": {
+   "venue": "univ2",
+   "token0": "0x97ad75064b20fb2b2447fed4fa953bf7f007a706",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x2289f64e11a3c6a3e23d5f0c705bb0bb7661278a": {
+   "venue": "univ2",
+   "token0": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xc2adda861f89bbb333c90c492cb837741916a225": {
+   "venue": "univ2",
+   "token0": "0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc": {
+   "venue": "univ2",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x3041cbd36888becc7bbcbc0045e3b1f144466f5f": {
+   "venue": "univ2",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x3c8ad34155b83ddb7f43119a19503d34ed2b5c7a": {
+   "venue": "univ2",
+   "token0": "0xa849eaae994fb86afa73382e9bd88c2b6b18dc71",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xc2eab7d33d3cb97692ecb231a5d0e4a649cb539d": {
+   "venue": "univ2",
+   "token0": "0xaaee1a9723aadb7afa2810263653a34ba2c21c7a",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xaa38d5755d313f03390dce8b570fb01cc591dffd": {
+   "venue": "univ2",
+   "token0": "0xb4444468e444f89e1c2cac2f1d3ee7e336cbd1f5",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xe945683b3462d2603a18bdfbb19261c6a4f03ad1": {
+   "venue": "univ2",
+   "token0": "0xb90b2a35c65dbc466b04240097ca756ad2005295",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xcffdded873554f362ac02f8fb1f02e5ada10516f": {
+   "venue": "univ2",
+   "token0": "0xc00e94cb662c3520282e6f5717214004a7f26888",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x2e81ec0b8b4022fac83a21b2f2b4b8f5ed744d70": {
+   "venue": "univ2",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xc944e90c64b2c07662a292be6244bdf05cda44a7",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xca7c2771d248dcbe09eabe0ce57a62e18da178c0": {
+   "venue": "univ2",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xcf0c122c6b73ff809c693db761e7baebe62b6a2e",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x3da1313ae46132a397d90d95b1424a9a7e3e0fce": {
+   "venue": "univ2",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xd533a949740bb3306d119cc777fa900ba034cd52",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xe96c108da71dbdb2aa1056bc55c3a073061a2fa1": {
+   "venue": "univ2",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xd9fcd98c322942075a5c3860693e9f4f03aae07b",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852": {
+   "venue": "univ2",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x52c77b0cb827afbad022e6d6caf2c44452edbc39": {
+   "venue": "univ2",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xc6f348dd3b91a56d117ec0071c1e9b83c0996de4": {
+   "venue": "univ2",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xe41d2489571d322189246dafa5ebde1f4699f498",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x3a0ef60e803aae8e94f741e7f61c7cbe9501e569": {
+   "venue": "univ2",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xed1167b6dc64e8a366db86f2e952a482d0981ebd",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x760166fa4f227da29ecac3bec348f5fa853a1f3c": {
+   "venue": "univ2",
+   "token0": "0x0000000000085d4780b73119b644ae5ecd22b376",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xa8aec03d5cf2824fd984ee249493d6d4d6740e61": {
+   "venue": "univ2",
+   "token0": "0x0b38210ea11411557c13457d4da7dc6ea731b88a",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x088ee5007c98a9677165d78dd2109ae4a3d04d0c": {
+   "venue": "univ2",
+   "token0": "0x0bc529c00c6401aef6d220be8c6ea1667f6ad93e",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x34b13f8cd184f55d0bd4dd1fe6c07d46f245c7ed": {
+   "venue": "univ2",
+   "token0": "0x1494ca1f11d487c2bbe4543e90080aeba4ba3c2b",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xdafd66636e2561b0284edde37e42d192f2844d40": {
+   "venue": "univ2",
+   "token0": "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xceff51756c56ceffca006cd410b03ffc46dd3a58": {
+   "venue": "univ2",
+   "token0": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xb27c7b131cf4915bec6c4bc1ce2f33f9ee434b9f": {
+   "venue": "univ2",
+   "token0": "0x4d224452801aced8b2f0aebe155379bb5d594381",
+   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xc40d16476380e4037e6b1a2594caf6a6cc8da967": {
+   "venue": "univ2",
+   "token0": "0x514910771af9ca656af840dff83e8264ecf986ca",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xc558f600b34a5f69dd2f0d06cb8a88d829b7420a": {
+   "venue": "univ2",
+   "token0": "0x5a98fcbea516cf06857215779fd812ca3bef1b32",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xb90047676cc13e68632c55cb5b7cbd8a4c5a0a8e": {
+   "venue": "univ2",
+   "token0": "0x677ddbd918637e5f2c79e164d402454de7da8619",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xc5578194d457dcce3f272538d1ad52c68d1ce849": {
+   "venue": "univ2",
+   "token0": "0x6b175474e89094c44da98b954eedeac495271d0f",
+   "token1": "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xc3d03e4f041fd4cd388c549ee2a29a9e5075882f": {
+   "venue": "univ2",
+   "token0": "0x6b175474e89094c44da98b954eedeac495271d0f",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xd75ea151a61d06868e31f8988d28dfe5e9df57b4": {
+   "venue": "univ2",
+   "token0": "0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xec8c342bc3e07f05b9a782bc34e7f04fb9b44502": {
+   "venue": "univ2",
+   "token0": "0x853d955acef822db058eb8505911ed77f175b99e",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xe4ebd836832f1a8a81641111a5b081a2f90b9430": {
+   "venue": "univ2",
+   "token0": "0x92d6c1e31e14520e676a687f0a93788b716beff5",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x397ff1542f962076d0bfe58ea045ffa2d347aca0": {
+   "venue": "univ2",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x31503dcb60119a812fee820bb7042752019f2355": {
+   "venue": "univ2",
+   "token0": "0xc00e94cb662c3520282e6f5717214004a7f26888",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x7b504a15ef05f4eed1c07208c5815c49022a0c19": {
+   "venue": "univ2",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xc944e90c64b2c07662a292be6244bdf05cda44a7",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x58dc5a51fe44589beb22e8ce67720b5bc5378009": {
+   "venue": "univ2",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xd533a949740bb3306d119cc777fa900ba034cd52",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x06da0fd433c1a5d7a4faa01111c044910a184553": {
+   "venue": "univ2",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xbebc44782c7db0a1a60cb6fe97d0b483032ff1c7": {
+   "venue": "curve",
+   "token0": "0x6b175474e89094c44da98b954eedeac495271d0f",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 1500000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x6b175474e89094c44da98b954eedeac495271d0f",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0xdac17f958d2ee523a2206206994597c13d831ec7"
+   ]
+  },
+  "0xae34574ac03a15cd58a92dc79de7b1a0800f1ce3": {
+   "venue": "curve",
+   "token0": "0x853d955acef822db058eb8505911ed77f175b99e",
+   "token1": "0x8e870d67f660d95d5be530380d0ec0bd388289e1",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x853d955acef822db058eb8505911ed77f175b99e",
+    "0x8e870d67f660d95d5be530380d0ec0bd388289e1"
+   ]
+  },
+  "0x447ddd4960d9fdbf6af9a790560d0af76795cb08": {
+   "venue": "curve",
+   "token0": "0xae78736cd615f374d3085123a210448e74fc6393",
+   "token1": "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xae78736cd615f374d3085123a210448e74fc6393",
+    "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
+   ]
+  },
+  "0x413928a25d6ea1a26f2625d633207755f67bf97c": {
+   "venue": "curve",
+   "token0": "0x1a7e4e63778b4f12a199c062f3efdd288afcbce8",
+   "token1": "0x3231cb76718cdef2155fc47b5286d82e6eda273f",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x1a7e4e63778b4f12a199c062f3efdd288afcbce8",
+    "0x3231cb76718cdef2155fc47b5286d82e6eda273f"
+   ]
+  },
+  "0x1c899ded01954d0959e034b62a728e7febe593b0": {
+   "venue": "curve",
+   "token0": "0xb8b295df2cd735b15be5eb419517aa626fc43cd5",
+   "token1": "0x514910771af9ca656af840dff83e8264ecf986ca",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xb8b295df2cd735b15be5eb419517aa626fc43cd5",
+    "0x514910771af9ca656af840dff83e8264ecf986ca"
+   ]
+  },
+  "0xb657b895b265c38c53fff00166cf7f6a3c70587d": {
+   "venue": "curve",
+   "token0": "0x0100546f2cd4c9d97f798ffc9755e47865ff7ee6",
+   "token1": "0x5e8422345238f34275888049021821e8e08caa1f",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x0100546f2cd4c9d97f798ffc9755e47865ff7ee6",
+    "0x5e8422345238f34275888049021821e8e08caa1f"
+   ]
+  },
+  "0xa4c567c662349bec3d0fb94c4e7f85ba95e208e4": {
+   "venue": "curve",
+   "token0": "0x64351fc9810adad17a690e4e1717df5e7e085160",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x64351fc9810adad17a690e4e1717df5e7e085160",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   ]
+  },
+  "0x857110b5f8efd66cc3762abb935315630ac770b5": {
+   "venue": "curve",
+   "token0": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "token1": "0x6c3ea9036406852006290770bedfcaba0e23a0e8",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+    "0x6c3ea9036406852006290770bedfcaba0e23a0e8"
+   ]
+  },
+  "0x390f3595bca2df7d23783dfd126427cceb997bf4": {
+   "venue": "curve",
+   "token0": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
+   ]
+  },
+  "0xca978a0528116dda3cba9acd3e68bc6191ca53d0": {
+   "venue": "curve",
+   "token0": "0x8e870d67f660d95d5be530380d0ec0bd388289e1",
+   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x8e870d67f660d95d5be530380d0ec0bd388289e1",
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
+   ]
+  },
+  "0x34d655069f4cac1547e4c8ca284ffff5ad4a8db0": {
+   "venue": "curve",
+   "token0": "0x0000000000085d4780b73119b644ae5ecd22b376",
+   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x0000000000085d4780b73119b644ae5ecd22b376",
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
+   ]
+  },
+  "0x0cd6f267b2086bea681e922e19d40512511be538": {
+   "venue": "curve",
+   "token0": "0x853d955acef822db058eb8505911ed77f175b99e",
+   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x853d955acef822db058eb8505911ed77f175b99e",
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
+   ]
+  },
+  "0x86152df0a0e321afb3b0b9c4deb813184f365ada": {
+   "venue": "curve",
+   "token0": "0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f",
+   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f",
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
+   ]
+  },
+  "0x8272e1a3dbef607c04aa6e5bd3a1a134c8ac063b": {
+   "venue": "curve",
+   "token0": "0x865377367054516e17014ccded1e7d814edc9ce4",
+   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x865377367054516e17014ccded1e7d814edc9ce4",
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
+   ]
+  },
+  "0xecdd0ce505da71cd9de855cd6804ba1e8c7bdb07": {
+   "venue": "curve",
+   "token0": "0x056fd409e1d7a124bd7017459dfea2f387b6d5cd",
+   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x056fd409e1d7a124bd7017459dfea2f387b6d5cd",
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
+   ]
+  },
+  "0x9c3b46c0ceb5b9e304fcd6d88fc50f7dd24b31bc": {
+   "venue": "curve",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0x5e8422345238f34275888049021821e8e08caa1f",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0x5e8422345238f34275888049021821e8e08caa1f"
+   ]
   }
  },
  "flash_sources": {},

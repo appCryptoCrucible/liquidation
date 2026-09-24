@@ -24,8 +24,8 @@ use liq_adapters_liquity_v2::{alloc_meter, math, Config, LiquityV2};
 use liq_config::{Intern, OnChainId, Registry};
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
-    BonusCurve, CallbackShape, Constraints, DirtySet, ExecutorAdapter, FlashRoute, HealthState,
-    LegChoice, Protocol, ProtocolError, StateWriter,
+    BonusCurve, CallbackShape, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice,
+    Protocol, ProtocolError, StateWriter,
 };
 use liq_types::{AssetId, LogSubscriber, MarketId, PriceVector, ProtocolId, Ray, Wad};
 
@@ -199,10 +199,7 @@ fn ten_checks_liquidatable_executes_5_and_10_then_inapplicable_8() {
     let pos = st.view(ALICE_ID, T0).unwrap();
     let h = p.health(pos, &px_liq).unwrap();
     assert_eq!(h.state, HealthState::Liquidatable);
-    let q = p
-        .quote(pos, &px_liq, &Constraints::UNBOUNDED)
-        .unwrap()
-        .expect("liquidatable quotes");
+    let q = p.quote(pos, &px_liq).unwrap().expect("liquidatable quotes");
     for s in &q.seize_options {
         assert_eq!(
             s.curve.bonus_at_hf(h.hf).unwrap(),
@@ -213,11 +210,7 @@ fn ten_checks_liquidatable_executes_5_and_10_then_inapplicable_8() {
     let h_ok = p.health(pos, &prices(ETH_USD_WAD, BOLD_USD_WAD)).unwrap();
     assert_eq!(h_ok.state, HealthState::Healthy);
     assert!(p
-        .quote(
-            pos,
-            &prices(ETH_USD_WAD, BOLD_USD_WAD),
-            &Constraints::UNBOUNDED
-        )
+        .quote(pos, &prices(ETH_USD_WAD, BOLD_USD_WAD),)
         .unwrap()
         .is_none());
 
@@ -289,20 +282,12 @@ fn quote_is_gas_comp_only() {
     let (p, st) = full_store(&d);
     let pos = st.view(ALICE_ID, T0).unwrap();
     assert!(p
-        .quote(
-            pos,
-            &prices(ETH_USD_WAD, BOLD_USD_WAD),
-            &Constraints::UNBOUNDED
-        )
+        .quote(pos, &prices(ETH_USD_WAD, BOLD_USD_WAD),)
         .unwrap()
         .is_none());
 
     let q = p
-        .quote(
-            pos,
-            &prices(ETH_USD_LIQ_WAD, BOLD_USD_WAD),
-            &Constraints::UNBOUNDED,
-        )
+        .quote(pos, &prices(ETH_USD_LIQ_WAD, BOLD_USD_WAD))
         .unwrap()
         .expect("liquidatable");
     assert_eq!(q.repay_options.len(), 1);
@@ -319,14 +304,6 @@ fn quote_is_gas_comp_only() {
     let want = math::ETH_GAS_COMPENSATION.checked_add(coll_gas).unwrap();
     assert_eq!(q.seize_options[0].max_seize, want);
     assert_eq!(coll_gas, ALICE_COLL / uint!(200_U256));
-
-    let cap = Constraints {
-        per_liquidation_notional_cap: Wad::from_raw(U256::ONE),
-    };
-    assert!(p
-        .quote(pos, &prices(ETH_USD_LIQ_WAD, BOLD_USD_WAD), &cap)
-        .unwrap()
-        .is_none());
 }
 
 #[test]
@@ -337,7 +314,6 @@ fn encode_validates_then_ok() {
         .quote(
             st.view(ALICE_ID, T0).unwrap(),
             &prices(ETH_USD_LIQ_WAD, BOLD_USD_WAD),
-            &Constraints::UNBOUNDED,
         )
         .unwrap()
         .expect("liquidatable");
@@ -930,7 +906,6 @@ fn health_wsteth_does_not_require_weth_price() {
         p.quote(
             pos,
             &prices_wsteth(ETH_USD_LIQ_WAD, BOLD_USD_WAD, U256::ZERO),
-            &Constraints::UNBOUNDED
         ),
         Err(ProtocolError::MissingPrice(WETH))
     );
@@ -954,7 +929,6 @@ fn quote_empty_sp_still_pays_eth_gas_comp() {
         .quote(
             st.view(ALICE_ID, T0).unwrap(),
             &prices(ETH_USD_LIQ_WAD, BOLD_USD_WAD),
-            &Constraints::UNBOUNDED,
         )
         .unwrap()
         .expect("liquidatable");

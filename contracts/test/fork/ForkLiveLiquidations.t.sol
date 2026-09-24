@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {Executor} from "../../src/Executor.sol";
+import {MainnetVenues} from "../../src/lib/MainnetVenues.sol";
 import {IAavePool, IAaveV4Spoke, IMorpho, IUniV3Pool, MarketParams} from "../../src/lib/Interfaces.sol";
 import {PlanBuilder as PB} from "../unit/PlanBuilder.sol";
 
@@ -51,6 +52,18 @@ interface IMorphoOracle {
     function price() external view returns (uint256);
 }
 
+interface IPoolAddressesProviderCfg {
+    function getPoolConfigurator() external view returns (address);
+}
+
+interface IPoolConfigurator {
+    function setSupplyCap(address asset, uint256 newSupplyCap) external;
+}
+
+interface ICurve3View {
+    function get_dy(int128 i, int128 j, uint256 dx) external view returns (uint256);
+}
+
 interface IMorphoIrm {
     function borrowRateView(MarketParams memory, IMorpho.Market memory) external view returns (uint256);
 }
@@ -89,12 +102,20 @@ contract ForkLiveLiquidationsTest is Test {
     address constant WSTETH_WETH_001 = 0x109830a1AAaD605BbF02a9dFA7B0B92EC2FB7dAa;
     address constant V4_POOL_MANAGER = 0x000000000004444c5dc75cB358380D2e3dE08A90;
     address constant DSS_FLASH = 0x60744434d6339a6B27d73d9Eda62b6F66a0a04FA;
+    address constant UNIV2_DAI_WETH = 0xA478c2975Ab1Ea89e8196811F51A7B7Ade33eB11;
+    /// Curve 3pool: coins DAI = 0, USDC = 1, USDT = 2.
+    address constant CURVE_3POOL = 0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7;
     bytes32 constant MORPHO_WSTETH_WETH = 0xC54D7ACF14DE29E0E5527CABD7A576506870346A78A11A6762E2CCA66322EC41;
 
     address operator = makeAddr("operator");
     address sink = makeAddr("sink");
     Executor ex;
     bool forked;
+    /// Repay-leg venue for `_runOne`: 0 = UniV3 pool (default), 2 = UniV2
+    /// pair, 3 = Curve 3pool (exact-in with overshoot). `collOverride`
+    /// replaces the default collateral choice.
+    uint8 repayVenue;
+    address collOverride;
 
     function setUp() public {
         string memory url = vm.envOr(
@@ -104,7 +125,7 @@ contract ForkLiveLiquidationsTest is Test {
         if (bytes(url).length == 0) return;
         vm.createSelectFork(url, PINNED_BLOCK);
         forked = true;
-        ex = new Executor(operator, sink, UNIV3_FACTORY, UNIV3_INIT_HASH, makeAddr("routerA"), makeAddr("routerB"), WETH);
+        ex = new Executor(operator, sink, UNIV3_FACTORY, UNIV3_INIT_HASH, makeAddr("routerA"), makeAddr("routerB"), WETH, MainnetVenues.UNIV2_FACTORY, MainnetVenues.UNIV2_INIT_HASH, MainnetVenues.SUSHI_FACTORY, MainnetVenues.SUSHI_INIT_HASH, MainnetVenues.CURVE_META_REGISTRY);
     }
 
     modifier onFork() {
@@ -162,13 +183,67 @@ contract ForkLiveLiquidationsTest is Test {
         _runOne(PB.A_MORPHO, PB.P_AAVE, WETH, false);
     }
 
-    /// Silo, Fluid T1, and Gearbox still have no fork proof. Opening them
-    /// here needs an oracle or an ABI this pin does not give us a recorded
-    /// liquidation for. Compound, Euler, and Liquity are proved in
-    /// ForkShareRedeem (Compound at block 22_000_000, where mint is live).
-    function test_fork_silo_v2_cannot_open_without_invented_state() public onFork {
-        vm.skip(true); // hook+SiloConfig isolated pair not opened from this fork
+    // Gas measurement set: one top-level execute() per flash provider on the
+    // same protocol and pair, so `forge test --isolate -vvvv` attributes the
+    // provider's wrap cost cold (tools/gas-measure/fork_decompose.py).
+    function test_gas_v3_dai_aave() public onFork {
+        _runOne(PB.A_V3, PB.P_AAVE, DAI, false);
     }
+
+    function test_gas_v3_dai_univ3() public onFork {
+        _runOne(PB.A_V3, PB.P_UNIV3, DAI, false);
+    }
+
+    function test_gas_v3_dai_univ4() public onFork {
+        _runOne(PB.A_V3, PB.P_UNIV4, DAI, false);
+    }
+
+    function test_gas_v3_dai_morpho() public onFork {
+        _runOne(PB.A_V3, PB.P_MORPHO, DAI, false);
+    }
+
+    function test_gas_v3_dai_sky() public onFork {
+        _runOne(PB.A_V3, PB.P_SKY, DAI, false);
+    }
+
+    function test_gas_morpho_weth_univ3() public onFork {
+        _runOne(PB.A_MORPHO, PB.P_UNIV3, WETH, false);
+    }
+
+    function test_gas_morpho_weth_univ4() public onFork {
+        _runOne(PB.A_MORPHO, PB.P_UNIV4, WETH, false);
+    }
+
+    /// Real Uniswap V2 DAI/WETH pair, exact-out repay, verified by CREATE2
+    /// against the real factory.
+    function test_fork_v3_dai_repay_via_univ2_pair() public onFork {
+        repayVenue = 2;
+        _runOne(PB.A_V3, PB.P_MORPHO, DAI, false);
+    }
+
+    /// Real Curve 3pool (MetaRegistry-verified), exact-in USDC → DAI repay
+    /// with overshoot; the surplus DAI is swept to WETH by the profit legs.
+    ///
+    /// Fixture only: Aave's USDC supply cap is full at this pin (and DAI has
+    /// zero LTV), so the governance pool admin (Executor level 1, checked
+    /// `isPoolAdmin` on chain) lifts the USDC cap to open the test position.
+    /// Nothing on the liquidation or swap path under test is touched.
+    function test_fork_v3_usdc_coll_dai_repay_via_curve_3pool() public onFork {
+        address cfg = IPoolAddressesProviderCfg(IPoolEx(AAVE_V3_POOL).ADDRESSES_PROVIDER()).getPoolConfigurator();
+        vm.prank(0x5300A1a15135EA4dc7aD5a167152C01EFc9b192A);
+        IPoolConfigurator(cfg).setSupplyCap(USDC, 0);
+        repayVenue = 3;
+        collOverride = USDC;
+        _runOne(PB.A_V3, PB.P_MORPHO, DAI, false);
+    }
+
+    function test_gas_morpho_weth_morpho() public onFork {
+        _runOne(PB.A_MORPHO, PB.P_MORPHO, WETH, false);
+    }
+
+    /// Fluid T1 and Gearbox still have no fork proof. Compound, Euler, and
+    /// Liquity are proved in ForkShareRedeem (Compound at block 22_000_000,
+    /// where mint is live); Silo V2 in ForkSiloGearbox.
     function test_fork_fluid_t1_cannot_open_without_invented_state() public onFork {
         vm.skip(true); // FluidOracle 1e27 / tick tree not opened from this fork
     }
@@ -199,8 +274,10 @@ contract ForkLiveLiquidationsTest is Test {
 
     function _runOne(uint8 adapter, uint8 provider, address debt, bool surplus) internal {
         address user = address(uint160(uint256(keccak256(abi.encode(adapter, provider, debt, surplus, "u")))));
-        address coll = debt == WETH ? WSTETH : WETH;
-        uint256 collAmt = adapter == PB.A_MORPHO ? 0.4e18 : 5e18;
+        address coll = collOverride != address(0) ? collOverride : (debt == WETH ? WSTETH : WETH);
+        uint256 collAmt = collOverride != address(0)
+            ? 50_000 * (10 ** uint256(IERC20B(coll).decimals()))
+            : adapter == PB.A_MORPHO ? 0.4e18 : 5e18;
 
         if (adapter == PB.A_V3) _openAaveV3(user, coll, debt, collAmt);
         else if (adapter == PB.A_V4) _openAaveV4(user, collAmt);
@@ -225,8 +302,16 @@ contract ForkLiveLiquidationsTest is Test {
         uint128 buyDebt = uint128(pulled + fee);
 
         bytes memory leg = _leg(adapter, user, coll, uint128(pulled));
-        address repayPool = _swapPool(coll, debt);
-        bytes memory repay = PB.poolSwap(repayPool, coll, debt, PB.L_EXACT_OUT, buyDebt);
+        bytes memory repay;
+        if (repayVenue == 2) {
+            require(coll == WETH && debt == DAI, "v2 venue fixture is WETH/DAI");
+            repay = PB.v2Swap(UNIV2_DAI_WETH, 0, coll, debt, PB.L_EXACT_OUT, buyDebt);
+        } else if (repayVenue == 3) {
+            require(coll == USDC && debt == DAI, "curve venue fixture is USDC/DAI");
+            repay = PB.curveSwap(CURVE_3POOL, 1, 0, coll, debt, 0, _curveDxFor(buyDebt));
+        } else {
+            repay = PB.poolSwap(_swapPool(coll, debt), coll, debt, PB.L_EXACT_OUT, buyDebt);
+        }
 
         bytes memory profitLegs;
         uint8 nProfit;
@@ -273,10 +358,21 @@ contract ForkLiveLiquidationsTest is Test {
         return DSS_FLASH;
     }
 
+    /// Smallest 0.1 %-step overshoot of USDC in that buys `want` DAI on 3pool.
+    function _curveDxFor(uint256 want) internal view returns (uint128) {
+        uint256 dx = want / 1e12 + 1;
+        for (uint256 k; k < 50; ++k) {
+            if (ICurve3View(CURVE_3POOL).get_dy(1, 0, dx) >= want) return uint128(dx);
+            dx = dx * 1001 / 1000 + 1;
+        }
+        revert("curve dx");
+    }
+
     function _swapPool(address a, address b) internal pure returns (address) {
         if ((a == WSTETH && b == WETH) || (a == WETH && b == WSTETH)) return WSTETH_WETH_001;
         if ((a == DAI && b == WETH) || (a == WETH && b == DAI)) return DAI_WETH_005;
         if ((a == USDT && b == WETH) || (a == WETH && b == USDT)) return USDT_WETH_005;
+        if ((a == USDC && b == WETH) || (a == WETH && b == USDC)) return USDC_WETH_005;
         revert("no pool");
     }
 

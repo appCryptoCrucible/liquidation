@@ -112,6 +112,14 @@ pub enum EncodeError {
     BadPoolDataLen(usize),
     #[error("router data must start with a 20-byte target, got {0}")]
     BadRouterDataLen(usize),
+    #[error("UniV2 pair data must be 21 bytes (pair ‖ factory id), got {0}")]
+    BadV2DataLen(usize),
+    #[error("UniV2 factory id {0} is not Uniswap (0) or SushiSwap (1)")]
+    BadV2Factory(u8),
+    #[error("Curve pool data must be 22 bytes (pool ‖ i ‖ j), got {0}")]
+    BadCurveDataLen(usize),
+    #[error("Curve legs are exact input only")]
+    CurveExactOut,
     #[error("zero address in plan field {0}")]
     ZeroAddress(&'static str),
     #[error("protocol_pull {pull} is zero")]
@@ -138,7 +146,7 @@ pub enum EncodeError {
         pull: u128,
     },
     #[error("liq-exec wire: {0}")]
-    Wire(#[from] liq_exec::wire::WireError),
+    Wire(#[from] liq_wire::wire::WireError),
 }
 
 pub type Result<T> = core::result::Result<T, EncodeError>;

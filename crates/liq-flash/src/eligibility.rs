@@ -191,6 +191,8 @@ mod tests {
 
     fn repay(asset: AssetId, max_repay: U256) -> RepayOption {
         RepayOption {
+            min_repay: alloy_primitives::U256::ZERO,
+            pair_seize: None,
             asset,
             max_repay,
             slot: liq_protocol::SlotRef::ByAsset,

@@ -11,6 +11,7 @@ alloy-primitives = { workspace = true, features = ["std", "serde"] }
 alloy-sol-types = { workspace = true, features = ["std"] }
 alloy-provider = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
+alloy-eips = { version = "=2.4.2", default-features = false, features = ["std"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

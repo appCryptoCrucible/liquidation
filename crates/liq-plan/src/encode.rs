@@ -1,12 +1,12 @@
-//! Packed encoder — inverse of `PlanDecoder.sol` / `liq_exec::wire`.
+//! Packed encoder — inverse of `PlanDecoder.sol` / `liq_wire::wire`.
 
 use alloy_primitives::Address;
-use liq_exec::wire::LegTail;
-use liq_exec::wire::{
+use liq_protocol::ExecutorAdapter;
+use liq_wire::wire::LegTail;
+use liq_wire::wire::{
     decode_group, decode_liq_leg, decode_swap_leg, Plan, GROUP_HEAD_LEN, HEADER_LEN,
     LEG_TAKE_BALANCE, SWAP_LEG_HEAD_LEN, VENUE_UNIV3_POOL,
 };
-use liq_protocol::ExecutorAdapter;
 
 use crate::error::{EncodeError, Result};
 use crate::types::{BatchPlan, EncodedPlan, FlashGroup, LiqLeg, SwapLeg, ValidateCtx, LIQ_LEG_LEN};
@@ -96,8 +96,9 @@ fn encode_liq(b: &mut Vec<u8>, l: &LiqLeg) -> Result<()> {
         (ExecutorAdapter::Fluid, LegTail::Fluid { col_per_unit_debt }) => {
             b.extend_from_slice(&col_per_unit_debt.to_be_bytes::<32>());
         }
-        (ExecutorAdapter::Gearbox, LegTail::Gearbox { min_seized }) => {
+        (ExecutorAdapter::Gearbox, LegTail::Gearbox { min_seized, full }) => {
             b.extend_from_slice(&min_seized.to_be_bytes::<32>());
+            b.push(u8::from(*full));
         }
         (
             ExecutorAdapter::CompoundV2,
@@ -166,7 +167,7 @@ fn size_hint(p: &BatchPlan) -> Result<usize> {
     Ok(n)
 }
 
-/// Rust-decode: walk with `liq_exec::wire` (the PlanDecoder mirror).
+/// Rust-decode: walk with `liq_wire::wire` (the PlanDecoder mirror).
 pub fn decode_batch(bytes: &[u8]) -> Result<BatchPlan> {
     let plan = Plan::parse(bytes)?;
     let h = plan.header();
@@ -215,7 +216,7 @@ pub fn decode_batch(bytes: &[u8]) -> Result<BatchPlan> {
         bytes
             .get(po)
             .copied()
-            .ok_or(EncodeError::Wire(liq_exec::wire::WireError::Truncated {
+            .ok_or(EncodeError::Wire(liq_wire::wire::WireError::Truncated {
                 need: po.saturating_add(1),
                 have: bytes.len(),
             }))?;
@@ -235,7 +236,7 @@ pub fn decode_batch(bytes: &[u8]) -> Result<BatchPlan> {
     })
 }
 
-fn swap_owned(s: liq_exec::wire::SwapLeg<'_>) -> SwapLeg {
+fn swap_owned(s: liq_wire::wire::SwapLeg<'_>) -> SwapLeg {
     SwapLeg {
         venue: s.venue,
         token_in: s.token_in,

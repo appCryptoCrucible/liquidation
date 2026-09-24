@@ -276,7 +276,9 @@ impl Submitter for FailRecorder {
         &self,
         _submission: &liq_types::IntendedSubmission,
     ) -> Result<SubmitReceipt, liq_exec::error::ExecError> {
-        Err(liq_exec::error::ExecError::Record("test record fail".into()))
+        Err(liq_exec::error::ExecError::Record(
+            "test record fail".into(),
+        ))
     }
 }
 

@@ -2,10 +2,13 @@
 
 use alloy_primitives::{keccak256, Address, B256, U256};
 use alloy_sol_types::sol;
-use liq_exec::wire::{LegTail, LEG_EXACT_OUT, LEG_TAKE_BALANCE, VENUE_ROUTER, VENUE_UNIV3_POOL};
 use liq_flash::fee_amount;
 use liq_protocol::ExecutorAdapter;
 use liq_types::fixed::{mul_div, Rounding, RAY, WAD};
+use liq_wire::wire::{
+    LegTail, LEG_EXACT_OUT, LEG_TAKE_BALANCE, V2_FACTORY_SUSHI, VENUE_CURVE_POOL, VENUE_ROUTER,
+    VENUE_UNIV2_POOL, VENUE_UNIV3_POOL,
+};
 
 use crate::error::{EncodeError, Result};
 use crate::types::{BatchPlan, FlashGroup, MorphoMarketPin, SwapLeg, ValidateCtx};
@@ -99,7 +102,7 @@ pub fn validate(p: &BatchPlan, ctx: &ValidateCtx) -> Result<()> {
                     }
                 }
                 (ExecutorAdapter::Fluid, _) => return Err(EncodeError::FluidTailShape),
-                (ExecutorAdapter::Gearbox, LegTail::Gearbox { min_seized }) => {
+                (ExecutorAdapter::Gearbox, LegTail::Gearbox { min_seized, .. }) => {
                     if min_seized.is_zero() {
                         return Err(EncodeError::GearboxZeroMinSeized);
                     }
@@ -301,6 +304,24 @@ fn check_swap(s: &SwapLeg) -> Result<()> {
                 return Err(EncodeError::BadRouterDataLen(s.data.len()));
             }
         }
+        VENUE_UNIV2_POOL => {
+            if s.data.len() != 21 {
+                return Err(EncodeError::BadV2DataLen(s.data.len()));
+            }
+            if let Some(&fid) = s.data.get(20) {
+                if fid > V2_FACTORY_SUSHI {
+                    return Err(EncodeError::BadV2Factory(fid));
+                }
+            }
+        }
+        VENUE_CURVE_POOL => {
+            if s.data.len() != 22 {
+                return Err(EncodeError::BadCurveDataLen(s.data.len()));
+            }
+            if s.flags & LEG_EXACT_OUT != 0 {
+                return Err(EncodeError::CurveExactOut);
+            }
+        }
         v => return Err(EncodeError::UnknownVenue(v)),
     }
     Ok(())
@@ -378,10 +399,21 @@ fn size_repay_to_pull(g: &FlashGroup) -> Result<()> {
     if exact_out > owed {
         return Err(EncodeError::UnderSeizure { exact_out, owed });
     }
-    if exact_out != owed {
+    // Exact-input repay legs (Curve has no exact output) cover the rest with
+    // an overshoot; the lender's pull enforces the total on chain, and the
+    // surplus must be swept ([`surplus_debt_routed`]). Without one, the
+    // exact-output legs must buy exactly what is owed.
+    if exact_out != owed && !has_exact_in_repay(g) {
         return Err(EncodeError::RepayNotSizedToPull { exact_out, owed });
     }
     Ok(())
+}
+
+/// A repay leg that sells a fixed amount into the debt asset.
+fn has_exact_in_repay(g: &FlashGroup) -> bool {
+    g.repay_swaps
+        .iter()
+        .any(|s| s.token_out == g.debt_asset && s.flags & (LEG_EXACT_OUT | LEG_TAKE_BALANCE) == 0)
 }
 
 fn surplus_debt_routed(p: &BatchPlan, g: &FlashGroup, weth: Address) -> Result<()> {
@@ -389,7 +421,7 @@ fn surplus_debt_routed(p: &BatchPlan, g: &FlashGroup, weth: Address) -> Result<(
         a.checked_add(l.protocol_pull)
             .ok_or(EncodeError::TooManyLegs)
     })?;
-    if g.debt_asset == weth || g.flash_amount <= pull {
+    if g.debt_asset == weth || (g.flash_amount <= pull && !has_exact_in_repay(g)) {
         return Ok(());
     }
     let routed = p.profit_swaps.iter().any(|s| {

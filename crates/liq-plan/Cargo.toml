@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 liq-types = { path = "../liq-types" }
 liq-protocol = { path = "../liq-protocol" }
-liq-exec = { path = "../liq-exec" }
+liq-wire = { path = "../liq-wire" }
 liq-flash = { path = "../liq-flash" }
 alloy-primitives = { workspace = true, features = ["std"] }
 alloy-sol-types = { workspace = true, features = ["std"] }

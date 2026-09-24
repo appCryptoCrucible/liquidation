@@ -161,7 +161,7 @@ fn engine(c: &mut Criterion) {
     // Attribution: the adapter's own cost on the same positions, called
     // directly — what the engine's budget sits on top of.
     {
-        use liq_protocol::{Constraints, Protocol};
+        use liq_protocol::Protocol;
         let view = rig.st.view(T0);
         let hot_warm_ids: Vec<PositionId> = {
             let mut v: Vec<PositionId> = rig
@@ -203,11 +203,7 @@ fn engine(c: &mut Criterion) {
                     let pos = view.position(id).unwrap();
                     let h = rig.p.health(pos, black_box(&px_crash)).unwrap();
                     if h.hf < Ray::ONE {
-                        black_box(
-                            rig.p
-                                .quote(pos, &px_crash, &Constraints::UNBOUNDED)
-                                .unwrap(),
-                        );
+                        black_box(rig.p.quote(pos, &px_crash).unwrap());
                     }
                 }
             })

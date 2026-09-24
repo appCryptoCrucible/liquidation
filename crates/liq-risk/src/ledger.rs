@@ -1,6 +1,6 @@
 //! Operational PnL ledger — SQLite (D06). Not the Step 7 books (14B).
 
-use alloy_primitives::U256;
+use alloy_primitives::{I256, U256};
 use rusqlite::{params, Connection, OpenFlags};
 use tracing::error;
 
@@ -27,6 +27,23 @@ CREATE TABLE IF NOT EXISTS daily_reconcile (
     ledger_net_wei TEXT NOT NULL,
     chain_net_wei TEXT NOT NULL,
     abs_diff_bps INTEGER NOT NULL
+);
+-- Written off the hot path by the inclusion-outcome thread the moment a
+-- submission's Terminal resolves (GUIDE 13 §5). Only the fields attested at
+-- that point are real: `net_wei`/`gas_used` come from the receipt
+-- (`Terminal::Included` only — every other Terminal carries no wei figure,
+-- so the column stays NULL rather than a fabricated 0). The full
+-- flash_fee_wei/gross_bonus_wei/repay_wei/slippage_wei/bid_wei breakdown in
+-- `liquidations` above is a separate, not-yet-wired pass (either liq-books
+-- import or submission-time quoting) and this table does not attempt it.
+CREATE TABLE IF NOT EXISTS liquidation_outcomes (
+    id INTEGER PRIMARY KEY,
+    trace_id INTEGER NOT NULL,
+    ts_unix INTEGER NOT NULL,
+    protocol INTEGER NOT NULL,
+    outcome TEXT NOT NULL,
+    net_wei TEXT,
+    gas_used INTEGER
 );
 ";
 
@@ -178,6 +195,20 @@ pub struct LiquidationRow {
     pub outcome: String,
 }
 
+/// One resolved submission, off the hot path (GUIDE 13 §5). Only
+/// `Terminal::Included` attests a wei figure; every other outcome leaves
+/// `net_wei`/`gas_used` `None` rather than a fabricated 0.
+#[derive(Clone, Debug)]
+pub struct OutcomeRow {
+    pub trace: TraceId,
+    pub ts_unix: i64,
+    pub protocol: ProtocolId,
+    /// GUIDE 09 `Outcome` name (`"Won"` / `"Dropped"` / `"Reverted"` / `"LostToCompetitor"`).
+    pub outcome: String,
+    pub net_wei: Option<I256>,
+    pub gas_used: Option<u64>,
+}
+
 pub struct PnlLedger {
     conn: Connection,
 }
@@ -222,6 +253,30 @@ impl PnlLedger {
                 row.bid_wei.to_string(),
                 row.net_wei.to_string(),
                 row.outcome.as_str(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Insert one resolved-outcome row. Idempotent per call site is the
+    /// caller's job (the inclusion watcher resolves each trace exactly
+    /// once); this does not dedupe.
+    pub fn insert_outcome(&self, row: &OutcomeRow) -> Result<(), LedgerError> {
+        if row.outcome.is_empty() {
+            error!("outcome row missing outcome name");
+            return Err(LedgerError::OutcomeEmpty);
+        }
+        self.conn.execute(
+            "INSERT INTO liquidation_outcomes (
+                trace_id, ts_unix, protocol, outcome, net_wei, gas_used
+            ) VALUES (?1,?2,?3,?4,?5,?6)",
+            params![
+                i64::try_from(row.trace.raw()).unwrap_or(i64::MAX),
+                row.ts_unix,
+                i64::from(row.protocol.0),
+                row.outcome.as_str(),
+                row.net_wei.map(|v| v.to_string()),
+                row.gas_used.and_then(|g| i64::try_from(g).ok()),
             ],
         )?;
         Ok(())
@@ -323,6 +378,7 @@ mod tests {
         let l = PnlLedger::open_memory().unwrap();
         assert!(l.table_exists("liquidations").unwrap());
         assert!(l.table_exists("daily_reconcile").unwrap());
+        assert!(l.table_exists("liquidation_outcomes").unwrap());
         l.insert(&row(100, FlashProvider::Aave)).unwrap();
         l.insert(&row(50, FlashProvider::UniV3)).unwrap();
         assert_eq!(l.sum_net().unwrap(), U256::from(150u64));
@@ -330,6 +386,65 @@ mod tests {
             l.reconcile_day("2026-09-20", U256::from(150u64)).unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn outcome_row_records_attested_net_and_leaves_others_null() {
+        let l = PnlLedger::open_memory().unwrap();
+        l.insert_outcome(&OutcomeRow {
+            trace: TraceId::from_raw(7),
+            ts_unix: 1_789_862_400,
+            protocol: ProtocolId(1),
+            outcome: "Won".into(),
+            net_wei: Some(I256::try_from(500i64).unwrap()),
+            gas_used: Some(180_000),
+        })
+        .unwrap();
+        l.insert_outcome(&OutcomeRow {
+            trace: TraceId::from_raw(8),
+            ts_unix: 1_789_862_401,
+            protocol: ProtocolId(1),
+            outcome: "Dropped".into(),
+            net_wei: None,
+            gas_used: None,
+        })
+        .unwrap();
+        let (net, gas): (Option<String>, Option<i64>) = l
+            .conn
+            .query_row(
+                "SELECT net_wei, gas_used FROM liquidation_outcomes WHERE trace_id = 7",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(net.as_deref(), Some("500"));
+        assert_eq!(gas, Some(180_000));
+        let (net, gas): (Option<String>, Option<i64>) = l
+            .conn
+            .query_row(
+                "SELECT net_wei, gas_used FROM liquidation_outcomes WHERE trace_id = 8",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(net, None, "Dropped must not invent a net_wei figure");
+        assert_eq!(gas, None);
+    }
+
+    #[test]
+    fn outcome_row_empty_outcome_refused() {
+        let l = PnlLedger::open_memory().unwrap();
+        let err = l
+            .insert_outcome(&OutcomeRow {
+                trace: TraceId::from_raw(1),
+                ts_unix: 1,
+                protocol: ProtocolId(0),
+                outcome: String::new(),
+                net_wei: None,
+                gas_used: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, LedgerError::OutcomeEmpty));
     }
 
     #[test]

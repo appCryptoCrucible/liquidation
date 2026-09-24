@@ -243,13 +243,8 @@ impl Protocol for SiloV2 {
         solve::time_to_cross(pos, px)
     }
 
-    fn quote(
-        &self,
-        pos: PositionRef<'_>,
-        px: &PriceVector,
-        cons: &liq_protocol::Constraints,
-    ) -> Result<Option<Quote>> {
-        quote::quote(pos, px, cons)
+    fn quote(&self, pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quote>> {
+        quote::quote(pos, px)
     }
 
     fn encode(

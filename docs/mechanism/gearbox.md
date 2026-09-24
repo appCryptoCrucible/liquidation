@@ -5,6 +5,19 @@ Source: `Gearbox-protocol/core-v3` @ `510fc6541c3767ce825929b4c311826fe81d6fa5` 
 
 Not in `registry.json`. D15 enumerated 1 `ContractsRegister` + 34 credit managers (confirm live).
 
+## Deployment reality (verified on chain 2026-09-24)
+
+- **v3.0** (`version() == 300/301`, Sourcify-verified): the D15 register below lists them. Their facades have **only** full `liquidateCreditAccount(ca, to, calls)` — no partial path — and every v3.0 manager has **zero debt** (pools show `totalBorrowed == 0`). Not enumerated.
+- **v3.1** (`version() == 310`, this pin): live debt. Discovered from `AddressProviderV3_1` `0xF7f0a609BfAb9a0A98786951ef10e5FE26cC1E38` → `MARKET_CONFIGURATOR_FACTORY` → `getMarketConfigurators()` → `contractsRegister()` → `getCreditManagers()`. At block 26_048_000: 17 configurators, 70 managers, 8 with debt (~92k USDC, ~911 WETH, ~2,986 wstETH, ~2.5 WBTC). Every v3.1 facade has both paths below.
+- Most live collateral is wrapped LP / vault shares (Beefy-wrapped Curve/Balancer LP, Pendle PT, savETH). The router cannot exit those yet, so today those accounts quote but find no route.
+- v3.1 `quotedTokensMask` is `2^256 − 2` (every non-underlying token quoted); mask it to `collateralTokensCount()` bits.
+
+## Executor paths (both proved on the kpk WETH manager, `ForkSiloGearbox.t.sol`)
+
+- **Partial** — `partiallyLiquidateCreditAccount`: after it, Gearbox runs a full collateral check (HF ≥ 1) **and** requires debt ≥ `debtLimits().minDebt` (`BorrowAmountOutOfLimitsException`). The quote's `[min_repay, max_repay]` window encodes both.
+- **Full** — `liquidateCreditAccount(ca, to, [addCollateral(underlying, X), withdrawCollateral(token, max, executor)])`. The manager pays the pool from the account's underlying, keeps `totalValue · discount − amountToPool` (the borrower's share) on the account, and returns any further underlying to `to`, so over-adding is refunded. `X = totalValue · discount − underlying − value(other tokens)` + margin; the liquidator keeps `totalValue · (1 − discount)`. On bad debt (`_hasBadDebt`) v3.1 asks the market's loss policy, which may refuse a public liquidator; the quote does not offer the full leg then.
+- A second debt change in the block an account's debt last changed reverts (`DebtUpdatedTwiceInOneBlockException`).
+
 ## Mechanism — hard (account close or partial seize)
 
 Two permissionless paths on **CreditFacadeV3** (not the manager — manager `liquidateCreditAccount` is `creditFacadeOnly`):

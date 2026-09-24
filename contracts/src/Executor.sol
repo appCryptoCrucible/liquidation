@@ -5,8 +5,8 @@ import {SafeTransfer} from "./lib/SafeTransfer.sol";
 import {Plan, FlashGroup, LiqLeg, SwapLeg, PlanDecoder} from "./lib/PlanDecoder.sol";
 import {
     IERC20, IWETH, IAavePool, IAaveV4Spoke, IMorpho, MarketParams,
-    IUniV3Pool, IPoolManager, IDssFlash,
-    IEVault, IEVC, ISiloHook, ITroveManager, IFluidT1, ICreditFacadeV3, PriceUpdate,
+    IUniV3Pool, IUniV2Pair, ICurvePool, ICurveMetaRegistry, IPoolManager, IDssFlash,
+    IEVault, IEVC, ISiloHook, ITroveManager, IFluidT1, ICreditFacadeV3, ICreditFacadeV3Multicall, MultiCall, PriceUpdate,
     ICToken, IComptroller, ICErc20, ICEther
 } from "./lib/Interfaces.sol";
 
@@ -57,6 +57,16 @@ contract Executor {
     address public immutable ROUTER_B;
     /// Canonical WETH. Profit is denominated in ETH, so every plan converges here.
     address public immutable WETH;
+    /// Uniswap V2 and SushiSwap factories + pair init-code hashes: a V2 leg's
+    /// pair must be the CREATE2 address one of them derives for the leg's
+    /// tokens, so a plan cannot send funds to an arbitrary "pair".
+    address public immutable UNIV2_FACTORY;
+    bytes32 public immutable UNIV2_INIT_HASH;
+    address public immutable SUSHI_FACTORY;
+    bytes32 public immutable SUSHI_INIT_HASH;
+    /// Curve MetaRegistry: a Curve leg's pool must be registered there and
+    /// hold the leg's tokens at the encoded indices.
+    address public immutable CURVE_REGISTRY;
 
     // Transient storage slots (EIP-1153). ~100 gas vs 20k/5k for SSTORE.
     uint256 private constant T_EXPECTED_CALLER = 0x00;
@@ -73,7 +83,16 @@ contract Executor {
     // behaviour pool-specific, so it is excluded as a routing venue even though
     // it remains the preferred flashloan source (D08, GUIDE 12 Step 3).
     uint8 private constant S_UNIV3_POOL = 0;  // pool-direct, transfer-in-callback, no approval
-    uint8 private constant S_ROUTER     = 1;  // allowlisted router (Curve, …)
+    uint8 private constant S_ROUTER     = 1;  // allowlisted router
+    /// Pair-direct V2: tokens in, `pair.swap` out, amounts from live reserves.
+    /// data = pair (20) ‖ factory id (1: 0 = Uniswap V2, 1 = SushiSwap).
+    uint8 private constant S_UNIV2_POOL = 2;
+    /// Pool-direct Curve StableSwap plain pool: approve, `exchange`.
+    /// data = pool (20) ‖ i (1) ‖ j (1). Exact-input only — Curve has no
+    /// exact-output swap.
+    uint8 private constant S_CURVE_POOL = 3;
+    /// Uniswap V2 / SushiSwap swap fee, 0.30 %.
+    uint256 private constant V2_FEE_KEEP = 997;
 
     // Provider ids — `liq_types::FlashProvider` discriminants (D09).
     uint8 private constant P_AAVE    = 0;
@@ -108,6 +127,11 @@ contract Executor {
     error UnknownVenue(uint8 v);
     error RouterNotAllowed(address target);
     error RouterCallFailed(address target);
+    /// A V2/Curve leg's data is malformed, names a pool that is not the
+    /// verified one for its tokens, or asks more than the pool holds.
+    error BadPool(uint8 venue, address pool);
+    /// Curve cannot swap to an exact output.
+    error ExactOutUnsupported(uint8 venue);
     error BadSwapCallback();
     error NoLegs();
     error BidFailed(uint256 amount);
@@ -128,6 +152,9 @@ contract Executor {
     /// Seized cTokens did not redeem. The whole `execute` reverts so the
     /// liquidation and the flash roll back together.
     error RedeemFailed(address token, uint256 code);
+    /// Gearbox full liquidation delivered less collateral than the plan's
+    /// minimum.
+    error SeizedBelowMin(uint256 got, uint256 minimum);
 
     /// Why a liquidation leg did not fill. Every `catch` in this contract
     /// emits one before returning false, so a skipped leg is diagnosable from
@@ -154,12 +181,22 @@ contract Executor {
     constructor(
         address operator_, address profitSink_,
         address univ3Factory_, bytes32 univ3InitHash_,
-        address routerA_, address routerB_, address weth_
+        address routerA_, address routerB_, address weth_,
+        address univ2Factory_, bytes32 univ2InitHash_,
+        address sushiFactory_, bytes32 sushiInitHash_,
+        address curveRegistry_
     ) {
         if (operator_ == address(0) || profitSink_ == address(0) || univ3Factory_ == address(0)
-            || routerA_ == address(0) || routerB_ == address(0) || weth_ == address(0)) {
+            || routerA_ == address(0) || routerB_ == address(0) || weth_ == address(0)
+            || univ2Factory_ == address(0) || sushiFactory_ == address(0)
+            || curveRegistry_ == address(0)) {
             revert ZeroAddress();
         }
+        UNIV2_FACTORY        = univ2Factory_;
+        UNIV2_INIT_HASH      = univ2InitHash_;
+        SUSHI_FACTORY        = sushiFactory_;
+        SUSHI_INIT_HASH      = sushiInitHash_;
+        CURVE_REGISTRY       = curveRegistry_;
         OPERATOR             = operator_;
         PROFIT_SINK          = profitSink_;
         UNIV3_FACTORY        = univ3Factory_;
@@ -818,20 +855,32 @@ contract Executor {
         debtAsset.safeApprove(l.market, 0);
     }
 
-    /// Gearbox V3 `partiallyLiquidateCreditAccount` pin `510fc654`. Target =
-    /// CreditFacadeV3. `priceUpdates` empty — do not invent PriceUpdate
-    /// payloads. Full MultiCall close is unwired off-chain. No facade health
-    /// view used here; the call is the guard.
+    /// Gearbox V3 (`market` = facade, `borrower` = credit account,
+    /// `debtAsset` = the manager's underlying). Tail = minimum collateral
+    /// received ‖ mode. **Approvals go to the credit manager**, which does
+    /// every pull as spender; an allowance held by the facade is never used.
     ///
-    /// **The approval goes to the credit manager, not the facade.** The facade
-    /// only forwards; `CreditManagerV3.partiallyLiquidateCreditAccount`
-    /// (pin `510fc654`) executes `IERC20(underlying).safeTransferFrom(source,
-    /// pool, amount)` with the *manager* as `msg.sender`. An allowance held by
-    /// the facade is never touched and every leg reverts on the pull.
+    /// Mode 0 — `partiallyLiquidateCreditAccount` (v3.1): repay
+    /// `repayAmount`, seize `collateralAsset` at the discount; the facade
+    /// enforces `minSeized` and requires the account to end healthy.
+    ///
+    /// Mode 1 — full `liquidateCreditAccount(account, this, calls)` (the
+    /// 3-arg form: v3.0, and v3.1's wrapper with empty loss-policy data).
+    /// Multicall: `addCollateral(underlying, repayAmount)` then
+    /// `withdrawCollateral(collateralAsset, max, this)`. The manager pays the
+    /// pool from the account's underlying, keeps the borrower's share on the
+    /// account and returns the rest of the underlying to us, so over-adding
+    /// comes back. Too little reverts in Gearbox → the leg fails. The facade
+    /// has no slip check on withdrawn collateral, so `minSeized` is enforced
+    /// here after the call — short is a whole-plan revert.
     function _liquidateGearbox(address debtAsset, LiqLeg memory l, bytes calldata plan)
         internal returns (bool ok)
     {
-        uint256 minSeized = plan.tailU256(l.tailOffset);
+        (uint256 minSeized, uint8 mode) = plan.tailGearbox(l.tailOffset);
+        if (mode > 1) {
+            emit LegFailed(PlanDecoder.A_GEARBOX, l.market, l.borrower, ST_TAIL, "");
+            return false;
+        }
 
         address puller;
         try ICreditFacadeV3(l.market).creditManager() returns (address m) {
@@ -845,16 +894,46 @@ contract Executor {
             return false;
         }
 
-        PriceUpdate[] memory none;
         debtAsset.safeApprove(puller, l.repayAmount);
-        try ICreditFacadeV3(l.market).partiallyLiquidateCreditAccount(
-            l.borrower, l.collateralAsset, l.repayAmount, minSeized, address(this), none
-        ) returns (uint256) {
+        if (mode == 0) {
+            PriceUpdate[] memory none;
+            try ICreditFacadeV3(l.market).partiallyLiquidateCreditAccount(
+                l.borrower, l.collateralAsset, l.repayAmount, minSeized, address(this), none
+            ) returns (uint256) {
+                ok = true;
+            } catch (bytes memory r) {
+                emit LegFailed(PlanDecoder.A_GEARBOX, l.market, l.borrower, ST_LIQUIDATE, _clip(r));
+            }
+        } else {
+            ok = _liquidateGearboxFull(debtAsset, l, minSeized);
+        }
+        debtAsset.safeApprove(puller, 0);
+    }
+
+    function _liquidateGearboxFull(address debtAsset, LiqLeg memory l, uint256 minSeized)
+        internal returns (bool ok)
+    {
+        MultiCall[] memory calls = new MultiCall[](2);
+        calls[0] = MultiCall({
+            target: l.market,
+            callData: abi.encodeCall(ICreditFacadeV3Multicall.addCollateral, (debtAsset, l.repayAmount))
+        });
+        calls[1] = MultiCall({
+            target: l.market,
+            callData: abi.encodeCall(
+                ICreditFacadeV3Multicall.withdrawCollateral, (l.collateralAsset, type(uint256).max, address(this))
+            )
+        });
+        uint256 collBefore = IERC20(l.collateralAsset).balanceOf(address(this));
+        try ICreditFacadeV3(l.market).liquidateCreditAccount(l.borrower, address(this), calls) {
             ok = true;
         } catch (bytes memory r) {
             emit LegFailed(PlanDecoder.A_GEARBOX, l.market, l.borrower, ST_LIQUIDATE, _clip(r));
         }
-        debtAsset.safeApprove(puller, 0);
+        if (ok) {
+            uint256 got = IERC20(l.collateralAsset).balanceOf(address(this)) - collBefore;
+            if (got < minSeized) revert SeizedBelowMin(got, minSeized);
+        }
     }
 
     /// Compound V2 official Unitroller pin `a3214f67`. `market` = debt
@@ -1039,9 +1118,73 @@ contract Executor {
             (bool ok, ) = target.call(data[20:]);
             if (!ok) revert RouterCallFailed(target);
             s.tokenIn.safeApprove(target, 0);
+        } else if (s.venue == S_UNIV2_POOL) {
+            _swapV2(s, amount, data);
+        } else if (s.venue == S_CURVE_POOL) {
+            _swapCurve(s, amount, data);
         } else {
             revert UnknownVenue(s.venue);
         }
+    }
+
+    /// Pair-direct V2 (UniswapV2Library math, 0.30 %). The pair is verified
+    /// by CREATE2 against an immutable factory before any token moves.
+    function _swapV2(SwapLeg memory s, uint256 amount, bytes calldata data) internal {
+        if (data.length != 21) revert BadPool(S_UNIV2_POOL, address(0));
+        address pair = address(bytes20(data[0:20]));
+        uint8 fid = uint8(data[20]);
+        address factory;
+        bytes32 initHash;
+        if (fid == 0) {
+            (factory, initHash) = (UNIV2_FACTORY, UNIV2_INIT_HASH);
+        } else if (fid == 1) {
+            (factory, initHash) = (SUSHI_FACTORY, SUSHI_INIT_HASH);
+        }
+        bool zeroForOne = s.tokenIn < s.tokenOut;
+        (address t0, address t1) = zeroForOne ? (s.tokenIn, s.tokenOut) : (s.tokenOut, s.tokenIn);
+        address expected = address(uint160(uint256(keccak256(abi.encodePacked(
+            hex"ff", factory, keccak256(abi.encodePacked(t0, t1)), initHash
+        )))));
+        if (factory == address(0) || pair != expected) revert BadPool(S_UNIV2_POOL, pair);
+
+        (uint112 r0, uint112 r1,) = IUniV2Pair(pair).getReserves();
+        (uint256 rIn, uint256 rOut) = zeroForOne ? (uint256(r0), uint256(r1)) : (uint256(r1), uint256(r0));
+        uint256 amountIn;
+        uint256 amountOut;
+        if (s.flags & L_EXACT_OUT != 0) {
+            amountOut = amount;
+            if (amountOut >= rOut) revert BadPool(S_UNIV2_POOL, pair);
+            amountIn = (rIn * amountOut * 1000) / ((rOut - amountOut) * V2_FEE_KEEP) + 1;
+        } else {
+            amountIn = amount;
+            uint256 inWithFee = amountIn * V2_FEE_KEEP;
+            amountOut = (inWithFee * rOut) / (rIn * 1000 + inWithFee);
+        }
+        s.tokenIn.safeTransfer(pair, amountIn);
+        (uint256 o0, uint256 o1) = zeroForOne ? (uint256(0), amountOut) : (amountOut, uint256(0));
+        IUniV2Pair(pair).swap(o0, o1, address(this), "");
+    }
+
+    /// Pool-direct Curve StableSwap plain pool, exact input. The pool must
+    /// be registered in the MetaRegistry and hold `tokenIn`/`tokenOut` at the
+    /// encoded indices. Exact approval, zeroed after. No per-leg min_dy:
+    /// `minProfit` is the constraint, as for every other leg.
+    function _swapCurve(SwapLeg memory s, uint256 amount, bytes calldata data) internal {
+        if (s.flags & L_EXACT_OUT != 0) revert ExactOutUnsupported(S_CURVE_POOL);
+        if (data.length != 22) revert BadPool(S_CURVE_POOL, address(0));
+        address pool = address(bytes20(data[0:20]));
+        uint8 i = uint8(data[20]);
+        uint8 j = uint8(data[21]);
+        if (!ICurveMetaRegistry(CURVE_REGISTRY).is_registered(pool)
+            || ICurvePool(pool).coins(i) != s.tokenIn
+            || ICurvePool(pool).coins(j) != s.tokenOut) {
+            revert BadPool(S_CURVE_POOL, pool);
+        }
+        s.tokenIn.safeApprove(pool, amount);
+        // i, j are uint8: widening to uint128 then int128 is lossless.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        ICurvePool(pool).exchange(int128(uint128(i)), int128(uint128(j)), amount, 0);
+        s.tokenIn.safeApprove(pool, 0);
     }
 
     /// Uniswap V3 swap callback. Distinct selector from the flash callback, and

@@ -47,7 +47,10 @@ fn fork_in_scope() -> ForkFacts {
 fn mutation_13_classifier_imports_neither_state_flash_nor_router() {
     // A `pub(crate) use` in `mod.rs` plus `super::` in the classifier
     // would not show up in `classifier.rs` alone.
-    let files = [("classifier.rs", include_str!("classifier.rs")), ("mod.rs", include_str!("mod.rs"))];
+    let files = [
+        ("classifier.rs", include_str!("classifier.rs")),
+        ("mod.rs", include_str!("mod.rs")),
+    ];
     for needle in [
         "liq_state",
         "liq-state",

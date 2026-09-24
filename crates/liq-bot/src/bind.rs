@@ -8,7 +8,7 @@
 use std::fs;
 use std::path::Path;
 
-use alloy_primitives::{address, Address, U256};
+use alloy_primitives::{address, Address, B256, U256};
 use liq_config::{AaveV3Toml, AaveV4Toml, Intern, MorphoBlueToml};
 use liq_engine::Candidate;
 use liq_exec::fee::FeeQuote;
@@ -16,13 +16,15 @@ use liq_flash::Haircut;
 use liq_node::LogHandler;
 use liq_plan::ValidateCtx;
 use liq_protocol::{
-    DecodedLog, DirtySet, ExecutorAdapter, FeedId, PositionExtraRepr, Protocol, ProtocolError,
+    BlockNum, DecodedLog, DirtySet, ExecutorAdapter, FeedId, MarketRow, Protocol, ProtocolError,
     StateWriter,
 };
 use liq_router::{GasOracle, TailPins};
-use liq_types::{AssetId, FlashProvider, HaltSink, LogFilter, LogSubscriber, MarketId, ProtocolId};
+use liq_state::StateView;
+use liq_types::{AssetId, HaltSink, LogFilter, LogSubscriber, MarketId, ProtocolId};
 
 use crate::index::BoundIndex;
+use crate::live_rpc::LiveRpc;
 
 use crate::assemble_view::ProcessAssembleView;
 
@@ -37,6 +39,10 @@ pub enum BoundProtocol {
     MorphoBlue(liq_adapters_morpho_blue::MorphoBlue),
     EulerV2(liq_adapters_euler_v2::EulerV2),
     SiloV2(liq_adapters_silo_v2::SiloV2),
+    LiquityV2(liq_adapters_liquity_v2::LiquityV2),
+    Fluid(liq_adapters_fluid::Fluid),
+    Gearbox(liq_adapters_gearbox::GearboxV3),
+    CompoundV2(liq_adapters_compound_v2::CompoundV2),
 }
 
 impl BoundProtocol {
@@ -48,6 +54,10 @@ impl BoundProtocol {
             Self::MorphoBlue(p) => p,
             Self::EulerV2(p) => p,
             Self::SiloV2(p) => p,
+            Self::LiquityV2(p) => p,
+            Self::Fluid(p) => p,
+            Self::Gearbox(p) => p,
+            Self::CompoundV2(p) => p,
         }
     }
 
@@ -64,27 +74,181 @@ impl BoundProtocol {
             Self::MorphoBlue(p) => p.config().assets.iter().map(|a| a.underlying).collect(),
             Self::EulerV2(p) => p.config().assets.iter().map(|a| a.underlying).collect(),
             Self::SiloV2(p) => p.config().assets.iter().map(|a| a.underlying).collect(),
+            Self::LiquityV2(p) => {
+                let cfg = p.config();
+                let mut v = vec![cfg.bold.underlying, cfg.weth.underlying];
+                v.extend(cfg.branches.iter().map(|b| b.coll_token));
+                v
+            }
+            Self::Fluid(p) => p.config().assets.iter().map(|a| a.underlying).collect(),
+            Self::Gearbox(p) => p.config().assets.iter().map(|a| a.underlying).collect(),
+            Self::CompoundV2(p) => p.config().assets.iter().map(|a| a.underlying).collect(),
         }
     }
 
     /// TailPins from adapter market/borrower fields already on the position.
     /// Quote-derived fields stay unset for [`ProcessAssembleView::apply_quote_derived`].
     /// Missing required pin → `None` (no zero tail).
+    ///
+    /// `view` is the store view at the candidate's block — Liquity reads the
+    /// position's [`liq_protocol::PositionExtraRepr`] from it (the trove id); Aave V4 and
+    /// Morpho Blue read the position's *market* rows from it (reserve slots,
+    /// the Morpho `Id`), since neither is a static config pin: Aave V4's
+    /// reserve id is the row's own slot index, and Morpho assigns `Id`s
+    /// on-chain at `CreateMarket`, not from a deployment pin. Fluid's
+    /// T1/T2-T4 split and Gearbox's facade are market/config properties;
+    /// Compound's collateral cToken and `is_cether` come off the quote's own
+    /// [`liq_protocol::SlotRef::Contract`] legs (P6: a global `AssetId`
+    /// cannot tell cWBTC from cWBTC2, but the quote that named the leg
+    /// already can).
     #[must_use]
     pub fn pins_from_candidate(
         &self,
         c: &Candidate,
-        extra: Option<&PositionExtraRepr>,
+        view: Option<&StateView<'_>>,
     ) -> Option<TailPins> {
-        let _ = extra;
         match self {
             Self::AaveV3(p) => pins_aave_v3(p.config(), c),
-            Self::AaveV4(p) => pins_aave_v4(p.config(), c),
-            Self::MorphoBlue(p) => pins_morpho(p.config(), c),
+            Self::AaveV4(p) => pins_aave_v4(p.config(), c, view),
+            Self::MorphoBlue(p) => pins_morpho(p.config(), c, view),
             Self::EulerV2(p) => pins_euler(p.config(), c),
             Self::SiloV2(p) => pins_silo(p.config(), c),
+            Self::LiquityV2(p) => pins_liquity(p.config(), c, view),
+            Self::Fluid(p) => pins_fluid(p.config(), c),
+            Self::Gearbox(p) => pins_gearbox(p.config(), c),
+            Self::CompoundV2(p) => pins_compound(p.config(), c),
         }
     }
+}
+
+impl BoundProtocol {
+    /// Plan-validation pins for the leg `pins` describes. `validate` refuses
+    /// an unpinned Aave V4 reserve, Morpho market or Liquity trove, so each
+    /// one the drain is about to encode is pinned from the same on-chain
+    /// state the adapter keeps: V4 reserve rows, the Morpho loan row (its
+    /// `MarketParams` must still hash to the market id — `validate` checks),
+    /// the Liquity trove. Compound pins are static ([`compound_validate_pins`]).
+    pub fn validate_pins(
+        &self,
+        c: &Candidate,
+        pins: &TailPins,
+        view: Option<&StateView<'_>>,
+        token: &dyn Fn(AssetId) -> Option<Address>,
+        out: &mut ValidateCtx,
+    ) {
+        let (Some(repay), Some(seize)) = (
+            c.quote.repay_options.get(usize::from(c.legs.repay)),
+            c.quote.seize_options.get(usize::from(c.legs.seize)),
+        ) else {
+            return;
+        };
+        match self {
+            Self::AaveV4(_) => {
+                let ids = [
+                    (pins.aave_v4_collateral_reserve_id, seize.asset),
+                    (pins.aave_v4_debt_reserve_id, repay.asset),
+                ];
+                for (id, asset) in ids {
+                    if let (Some(reserve_id), Some(underlying)) = (id, token(asset)) {
+                        out.add_v4(liq_plan::V4ReservePin {
+                            spoke: pins.market,
+                            reserve_id,
+                            underlying,
+                        });
+                    }
+                }
+            }
+            Self::MorphoBlue(_) => {
+                let (Some(id), Some(loan_token), Some(collateral_token)) = (
+                    pins.morpho_market_id,
+                    token(repay.asset),
+                    token(seize.asset),
+                ) else {
+                    return;
+                };
+                let Some(loan) = view
+                    .and_then(|v| v.markets(c.quote.key.market).ok())
+                    .and_then(|rows| {
+                        rows.get(usize::from(liq_adapters_morpho_blue::layout::LOAN_SLOT))
+                    })
+                    .and_then(|row| {
+                        row.body::<liq_adapters_morpho_blue::layout::LoanRow>()
+                            .ok()
+                            .copied()
+                    })
+                else {
+                    return;
+                };
+                out.add_morpho(liq_plan::MorphoMarketPin {
+                    id,
+                    morpho: pins.market,
+                    loan_token,
+                    collateral_token,
+                    oracle: Address::from(loan.oracle),
+                    irm: Address::from(loan.irm),
+                    lltv: U256::from(loan.lltv),
+                });
+            }
+            Self::LiquityV2(_) => {
+                if let Some(trove_id) = pins.liquity_trove_id {
+                    out.add_liquity(liq_plan::LiquityTrovePin {
+                        trove_manager: pins.market,
+                        trove_id,
+                        borrower: pins.borrower,
+                    });
+                }
+            }
+            Self::AaveV3(_)
+            | Self::EulerV2(_)
+            | Self::SiloV2(_)
+            | Self::Fluid(_)
+            | Self::Gearbox(_)
+            | Self::CompoundV2(_) => {}
+        }
+    }
+}
+
+/// Family name → protocol id: the registry intern first, then adapters whose
+/// id is config-defined rather than registry-interned (Fluid, Gearbox).
+#[must_use]
+pub fn resolve_family(
+    intern: &Intern,
+    adapters: &[BoundProtocol],
+    family: &str,
+) -> Option<ProtocolId> {
+    intern.protocol(family).or_else(|| {
+        adapters.iter().find_map(|p| match (p, family) {
+            (BoundProtocol::Fluid(_), "fluid")
+            | (BoundProtocol::Gearbox(_), "gearbox")
+            | (BoundProtocol::LiquityV2(_), "liquity-v2") => Some(p.id()),
+            _ => None,
+        })
+    })
+}
+
+/// Every `(debt cToken, collateral cToken)` pair within one Comptroller,
+/// from config. `is_cether` is the *debt* cToken's config pin
+/// (`underlying == 0`) — which `liquidateBorrow` the Executor calls.
+#[must_use]
+pub fn compound_validate_pins(protocols: &[BoundProtocol]) -> Vec<liq_plan::CompoundMarketPin> {
+    let mut out = Vec::new();
+    for p in protocols {
+        let BoundProtocol::CompoundV2(c) = p else {
+            continue;
+        };
+        for fork in &c.config().forks {
+            for debt in &fork.ctokens {
+                for coll in &fork.ctokens {
+                    out.push(liq_plan::CompoundMarketPin {
+                        debt_ctoken: debt.ctoken,
+                        ctoken_collateral: coll.ctoken,
+                        is_cether: u8::from(debt.underlying.is_zero()),
+                    });
+                }
+            }
+        }
+    }
+    out
 }
 
 impl LogSubscriber for BoundProtocol {
@@ -176,8 +340,19 @@ pub struct ProtocolLoad {
 }
 
 /// Load each committed protocol file. Missing file or refused `new` → omit, log.
+///
+/// `live`: a connected [`LiveRpc`] plus the block its callers already pinned
+/// the rest of boot against, for the four adapters whose `Config::new`
+/// refuses without a live-registry assertion (Liquity, Fluid, Gearbox,
+/// Compound V2 — see `push_liquity` et al.). `None` omits all four with a
+/// named reason instead of silently never registering them; tests that
+/// exercise only the offline TOML/shape paths pass `None` on purpose.
 #[must_use]
-pub fn load_protocols(config_dir: &Path, intern: &Intern) -> ProtocolLoad {
+pub fn load_protocols(
+    config_dir: &Path,
+    intern: &Intern,
+    live: Option<(&LiveRpc, BlockNum)>,
+) -> ProtocolLoad {
     let mut out = ProtocolLoad::default();
     let proto_dir = config_dir.join("protocols");
     for name in ["aave-v3.toml", "aave-v4.toml", "morpho-blue.toml"] {
@@ -196,10 +371,10 @@ pub fn load_protocols(config_dir: &Path, intern: &Intern) -> ProtocolLoad {
     push_morpho(&proto_dir, intern, &mut out);
     push_euler(&proto_dir, intern, &mut out);
     push_silo(&proto_dir, &mut out);
-    push_liquity(&proto_dir, &mut out);
-    push_fluid(&proto_dir, &mut out);
-    push_gearbox(&proto_dir, &mut out);
-    push_compound(&proto_dir, intern, &mut out);
+    push_liquity(&proto_dir, live, &mut out);
+    push_fluid(&proto_dir, live, &mut out);
+    push_gearbox(&proto_dir, intern, live, &mut out);
+    push_compound(&proto_dir, intern, live, &mut out);
     if out.protocols.is_empty() {
         tracing::error!("empty protocol list after TOML load — drain stays a no-op");
     }
@@ -587,84 +762,120 @@ struct SiloAssetToml {
     decimals: u8,
 }
 
-fn push_liquity(dir: &Path, out: &mut ProtocolLoad) {
+fn push_liquity(dir: &Path, live: Option<(&LiveRpc, BlockNum)>, out: &mut ProtocolLoad) {
     let Some(raw) = read_toml(dir, "liquity-v2.toml") else {
         omit(out, "liquity-v2", "toml absent");
         return;
     };
-    let cfg = match liq_adapters_liquity_v2::Config::from_toml(&raw) {
+    let mut cfg = match liq_adapters_liquity_v2::Config::from_toml(&raw) {
         Ok(c) => c,
         Err(e) => {
             omit(out, "liquity-v2", e);
             return;
         }
     };
+    // T13 L2/L2-follow-up. `new` cannot return `Ok` without
+    // `live_registry_asserted`, which `from_toml` never sets — the live
+    // AddressesRegistry read is what `assert_live_registry` performs, here,
+    // against the same block the rest of boot observed. No provider (tests,
+    // or a boot that could not reach the RPC) omits with a name distinct
+    // from a real on-chain mismatch.
+    let Some((rpc, block)) = live else {
+        omit(out, "liquity-v2", "no live RPC at bind time");
+        return;
+    };
+    if let Err(e) = cfg.assert_live_registry(rpc, block) {
+        omit(out, "liquity-v2", e);
+        return;
+    }
     match liq_adapters_liquity_v2::LiquityV2::new(cfg) {
-        // T13 L2. `new` cannot return `Ok` without `live_registry_asserted`,
-        // which `from_toml` never sets — this path has no live-RPC step, so
-        // this branch stays unreachable by construction today. It was
-        // logging via `tracing::error!` alone and never recording itself in
-        // `out.omitted`, so a validly-constructed adapter dropped here left
-        // no diagnostic trail distinguishing it from every other omission
-        // reason. `omit` is the house idiom; use it here too.
-        Ok(_) => omit(
-            out,
-            "liquity-v2",
-            "constructed without live registry — refuse to keep",
-        ),
+        Ok(p) => out.protocols.push(BoundProtocol::LiquityV2(p)),
         Err(e) => omit(out, "liquity-v2", e),
     }
 }
 
-fn push_fluid(dir: &Path, out: &mut ProtocolLoad) {
+fn push_fluid(dir: &Path, live: Option<(&LiveRpc, BlockNum)>, out: &mut ProtocolLoad) {
     let Some(raw) = read_toml(dir, "fluid.toml") else {
         omit(out, "fluid", "toml absent");
         return;
     };
-    let cfg = match liq_adapters_fluid::Config::from_toml(&raw) {
+    let mut cfg = match liq_adapters_fluid::Config::from_toml(&raw) {
         Ok(c) => c,
         Err(e) => {
             omit(out, "fluid", e);
             return;
         }
     };
+    let Some((rpc, block)) = live else {
+        omit(out, "fluid", "no live RPC at bind time");
+        return;
+    };
+    if let Err(e) = cfg.assert_live_factory(rpc, block) {
+        omit(out, "fluid", e);
+        return;
+    }
     match liq_adapters_fluid::Fluid::new(cfg) {
-        // Same fix as `push_liquity` above (T13 L2): record the omission
-        // instead of only logging it.
-        Ok(_) => omit(
-            out,
-            "fluid",
-            "constructed without live factory — refuse to keep",
-        ),
+        Ok(p) => out.protocols.push(BoundProtocol::Fluid(p)),
         Err(e) => omit(out, "fluid", e),
     }
 }
 
-fn push_gearbox(dir: &Path, out: &mut ProtocolLoad) {
+fn push_gearbox(
+    dir: &Path,
+    intern: &Intern,
+    live: Option<(&LiveRpc, BlockNum)>,
+    out: &mut ProtocolLoad,
+) {
     let Some(raw) = read_toml(dir, "gearbox.toml") else {
         omit(out, "gearbox", "toml absent");
         return;
     };
-    let cfg = match liq_adapters_gearbox::Config::from_toml(&raw) {
+    let mut cfg = match liq_adapters_gearbox::Config::from_toml(&raw) {
         Ok(c) => c,
         Err(e) => {
             omit(out, "gearbox", e);
             return;
         }
     };
+    let Some((rpc, block)) = live else {
+        omit(out, "gearbox", "no live RPC at bind time");
+        return;
+    };
+    if let Err(e) = cfg.assert_live_registry(rpc, block) {
+        omit(out, "gearbox", e);
+        return;
+    }
+    for (manager, why) in &cfg.skipped {
+        tracing::warn!(%manager, reason = %why, "gearbox manager skipped");
+    }
+    if let Err(e) = cfg.bind_assets_from_intern(intern) {
+        omit(out, "gearbox", e);
+        return;
+    }
+    let unmapped = cfg
+        .managers
+        .iter()
+        .flat_map(|m| &m.tokens)
+        .filter(|t| t.asset == liq_adapters_gearbox::UNMAPPED_ASSET)
+        .count();
+    if unmapped != 0 {
+        tracing::warn!(
+            unmapped,
+            "gearbox collateral tokens not in the registry — accounts holding them fail closed"
+        );
+    }
     match liq_adapters_gearbox::GearboxV3::new(cfg) {
-        // Same fix as `push_liquity` above (T13 L2): record the omission
-        // instead of only logging it.
-        Ok(_) => omit(
-            out,
-            "gearbox",
-            "constructed without live fees — refuse to keep",
-        ),
+        Ok(p) => out.protocols.push(BoundProtocol::Gearbox(p)),
         Err(e) => omit(out, "gearbox", e),
     }
 }
 
-fn push_compound(dir: &Path, intern: &Intern, out: &mut ProtocolLoad) {
+fn push_compound(
+    dir: &Path,
+    intern: &Intern,
+    live: Option<(&LiveRpc, BlockNum)>,
+    out: &mut ProtocolLoad,
+) {
     let Some(raw) = read_toml(dir, "compound-v2.toml") else {
         omit(out, "compound-v2", "toml absent");
         return;
@@ -680,8 +891,16 @@ fn push_compound(dir: &Path, intern: &Intern, out: &mut ProtocolLoad) {
         omit(out, "compound-v2", e);
         return;
     }
+    let Some((rpc, block)) = live else {
+        omit(out, "compound-v2", "no live RPC at bind time");
+        return;
+    };
+    if let Err(e) = cfg.assert_live_registry(rpc, block) {
+        omit(out, "compound-v2", e);
+        return;
+    }
     match liq_adapters_compound_v2::CompoundV2::new(cfg) {
-        Ok(_) => tracing::error!("compound-v2 constructed without live registry — refuse to keep"),
+        Ok(p) => out.protocols.push(BoundProtocol::CompoundV2(p)),
         Err(e) => omit(out, "compound-v2", e),
     }
 }
@@ -744,94 +963,14 @@ pub fn registry_weth(intern: &Intern) -> Option<Address> {
     Some(rec.address)
 }
 
-/// 10C wrap snapshots. `by_provider` is indexed by [`FlashProvider`].
-/// `aave_v4` is the V3-flash + V4-adapter measurement (no FlashProvider id).
+/// Per-provider wrap gas as `select` charges it (`liq-gas.toml` `[wrap]` +
+/// `[tx].base`, see [`crate::gas_model::GasModel::select_wrap`]).
+/// `by_provider` is indexed by [`liq_types::FlashProvider`]; `aave_v4` is
+/// the V3-flash + V4-adapter figure.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct WrapGas {
     pub by_provider: [u64; 5],
     pub aave_v4: u64,
-}
-
-/// 10C `gas_overhead` mapped onto [`FlashProvider`] discriminants.
-/// Missing key → `0` (that provider unusable). Never invents 30M.
-#[must_use]
-pub fn load_wrap_gas(flash_gas: &Path) -> WrapGas {
-    let mut wrap = WrapGas::default();
-    let raw = match fs::read_to_string(flash_gas) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!(error = %e, "flash-gas.toml unreadable — wrap_gas stays 0");
-            return wrap;
-        }
-    };
-    let parsed: Result<FlashGasToml, _> = toml::from_str(&raw);
-    let file = match parsed {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::error!(error = %e, "flash-gas.toml malformed — wrap_gas stays 0");
-            return wrap;
-        }
-    };
-    set_wrap(
-        &mut wrap.by_provider,
-        FlashProvider::Aave,
-        file.gas_overhead.aave_v3,
-    );
-    set_wrap(
-        &mut wrap.by_provider,
-        FlashProvider::UniV3,
-        file.gas_overhead.univ3,
-    );
-    set_wrap(
-        &mut wrap.by_provider,
-        FlashProvider::UniV4,
-        file.gas_overhead.univ4,
-    );
-    set_wrap(
-        &mut wrap.by_provider,
-        FlashProvider::Morpho,
-        file.gas_overhead.morpho,
-    );
-    set_wrap(
-        &mut wrap.by_provider,
-        FlashProvider::SkyDss,
-        file.gas_overhead.sky_dss,
-    );
-    match file.gas_overhead.aave_v4 {
-        Some(g) if g != 0 => wrap.aave_v4 = g,
-        Some(_) => tracing::error!("10C aave_v4 snapshot is zero — V4 wrap unusable"),
-        None => tracing::error!("10C aave_v4 snapshot missing — V4 wrap unusable"),
-    }
-    wrap
-}
-
-fn set_wrap(wrap: &mut [u64; 5], p: FlashProvider, v: Option<u64>) {
-    let Some(gas) = v else {
-        tracing::error!(provider = ?p, "10C snapshot missing — provider unusable (no guessed gas)");
-        return;
-    };
-    if gas == 0 {
-        tracing::error!(provider = ?p, "10C snapshot is zero — provider unusable");
-        return;
-    }
-    if let Some(slot) = wrap.get_mut(p as usize) {
-        *slot = gas;
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct FlashGasToml {
-    gas_overhead: GasOverheadToml,
-}
-
-#[derive(serde::Deserialize)]
-struct GasOverheadToml {
-    aave_v3: Option<u64>,
-    aave_v4: Option<u64>,
-    univ3: Option<u64>,
-    univ4: Option<u64>,
-    morpho: Option<u64>,
-    sky_dss: Option<u64>,
 }
 
 /// Observed parts that can become [`crate::drain::SelectReady`] when header
@@ -990,29 +1129,66 @@ pub fn fee_from_oracle(oracle: &GasOracle, parent_block: u64) -> Option<FeeQuote
     })
 }
 
-fn pins_aave_v4(cfg: &liq_adapters_aave_v4::Config, c: &Candidate) -> Option<TailPins> {
+/// The reserve id of `asset` in a spoke's market rows: `slot - 1` (slot 0
+/// is the spoke meta row, never a reserve).
+fn aave_v4_reserve_id(rows: &[MarketRow], asset: AssetId) -> Option<u16> {
+    let slot = rows.iter().position(|r| r.asset == asset)?;
+    u16::try_from(slot.checked_sub(1)?).ok()
+}
+
+fn pins_aave_v4(
+    cfg: &liq_adapters_aave_v4::Config,
+    c: &Candidate,
+    view: Option<&StateView<'_>>,
+) -> Option<TailPins> {
     let spoke = cfg.spokes.iter().find(|s| s.market == c.quote.key.market)?;
     if spoke.address.is_zero() || c.quote.key.user.is_zero() {
         tracing::error!("aave-v4 spoke/borrower zero — skip (no zero tail)");
         return None;
     }
-    Some(base_pins(
-        ExecutorAdapter::AaveV4,
-        spoke.address,
-        c.quote.key.user,
-    ))
+    let repay = c.quote.repay_options.get(usize::from(c.legs.repay))?;
+    let seize = c.quote.seize_options.get(usize::from(c.legs.seize))?;
+    let rows = view.and_then(|v| v.markets(c.quote.key.market).ok());
+    let debt_reserve_id = rows.and_then(|r| aave_v4_reserve_id(r, repay.asset));
+    let collateral_reserve_id = rows.and_then(|r| aave_v4_reserve_id(r, seize.asset));
+    if debt_reserve_id.is_none() || collateral_reserve_id.is_none() {
+        tracing::error!(
+            pos = c.position.0,
+            "aave-v4 reserve id lookup refused — skip (no zero tail)"
+        );
+        return None;
+    }
+    let mut p = base_pins(ExecutorAdapter::AaveV4, spoke.address, c.quote.key.user);
+    p.aave_v4_debt_reserve_id = debt_reserve_id;
+    p.aave_v4_collateral_reserve_id = collateral_reserve_id;
+    Some(p)
 }
 
-fn pins_morpho(cfg: &liq_adapters_morpho_blue::Config, c: &Candidate) -> Option<TailPins> {
+fn pins_morpho(
+    cfg: &liq_adapters_morpho_blue::Config,
+    c: &Candidate,
+    view: Option<&StateView<'_>>,
+) -> Option<TailPins> {
     if cfg.morpho.is_zero() || c.quote.key.user.is_zero() {
         tracing::error!("morpho singleton/borrower zero — skip (no zero tail)");
         return None;
     }
-    Some(base_pins(
-        ExecutorAdapter::MorphoBlue,
-        cfg.morpho,
-        c.quote.key.user,
-    ))
+    let market_id = view
+        .and_then(|v| v.markets(c.quote.key.market).ok())
+        .and_then(|rows| rows.get(usize::from(liq_adapters_morpho_blue::layout::LOAN_SLOT)))
+        .and_then(|row| row.body::<liq_adapters_morpho_blue::layout::LoanRow>().ok())
+        .map(|loan| B256::from(loan.morpho_id))
+        .filter(|id| !id.is_zero());
+    let Some(market_id) = market_id else {
+        tracing::error!(
+            pos = c.position.0,
+            "morpho market_id lookup refused — skip (no zero tail)"
+        );
+        return None;
+    };
+    let mut p = base_pins(ExecutorAdapter::MorphoBlue, cfg.morpho, c.quote.key.user);
+    p.morpho_market_id = Some(market_id);
+    Some(p)
 }
 
 fn pins_aave_v3(cfg: &liq_adapters_aave_v3::Config, c: &Candidate) -> Option<TailPins> {
@@ -1054,6 +1230,88 @@ fn pins_silo(cfg: &liq_adapters_silo_v2::Config, c: &Candidate) -> Option<TailPi
     ))
 }
 
+fn pins_liquity(
+    cfg: &liq_adapters_liquity_v2::Config,
+    c: &Candidate,
+    view: Option<&StateView<'_>>,
+) -> Option<TailPins> {
+    let branch = cfg
+        .branches
+        .iter()
+        .find(|b| b.market == c.quote.key.market)?;
+    let trove_id = view
+        .and_then(|v| v.position(c.position).ok())
+        .and_then(|pos| {
+            pos.extra
+                .view::<liq_adapters_liquity_v2::layout::TroveExtra>()
+                .ok()
+        })
+        .map(|t| U256::from_be_bytes(t.trove_id));
+    let pins = pins_liquity_required(branch.trove_manager, c.quote.key.user, trove_id);
+    if pins.is_none() {
+        tracing::error!(
+            pos = c.position.0,
+            "liquity trove_manager/borrower/trove_id refused — skip (no zero tail)"
+        );
+    }
+    pins
+}
+
+fn pins_fluid(cfg: &liq_adapters_fluid::Config, c: &Candidate) -> Option<TailPins> {
+    let vault = cfg.vault_pins.iter().find(|p| {
+        liq_adapters_fluid::CATALOG_MARKET
+            .0
+            .saturating_add(p.vault_id)
+            == c.quote.key.market.0
+    })?;
+    let fluid_t1 = Some(vault.vault_type == liq_adapters_fluid::VAULT_T1);
+    let pins = pins_fluid_required(vault.vault, c.quote.key.user, fluid_t1);
+    if pins.is_none() {
+        tracing::error!(
+            pos = c.position.0,
+            "fluid vault/borrower refused or T2-T4 unwired — skip (no zero tail)"
+        );
+    }
+    pins
+}
+
+fn pins_gearbox(cfg: &liq_adapters_gearbox::Config, c: &Candidate) -> Option<TailPins> {
+    let mgr = cfg
+        .managers
+        .iter()
+        .find(|m| m.market == c.quote.key.market)?;
+    if mgr.facade.is_zero() || c.quote.key.user.is_zero() {
+        tracing::error!("gearbox facade/borrower zero — skip (no zero tail)");
+        return None;
+    }
+    Some(base_pins(
+        ExecutorAdapter::Gearbox,
+        mgr.facade,
+        c.quote.key.user,
+    ))
+}
+
+fn pins_compound(cfg: &liq_adapters_compound_v2::Config, c: &Candidate) -> Option<TailPins> {
+    let repay = c.quote.repay_options.get(usize::from(c.legs.repay))?;
+    let seize = c.quote.seize_options.get(usize::from(c.legs.seize))?;
+    let debt_ctoken = repay.slot.contract()?;
+    let coll_ctoken = seize.slot.contract()?;
+    let is_cether = cfg
+        .forks
+        .iter()
+        .flat_map(|f| &f.ctokens)
+        .find(|p| p.ctoken == debt_ctoken)
+        .map(|p| p.underlying.is_zero());
+    let pins = pins_compound_required(debt_ctoken, c.quote.key.user, Some(coll_ctoken), is_cether);
+    if pins.is_none() {
+        tracing::error!(
+            pos = c.position.0,
+            "compound cToken/borrower/is_cether refused — skip (no zero tail)"
+        );
+    }
+    pins
+}
+
 fn base_pins(adapter: ExecutorAdapter, market: Address, borrower: Address) -> TailPins {
     TailPins {
         adapter,
@@ -1066,9 +1324,12 @@ fn base_pins(adapter: ExecutorAdapter, market: Address, borrower: Address) -> Ta
         fluid_t1: None,
         fluid_col_per_unit_debt: None,
         gearbox_min_seized: None,
-        gearbox_full_multicall: false,
+        gearbox_full: false,
         compound_ctoken_collateral: None,
         compound_is_cether: None,
+        aave_v4_collateral_reserve_id: None,
+        aave_v4_debt_reserve_id: None,
+        morpho_market_id: None,
     }
 }
 
@@ -1139,6 +1400,7 @@ pub fn pins_fluid_required(
 mod tests {
     use super::*;
     use liq_config::{Intern, Registry};
+    use liq_protocol::PositionExtraRepr;
     use liq_router::{AssembleView, GasOracle, PRIORITY_FEE_WEI};
 
     fn root() -> std::path::PathBuf {
@@ -1148,33 +1410,82 @@ mod tests {
             .unwrap()
     }
 
+    /// Live: Gearbox v3.1 discovery through the address provider loads the
+    /// real managers, including the ones holding debt, and maps their
+    /// tokens from the committed intern.
+    #[test]
+    #[ignore = "needs MAINNET_RPC_URL"]
+    fn gearbox_v31_discovery_loads_live_managers() {
+        let url = std::env::var("MAINNET_RPC_URL").expect("MAINNET_RPC_URL");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let http = liq_config::rpc::HttpRpc::connect(&url).unwrap();
+        let block = rt
+            .block_on(liq_config::rpc::ChainRpc::block_number(&http))
+            .unwrap();
+        drop(rt);
+        let rpc = LiveRpc::new(http);
+        let intern = Intern::from_registry(
+            &Registry::from_path(&root().join("registry/registry.json")).unwrap(),
+        )
+        .unwrap();
+        let mut out = ProtocolLoad::default();
+        push_gearbox(
+            &root().join("config/protocols"),
+            &intern,
+            Some((&rpc, block)),
+            &mut out,
+        );
+        assert!(out.omitted.is_empty(), "omitted: {:?}", out.omitted);
+        let Some(BoundProtocol::Gearbox(g)) = out.protocols.first() else {
+            panic!("gearbox not bound");
+        };
+        let cfg = g.config();
+        let mapped = cfg
+            .managers
+            .iter()
+            .flat_map(|m| &m.tokens)
+            .filter(|t| t.asset != liq_adapters_gearbox::UNMAPPED_ASSET)
+            .count();
+        eprintln!(
+            "gearbox v3.1: {} registers, {} managers, {mapped} mapped tokens",
+            cfg.registers.len(),
+            cfg.managers.len()
+        );
+        assert!(cfg.managers.len() >= 60);
+        // The WETH manager with ~749 WETH of debt at 26_048_000.
+        assert!(cfg.managers.iter().any(|m| m.manager
+            == alloy_primitives::address!("0x79c6c1ce5b12abcc3e407ce8c160ee1160250921")));
+        assert!(mapped > 0);
+    }
+
     #[test]
     fn adapter_toml_load_constructs_and_omits_unasserted() {
         let intern = Intern::from_registry(
             &Registry::from_path(&root().join("registry/registry.json")).unwrap(),
         )
         .unwrap();
-        let load = load_protocols(&root().join("config"), &intern);
+        // `live: None` — the offline path this test exercises never reaches
+        // each adapter's own `LiveRegistryUnasserted`/`LiveFeesUnasserted`;
+        // `push_liquity`/`push_fluid`/`push_gearbox`/`push_compound` now
+        // short-circuit on "no live RPC at bind time" before ever calling
+        // `assert_live_*` or `new`. A real RPC (`Some((rpc, block))`, wired
+        // in `startup.rs` from `loaded.config.rpc_url`) is what makes these
+        // four adapters construct in production.
+        let load = load_protocols(&root().join("config"), &intern, None);
         assert!(
             !load.protocols.is_empty(),
             "at least one real TOML adapter must construct: omitted={:?}",
             load.omitted
         );
-        assert!(
-            load.omitted
-                .iter()
-                .any(|(n, w)| { *n == "liquity-v2" && w.contains("not asserted") }),
-            "LiveRegistryUnasserted crate must be omitted: {:?}",
-            load.omitted
-        );
-        assert!(
-            load.omitted
-                .iter()
-                .any(|(n, w)| { *n == "gearbox" && w.contains("fees() was not asserted") }),
-            "LiveFeesUnasserted crate must be omitted: {:?}",
-            load.omitted
-        );
-        assert!(load.omitted.iter().any(|(n, _)| *n == "compound-v2"));
+        for name in ["liquity-v2", "fluid", "gearbox", "compound-v2"] {
+            assert!(
+                load.omitted
+                    .iter()
+                    .any(|(n, w)| { *n == name && w.contains("no live RPC at bind time") }),
+                "{name} must be omitted with no live RPC in the offline path: {:?}",
+                load.omitted
+            );
+        }
         assert!(load.protocols.iter().any(|p| matches!(
             p,
             BoundProtocol::AaveV3(_) | BoundProtocol::EulerV2(_) | BoundProtocol::SiloV2(_)
@@ -1198,6 +1509,26 @@ mod tests {
             "T2–T4 must not assemble"
         );
         assert!(pins_fluid_required(m, b, Some(true)).is_some());
+    }
+
+    /// `pins_liquity` decodes `trove_id` with `U256::from_be_bytes`, matching
+    /// `liq_adapters_liquity_v2::apply`'s `trove_id.to_be_bytes()` write —
+    /// a mismatched endianness here would silently pin every Liquity leg to
+    /// the wrong trove.
+    #[test]
+    fn liquity_trove_id_round_trips_big_endian() {
+        let trove_id = U256::from(0x1234_5678_u64);
+        let mut extra = PositionExtraRepr::ZERO;
+        {
+            let view = extra
+                .view_mut::<liq_adapters_liquity_v2::layout::TroveExtra>()
+                .unwrap();
+            view.trove_id = trove_id.to_be_bytes();
+        }
+        let decoded = extra
+            .view::<liq_adapters_liquity_v2::layout::TroveExtra>()
+            .unwrap();
+        assert_eq!(U256::from_be_bytes(decoded.trove_id), trove_id);
     }
 
     #[test]
@@ -1240,22 +1571,10 @@ mod tests {
         assert_ne!(s.aave_v3, intern.protocol("spark").unwrap());
         assert_ne!(s.aave_v3, intern.protocol("morpho-blue").unwrap());
         assert_eq!(s.aave_below.beta_cap_bps, 9_950);
-        assert_eq!(s.aave_above.beta_cap_bps, 9_980);
-        assert_eq!(s.other_below.beta_cap_bps, 6_500);
-        assert_eq!(s.other_above.beta_cap_bps, 6_700);
+        assert_eq!(s.aave_above.beta_cap_bps, 9_950);
+        assert_eq!(s.other_below.beta_cap_bps, 7_500);
+        assert_eq!(s.other_above.beta_cap_bps, 7_500);
         assert_eq!(s.size_cut_wei, U256::from(3_000_000_000_000_000_000u128));
-    }
-
-    #[test]
-    fn wrap_gas_matches_10c_toml() {
-        let w = load_wrap_gas(&root().join("config/flash-gas.toml"));
-        assert_eq!(w.by_provider[FlashProvider::Aave as usize], 366_332);
-        assert_eq!(w.by_provider[FlashProvider::UniV3 as usize], 355_632);
-        assert_eq!(w.by_provider[FlashProvider::UniV4 as usize], 460_032);
-        assert_eq!(w.by_provider[FlashProvider::Morpho as usize], 370_435);
-        assert_eq!(w.by_provider[FlashProvider::SkyDss as usize], 384_134);
-        assert_eq!(w.aave_v4, 496_704);
-        assert!(!w.by_provider.contains(&30_000_000));
     }
 
     #[test]
@@ -1289,7 +1608,7 @@ mod tests {
             &Registry::from_path(&root().join("registry/registry.json")).unwrap(),
         )
         .unwrap();
-        let load = load_protocols(&root().join("config"), &intern);
+        let load = load_protocols(&root().join("config"), &intern, None);
         assert!(
             load.protocols
                 .iter()
@@ -1335,7 +1654,7 @@ mod tests {
         )
         .unwrap();
         let missing = root().join("config/protocols/.17f-empty-omitted");
-        let load = load_protocols(&missing, &intern);
+        let load = load_protocols(&missing, &intern, None);
         assert!(
             load.protocols.is_empty(),
             "omitted dir must not invent adapters: {:?}",
@@ -1360,7 +1679,7 @@ mod tests {
             &Registry::from_path(&root().join("registry/registry.json")).unwrap(),
         )
         .unwrap();
-        let load = load_protocols(&root().join("config"), &intern);
+        let load = load_protocols(&root().join("config"), &intern, None);
         let leaked = leak_protocols(load);
         let index = crate::index::leak_index(crate::index::load_index(
             &root().join("config"),

@@ -23,8 +23,8 @@ use liq_config::{AaveV3Toml, Intern, OnChainId, Registry};
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::FeedId;
 use liq_protocol::{
-    CallbackShape, Constraints, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice,
-    Protocol, ProtocolError,
+    CallbackShape, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice, Protocol,
+    ProtocolError,
 };
 use liq_types::fixed::RAY;
 use liq_types::{AssetId, MarketId, Price, PriceVector, ProtocolId, Ray, SourceKind, Wad};
@@ -455,10 +455,7 @@ fn quote_static_bonus_and_encode() {
     let st = full_store(&h);
     let px = spark_prices(h.weth, h.dai, 1800_0000_0000, DAI_P8);
     let pos = st.view(ALICE_ID, T0).unwrap();
-    let q =
-        h.p.quote(pos, &px, &Constraints::UNBOUNDED)
-            .unwrap()
-            .expect("liquidatable");
+    let q = h.p.quote(pos, &px).unwrap().expect("liquidatable");
     assert_eq!(q.repay_options[0].asset, h.dai);
     assert_eq!(q.seize_options[0].asset, h.weth);
     assert_eq!(

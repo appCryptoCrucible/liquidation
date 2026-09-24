@@ -107,6 +107,7 @@ pub fn v2(n: u64, r0: U256, r1: U256) -> Pool {
         state: PoolState::V2(V2State {
             reserve0: r0,
             reserve1: r1,
+            factory: 0,
         }),
     }
 }
@@ -127,6 +128,7 @@ pub fn curve(n: u64, balances: &[U256], a_times_100: u64, fee_1e10: u64) -> Pool
             a_precision: U256::from(100u64),
             fee: U256::from(fee_1e10),
             stale: false,
+            stale_block: 0,
         }),
     }
 }

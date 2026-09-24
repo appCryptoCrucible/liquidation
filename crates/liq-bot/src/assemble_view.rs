@@ -5,13 +5,17 @@
 //! decimals, or Gearbox PriceUpdate.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use alloy_primitives::{Address, U256};
 use liq_protocol::{ExecutorAdapter, Quote};
 use liq_router::{
     euler_min_yield_from_quote, fluid_col_per_unit_debt_from_quote, gearbox_min_seized_from_quote,
     leg_meta_from_pins, AssembleError, AssembleView, LegMeta, MarketView, PairTerms, TailPins,
+    ViabilityBand,
 };
+
+use crate::bands::{BandKey, BandShared};
 use liq_state::AssetInterner;
 use liq_types::{AssetId, PositionId, ProtocolId};
 
@@ -21,9 +25,12 @@ pub struct ProcessAssembleView {
     intern: AssetInterner,
     pins: HashMap<PositionId, TailPins>,
     per_eth: HashMap<AssetId, U256>,
-    routers: HashMap<Address, (Address, Vec<u8>)>,
     pair_terms: HashMap<(ProtocolId, AssetId, AssetId), PairTerms>,
-    notional_cap: HashMap<AssetId, U256>,
+    /// Warm-thread band table. `None` → no bands → nothing sizes.
+    bands: Option<Arc<BandShared>>,
+    /// Bands the drain computed this block for pairs the table has not
+    /// evaluated yet. The newer of this and the table wins.
+    local_bands: HashMap<BandKey, ViabilityBand>,
 }
 
 impl ProcessAssembleView {
@@ -61,14 +68,6 @@ impl ProcessAssembleView {
         self.per_eth.insert(asset, units);
     }
 
-    pub fn insert_router(&mut self, pool: Address, target: Address, calldata: Vec<u8>) {
-        if target.is_zero() {
-            tracing::error!(?pool, "router target zero refused");
-            return;
-        }
-        self.routers.insert(pool, (target, calldata));
-    }
-
     pub fn insert_pair_terms(
         &mut self,
         protocol: ProtocolId,
@@ -79,12 +78,49 @@ impl ProcessAssembleView {
         self.pair_terms.insert((protocol, coll, debt), terms);
     }
 
-    pub fn insert_notional_cap(&mut self, asset: AssetId, cap: U256) {
-        if cap.is_zero() {
-            tracing::error!(?asset, "notional cap zero refused");
+    #[must_use]
+    pub fn with_bands(mut self, bands: Arc<BandShared>) -> Self {
+        self.bands = Some(bands);
+        self
+    }
+
+    #[must_use]
+    pub fn bands(&self) -> Option<&Arc<BandShared>> {
+        self.bands.as_ref()
+    }
+
+    /// Published table's band for `key`, if the warm thread has one.
+    #[must_use]
+    pub fn published_band(&self, key: BandKey) -> Option<ViabilityBand> {
+        let (p, c, d) = key;
+        self.bands
+            .as_ref()
+            .and_then(|b| b.table.load().get(p, c, d).copied())
+    }
+
+    /// Block the published table was built for (`0` = none yet).
+    #[must_use]
+    pub fn published_block(&self) -> u64 {
+        self.bands.as_ref().map_or(0, |b| b.table.load().block)
+    }
+
+    pub fn insert_local_band(&mut self, key: BandKey, band: ViabilityBand) {
+        self.local_bands.insert(key, band);
+    }
+
+    #[must_use]
+    pub fn local_band(&self, key: BandKey) -> Option<ViabilityBand> {
+        self.local_bands.get(&key).copied()
+    }
+
+    /// Drop local bands the published table has caught up with.
+    pub fn prune_local_bands(&mut self) {
+        let Some(shared) = self.bands.as_ref() else {
             return;
-        }
-        self.notional_cap.insert(asset, cap);
+        };
+        let table = shared.table.load();
+        self.local_bands
+            .retain(|&(p, c, d), b| table.get(p, c, d).is_none_or(|t| t.block < b.block));
     }
 
     /// Quote-derived tail fill on a pinned position. Missing pin → Missing.
@@ -133,7 +169,15 @@ impl ProcessAssembleView {
                     Some(fluid_col_per_unit_debt_from_quote(quote, repay, seize)?);
             }
             ExecutorAdapter::Gearbox => {
-                pins.gearbox_min_seized = Some(gearbox_min_seized_from_quote(quote, seize, tol_bps)?);
+                pins.gearbox_min_seized =
+                    Some(gearbox_min_seized_from_quote(quote, seize, tol_bps)?);
+                // The all-or-nothing repay option is the full liquidation.
+                pins.gearbox_full = !quote
+                    .repay_options
+                    .get(repay)
+                    .ok_or(AssembleError::Missing("gearbox repay"))?
+                    .min_repay
+                    .is_zero();
             }
             ExecutorAdapter::AaveV3
             | ExecutorAdapter::AaveV4
@@ -165,10 +209,6 @@ impl AssembleView for ProcessAssembleView {
     fn per_eth(&self, asset: AssetId) -> Option<U256> {
         self.per_eth.get(&asset).copied().filter(|v| !v.is_zero())
     }
-
-    fn router_leg(&self, pool: Address) -> Option<(Address, Vec<u8>)> {
-        self.routers.get(&pool).cloned()
-    }
 }
 
 impl MarketView for ProcessAssembleView {
@@ -180,9 +220,12 @@ impl MarketView for ProcessAssembleView {
         AssembleView::per_eth(self, asset)
     }
 
-    fn notional_cap_raw(&self, debt: AssetId) -> Option<U256> {
-        // No entry → no notional cap. Viability band is the size filter.
-        Some(self.notional_cap.get(&debt).copied().unwrap_or(U256::MAX))
+    fn band(&self, protocol: ProtocolId, coll: AssetId, debt: AssetId) -> Option<ViabilityBand> {
+        let key = (protocol, coll, debt);
+        match (self.published_band(key), self.local_band(key)) {
+            (Some(p), Some(l)) => Some(if l.block > p.block { l } else { p }),
+            (p, l) => p.or(l),
+        }
     }
 }
 
@@ -220,9 +263,12 @@ mod tests {
             fluid_t1: None,
             fluid_col_per_unit_debt: None,
             gearbox_min_seized: None,
-            gearbox_full_multicall: false,
+            gearbox_full: false,
             compound_ctoken_collateral: None,
             compound_is_cether: None,
+            aave_v4_collateral_reserve_id: None,
+            aave_v4_debt_reserve_id: None,
+            morpho_market_id: None,
         }
     }
 
@@ -292,6 +338,8 @@ mod tests {
                 user: address!("0x00000000000000000000000000000000000000b1"),
             },
             repay_options: smallvec::SmallVec::from_slice(&[RepayOption {
+                min_repay: alloy_primitives::U256::ZERO,
+                pair_seize: None,
                 asset: AssetId(1),
                 max_repay: U256::from(1u64),
                 slot: liq_protocol::SlotRef::ByAsset,
@@ -319,7 +367,10 @@ mod tests {
         match leg_meta_from_pins(&pins).unwrap().tail {
             LegTail::Euler { min_yield, vault } => {
                 assert_eq!(min_yield, U256::from(9u64));
-                assert_eq!(vault, address!("0x00000000000000000000000000000000000000e1"));
+                assert_eq!(
+                    vault,
+                    address!("0x00000000000000000000000000000000000000e1")
+                );
             }
             other => panic!("expected Euler tail, got {other:?}"),
         }

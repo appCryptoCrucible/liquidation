@@ -43,6 +43,47 @@ pub enum SelectError {
     ZeroFailedGas,
     #[error("p > 1")]
     BadP,
+    #[error("no measured liquidation gas for protocol {0:?}")]
+    UnmeasuredLiqGas(ProtocolId),
+}
+
+/// Gas of one liquidation leg inside the Executor, per protocol: the
+/// protocol's own liquidation call plus the adapter's guard reads. Indexed
+/// by `ProtocolId`; `0` is "not measured" and the protocol is not sized —
+/// never a zero-gas guess.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct LiqGas([u64; LiqGas::N]);
+
+impl LiqGas {
+    pub const N: usize = 64;
+
+    #[must_use]
+    pub const fn none() -> Self {
+        Self([0; Self::N])
+    }
+
+    #[must_use]
+    pub const fn uniform(gas: u64) -> Self {
+        Self([gas; Self::N])
+    }
+
+    /// `false` when the id is outside the table.
+    pub fn set(&mut self, protocol: ProtocolId, gas: u64) -> bool {
+        match self.0.get_mut(usize::from(protocol.0)) {
+            Some(g) => {
+                *g = gas;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn get(&self, protocol: ProtocolId) -> Result<u64, SelectError> {
+        match self.0.get(usize::from(protocol.0)) {
+            Some(&g) if g != 0 => Ok(g),
+            _ => Err(SelectError::UnmeasuredLiqGas(protocol)),
+        }
+    }
 }
 
 /// One engine candidate as the router sees it. `liq-engine::Candidate` is
@@ -149,11 +190,12 @@ pub struct SelectCfg {
     pub header_gas_limit: u64,
     /// Wrapping gas per `FlashProvider as usize`. 10C measurements.
     pub wrap_gas: [u64; 5],
-    /// Aave V3 flash + V4 adapter leg (`flash-gas.toml` `aave_v4`).
+    /// Aave V3 flash + V4 adapter leg (`liq-gas.toml` `[wrap].aave_v4`).
     pub wrap_aave_v4: u64,
     /// Intern id for family `aave-v4`. `None` → Aave wrap is V3/Spark.
     pub aave_v4: Option<ProtocolId>,
-    pub liq_gas: u64,
+    /// Per-protocol leg gas (`config/liq-gas.toml`).
+    pub liq_gas: LiqGas,
     pub over_borrow: U256,
     /// Slack, in basis points, between what a quote expects to seize and the
     /// **minimum** the protocol is told to accept.
@@ -185,6 +227,9 @@ pub struct Scored {
     pub gas_success: u64,
     pub gas_failed: u64,
     pub expected_gas: u64,
+    /// `leg.contribution` in WETH wei via `per_eth(debt)`. Legs with
+    /// different debt assets are only comparable in one numeraire.
+    pub contribution_wei: U256,
     pub contrib_per_gas: U256,
     pub leg: SizedLeg,
     /// Wire `bidBps` when [`SelectCfg::bids`] is set. `None` means the
@@ -243,7 +288,7 @@ fn success_gas(
     protocol: ProtocolId,
 ) -> Result<u64, SelectError> {
     wrap_gas(cfg, provider, protocol)?
-        .checked_add(cfg.liq_gas)
+        .checked_add(cfg.liq_gas.get(protocol)?)
         .and_then(|a| a.checked_add(scored_hop))
         .ok_or(SelectError::ZeroWrapGas)
 }
@@ -325,7 +370,14 @@ fn rank(
         let gs = match el.pos.gas_success {
             Some(g) if g > 0 => g,
             Some(_) => return Err(SelectError::ZeroWrapGas),
-            None => success_gas(cfg, leg.hop_gas, leg.route.provider, el.pos.protocol)?,
+            None => match success_gas(cfg, leg.hop_gas, leg.route.provider, el.pos.protocol) {
+                Ok(g) => g,
+                Err(SelectError::UnmeasuredLiqGas(p)) => {
+                    tracing::error!(protocol = p.0, "liquidation gas unmeasured — leg not sized");
+                    continue;
+                }
+                Err(e) => return Err(e),
+            },
         };
         let p_raw = el.pos.p.raw();
         // Learning p = 1 ⇒ expected_gas = gas_success; failed-leg gas is unused.
@@ -334,14 +386,17 @@ fn rank(
             continue;
         }
         let eg = expected_gas(p_raw, gs, el.pos.gas_failed).ok_or(SelectError::BadP)?;
-        let cpg = expected_contrib_per_gas(leg.contribution, p_raw, gs, el.pos.gas_failed)?;
+        let Some(per) = market.per_eth(leg.debt).filter(|p| !p.is_zero()) else {
+            tracing::error!("per_eth missing — leg not ranked");
+            continue;
+        };
+        let contribution_wei =
+            crate::solver::mul_div_512(leg.contribution, crate::exact::OUT_PER_ETH_WETH, per)
+                .map_err(ProfitError::from)?;
+        let cpg = expected_contrib_per_gas(contribution_wei, p_raw, gs, el.pos.gas_failed)?;
         let bid_bps = match cfg.bids {
             None => None,
             Some(sched) => {
-                let Some(per) = market.per_eth(leg.debt) else {
-                    tracing::error!("per_eth missing — leg not bid");
-                    continue;
-                };
                 let Some(size) = crate::debt_notional_eth_wei(leg.s, per) else {
                     tracing::error!("debt notional refused — leg not bid");
                     continue;
@@ -362,6 +417,7 @@ fn rank(
             gas_success: gs,
             gas_failed: el.pos.gas_failed,
             expected_gas: eg,
+            contribution_wei,
             contrib_per_gas: cpg,
             leg,
             bid_bps,
@@ -385,7 +441,10 @@ fn crude_key(e: &Eligible<'_>, warm: Option<&RouteTable>, market: &dyn MarketVie
     let q = e.quote();
     let mut best = U256::ZERO;
     for repay in q.repay_options.iter() {
-        for seize in q.seize_options.iter() {
+        for (si, seize) in q.seize_options.iter().enumerate() {
+            if !u8::try_from(si).is_ok_and(|si| repay.pairs_with(si)) {
+                continue;
+            }
             let Some(mut terms) = market.pair_terms(e.pos.protocol, seize.asset, repay.asset)
             else {
                 continue;
@@ -415,7 +474,18 @@ fn crude_key(e: &Eligible<'_>, warm: Option<&RouteTable>, market: &dyn MarketVie
                 .and_then(|n| n.checked_div(U256::from(10_000u64)))
                 .unwrap_or(U256::ZERO);
             let owed = s.saturating_add(fee);
-            let contrib = out.saturating_sub(owed);
+            // Candidates with different debt assets compete for the same
+            // exact-solve slots: rank in WETH wei, not raw debt units.
+            let Some(per) = market.per_eth(repay.asset).filter(|p| !p.is_zero()) else {
+                continue;
+            };
+            let Ok(contrib) = crate::solver::mul_div_512(
+                out.saturating_sub(owed),
+                crate::exact::OUT_PER_ETH_WETH,
+                per,
+            ) else {
+                continue;
+            };
             let Some(cpg) = contrib.checked_div(U256::from(bucket.hop_gas)) else {
                 continue;
             };
@@ -443,7 +513,7 @@ fn pack(
 
     for s in scored {
         let p_raw = s.p.raw();
-        let d = delta_net(s.leg.contribution, p_raw, s.expected_gas, price)?;
+        let d = delta_net(s.contribution_wei, p_raw, s.expected_gas, price)?;
         if d.is_none_or(|v| v.is_zero()) {
             continue;
         }
@@ -463,14 +533,12 @@ fn pack(
                 };
             }
         }
+        let liq = cfg.liq_gas.get(s.protocol)?;
         let incr_for = |same_debt: bool| -> u64 {
             if same_debt {
-                s.leg.hop_gas.saturating_add(cfg.liq_gas)
+                s.leg.hop_gas.saturating_add(liq)
             } else {
-                s.leg
-                    .hop_gas
-                    .saturating_add(cfg.liq_gas)
-                    .saturating_add(wrap)
+                s.leg.hop_gas.saturating_add(liq).saturating_add(wrap)
             }
         };
         let same = cur.groups.iter().any(|g| g.debt == s.leg.debt);
@@ -748,8 +816,18 @@ mod tests {
         fn per_eth(&self, _: AssetId) -> Option<U256> {
             Some(e18(1))
         }
-        fn notional_cap_raw(&self, _: AssetId) -> Option<U256> {
-            Some(U256::MAX)
+        fn band(
+            &self,
+            _: ProtocolId,
+            _: AssetId,
+            _: AssetId,
+        ) -> Option<crate::band::ViabilityBand> {
+            Some(crate::band::ViabilityBand {
+                min_size: U256::ZERO,
+                max_size: U256::MAX,
+                base_fee: 0,
+                block: 0,
+            })
         }
     }
 
@@ -815,6 +893,8 @@ mod tests {
                 user: addr(pos as u64),
             },
             repay_options: SmallVec::from_slice(&[RepayOption {
+                min_repay: alloy_primitives::U256::ZERO,
+                pair_seize: None,
                 asset: A1,
                 max_repay: repay,
                 slot: liq_protocol::SlotRef::ByAsset,
@@ -840,7 +920,7 @@ mod tests {
             wrap_gas: [366_332, 355_632, 460_032, 370_435, 384_134],
             wrap_aave_v4: 496_704,
             aave_v4: None,
-            liq_gas: 80_000,
+            liq_gas: LiqGas::uniform(80_000),
             over_borrow: U256::from(1u64),
             min_out_tolerance_bps: crate::select::MIN_OUT_TOLERANCE_BPS,
             budget: B,
@@ -923,6 +1003,24 @@ mod tests {
         assert_eq!(plans[0].groups[0].legs.len(), 1);
         assert_eq!(plans[0].groups[0].debt, A1);
         assert!(!plans[0].groups[0].cascade.groups.is_empty());
+    }
+
+    /// A protocol with no measured liquidation gas is skipped, not sized at
+    /// zero gas — and it does not take the rest of the drain down with it.
+    #[test]
+    fn unmeasured_liquidation_gas_skips_the_leg_not_the_drain() {
+        let quote = q(4, e18(10));
+        let one = inp(&quote, true, learning_p(), 50_000);
+        let bk = book(vec![deep()]);
+        let (_s, flash) = idx();
+        let mut c = cfg();
+        c.liq_gas = LiqGas::none();
+        let plans = select(&[one], &c, &flash, H, &bk, None, &Mkt, &GAS).unwrap();
+        assert!(plans.is_empty());
+        assert!(matches!(
+            LiqGas::none().get(ProtocolId(0)),
+            Err(SelectError::UnmeasuredLiqGas(_))
+        ));
     }
 
     /// Lower `p` raises expected gas and cuts contrib-per-gas; a second
@@ -1114,7 +1212,7 @@ mod tests {
         let (_s, flash) = idx();
         let mut c = cfg();
         c.wrap_gas = [100_000, 100_000, 100_000, 100_000, 100_000];
-        c.liq_gas = 200_000;
+        c.liq_gas = LiqGas::uniform(200_000);
         c.header_gas_limit = 30_000_000;
         let inputs = [
             inp(&a, true, learning_p(), 50_000),
@@ -1125,7 +1223,7 @@ mod tests {
         assert_eq!(wide[0].groups[0].legs.len(), 2);
         let first_leg = wide[0].groups[0].legs[0].leg.hop_gas;
         let wrap = 100_000u64;
-        let one = wrap.saturating_add(c.liq_gas).saturating_add(first_leg);
+        let one = wrap.saturating_add(200_000).saturating_add(first_leg);
         let liq_plus_hop = one.saturating_sub(wrap);
         c.header_gas_limit = one.saturating_add(liq_plus_hop).saturating_sub(1);
         let rolled = select(&inputs, &c, &flash, H, &bk, None, &Mkt, &GAS).unwrap();

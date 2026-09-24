@@ -26,8 +26,8 @@ use liq_adapters_compound_v2::{alloc_meter, CompoundV2};
 use liq_config::{Intern, OnChainId, Registry};
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
-    CallbackShape, Constraints, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice,
-    Protocol, ProtocolError, StateWriter,
+    CallbackShape, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice, Protocol,
+    ProtocolError, StateWriter,
 };
 use liq_types::{LogSubscriber, ProtocolId, Ray};
 
@@ -205,11 +205,7 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
     let h_u = p_u.health(st_u.view(ALICE_ID, T0).unwrap(), &px_u).unwrap();
     assert_eq!(h_u.state, HealthState::Liquidatable, "check 10 class");
     let q_u = p_u
-        .quote(
-            st_u.view(ALICE_ID, T0).unwrap(),
-            &px_u,
-            &Constraints::UNBOUNDED,
-        )
+        .quote(st_u.view(ALICE_ID, T0).unwrap(), &px_u)
         .unwrap()
         .expect("check 10: Liquidatable quotes");
     let from_curve = q_u.seize_options[0].curve.bonus_at_hf(h_u.hf).unwrap();
@@ -256,7 +252,7 @@ fn quote_close_factor_capped_and_encode_ok() {
     let (p, st) = full_store(&d, ALICE_DEBT_LIQ);
     let px = prices(RAY_ONE, RAY_ONE);
     let q = p
-        .quote(st.view(ALICE_ID, T0).unwrap(), &px, &Constraints::UNBOUNDED)
+        .quote(st.view(ALICE_ID, T0).unwrap(), &px)
         .unwrap()
         .expect("liquidatable");
     assert_eq!(q.repay_options[0].asset, USDC);
