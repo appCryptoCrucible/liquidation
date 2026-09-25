@@ -204,3 +204,23 @@ pub fn value_wad(amount: U256, price_ray: U256, decimals: u8) -> Result<U256> {
 const _: () = {
     let _ = MAX_FEE.as_limbs();
 };
+
+#[cfg(test)]
+mod lif_pin {
+    use super::{liquidation_incentive_factor, MAX_LIF};
+    use alloy_primitives::{uint, U256};
+
+    #[test]
+    fn incentive_matches_the_documented_floor_and_caps() {
+        // lltv = 0.86e18. cursor.wMulDown(WAD - lltv) = 0.042e18.
+        // WAD.wDivDown(WAD - that) = floor(1e36 / 0.958e18).
+        let lif = liquidation_incentive_factor(uint!(860_000_000_000_000_000_U256));
+        assert_eq!(lif.ok(), Some(uint!(1_043_841_336_116_910_229_U256)));
+        // lltv = 0. Uncapped floor(1e36 / 0.7e18) is above 1.15e18, so the
+        // function returns the cap and not that larger integer.
+        let capped = liquidation_incentive_factor(U256::ZERO);
+        assert_eq!(capped.ok(), Some(MAX_LIF));
+        assert_ne!(capped.ok(), Some(uint!(1_428_571_428_571_428_571_U256)));
+        assert!(liquidation_incentive_factor(uint!(1_000_000_000_000_000_001_U256)).is_err());
+    }
+}
