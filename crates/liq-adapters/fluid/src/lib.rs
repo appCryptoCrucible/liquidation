@@ -24,14 +24,14 @@ pub mod math;
 pub mod quote;
 pub mod solve;
 
-use alloy_primitives::{Address, U256};
-use alloy_sol_types::SolEvent;
+use alloy_primitives::{Address, Bytes, U256};
+use alloy_sol_types::{SolCall, SolEvent};
 use liq_protocol::{
     Archive, BlockNum, DecodedLog, DirtySet, ExecutorAdapter, FlashRoute, Health, LegChoice,
     LiquidationLeg, LiquidationPlan, PositionRef, ProbeCall, Protocol, ProtocolError, Quote,
     Result, StateWriter, Timestamp,
 };
-use liq_types::{AssetId, LogFilter, LogSubscriber, Price, PriceVector, ProtocolId};
+use liq_types::{AssetId, LogFilter, LogSubscriber, MarketId, Price, PriceVector, ProtocolId, Ray};
 
 pub use config::{AssetConfig, Config, ConfigError, FactoryRpc, VaultPin};
 pub use events::liquidate_selector;
@@ -279,4 +279,78 @@ impl Protocol for Fluid {
     fn health_probe(&self, _pos: PositionRef<'_>) -> Result<ProbeCall> {
         Err(ProtocolError::ProbeUnavailable)
     }
+
+    /// T1 vaults only. `getExchangeRateLiquidate` is debt per collateral at
+    /// 1e27 (`oracle_debt_per_col_1e27`). The overlay publishes a pair that
+    /// reproduces that rate exactly, or nothing.
+    fn price_reads(&self, rows: &dyn liq_protocol::MarketRows) -> Vec<liq_protocol::PriceRead> {
+        let mut out = Vec::new();
+        let mut id = crate::layout::FIRST_VAULT_MARKET.0;
+        while id <= crate::layout::LAST_VAULT_MARKET.0 {
+            if let Some(market_rows) = rows.rows(MarketId(id)) {
+                if let Some(read) = fluid_t1_read(MarketId(id), market_rows) {
+                    out.push(read);
+                }
+            }
+            id = match id.checked_add(1) {
+                Some(v) => v,
+                None => break,
+            };
+        }
+        out
+    }
+
+    fn decode_prices(
+        &self,
+        read: &liq_protocol::PriceRead,
+        ret: &[u8],
+        out: &mut Vec<(AssetId, Ray)>,
+    ) -> Result<()> {
+        let rate = crate::events::views::getExchangeRateLiquidateCall::abi_decode_returns(ret)
+            .map_err(|_| ProtocolError::ProbeDecode)?;
+        let coll_dec = u8::try_from(read.tag & 0xff).map_err(|_| ProtocolError::ProbeDecode)?;
+        let hi = read.tag.checked_shr(8).ok_or(ProtocolError::ProbeDecode)?;
+        let debt_dec = u8::try_from(hi & 0xff).map_err(|_| ProtocolError::ProbeDecode)?;
+        let Some((p_coll, p_debt)) = crate::math::t1_prices_from_rate(rate, coll_dec, debt_dec)
+        else {
+            return Ok(());
+        };
+        let (Some(&coll), Some(&debt)) = (read.assets.first(), read.assets.get(1)) else {
+            return Err(ProtocolError::ProbeDecode);
+        };
+        out.push((coll, Ray::from_raw(p_coll)));
+        out.push((debt, Ray::from_raw(p_debt)));
+        Ok(())
+    }
+}
+
+fn fluid_t1_read(
+    market: MarketId,
+    rows: &[liq_protocol::MarketRow],
+) -> Option<liq_protocol::PriceRead> {
+    use crate::events::views::getExchangeRateLiquidateCall;
+    use crate::layout::{VaultRow, UNMAPPED_ASSET};
+    let head = rows.first()?;
+    let body: &VaultRow = head.body().ok()?;
+    if !body.is_t1_token_pair() {
+        return None;
+    }
+    let debt = rows.get(usize::from(body.n_col))?;
+    if head.asset == UNMAPPED_ASSET || debt.asset == UNMAPPED_ASSET {
+        return None;
+    }
+    let vault = Address::from(body.vault);
+    if vault.is_zero() {
+        return None;
+    }
+    let coll_dec = u32::from(head.decimals);
+    let debt_dec = u32::from(debt.decimals);
+    let tag = debt_dec.checked_shl(8)?.checked_add(coll_dec)?;
+    Some(liq_protocol::PriceRead {
+        market,
+        target: vault,
+        calldata: Bytes::from(getExchangeRateLiquidateCall {}.abi_encode()),
+        tag,
+        assets: vec![head.asset, debt.asset],
+    })
 }

@@ -121,6 +121,14 @@ pub struct DrainJoin {
     /// Block each band key was first seen; the warm table is trusted for a
     /// key once it was built after that block.
     band_registered: HashMap<crate::bands::BandKey, u64>,
+    /// Protocol-reported prices: the engine's per-market overlay.
+    protocol_prices: crate::protocol_prices::ProtocolPriceBook,
+    /// Moves from the last applied batch. Reused each block.
+    protocol_moves: Vec<liq_engine::ProtocolPriceMove>,
+    /// The reader thread's read set and newest batch; `None` → canonical only.
+    price_reader: Option<Arc<crate::protocol_prices::ReaderShared>>,
+    /// Block the read set was last rebuilt (`0` = never).
+    reads_at: u64,
 }
 
 /// The oracle books the ingest router writes, and the engine's view of them.
@@ -157,6 +165,34 @@ impl PriceFeed {
 /// Raw units of `asset` per 1e18 wei: `10^decimals · P(ETH) / P(asset)`,
 /// both prices per whole token in the same numeraire. `None` when either
 /// price or the decimals are unknown — never a guessed rate.
+/// Canonical slot when it has a timestamp, otherwise a protocol getter's
+/// USD price. A zero ray is not a price.
+fn sizing_ray(
+    canon: &liq_types::Price,
+    protocol_usd: Option<liq_types::Ray>,
+) -> Option<liq_types::Ray> {
+    if canon.ts != 0 && !canon.price.raw().is_zero() {
+        return Some(canon.price);
+    }
+    protocol_usd.filter(|p| !p.raw().is_zero())
+}
+
+fn per_eth_from_rays(asset: liq_types::Ray, eth: liq_types::Ray, decimals: u8) -> Option<U256> {
+    if asset.raw().is_zero() || eth.raw().is_zero() {
+        return None;
+    }
+    let unit = U256::from(10u64).checked_pow(U256::from(decimals))?;
+    liq_types::fixed::mul_div(
+        unit,
+        eth.raw(),
+        asset.raw(),
+        liq_types::fixed::Rounding::Down,
+    )
+    .ok()
+    .filter(|v| !v.is_zero())
+}
+
+#[cfg(test)]
 fn per_eth_from_prices(
     asset_price: &liq_types::Price,
     eth_price: &liq_types::Price,
@@ -165,15 +201,7 @@ fn per_eth_from_prices(
     if asset_price.ts == 0 || eth_price.ts == 0 || asset_price.price.raw().is_zero() {
         return None;
     }
-    let unit = U256::from(10u64).checked_pow(U256::from(decimals))?;
-    liq_types::fixed::mul_div(
-        unit,
-        eth_price.price.raw(),
-        asset_price.price.raw(),
-        liq_types::fixed::Rounding::Down,
-    )
-    .ok()
-    .filter(|v| !v.is_zero())
+    per_eth_from_rays(asset_price.price, eth_price.price, decimals)
 }
 
 /// Raw collateral units per raw debt unit, RAY, before bonus:
@@ -183,24 +211,37 @@ fn per_eth_from_prices(
 /// This is the canonical (Chainlink) ratio. It equals the protocol's own
 /// ratio where the protocol prices off the same feeds (Aave V3/Spark); for
 /// protocols with their own oracle it is an approximation of it.
+fn coll_per_debt_from_rays(
+    coll: liq_types::Ray,
+    debt: liq_types::Ray,
+    dec_coll: u8,
+    dec_debt: u8,
+) -> Option<liq_types::Ray> {
+    use liq_types::fixed::{mul_div, Rounding, RAY};
+    if coll.raw().is_zero() || debt.raw().is_zero() {
+        return None;
+    }
+    let ten = U256::from(10u64);
+    let uc = ten.checked_pow(U256::from(dec_coll))?;
+    let ud = ten.checked_pow(U256::from(dec_debt))?;
+    let x = mul_div(debt.raw(), uc, ud, Rounding::Down).ok()?;
+    mul_div(x, RAY, coll.raw(), Rounding::Down)
+        .ok()
+        .filter(|v| !v.is_zero())
+        .map(liq_types::Ray::from_raw)
+}
+
+#[cfg(test)]
 fn coll_per_debt_from_prices(
     coll: &liq_types::Price,
     debt: &liq_types::Price,
     dec_coll: u8,
     dec_debt: u8,
 ) -> Option<liq_types::Ray> {
-    use liq_types::fixed::{mul_div, Rounding, RAY};
     if coll.ts == 0 || debt.ts == 0 || coll.price.raw().is_zero() {
         return None;
     }
-    let ten = U256::from(10u64);
-    let uc = ten.checked_pow(U256::from(dec_coll))?;
-    let ud = ten.checked_pow(U256::from(dec_debt))?;
-    let x = mul_div(debt.price.raw(), uc, ud, Rounding::Down).ok()?;
-    mul_div(x, RAY, coll.price.raw(), Rounding::Down)
-        .ok()
-        .filter(|v| !v.is_zero())
-        .map(liq_types::Ray::from_raw)
+    coll_per_debt_from_rays(coll.price, debt.price, dec_coll, dec_debt)
 }
 
 /// Publish [`MarketView::pair_terms`] for every `(repay, seize)` leg of the
@@ -211,6 +252,7 @@ fn coll_per_debt_from_prices(
 /// under-charging gas).
 fn publish_pair_terms(
     feed: &PriceFeed,
+    book: &crate::protocol_prices::ProtocolPriceBook,
     flash: &FlashIndex,
     gas: &crate::gas_model::BandGas,
     cands: &[&Candidate],
@@ -220,7 +262,10 @@ fn publish_pair_terms(
     let mut shared = bands.as_ref().map(|b| b.inputs.lock());
     for c in cands {
         for r in &c.quote.repay_options {
-            let Some(dp) = feed.merged.0.get(usize::from(r.asset.0)) else {
+            let Some(dp0) = feed.merged.0.get(usize::from(r.asset.0)) else {
+                continue;
+            };
+            let Some(dp) = sizing_ray(dp0, book.usd(r.asset)) else {
                 continue;
             };
             let Some(&dd) = feed.decimals.get(usize::from(r.asset.0)) else {
@@ -230,13 +275,21 @@ fn publish_pair_terms(
             let flash_fee_bps = cheapest.map_or(0, |e| e.fee_bps);
             let fixed_gas = cheapest.map_or(0, |e| gas.fixed(c.protocol, e.provider));
             for s in &c.quote.seize_options {
-                let (Some(cp), Some(&dc)) = (
+                let (Some(cp0), Some(&dc)) = (
                     feed.merged.0.get(usize::from(s.asset.0)),
                     feed.decimals.get(usize::from(s.asset.0)),
                 ) else {
                     continue;
                 };
-                let Some(ratio) = coll_per_debt_from_prices(cp, dp, dc, dd) else {
+                let Some(cp) = sizing_ray(cp0, book.usd(s.asset)) else {
+                    tracing::error!(
+                        coll = s.asset.0,
+                        debt = r.asset.0,
+                        "pair unpriced — pair_terms withheld, leg not sized"
+                    );
+                    continue;
+                };
+                let Some(ratio) = coll_per_debt_from_rays(cp, dp, dc, dd) else {
                     tracing::error!(
                         coll = s.asset.0,
                         debt = r.asset.0,
@@ -262,11 +315,18 @@ fn publish_pair_terms(
 /// Refresh [`MarketView::per_eth`] for every priced asset from this block's
 /// merged vector. Existing keys are overwritten in place (no allocation
 /// after the first block).
-fn publish_per_eth(feed: &PriceFeed, view: &mut ProcessAssembleView) {
+fn publish_per_eth(
+    feed: &PriceFeed,
+    book: &crate::protocol_prices::ProtocolPriceBook,
+    view: &mut ProcessAssembleView,
+) {
     let Some(weth) = feed.weth else {
         return;
     };
-    let Some(eth) = feed.merged.0.get(usize::from(weth.0)) else {
+    let Some(eth_slot) = feed.merged.0.get(usize::from(weth.0)) else {
+        return;
+    };
+    let Some(eth) = sizing_ray(eth_slot, book.usd(weth)) else {
         return;
     };
     let bands = view.bands().cloned();
@@ -275,7 +335,10 @@ fn publish_per_eth(feed: &PriceFeed, view: &mut ProcessAssembleView) {
         let Some(&dec) = feed.decimals.get(usize::from(p.asset.0)) else {
             continue;
         };
-        if let Some(per) = per_eth_from_prices(p, eth, dec) {
+        let Some(asset_ray) = sizing_ray(p, book.usd(p.asset)) else {
+            continue;
+        };
+        if let Some(per) = per_eth_from_rays(asset_ray, eth, dec) {
             view.insert_per_eth(p.asset, per);
             if let Some(i) = inputs.as_mut() {
                 i.per_eth.insert(p.asset, per);
@@ -387,7 +450,47 @@ impl DrainJoin {
             band_gas: crate::gas_model::BandGas::none(),
             liq_gas: liq_router::LiqGas::none(),
             band_registered: HashMap::new(),
+            protocol_prices: crate::protocol_prices::ProtocolPriceBook::default(),
+            protocol_moves: Vec::new(),
+            price_reader: None,
+            reads_at: 0,
         }
+    }
+
+    /// Price health from each protocol's own getters (read off the hot path
+    /// by the thread behind `shared`), laid over the canonical vector.
+    #[must_use]
+    pub fn with_price_reader(mut self, shared: Arc<crate::protocol_prices::ReaderShared>) -> Self {
+        self.price_reader = Some(shared);
+        self
+    }
+
+    /// Protocol prices currently applied (tests / diagnostics).
+    #[must_use]
+    pub fn protocol_price_book(&self) -> &crate::protocol_prices::ProtocolPriceBook {
+        &self.protocol_prices
+    }
+
+    /// Rebuild the reader's read set when due, then fold its newest batch
+    /// into the book. `true` when some protocol price is new (the engine
+    /// resyncs rather than sweeps).
+    fn take_protocol_prices(&mut self, block: u64, view: StateView<'_>) -> bool {
+        let Some(shared) = self.price_reader.as_ref() else {
+            return false;
+        };
+        if self.reads_at == 0
+            || block.saturating_sub(self.reads_at) >= crate::protocol_prices::READS_REFRESH_BLOCKS
+        {
+            let reads = crate::protocol_prices::collect_reads(self.protocols, view);
+            tracing::info!(reads = reads.len(), block, "protocol price reads rebuilt");
+            shared.reads.store(Arc::new(reads));
+            self.reads_at = block.max(1);
+        }
+        let latest = shared.latest.load_full();
+        let Some(batch) = latest.as_ref().as_ref() else {
+            return false;
+        };
+        self.protocol_prices.apply(batch, &mut self.protocol_moves)
     }
 
     /// Size the engine's per-position tables for the real universe so the
@@ -639,6 +742,16 @@ impl DrainJoin {
     }
 
     fn feed_engine(&mut self, ctx: AfterBlockCtx<'_>) {
+        let first_protocol_prices =
+            self.take_protocol_prices(ctx.block, ctx.store.view(ctx.timestamp));
+        // The overlay needs a vector to lay onto even before any canonical
+        // feed loads (a protocol priced only by its own getters).
+        if self.engine.prices().0.is_empty() && self.protocol_prices.applied() != 0 {
+            let px = zero_prices(self.prices.decimals.len());
+            if let Err(e) = self.engine.load_prices(&px) {
+                tracing::error!(error = %e, "zero price vector refused");
+            }
+        }
         let proto_refs: Vec<&dyn Protocol> = self.protocols.iter().map(|p| p.as_dyn()).collect();
         let flash = self.flash.load();
         let world = World {
@@ -647,9 +760,17 @@ impl DrainJoin {
             flash: flash.as_ref(),
             routes: &self.routes,
             haircut: self.world_haircut(),
+            overlay: Some(&self.protocol_prices),
         };
         sync_prices(&mut self.engine, &world, &mut self.prices);
-        publish_per_eth(&self.prices, &mut self.assemble);
+        if first_protocol_prices {
+            if let Err(e) = self.engine.resync(&world) {
+                tracing::error!(error = %e, "resync on first protocol prices reported an error");
+            }
+        } else if let Err(e) = self.engine.on_protocol_prices(&world, &self.protocol_moves) {
+            tracing::error!(error = %e, "protocol price moves failed");
+        }
+        publish_per_eth(&self.prices, &self.protocol_prices, &mut self.assemble);
         publish_band_block(&self.assemble, self.fee.as_ref(), ctx.block);
         self.assemble.prune_local_bands();
         if proto_refs.is_empty() {
@@ -748,6 +869,7 @@ impl DrainJoin {
         };
         publish_pair_terms(
             &self.prices,
+            &self.protocol_prices,
             &self.flash.load(),
             &self.band_gas,
             &kept,
@@ -1006,6 +1128,22 @@ enum Finish {
     Job,
     Full,
     Exec,
+}
+
+/// A vector of `n` unpriced slots, slot `i` = asset `i`.
+fn zero_prices(n: usize) -> PriceVector {
+    PriceVector(
+        (0..n)
+            .filter_map(|i| u16::try_from(i).ok())
+            .map(|i| liq_types::Price {
+                asset: AssetId(i),
+                price: liq_types::Ray::ZERO,
+                source: liq_types::SourceKind::Canonical,
+                block: 0,
+                ts: 0,
+            })
+            .collect(),
+    )
 }
 
 /// Bring the engine's price vector up to the oracle books after this block's
@@ -2186,6 +2324,60 @@ mod tests {
         let mut unpriced = price(3, 1);
         unpriced.ts = 0;
         assert_eq!(per_eth_from_prices(&unpriced, &eth, 18), None);
+    }
+
+    #[test]
+    fn protocol_usd_prices_an_asset_the_canonical_vector_lacks() {
+        use crate::protocol_prices::{PriceBatch, ProtocolPriceBook, QuotedPrice};
+        let ray = |usd: u64| U256::from(usd) * liq_types::fixed::RAY;
+        let price = |asset: u16, usd: u64| liq_types::Price {
+            asset: AssetId(asset),
+            price: liq_types::Ray::from_raw(ray(usd)),
+            source: liq_types::SourceKind::Canonical,
+            block: 1,
+            ts: 1,
+        };
+        let mut book = ProtocolPriceBook::default();
+        let mut moves = Vec::new();
+        book.apply(
+            &PriceBatch {
+                block: 1,
+                entries: vec![QuotedPrice {
+                    protocol: liq_types::ProtocolId(1),
+                    market: liq_types::MarketId(1),
+                    asset: AssetId(1),
+                    price: liq_types::Ray::from_raw(liq_types::fixed::RAY),
+                    usd: true,
+                }],
+                failed: 0,
+            },
+            &mut moves,
+        );
+        let mut unpriced = price(1, 1);
+        unpriced.ts = 0;
+        let eth = price(0, 3_000);
+        let asset = sizing_ray(&unpriced, book.usd(AssetId(1))).unwrap();
+        // 6 decimals, $1 from the protocol getter, ETH at $3000 → 3000e6.
+        assert_eq!(
+            per_eth_from_rays(asset, eth.price, 6),
+            Some(U256::from(3_000_000_000u64))
+        );
+        // WETH collateral at $3000 (18 dec) per raw USDC: floor(1e12 / 3000).
+        let ratio = coll_per_debt_from_rays(eth.price, asset, 18, 6).unwrap();
+        assert_eq!(
+            ratio.raw() / liq_types::fixed::RAY,
+            U256::from(333_333_333u64)
+        );
+        // A canonical price is kept. The book must not overwrite it.
+        let canon = price(1, 2);
+        assert_eq!(
+            sizing_ray(&canon, book.usd(AssetId(1))).unwrap().raw(),
+            canon.price.raw()
+        );
+        // No getter and no canonical timestamp: no rate.
+        let mut missing = price(4, 1);
+        missing.ts = 0;
+        assert!(sizing_ray(&missing, book.usd(AssetId(4))).is_none());
     }
 
     #[test]

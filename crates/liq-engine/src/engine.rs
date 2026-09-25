@@ -13,6 +13,14 @@
 //! not missed); the executor's simulation is the arbiter of what lands
 //! together. Predicted prices are a transient override, never kept.
 //!
+//! **Protocol prices.** A protocol's own oracle can price an asset
+//! differently from the canonical feed (Aave CAPO, a Morpho market oracle,
+//! a Liquity branch feed). [`World::overlay`] carries those per `(protocol,
+//! market)`; each fold lays the position's market prices over the vector in
+//! place and restores them after, so every adapter reads exactly what its
+//! protocol reads. Thresholds on an overlaid asset register in a second
+//! index, in protocol-price units, swept by [`Engine::on_protocol_prices`].
+//!
 //! **What fires on what** ([`TriggerCause`]): announced → `SvrAuction` /
 //! `OraclePublic`; predicted → `OraclePredicted` (not fireable); a landed
 //! canonical price → `Stale` (liquidatable on canonical state, untaken);
@@ -39,8 +47,8 @@ use liq_protocol::{
 use liq_state::StateView;
 use liq_types::fixed::{mul_div, Rounding, RAY};
 use liq_types::{
-    AssetId, Band, MevShareHint, PositionId, Price, PriceTick, PriceVector, ProtocolId, Ray,
-    SourceKind, TraceId, Wad,
+    AssetId, Band, MarketId, MevShareHint, PositionId, Price, PriceTick, PriceVector, ProtocolId,
+    Ray, SourceKind, TraceId, Wad,
 };
 
 use crate::band::{classify, BandManager};
@@ -76,6 +84,24 @@ pub struct EngineConfig {
     pub queue: usize,
 }
 
+/// Prices a protocol's own oracle reports for one of its markets, read off
+/// the hot path (GUIDE 06: the protocol's price decides health, not ours).
+pub trait ProtocolPrices {
+    /// `(asset, price)` for `market` of `protocol`, in the canonical
+    /// vector's unit (RAY USD per whole token). Empty when none is known.
+    fn patch(&self, protocol: ProtocolId, market: MarketId) -> &[(AssetId, Ray)];
+}
+
+/// One protocol-reported price that moved this block.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ProtocolPriceMove {
+    pub protocol: ProtocolId,
+    pub market: MarketId,
+    pub asset: AssetId,
+    pub old: Ray,
+    pub new: Ray,
+}
+
 /// Everything outside the engine that one evaluation reads. Borrowed for
 /// the call; the engine keeps nothing of it.
 #[derive(Copy, Clone)]
@@ -88,6 +114,9 @@ pub struct World<'a> {
     pub flash: &'a FlashIndex,
     pub routes: &'a dyn RouteCache,
     pub haircut: Haircut,
+    /// Protocol-reported prices laid over the vector per position market;
+    /// `None` evaluates on the canonical vector alone.
+    pub overlay: Option<&'a dyn ProtocolPrices>,
 }
 
 impl World<'_> {
@@ -139,6 +168,8 @@ enum Cause<'a> {
 struct Tables {
     bands: BandManager,
     index: ThresholdIndex,
+    /// Thresholds on overlaid assets, in protocol-price units.
+    overlay_index: ThresholdIndex,
     heap: TimeCrossHeap,
     elig: Eligibility,
     queue: CandidateQueue,
@@ -161,6 +192,9 @@ pub struct Engine {
     t: Tables,
     /// Scratch: ids to fold this call. Sorted + deduplicated before use.
     batch: Vec<PositionId>,
+    /// Scratch: `(slot, price, ts)` a fold's overlay replaced, restored
+    /// after the fold.
+    saved: Vec<(usize, Ray, u64)>,
 }
 
 impl Engine {
@@ -175,6 +209,7 @@ impl Engine {
             t: Tables {
                 bands: BandManager::with_capacity(cfg.positions),
                 index: ThresholdIndex::new(cfg.assets, cfg.positions),
+                overlay_index: ThresholdIndex::new(cfg.assets, cfg.positions),
                 heap: TimeCrossHeap::with_capacity(cfg.positions),
                 elig: Eligibility::new(cfg.positions),
                 queue: CandidateQueue::with_capacity(cfg.queue),
@@ -183,6 +218,7 @@ impl Engine {
                 stats: Stats::default(),
             },
             batch: Vec::with_capacity(cfg.positions.clamp(1024, 1 << 16)),
+            saved: Vec::with_capacity(cfg.assets.min(256)),
         }
     }
 
@@ -211,6 +247,13 @@ impl Engine {
     #[must_use]
     pub fn index(&self) -> &ThresholdIndex {
         &self.t.index
+    }
+
+    /// Thresholds registered on overlaid assets (protocol-price units).
+    #[inline]
+    #[must_use]
+    pub fn overlay_index(&self) -> &ThresholdIndex {
+        &self.t.overlay_index
     }
 
     #[inline]
@@ -415,6 +458,7 @@ impl Engine {
         self.moved.clear();
         self.moved_count = 0;
         self.t.index.commit();
+        self.t.overlay_index.commit();
         let now = w.view.timestamp();
         self.batch.clear();
         self.batch.extend(self.t.heap.crossed(now));
@@ -494,6 +538,43 @@ impl Engine {
         Ok(())
     }
 
+    /// Protocol-reported prices moved (one batch per block, after the
+    /// block's logs). Folds every position whose protocol-price threshold a
+    /// move crossed, plus every `Hot`/`Warm`/`Cool` position in a moved
+    /// market. An asset's *first* protocol price has no thresholds behind
+    /// it yet: the caller resyncs once instead.
+    pub fn on_protocol_prices(
+        &mut self,
+        w: &World<'_>,
+        moves: &[ProtocolPriceMove],
+    ) -> Result<(), EngineError> {
+        if moves.is_empty() {
+            return Ok(());
+        }
+        self.batch.clear();
+        let (batch, t) = (&mut self.batch, &self.t);
+        let bands = &t.bands;
+        for m in moves {
+            batch.extend(
+                t.overlay_index
+                    .crossed(m.asset, m.old, m.new)
+                    .filter(|id| bands.band(*id) != Some(Band::Unfundable)),
+            );
+        }
+        for band in [Band::Hot, Band::Warm, Band::Cool] {
+            for &id in bands.members(band) {
+                let key = w.view.position(id)?.key;
+                if moves
+                    .iter()
+                    .any(|m| m.protocol == key.protocol && m.market == key.market)
+                {
+                    batch.push(id);
+                }
+            }
+        }
+        self.run(w, true, Cause::Landed, None)
+    }
+
     /// Flash liquidity moved materially: every `Unfundable` position is
     /// re-evaluated and promoted if its debt is fundable now (GUIDE 07 §4b:
     /// marked, never deleted).
@@ -529,15 +610,23 @@ impl Engine {
         let mut batch = std::mem::take(&mut self.batch);
         batch.sort_unstable();
         batch.dedup();
-        let px = if canonical { &self.px } else { &self.shadow };
+        let px = if canonical {
+            &mut self.px
+        } else {
+            &mut self.shadow
+        };
+        let saved = &mut self.saved;
         let block = w.view.tip();
         let mut first = Ok(());
         for &id in &batch {
-            let r = if canonical {
-                fold(&mut self.t, px, w, id, cause, block)
-            } else {
-                shadow_fold(&mut self.t, px, w, id, cause, deadline)
-            };
+            let r = overlay_on(px, w, id, saved).and_then(|()| {
+                if canonical {
+                    fold(&mut self.t, px, w, id, cause, block, saved)
+                } else {
+                    shadow_fold(&mut self.t, px, w, id, cause, deadline)
+                }
+            });
+            overlay_off(px, saved);
             if let Err(e) = r {
                 self.t.stats.fold_errors = self.t.stats.fold_errors.saturating_add(1);
                 tracing::error!(position = id.0, error = %e, "engine fold failed");
@@ -550,6 +639,48 @@ impl Engine {
         self.batch = batch;
         first
     }
+}
+
+/// Lay the position's protocol prices over `px`, remembering what they
+/// replaced in `saved`. A slot never canonically priced gets the view's
+/// timestamp so readers that copy `ts` see a live price.
+fn overlay_on(
+    px: &mut PriceVector,
+    w: &World<'_>,
+    id: PositionId,
+    saved: &mut Vec<(usize, Ray, u64)>,
+) -> Result<(), EngineError> {
+    saved.clear();
+    let Some(ov) = w.overlay else {
+        return Ok(());
+    };
+    let key = w.view.position(id)?.key;
+    let patch = ov.patch(key.protocol, key.market);
+    if patch.is_empty() {
+        return Ok(());
+    }
+    let now = w.view.timestamp();
+    for &(asset, price) in patch {
+        let i = usize::from(asset.0);
+        let cell = px.0.get_mut(i).ok_or(EngineError::UnknownAsset(asset))?;
+        saved.push((i, cell.price, cell.ts));
+        cell.price = price;
+        if cell.ts == 0 {
+            cell.ts = now;
+        }
+    }
+    Ok(())
+}
+
+/// Undo [`overlay_on`], newest first.
+fn overlay_off(px: &mut PriceVector, saved: &mut Vec<(usize, Ray, u64)>) {
+    for &(i, price, ts) in saved.iter().rev() {
+        if let Some(cell) = px.0.get_mut(i) {
+            cell.price = price;
+            cell.ts = ts;
+        }
+    }
+    saved.clear();
 }
 
 /// `tick` with any MEV-Share hint payload (`call_data`, `logs`) dropped:
@@ -621,6 +752,7 @@ fn margin(lp: Ray, cur: Ray) -> Result<(Option<Side>, Ray), EngineError> {
 /// Canonical fold of one position: exact health at `px`, quote +
 /// eligibility when below the boundary, then band, thresholds and heap
 /// re-derived (GUIDE 08 §2 mitigation 3: every recompute re-registers).
+#[allow(clippy::too_many_arguments)] // each input is a distinct fold term
 fn fold(
     t: &mut Tables,
     px: &PriceVector,
@@ -628,6 +760,7 @@ fn fold(
     id: PositionId,
     cause: Cause<'_>,
     block: BlockNum,
+    overlaid: &[(usize, Ray, u64)],
 ) -> Result<(), EngineError> {
     t.stats.folds = t.stats.folds.saturating_add(1);
     let pos = w.view.position(id)?;
@@ -672,8 +805,11 @@ fn fold(
             0
         };
     }
-    // Thresholds: one per price-sensitive slot, at the margin.
+    // Thresholds: one per price-sensitive slot, at the margin. A slot whose
+    // price came from the protocol overlay registers in the overlay index,
+    // in the protocol's units — canonical ticks never compare against it.
     t.index.begin(id);
+    t.overlay_index.begin(id);
     if debt {
         for slot in h.price_sensitivity.iter() {
             let asset = pos
@@ -690,11 +826,17 @@ fn fold(
                     .price;
             if let Some(lp) = p.liquidation_price(pos, px, asset)? {
                 let (side, at) = margin(lp.price, cur)?;
+                let on_overlay = overlaid.iter().any(|(i, ..)| *i == usize::from(asset.0));
+                let index = if on_overlay {
+                    &mut t.overlay_index
+                } else {
+                    &mut t.index
+                };
                 match side {
-                    Some(side) => t.index.register(id, asset, side, at)?,
+                    Some(side) => index.register(id, asset, side, at)?,
                     None => {
-                        t.index.register(id, asset, Side::Falling, at)?;
-                        t.index.register(id, asset, Side::Rising, at)?;
+                        index.register(id, asset, Side::Falling, at)?;
+                        index.register(id, asset, Side::Rising, at)?;
                     }
                 }
             }

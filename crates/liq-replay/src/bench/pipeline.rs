@@ -254,6 +254,7 @@ pub(crate) fn process_segment(
                 flash: &flash,
                 routes: &routes,
                 haircut,
+                overlay: None,
             };
             if first {
                 if let Some(c) = llc_counters.as_mut() {

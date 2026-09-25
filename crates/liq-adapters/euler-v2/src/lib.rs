@@ -15,7 +15,7 @@ pub mod math;
 pub mod quote;
 pub mod solve;
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{address, Address, Bytes, U256};
 use alloy_sol_types::{SolCall, SolEvent};
 use liq_protocol::{
     Archive, BlockNum, DecodedLog, DirtySet, ExecutorAdapter, FlashRoute, Health, LegChoice,
@@ -23,7 +23,7 @@ use liq_protocol::{
     Result, StateWriter, Timestamp,
 };
 use liq_types::fixed::WAD;
-use liq_types::{AssetId, LogFilter, LogSubscriber, Price, PriceVector, ProtocolId, Ray};
+use liq_types::{AssetId, LogFilter, LogSubscriber, MarketId, Price, PriceVector, ProtocolId, Ray};
 
 pub use config::{
     AssetConfig, Config, ConfigError, SourcePin, CATALOG_MARKET, FIRST_DISCOVERED_MARKET,
@@ -277,6 +277,57 @@ impl Protocol for EulerV2 {
         })
     }
 
+    /// `getQuote` on the controller vault's oracle, one call per asset in
+    /// the market. Only the USD unit of account (`0x…0348`, 18 decimals)
+    /// is published; any other unit is skipped and logged.
+    fn price_reads(&self, rows: &dyn liq_protocol::MarketRows) -> Vec<liq_protocol::PriceRead> {
+        let mut markets = Vec::new();
+        for (_, m) in &self.cfg.interned {
+            if !markets.contains(m) {
+                markets.push(*m);
+            }
+        }
+        // Discovered vaults sit in 3512..=3999. Fluid owns 4000+.
+        let mut id = FIRST_DISCOVERED_MARKET.0;
+        const LAST_EULER_MARKET: u32 = 3999;
+        while id <= LAST_EULER_MARKET {
+            let m = MarketId(id);
+            if rows.rows(m).is_some() && !markets.contains(&m) {
+                markets.push(m);
+            }
+            id = match id.checked_add(1) {
+                Some(v) => v,
+                None => break,
+            };
+        }
+        let mut out = Vec::new();
+        for m in markets {
+            let Some(market_rows) = rows.rows(m) else {
+                continue;
+            };
+            out.extend(euler_quote_reads(&self.cfg, m, market_rows));
+        }
+        out
+    }
+
+    fn decode_prices(
+        &self,
+        read: &liq_protocol::PriceRead,
+        ret: &[u8],
+        out: &mut Vec<(AssetId, Ray)>,
+    ) -> Result<()> {
+        let answer = IEulerRouter::getQuoteCall::abi_decode_returns(ret)
+            .map_err(|_| ProtocolError::ProbeDecode)?;
+        let Some(ray) = euler_quote_ray(answer) else {
+            return Ok(());
+        };
+        let [asset] = read.assets.as_slice() else {
+            return Err(ProtocolError::ProbeDecode);
+        };
+        out.push((*asset, Ray::from_raw(ray)));
+        Ok(())
+    }
+
     fn health_probe(&self, pos: PositionRef<'_>) -> Result<ProbeCall> {
         let row = pos
             .markets
@@ -297,5 +348,110 @@ impl Protocol for EulerV2 {
             .into(),
             decode: decode_probe,
         })
+    }
+}
+
+/// USD unit of account. 18 decimals (`euler-vault-kit` whitepaper).
+const USD_UNIT: Address = address!("0000000000000000000000000000000000000348");
+
+/// `getQuote` of one whole token in 18-decimal USD → RAY (`× 10^9`).
+pub(crate) fn euler_quote_ray(answer: U256) -> Option<U256> {
+    if answer.is_zero() {
+        return None;
+    }
+    answer.checked_mul(U256::from(1_000_000_000u64))
+}
+
+fn euler_quote_reads(
+    cfg: &Config,
+    market: MarketId,
+    rows: &[liq_protocol::MarketRow],
+) -> Vec<liq_protocol::PriceRead> {
+    use crate::layout::{VaultRow, DEBT_SLOT, UNMAPPED_ASSET};
+    let Some(head) = rows.get(usize::from(DEBT_SLOT)) else {
+        return Vec::new();
+    };
+    let Ok(vault) = head.body::<VaultRow>() else {
+        return Vec::new();
+    };
+    if vault.flags & VaultRow::PRICED == 0 {
+        return Vec::new();
+    }
+    let unit = Address::from(vault.unit_of_account);
+    if unit != USD_UNIT {
+        tracing::debug!(
+            market = market.0,
+            unit = %unit,
+            "euler vault unit of account is not USD; overlay skipped"
+        );
+        return Vec::new();
+    }
+    let oracle = Address::from(vault.oracle);
+    if oracle.is_zero() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut seen = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        if row.asset == UNMAPPED_ASSET || seen.contains(&row.asset) {
+            continue;
+        }
+        let token = if i == usize::from(DEBT_SLOT) {
+            Address::from(vault.underlying)
+        } else {
+            match cfg.underlying_of(row.asset) {
+                Some(a) => a,
+                None => continue,
+            }
+        };
+        if token.is_zero() {
+            continue;
+        }
+        let Some(amount) = U256::from(10u64).checked_pow(U256::from(row.decimals)) else {
+            continue;
+        };
+        seen.push(row.asset);
+        out.push(liq_protocol::PriceRead {
+            market,
+            target: oracle,
+            calldata: Bytes::from(
+                IEulerRouter::getQuoteCall {
+                    inAmount: amount,
+                    base: token,
+                    quote: unit,
+                }
+                .abi_encode(),
+            ),
+            tag: 0,
+            assets: vec![row.asset],
+        });
+    }
+    out
+}
+
+alloy_sol_types::sol! {
+    interface IEulerRouter {
+        function getQuote(uint256 inAmount, address base, address quote) external view returns (uint256);
+    }
+}
+
+#[cfg(test)]
+mod quote_ray {
+    use super::euler_quote_ray;
+    use alloy_primitives::U256;
+    use liq_types::fixed::RAY;
+
+    #[test]
+    fn one_dollar_wad_is_one_ray() {
+        // getQuote returns 18-decimal USD. $1 = 10^18. RAY = 10^27 = 10^18 × 10^9.
+        assert_eq!(
+            euler_quote_ray(U256::from(1_000_000_000_000_000_000u64)),
+            Some(RAY)
+        );
+    }
+
+    #[test]
+    fn zero_quote_is_not_a_price() {
+        assert_eq!(euler_quote_ray(U256::ZERO), None);
     }
 }

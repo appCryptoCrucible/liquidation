@@ -27,6 +27,7 @@ pub mod index;
 pub mod lease;
 pub mod live_rpc;
 pub mod pool_seed;
+pub mod protocol_prices;
 pub mod rebuild;
 pub mod reload;
 pub mod routes;

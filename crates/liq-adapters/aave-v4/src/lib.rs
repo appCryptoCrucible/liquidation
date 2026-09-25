@@ -54,6 +54,9 @@ use crate::events::{halt, hub, oracle, spoke};
 use crate::math::hf_wad_to_ray;
 
 sol! {
+    /// `AaveOracle.getReservesPrices` — the spoke's own price per reserve,
+    /// 8 decimals (`ORACLE_DECIMALS`).
+    function getReservesPrices(uint256[] reserveIds) external view returns (uint256[] prices);
     /// `ISpoke.getUserAccountData` — the drift detector's ground truth.
     struct UserAccountData {
         uint256 riskPremium;
@@ -314,5 +317,69 @@ impl Protocol for AaveV4 {
             data: Bytes::from(call.abi_encode()),
             decode: decode_probe,
         })
+    }
+
+    /// One `getReservesPrices` per spoke over its pinned-source reserves;
+    /// each reserve's asset is its row (`slot = reserve_id + 1`) in state.
+    fn price_reads(&self, rows: &dyn liq_protocol::MarketRows) -> Vec<liq_protocol::PriceRead> {
+        let mut out = Vec::with_capacity(self.cfg.spokes.len());
+        for (i, spoke) in self.cfg.spokes.iter().enumerate() {
+            let Some(market_rows) = rows.rows(spoke.market) else {
+                continue;
+            };
+            let mut ids = Vec::new();
+            let mut assets = Vec::new();
+            for pin in self
+                .cfg
+                .price_sources
+                .iter()
+                .filter(|p| p.spoke == spoke.address)
+            {
+                let Some(row) = market_rows.get(usize::from(pin.reserve_id).saturating_add(1))
+                else {
+                    continue;
+                };
+                if !self.cfg.assets.iter().any(|a| a.asset == row.asset) {
+                    continue;
+                }
+                ids.push(U256::from(pin.reserve_id));
+                assets.push(row.asset);
+            }
+            if ids.is_empty() {
+                continue;
+            }
+            let Ok(tag) = u32::try_from(i) else { continue };
+            out.push(liq_protocol::PriceRead {
+                market: spoke.market,
+                target: spoke.oracle,
+                calldata: Bytes::from(getReservesPricesCall { reserveIds: ids }.abi_encode()),
+                tag,
+                assets,
+            });
+        }
+        out
+    }
+
+    fn decode_prices(
+        &self,
+        read: &liq_protocol::PriceRead,
+        ret: &[u8],
+        out: &mut Vec<(AssetId, Ray)>,
+    ) -> Result<()> {
+        let prices = getReservesPricesCall::abi_decode_returns(ret)
+            .map_err(|_| ProtocolError::ProbeDecode)?;
+        if prices.len() != read.assets.len() {
+            return Err(ProtocolError::ProbeDecode);
+        }
+        // 8-decimal oracle → RAY per whole token (`liq-oracle` scale).
+        let scale = U256::from(10u64).pow(U256::from(19u64));
+        for (asset, p) in read.assets.iter().zip(prices) {
+            if p.is_zero() {
+                continue;
+            }
+            let ray = p.checked_mul(scale).ok_or(ProtocolError::ProbeDecode)?;
+            out.push((*asset, Ray::from_raw(ray)));
+        }
+        Ok(())
     }
 }

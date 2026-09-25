@@ -46,7 +46,7 @@ pub(crate) fn price_ray(px: &PriceVector, asset: AssetId) -> Result<U256> {
 
 /// `IOracle.price` reconstruction: collateral quoted in loan, 1e36.
 #[inline]
-pub(crate) fn oracle_price(
+pub fn oracle_price(
     p_coll: U256,
     p_loan: U256,
     coll_decimals: u8,
@@ -67,6 +67,47 @@ pub(crate) fn oracle_price(
             mul_div_down(p_coll, ORACLE_PRICE_SCALE, den)
         }
     }
+}
+
+/// Prices whose `oracle_price` equals `price()` exactly.
+///
+/// A loan price of `10^27` cannot hit a `price()` that is not a multiple of
+/// `10^9` (`floor(p_coll · 10^36 / 10^27) = p_coll · 10^9`). The loan price
+/// is `ORACLE_PRICE_SCALE` (lifted when the loan has more decimals), so the
+/// reconstruction matches `IOracle.price()` to the wei. These are ratio
+/// prices, not USD: the book must not size from them.
+pub fn prices_matching_oracle(
+    price: U256,
+    loan_decimals: u8,
+    coll_decimals: u8,
+) -> Result<(U256, U256)> {
+    if price.is_zero() {
+        return Err(ProtocolError::Internal);
+    }
+    let (p_loan, p_coll) = match loan_decimals.cmp(&coll_decimals) {
+        core::cmp::Ordering::Equal => (ORACLE_PRICE_SCALE, price),
+        core::cmp::Ordering::Greater => {
+            let lift = asset_unit(loan_decimals.wrapping_sub(coll_decimals))?;
+            (
+                ORACLE_PRICE_SCALE
+                    .checked_mul(lift)
+                    .ok_or(FixedError::Overflow)?,
+                price,
+            )
+        }
+        core::cmp::Ordering::Less => {
+            let lift = asset_unit(coll_decimals.wrapping_sub(loan_decimals))?;
+            (
+                ORACLE_PRICE_SCALE,
+                price.checked_mul(lift).ok_or(FixedError::Overflow)?,
+            )
+        }
+    };
+    let back = oracle_price(p_coll, p_loan, coll_decimals, loan_decimals)?;
+    if back != price {
+        return Err(ProtocolError::Internal);
+    }
+    Ok((p_loan, p_coll))
 }
 
 pub(crate) fn terms(pos: PositionRef<'_>) -> Result<Terms<'_>> {
@@ -240,5 +281,45 @@ mod hf_boundary {
         };
         let (_, h2) = finish(&past, &prices).unwrap();
         assert!(matches!(h2.state, HealthState::Liquidatable));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
+mod oracle_inverse {
+    use super::{oracle_price, prices_matching_oracle};
+    use crate::math::ORACLE_PRICE_SCALE;
+    use alloy_primitives::U256;
+    use liq_types::fixed::RAY;
+
+    #[test]
+    fn inverse_matches_price_that_is_not_a_multiple_of_1e9() {
+        // 1e36 + 1 is not divisible by 1e9, so no integer collateral price
+        // with the loan at 1 RAY reproduces it.
+        let price = ORACLE_PRICE_SCALE + U256::from(1u8);
+        let floored = price / U256::from(1_000_000_000u64);
+        let wrong = oracle_price(floored, RAY, 18, 18).unwrap();
+        assert_ne!(wrong, price);
+
+        let (p_loan, p_coll) = prices_matching_oracle(price, 18, 18).unwrap();
+        assert_eq!(p_loan, ORACLE_PRICE_SCALE);
+        assert_eq!(p_coll, price);
+        assert_eq!(oracle_price(p_coll, p_loan, 18, 18).unwrap(), price);
+    }
+
+    #[test]
+    fn inverse_lifts_when_collateral_has_more_decimals() {
+        // loan 6, coll 18: lift = 10^12. price = 1_000_000_001.
+        // p_coll = 1_000_000_001 * 10^12 = 1_000_000_001_000_000_000_000.
+        let price = U256::from(1_000_000_001u64);
+        let (p_loan, p_coll) = prices_matching_oracle(price, 6, 18).unwrap();
+        assert_eq!(p_loan, ORACLE_PRICE_SCALE);
+        assert_eq!(p_coll, U256::from(1_000_000_001_000_000_000_000u128));
+        assert_eq!(oracle_price(p_coll, p_loan, 18, 6).unwrap(), price);
+    }
+
+    #[test]
+    fn zero_oracle_price_is_not_published() {
+        assert!(prices_matching_oracle(U256::ZERO, 18, 18).is_err());
     }
 }

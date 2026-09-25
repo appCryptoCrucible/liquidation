@@ -245,6 +245,33 @@ pub fn oracle_debt_per_col_1e27(
     mul_div_down(num, RAY, asset_unit(coll_decimals)?)
 }
 
+/// `(p_coll, p_debt = RAY)` such that [`oracle_debt_per_col_1e27`] returns
+/// `rate`, or `None` when no integer pair with the debt at 1 RAY does.
+/// The debt price is the unit; the collateral price is
+/// `rate · 10^coll_decimals / 10^debt_decimals` only when that division and
+/// the forward floor both reproduce `rate`. A nearest price is not published.
+pub fn t1_prices_from_rate(
+    rate: U256,
+    coll_decimals: u8,
+    debt_decimals: u8,
+) -> Option<(U256, U256)> {
+    if rate.is_zero() {
+        return None;
+    }
+    let c = asset_unit(coll_decimals).ok()?;
+    let d = asset_unit(debt_decimals).ok()?;
+    let num = rate.checked_mul(c)?;
+    let p_coll = num.checked_div(d)?;
+    if p_coll.checked_mul(d) != Some(num) {
+        return None;
+    }
+    let back = oracle_debt_per_col_1e27(p_coll, RAY, coll_decimals, debt_decimals).ok()?;
+    if back != rate {
+        return None;
+    }
+    Some((p_coll, RAY))
+}
+
 /// Pin: `temp_ = (oracle * supplyExPrice) / borrowExPrice`, cap `1e45`.
 pub fn raw_debt_per_col(oracle_1e27: U256, supply_ex: U256, borrow_ex: U256) -> Result<U256> {
     if oracle_1e27.is_zero() || oracle_1e27 > one_e54()? {
@@ -456,6 +483,26 @@ mod tick_tests {
         )
         .unwrap();
         assert_eq!(r, uint!(2_000_000_000_000_000_000_U256));
+    }
+
+    #[test]
+    fn t1_rate_inverts_the_documented_eth_usdc_example() {
+        // Same pin as `oracle_eth_usdc_example_scale`: rate 2000e15, 18/6
+        // collateral/debt. The pair is the comment's inputs, not a value
+        // copied out of `t1_prices_from_rate`.
+        let (p_coll, p_debt) =
+            t1_prices_from_rate(uint!(2_000_000_000_000_000_000_U256), 18, 6).unwrap();
+        assert_eq!(p_coll, uint!(2000_000_000_000_000_000_000_000_000_000_U256));
+        assert_eq!(p_debt, RAY);
+        let back = oracle_debt_per_col_1e27(p_coll, p_debt, 18, 6).unwrap();
+        assert_eq!(back, uint!(2_000_000_000_000_000_000_U256));
+    }
+
+    #[test]
+    fn t1_rate_that_does_not_divide_is_not_published() {
+        // 1 debt-per-col at 1e27 with 18/6 does not survive the forward floor.
+        assert!(t1_prices_from_rate(U256::from(1u64), 18, 6).is_none());
+        assert!(t1_prices_from_rate(U256::ZERO, 18, 6).is_none());
     }
 
     #[test]

@@ -94,6 +94,8 @@ pub struct ManagerConfig {
     pub quoted_tokens_mask: u64,
     /// Facade `debtLimits().minDebt` (underlying units).
     pub min_debt: u128,
+    /// `ICreditManagerV3.priceOracle()`.
+    pub price_oracle: Address,
     pub tokens: Vec<TokenConfig>,
 }
 
@@ -710,6 +712,12 @@ fn load_manager<R: RegistryRpc>(
     let min_debt = ICreditFacadeV3::debtLimitsCall::abi_decode_returns(&limits_raw)
         .map_err(|_| ConfigError::RegistryCall(facade))?
         .minDebt;
+    let price_oracle = decode_addr(
+        provider,
+        manager,
+        block,
+        &ICreditManagerV3::priceOracleCall {}.abi_encode(),
+    )?;
     Ok(ManagerConfig {
         market,
         manager,
@@ -725,6 +733,7 @@ fn load_manager<R: RegistryRpc>(
         expiration_date,
         quoted_tokens_mask,
         min_debt,
+        price_oracle,
         tokens,
     })
 }

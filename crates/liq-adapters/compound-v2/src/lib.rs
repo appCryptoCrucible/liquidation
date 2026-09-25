@@ -19,7 +19,7 @@ pub mod quote;
 pub mod solve;
 
 use alloy_primitives::{Address, U256};
-use alloy_sol_types::SolEvent;
+use alloy_sol_types::{SolCall, SolEvent};
 use liq_protocol::{
     Archive, BlockNum, DecodedLog, DirtySet, ExecutorAdapter, FlashRoute, Health, LegChoice,
     LiquidationLeg, LiquidationPlan, PositionRef, ProbeCall, Protocol, ProtocolError, Quote,
@@ -284,5 +284,117 @@ impl Protocol for CompoundV2 {
 
     fn health_probe(&self, _pos: PositionRef<'_>) -> Result<ProbeCall> {
         Err(ProtocolError::ProbeUnavailable)
+    }
+
+    /// `PriceOracle.getUnderlyingPrice(cToken)` per cToken of each interned
+    /// comptroller (no batch getter). Tag = the underlying's decimals.
+    fn price_reads(&self, _rows: &dyn liq_protocol::MarketRows) -> Vec<liq_protocol::PriceRead> {
+        let mut out = Vec::new();
+        for fork in &self.cfg.forks {
+            if fork.oracle.is_zero() {
+                continue;
+            }
+            let Some(market) = self
+                .cfg
+                .interned
+                .iter()
+                .find(|(a, _)| *a == fork.comptroller)
+                .map(|(_, m)| *m)
+            else {
+                continue;
+            };
+            for c in &fork.ctokens {
+                let asset = if c.underlying.is_zero() {
+                    self.cfg.native_asset(fork)
+                } else {
+                    self.cfg.asset_by_underlying(c.underlying)
+                };
+                let Some(asset) = asset else { continue };
+                out.push(liq_protocol::PriceRead {
+                    market,
+                    target: fork.oracle,
+                    calldata: alloy_primitives::Bytes::from(
+                        getUnderlyingPriceCall { cToken: c.ctoken }.abi_encode(),
+                    ),
+                    tag: u32::from(asset.decimals),
+                    assets: vec![asset.asset],
+                });
+            }
+        }
+        out
+    }
+
+    /// Compound's mantissa is `USD · 10^(36 − decimals)` per whole token;
+    /// RAY is `USD · 10^27`, so `ray = m · 10^(decimals − 9)`. (The adapter
+    /// re-derives the mantissa keeping 18 USD decimals — a sub-1e-18
+    /// relative difference on tokens under 18 decimals.)
+    fn decode_prices(
+        &self,
+        read: &liq_protocol::PriceRead,
+        ret: &[u8],
+        out: &mut Vec<(AssetId, liq_types::Ray)>,
+    ) -> Result<()> {
+        let m = getUnderlyingPriceCall::abi_decode_returns(ret)
+            .map_err(|_| ProtocolError::ProbeDecode)?;
+        let [asset] = read.assets.as_slice() else {
+            return Err(ProtocolError::ProbeDecode);
+        };
+        if m.is_zero() {
+            return Ok(());
+        }
+        let dec = read.tag;
+        let ray = compound_ray(m, dec).ok_or(ProtocolError::ProbeDecode)?;
+        out.push((*asset, liq_types::Ray::from_raw(ray)));
+        Ok(())
+    }
+}
+
+alloy_sol_types::sol! {
+    /// Compound V2 `PriceOracle.getUnderlyingPrice`.
+    function getUnderlyingPrice(address cToken) external view returns (uint256);
+}
+
+/// `USD · 10^(36 − decimals)` → RAY (`USD · 10^27`): `m · 10^(decimals − 9)`.
+/// Zero is not a price.
+pub(crate) fn compound_ray(m: U256, dec: u32) -> Option<U256> {
+    if m.is_zero() {
+        return None;
+    }
+    if dec >= 9 {
+        m.checked_mul(U256::from(10u64).pow(U256::from(dec.saturating_sub(9))))
+    } else {
+        m.checked_div(U256::from(10u64).pow(U256::from(9u32.saturating_sub(dec))))
+    }
+}
+
+#[cfg(test)]
+mod ray_scale {
+    use super::compound_ray;
+    use alloy_primitives::U256;
+
+    #[test]
+    fn six_decimals_divides_the_mantissa_by_one_thousand() {
+        // cUSDC: mantissa is USD·10^30; RAY is USD·10^27. 10^(6−9) = 1/1000.
+        // 1_000 * 1_000_000_000 / 1_000 = 1_000_000_000. Written out, not
+        // taken from `compound_ray`.
+        assert_eq!(
+            compound_ray(U256::from(1_000_000_000_000u64), 6),
+            Some(U256::from(1_000_000_000u64))
+        );
+    }
+
+    #[test]
+    fn eighteen_decimals_multiplies_by_one_billion() {
+        // 10^(18−9) = 10^9. One mantissa unit is 1_000_000_000 ray.
+        assert_eq!(
+            compound_ray(U256::from(1u64), 18),
+            Some(U256::from(1_000_000_000u64))
+        );
+    }
+
+    #[test]
+    fn zero_mantissa_is_not_a_price() {
+        assert_eq!(compound_ray(U256::ZERO, 6), None);
+        assert_eq!(compound_ray(U256::ZERO, 18), None);
     }
 }

@@ -32,7 +32,7 @@ use liq_types::{AssetId, ProtocolId};
 
 pub use band::{classify, BandManager};
 pub use candidate::{Candidate, CandidateQueue, Drain, TriggerCause};
-pub use engine::{Engine, EngineConfig, Stats, World};
+pub use engine::{Engine, EngineConfig, ProtocolPriceMove, ProtocolPrices, Stats, World};
 pub use heap::TimeCrossHeap;
 pub use threshold::{Side, ThresholdIndex};
 pub use triggers::{

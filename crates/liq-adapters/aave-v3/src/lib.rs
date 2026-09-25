@@ -27,6 +27,9 @@ use crate::events::{cfg as ccfg, halt, oracle, pool, provider, sentinel, token};
 use crate::math::hf_wad_to_ray;
 
 sol! {
+    /// `AaveOracle.getAssetsPrices` — the pool's own price for each reserve,
+    /// in `BASE_CURRENCY_UNIT` (8-decimal USD on mainnet).
+    function getAssetsPrices(address[] assets) external view returns (uint256[] prices);
     function getUserAccountData(address user) external view returns (
         uint256 totalCollateralBase,
         uint256 totalDebtBase,
@@ -285,6 +288,85 @@ impl Protocol for AaveV3 {
             decode: decode_probe,
         })
     }
+
+    /// One `getAssetsPrices` per pool, over every reserve the config pins a
+    /// source for in that pool (tag = pool index).
+    fn price_reads(&self, _rows: &dyn liq_protocol::MarketRows) -> Vec<liq_protocol::PriceRead> {
+        let mut out = Vec::with_capacity(self.cfg.pools.len());
+        for (i, pool) in self.cfg.pools.iter().enumerate() {
+            let priced = self.priced_underlyings(pool.address);
+            if priced.is_empty() {
+                continue;
+            }
+            let Ok(tag) = u32::try_from(i) else { continue };
+            let (underlyings, assets): (Vec<Address>, Vec<AssetId>) = priced.into_iter().unzip();
+            out.push(liq_protocol::PriceRead {
+                market: pool.market,
+                target: pool.oracle,
+                calldata: Bytes::from(
+                    getAssetsPricesCall {
+                        assets: underlyings,
+                    }
+                    .abi_encode(),
+                ),
+                tag,
+                assets,
+            });
+        }
+        out
+    }
+
+    fn decode_prices(
+        &self,
+        read: &liq_protocol::PriceRead,
+        ret: &[u8],
+        out: &mut Vec<(AssetId, Ray)>,
+    ) -> Result<()> {
+        let prices =
+            getAssetsPricesCall::abi_decode_returns(ret).map_err(|_| ProtocolError::ProbeDecode)?;
+        scaled_prices(&prices, &read.assets, self.cfg.oracle_scale(), out)
+    }
+}
+
+impl AaveV3 {
+    /// Reserves of `pool` with a pinned price source and an interned asset,
+    /// in config order (the order a read asks and its answer returns).
+    fn priced_underlyings(&self, pool: Address) -> Vec<(Address, AssetId)> {
+        self.cfg
+            .price_sources
+            .iter()
+            .filter(|s| s.pool == pool)
+            .filter_map(|s| {
+                self.cfg
+                    .assets
+                    .iter()
+                    .find(|a| a.underlying == s.underlying)
+                    .map(|a| (s.underlying, a.asset))
+            })
+            .collect()
+    }
+}
+
+/// `prices[i]` (oracle units) for `assets[i]`, scaled to RAY. A zero answer
+/// is an unpriced reserve on the protocol's side too: left out, never 0.
+fn scaled_prices(
+    prices: &[U256],
+    assets: &[AssetId],
+    scale: u128,
+    out: &mut Vec<(AssetId, Ray)>,
+) -> Result<()> {
+    if prices.len() != assets.len() {
+        return Err(ProtocolError::ProbeDecode);
+    }
+    let scale = U256::from(scale);
+    for (asset, p) in assets.iter().zip(prices) {
+        if p.is_zero() {
+            continue;
+        }
+        let ray = p.checked_mul(scale).ok_or(ProtocolError::ProbeDecode)?;
+        out.push((*asset, Ray::from_raw(ray)));
+    }
+    Ok(())
 }
 
 use liq_protocol::Timestamp;

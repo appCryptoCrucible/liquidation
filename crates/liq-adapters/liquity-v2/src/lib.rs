@@ -19,14 +19,15 @@ pub mod math;
 pub mod quote;
 pub mod solve;
 
-use alloy_primitives::{Address, U256};
-use alloy_sol_types::SolEvent;
+use alloy_primitives::{Address, Bytes, U256};
+use alloy_sol_types::{SolCall, SolEvent};
 use liq_protocol::{
     Archive, BlockNum, DecodedLog, DirtySet, ExecutorAdapter, FlashRoute, Health, LegChoice,
     LiquidationLeg, LiquidationPlan, PositionRef, ProbeCall, Protocol, ProtocolError, Quote,
     Result, StateWriter, Timestamp,
 };
-use liq_types::{AssetId, LogFilter, LogSubscriber, Price, PriceVector, ProtocolId};
+use liq_types::fixed::RAY;
+use liq_types::{AssetId, LogFilter, LogSubscriber, Price, PriceVector, ProtocolId, Ray};
 
 pub use config::{AssetConfig, BranchConfig, Config, ConfigError, Emitter, RegistryRpc};
 
@@ -250,5 +251,80 @@ impl Protocol for LiquityV2 {
 
     fn health_probe(&self, _pos: PositionRef<'_>) -> Result<ProbeCall> {
         Err(ProtocolError::ProbeUnavailable)
+    }
+
+    /// `PriceFeed.fetchPrice` per branch. After shutdown the call still
+    /// returns `lastGoodPrice` and liquidations still use it, so the
+    /// failure flag does not drop the price. A revert is a failed read.
+    /// BOLD is 1 USD in Liquity's own accounting.
+    fn price_reads(&self, _rows: &dyn liq_protocol::MarketRows) -> Vec<liq_protocol::PriceRead> {
+        let mut out = Vec::new();
+        for branch in &self.cfg.branches {
+            if branch.price_feed.is_zero() {
+                continue;
+            }
+            out.push(liq_protocol::PriceRead {
+                market: branch.market,
+                target: branch.price_feed,
+                calldata: Bytes::from(fetchPriceCall {}.abi_encode()),
+                tag: 0,
+                assets: vec![branch.coll_asset, self.cfg.bold.asset],
+            });
+        }
+        out
+    }
+
+    fn decode_prices(
+        &self,
+        read: &liq_protocol::PriceRead,
+        ret: &[u8],
+        out: &mut Vec<(AssetId, Ray)>,
+    ) -> Result<()> {
+        let decoded =
+            fetchPriceCall::abi_decode_returns(ret).map_err(|_| ProtocolError::ProbeDecode)?;
+        let price = decoded.price;
+        // Shutdown still returns lastGoodPrice. The flag does not drop it.
+        let _ = decoded.newOracleFailureDetected;
+        let (Some(&coll), Some(&bold)) = (read.assets.first(), read.assets.get(1)) else {
+            return Err(ProtocolError::ProbeDecode);
+        };
+        if let Some(ray) = liquity_coll_ray(price) {
+            out.push((coll, Ray::from_raw(ray)));
+        }
+        out.push((bold, Ray::from_raw(RAY)));
+        Ok(())
+    }
+}
+
+/// `fetchPrice` is USD × 1e18 per whole collateral. RAY is × 1e27.
+pub(crate) fn liquity_coll_ray(price: U256) -> Option<U256> {
+    if price.is_zero() {
+        return None;
+    }
+    price.checked_mul(U256::from(1_000_000_000u64))
+}
+
+alloy_sol_types::sol! {
+    /// Liquity V2 `PriceFeed.fetchPrice`. State-changing; `eth_call` only.
+    function fetchPrice() external returns (uint256 price, bool newOracleFailureDetected);
+}
+
+#[cfg(test)]
+mod coll_ray {
+    use super::liquity_coll_ray;
+    use alloy_primitives::U256;
+
+    #[test]
+    fn three_thousand_dollars_is_three_thousand_ray() {
+        // 3000 × 10^18 = 3e21. × 10^9 = 3e30 = 3000 × 10^27.
+        assert_eq!(
+            liquity_coll_ray(U256::from(3_000_000_000_000_000_000_000u128)),
+            Some(U256::from(3_000_000_000_000_000_000_000_000_000_000u128))
+        );
+    }
+
+    #[test]
+    fn zero_fetch_price_is_not_a_collateral_price() {
+        assert_eq!(liquity_coll_ray(U256::ZERO), None);
     }
 }

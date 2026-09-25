@@ -176,6 +176,7 @@ pub mod views {
 
         interface ICreditManagerV3 {
             function pool() external view returns (address);
+            function priceOracle() external view returns (address);
             function underlying() external view returns (address);
             function creditFacade() external view returns (address);
             function creditConfigurator() external view returns (address);

@@ -17,6 +17,12 @@
 //! address indexed borrower, uint256 repayDebtAssets, uint256 withdrawCollateral,
 //! bool receiveSToken)`.
 //!
+//! The solvency oracle quotes in the pair's quote token, and `debt_value`
+//! is what the quote sizes. That is not USD unless the debt token is the
+//! quote token, which the rows do not prove. No protocol-price overlay:
+//! health and sizing stay on the canonical vector. A zero-address oracle
+//! (1:1 in the quote token) is not turned into a guessed USD price.
+//!
 //! `liq-watch` `silo::LiquidationCall(liquidator, borrower, repay, withdraw)` is
 //! a different topic0. This adapter decodes the pin ABI. 10E calls the hook.
 //!

@@ -12,14 +12,14 @@ pub mod math;
 pub mod quote;
 pub mod solve;
 
-use alloy_primitives::{Address, U256};
-use alloy_sol_types::SolEvent;
+use alloy_primitives::{Address, Bytes, U256};
+use alloy_sol_types::{SolCall, SolEvent};
 use liq_protocol::{
     Archive, BlockNum, DecodedLog, DirtySet, ExecutorAdapter, FlashRoute, Health, LegChoice,
     LiquidationLeg, LiquidationPlan, PositionRef, ProbeCall, Protocol, ProtocolError, Quote,
     Result, StateWriter, Timestamp,
 };
-use liq_types::{AssetId, LogFilter, LogSubscriber, Price, PriceVector, ProtocolId};
+use liq_types::{AssetId, LogFilter, LogSubscriber, MarketId, Price, PriceVector, ProtocolId, Ray};
 
 pub use config::{AssetConfig, Config, ConfigError, SourcePin};
 
@@ -179,5 +179,86 @@ impl Protocol for MorphoBlue {
 
     fn health_probe(&self, _pos: PositionRef<'_>) -> Result<ProbeCall> {
         Err(ProtocolError::ProbeUnavailable)
+    }
+
+    /// One `IOracle.price()` per created market. Markets exist only in
+    /// state: walk from `first_market` until a gap.
+    fn price_reads(&self, rows: &dyn liq_protocol::MarketRows) -> Vec<liq_protocol::PriceRead> {
+        let mut out = Vec::new();
+        let mut n = self.cfg.first_market.0;
+        while let Some(market_rows) = rows.rows(MarketId(n)) {
+            if let Some(read) = morpho_price_read(MarketId(n), market_rows) {
+                out.push(read);
+            }
+            n = match n.checked_add(1) {
+                Some(v) => v,
+                None => break,
+            };
+        }
+        out
+    }
+
+    fn decode_prices(
+        &self,
+        read: &liq_protocol::PriceRead,
+        ret: &[u8],
+        out: &mut Vec<(AssetId, Ray)>,
+    ) -> Result<()> {
+        let price = IOraclePrice::priceCall::abi_decode_returns(ret)
+            .map_err(|_| ProtocolError::ProbeDecode)?;
+        if price.is_zero() {
+            return Ok(());
+        }
+        let hi = read.tag.checked_shr(8).ok_or(ProtocolError::ProbeDecode)?;
+        let loan_dec = u8::try_from(hi & 0xff).map_err(|_| ProtocolError::ProbeDecode)?;
+        let coll_dec = u8::try_from(read.tag & 0xff).map_err(|_| ProtocolError::ProbeDecode)?;
+        let (p_loan, p_coll) = crate::health::prices_matching_oracle(price, loan_dec, coll_dec)
+            .map_err(|_| ProtocolError::ProbeDecode)?;
+        let (Some(&loan), Some(&coll)) = (read.assets.first(), read.assets.get(1)) else {
+            return Err(ProtocolError::ProbeDecode);
+        };
+        out.push((loan, Ray::from_raw(p_loan)));
+        out.push((coll, Ray::from_raw(p_coll)));
+        Ok(())
+    }
+}
+
+fn morpho_price_read(
+    market: MarketId,
+    rows: &[liq_protocol::MarketRow],
+) -> Option<liq_protocol::PriceRead> {
+    use crate::layout::{LoanRow, COLL_SLOT, LOAN_SLOT, UNMAPPED_ASSET};
+    let loan_row = rows.get(usize::from(LOAN_SLOT))?;
+    let coll_row = rows.get(usize::from(COLL_SLOT))?;
+    if loan_row.flags.contains(liq_protocol::MarketFlags::UNPRICED)
+        || coll_row.flags.contains(liq_protocol::MarketFlags::UNPRICED)
+        || loan_row.asset == UNMAPPED_ASSET
+        || coll_row.asset == UNMAPPED_ASSET
+    {
+        return None;
+    }
+    let loan: &LoanRow = loan_row.body().ok()?;
+    if loan.flags & LoanRow::PRICED == 0 {
+        return None;
+    }
+    let oracle = Address::from(loan.oracle);
+    if oracle.is_zero() {
+        return None;
+    }
+    let loan_dec = u32::from(loan_row.decimals);
+    let coll_dec = u32::from(loan.coll_decimals);
+    let tag = loan_dec.checked_shl(8)?.checked_add(coll_dec)?;
+    Some(liq_protocol::PriceRead {
+        market,
+        target: oracle,
+        calldata: Bytes::from(IOraclePrice::priceCall {}.abi_encode()),
+        tag,
+        assets: vec![loan_row.asset, coll_row.asset],
+    })
+}
+
+alloy_sol_types::sol! {
+    interface IOraclePrice {
+        function price() external view returns (uint256);
     }
 }

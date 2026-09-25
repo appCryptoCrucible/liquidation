@@ -73,7 +73,11 @@ fn words(tick: i32, spacing: i32) -> Option<(i16, i16)> {
     Some((lo, hi))
 }
 
-async fn aggregate(rpc: &HttpRpc, calls: Vec<Call3>, block: u64) -> Option<Vec<Result3>> {
+pub(crate) async fn aggregate(
+    rpc: &HttpRpc,
+    calls: Vec<Call3>,
+    block: u64,
+) -> Option<Vec<Result3>> {
     let data = Bytes::from(aggregate3Call { calls }.abi_encode());
     let raw = rpc.call_at(MULTICALL3, data, block).await.ok()?;
     aggregate3Call::abi_decode_returns(&raw).ok()
@@ -228,7 +232,7 @@ pub async fn seed_v3(book: &mut PoolBook, rpc: &HttpRpc) -> SeedStats {
     stats
 }
 
-fn call(target: Address, data: Vec<u8>) -> Call3 {
+pub(crate) fn call(target: Address, data: Vec<u8>) -> Call3 {
     Call3 {
         target,
         allowFailure: true,

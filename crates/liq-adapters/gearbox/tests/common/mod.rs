@@ -63,6 +63,7 @@ pub struct Deploy {
     pub configurator: Address,
     pub factory: Address,
     pub quota_keeper: Address,
+    pub price_oracle: Address,
     pub underlying: Address,
     pub coll: Address,
     pub alice: Address,
@@ -78,6 +79,7 @@ impl Deploy {
             configurator: Address::repeat_byte(0xa4),
             factory: Address::repeat_byte(0xa5),
             quota_keeper: Address::repeat_byte(0xa6),
+            price_oracle: Address::repeat_byte(0xb7),
             underlying: Address::repeat_byte(0xc0),
             coll: Address::repeat_byte(0xc1),
             alice: Address::repeat_byte(0x11),
@@ -135,6 +137,7 @@ impl Deploy {
             expiration_date,
             quoted_tokens_mask: 2,
             min_debt: 0,
+            price_oracle: self.price_oracle,
             tokens: self.tokens(),
         }
     }
@@ -401,6 +404,11 @@ pub fn mock_registry(d: &Deploy) -> MockRpc {
         d.manager,
         ICreditManagerV3::poolCall {}.abi_encode(),
         pad_addr(d.pool),
+    ));
+    calls.push((
+        d.manager,
+        ICreditManagerV3::priceOracleCall {}.abi_encode(),
+        pad_addr(d.price_oracle),
     ));
     calls.push((
         d.pool,

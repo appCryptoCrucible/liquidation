@@ -313,6 +313,47 @@ impl Protocol for GearboxV3 {
         })
     }
 
+    /// `PriceOracleV3.getPrice` per collateral. 8-decimal USD per whole
+    /// token. A reverting on-demand feed is a failed read, not a zero.
+    fn price_reads(&self, _rows: &dyn liq_protocol::MarketRows) -> Vec<liq_protocol::PriceRead> {
+        let mut out = Vec::new();
+        for mgr in &self.cfg.managers {
+            if mgr.price_oracle.is_zero() {
+                continue;
+            }
+            for t in &mgr.tokens {
+                if t.asset == UNMAPPED_ASSET || t.token.is_zero() {
+                    continue;
+                }
+                out.push(liq_protocol::PriceRead {
+                    market: mgr.market,
+                    target: mgr.price_oracle,
+                    calldata: getPriceCall { token: t.token }.abi_encode().into(),
+                    tag: 0,
+                    assets: vec![t.asset],
+                });
+            }
+        }
+        out
+    }
+
+    fn decode_prices(
+        &self,
+        read: &liq_protocol::PriceRead,
+        ret: &[u8],
+        out: &mut Vec<(AssetId, Ray)>,
+    ) -> Result<()> {
+        let p = getPriceCall::abi_decode_returns(ret).map_err(|_| ProtocolError::ProbeDecode)?;
+        let Some(ray) = gearbox_ray(p) else {
+            return Ok(());
+        };
+        let [asset] = read.assets.as_slice() else {
+            return Err(ProtocolError::ProbeDecode);
+        };
+        out.push((*asset, Ray::from_raw(ray)));
+        Ok(())
+    }
+
     fn health_probe(&self, pos: PositionRef<'_>) -> Result<ProbeCall> {
         let row = pos.markets.first().ok_or(ProtocolError::ProbeUnavailable)?;
         let m: &ManagerRow = row.body()?;
@@ -330,5 +371,38 @@ impl Protocol for GearboxV3 {
             .into(),
             decode: decode_probe,
         })
+    }
+}
+
+/// 8-decimal USD per whole token → RAY (`× 10^19`).
+pub(crate) fn gearbox_ray(p: U256) -> Option<U256> {
+    if p.is_zero() {
+        return None;
+    }
+    p.checked_mul(U256::from(10u64).pow(U256::from(19u32)))
+}
+
+alloy_sol_types::sol! {
+    /// Gearbox `PriceOracleV3.getPrice`.
+    function getPrice(address token) external view returns (uint256);
+}
+
+#[cfg(test)]
+mod oracle_ray {
+    use super::gearbox_ray;
+    use alloy_primitives::U256;
+
+    #[test]
+    fn three_thousand_dollars_at_eight_decimals_is_three_thousand_ray() {
+        // 3000 × 10^8 × 10^19 = 3000 × 10^27.
+        assert_eq!(
+            gearbox_ray(U256::from(300_000_000_000u64)),
+            Some(U256::from(3_000_000_000_000_000_000_000_000_000_000u128))
+        );
+    }
+
+    #[test]
+    fn zero_get_price_is_not_a_price() {
+        assert_eq!(gearbox_ray(U256::ZERO), None);
     }
 }

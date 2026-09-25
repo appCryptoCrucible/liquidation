@@ -388,6 +388,20 @@ pub async fn run(
             None
         }
     };
+    // Protocol-reported prices: each adapter's own price getters, read off
+    // the hot path every block (decision 2026-09-25).
+    let price_reader = crate::protocol_prices::ReaderShared::new();
+    if let Err(e) = crate::protocol_prices::spawn_reader(
+        adapters,
+        loaded.config.rpc_url.clone(),
+        Arc::clone(&price_reader),
+        Arc::new(AtomicBool::new(false)),
+    ) {
+        tracing::error!(
+            ?e,
+            "protocol price reader not started — health priced from canonical feeds only"
+        );
+    }
     let hook = DrainJoin::live(
         Arc::clone(&shared.flash),
         shared.routes.clone(),
@@ -407,7 +421,8 @@ pub async fn run(
     })
     .with_index(index)
     .with_bid_cfg(bid_cfg)
-    .with_header_clock(clock);
+    .with_header_clock(clock)
+    .with_price_reader(price_reader);
     let _map = pin_threads(cores_path, allow_unpinned)?;
     let sink: &'static dyn liq_types::HaltSink = shared.risk;
     let (forwarder, hot) = register_exex(

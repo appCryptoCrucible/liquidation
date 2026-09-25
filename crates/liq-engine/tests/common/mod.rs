@@ -423,6 +423,7 @@ impl Rig {
             flash: &self.flash,
             routes: &routes,
             haircut: Haircut::NONE,
+            overlay: None,
         };
         self.engine.resync(&w).unwrap();
     }
@@ -437,6 +438,7 @@ impl Rig {
             flash: &self.flash,
             routes: &routes,
             haircut: Haircut::NONE,
+            overlay: None,
         };
         f(&mut self.engine, &w)
     }

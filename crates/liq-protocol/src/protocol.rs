@@ -14,7 +14,7 @@
 //! reason.
 
 use alloy_primitives::Address;
-use liq_types::{AssetId, LogSubscriber, Price, PriceVector, ProtocolId};
+use liq_types::{AssetId, LogSubscriber, Price, PriceVector, ProtocolId, Ray};
 
 use crate::archive::Archive;
 use crate::dirty::DirtySet;
@@ -24,6 +24,7 @@ use crate::health::Health;
 use crate::log::DecodedLog;
 use crate::plan::{LiquidationPlan, ProbeCall};
 use crate::posref::PositionRef;
+use crate::price_read::{MarketRows, PriceRead};
 use crate::quote::{LegChoice, Quote};
 use crate::statewriter::StateWriter;
 use crate::{BlockNum, Timestamp};
@@ -109,4 +110,29 @@ pub trait Protocol: LogSubscriber + Send + Sync + 'static {
     /// `health(pos)?.hf` (GUIDE 02 §8). `Err(ProbeUnavailable)` when the
     /// adapter has no such view for this position.
     fn health_probe(&self, pos: PositionRef<'_>) -> Result<ProbeCall>;
+
+    // ---- protocol-reported prices -----------------------------------------
+
+    /// The views that return this protocol's own prices, keyed by market
+    /// (GUIDE 06). Called off the hot path, at startup and whenever the
+    /// market set may have changed; `rows` is the current state for
+    /// adapters whose markets live there. Empty: the protocol is priced
+    /// from the canonical vector alone.
+    fn price_reads(&self, rows: &dyn MarketRows) -> Vec<PriceRead> {
+        let _ = rows;
+        Vec::new()
+    }
+
+    /// Decode one [`PriceRead`]'s return data into `(asset, price)` for
+    /// `read.market`, in the canonical vector's unit (RAY USD per whole
+    /// token), appended to `out`. Pure; runs on the price-reader thread.
+    fn decode_prices(
+        &self,
+        read: &PriceRead,
+        ret: &[u8],
+        out: &mut Vec<(AssetId, Ray)>,
+    ) -> Result<()> {
+        let _ = (read, ret, out);
+        Ok(())
+    }
 }

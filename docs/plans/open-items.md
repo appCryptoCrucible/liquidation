@@ -1,6 +1,6 @@
 # Open items: step-by-step plan
 
-Status as of 2026-09-25, later the same day. Phase 0 is on origin (`977242f`). Phase 1's ledger is in the tree, and the tokens whose `decimals()` / `symbol()` read on mainnet were appended (ids 1073–1083; nothing below 1073 moved). Phases 2–8 are not started. Tokens that failed the chain read are listed under Phase 1 and were not added. Phase 1 was reviewed the same day; fixes are listed under its progress note.
+Status as of 2026-09-25, later the same day. Phase 0 is on origin (`977242f`). Phase 1's ledger is on origin. Phase 2/3's getter overlay is in the tree (see the progress notes): each bound adapter except Silo publishes its own price getter, off the hot path, and the engine lays that over the canonical vector per market. Chainlink reproduction, Curve exits, unwraps, the docs audit, and the carry-forwards are not done. Tokens that failed the chain read are listed under Phase 1 and were not added.
 
 Each phase lists why it matters, what is true today, the steps in order, how we know it's done, and any decisions for you. Sizes are rough: **S** is under a day, **M** is a few days, **L** is a week or more.
 
@@ -140,6 +140,10 @@ Gearbox, Fluid, and Liquity are not families in `registry.protocols`, so this pa
 
 **Decided 2026-09-25.** Where a protocol reads a price we can't reproduce exactly (proprietary adapter, off-chain signed price), we read the protocol's own getter each block, **off the hot path** (a background thread writes the value; the hot path only reads it), for that residue only. This costs one RPC call per such asset per block, which is fine on the production reth node.
 
+**Progress.** The getter path is in, ahead of the reproduction inventory. `liq-bot-prices` multicalls each adapter's `price_reads` at each new head and `ProtocolPriceBook` overlays the answers per `(protocol, market)`. Aave V3/Spark (`getAssetsPrices`), Aave V4 (`getReservesPrices`), Compound (`getUnderlyingPrice`), Euler (`getQuote` for the USD unit `0x…0348` only), Gearbox (`getPrice`, 8-decimal USD) and Liquity (`fetchPrice`, and BOLD at 1e27) publish RAY USD per whole token. Morpho and Fluid publish a ratio that `oracle_price` / `oracle_debt_per_col_1e27` turns back into the protocol's own integer; a Fluid rate that does not round-trip is omitted. Silo is not overlaid: `debt_value` sizes the quote and the solvency oracle is in the pair's quote token, which the rows do not prove is USD. When a canonical slot has `ts == 0`, sizing uses the first USD getter (Aave, Spark, Compound, Euler, Gearbox) and never a ratio price.
+
+Live, same block, to the wei: Aave V3/Spark `getAssetPrice` (100 prices, 80 + 20, at block 26054734), Aave V4 spoke `0xe190…` `getReservePrice`, Compound cUSDC `getUnderlyingPrice` (`mantissa / 1000`), Morpho `price()` on 20 pins. Euler, Fluid, Liquity and Gearbox have unit tests of the conversion and still need that same live equality test. Steps 1–4 and 6–7 (Chainlink inventory, derived specs, `AnswerUpdated`) are not done.
+
 ---
 
 ## Phase 3: Protocol-native oracles for Morpho, Liquity V2, Fluid (L)
@@ -174,6 +178,8 @@ Gearbox, Fluid, and Liquity are not families in `registry.protocols`, so this pa
 3. Use the *liquidate* rate for health and seizure sizing.
 4. Live test per vault at a pinned block.
 5. **Add the missing Fluid fork test.** `test_fork_fluid_t1_cannot_open_without_invented_state` is still skipped: open a real T1 position, make it liquidatable, liquidate through the Executor, and measure gas (replacing the mainnet-frame estimate in `liq-gas.toml`).
+
+**Progress.** Morpho's overlay reconstructs `IOracle.price()` to the wei (loan price is `1e36`, not `1e27`, because `1e27` cannot represent a `price()` that is not a multiple of `1e9`). Liquity publishes `fetchPrice` even when `newOracleFailureDetected` is set, because a shut-down branch still liquidates at `lastGoodPrice`; a revert is the only skip. Fluid publishes a T1 pair only when `getExchangeRateLiquidate` round-trips through `oracle_debt_per_col_1e27`. The Fluid fork test is still skipped. The LIF check against the documented `0.3` / `1.15` formula is not done.
 
 **Done when** health for all three uses the protocol's own price with a per-protocol live equality test, and the Fluid fork test passes.
 
