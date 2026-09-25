@@ -14,19 +14,19 @@ jitter_lo_bps = 0
 jitter_hi_bps = 0
 
 [aave.above]
-beta_cap_bps = 9980
-learning_target_bps = 9980
+beta_cap_bps = 9950
+learning_target_bps = 9950
 jitter_lo_bps = 0
 jitter_hi_bps = 0
 
 [other.below]
-beta_cap_bps = 6500
-learning_target_bps = 6500
+beta_cap_bps = 7500
+learning_target_bps = 7500
 jitter_lo_bps = 0
 jitter_hi_bps = 0
 
 [other.above]
-beta_cap_bps = 6700
-learning_target_bps = 6700
+beta_cap_bps = 7500
+learning_target_bps = 7500
 jitter_lo_bps = 0
 jitter_hi_bps = 0
