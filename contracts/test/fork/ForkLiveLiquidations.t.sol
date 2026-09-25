@@ -464,8 +464,12 @@ contract ForkLiveLiquidationsTest is Test {
         vm.prank(user);
         ISpokeEx(AAVE_V4_SPOKE).borrow(1, borrowAmt, user);
         IAaveV4Spoke.UserAccountData memory d = IAaveV4Spoke(AAVE_V4_SPOKE).getUserAccountData(user);
+        // Local clock. Under via-IR `block.timestamp` can be read once and
+        // reused, so `warp(block.timestamp + dt)` in a loop never advances.
+        uint256 t = block.timestamp;
         for (uint256 i; i < 8 && d.healthFactor >= 1e18; ++i) {
-            vm.warp(block.timestamp + 2500 days);
+            t += 2500 days;
+            vm.warp(t);
             d = IAaveV4Spoke(AAVE_V4_SPOKE).getUserAccountData(user);
         }
         require(d.healthFactor < 1e18, "v4 still healthy");
@@ -512,8 +516,11 @@ contract ForkLiveLiquidationsTest is Test {
         debtAssets =
             uint256(pos.borrowShares) * (uint256(m1.totalBorrowAssets) + 1) / (uint256(m1.totalBorrowShares) + 1e6);
         maxHealthy = uint256(pos.collateral) * px / 1e36 * mp.lltv / 1e18;
+        // Same local-clock reason as the Aave V4 loop above.
+        uint256 t = block.timestamp;
         for (uint256 i; i < 8 && debtAssets <= maxHealthy; ++i) {
-            vm.warp(block.timestamp + 30 days);
+            t += 30 days;
+            vm.warp(t);
             IMorpho(MORPHO).accrueInterest(mp);
             m1 = IMorpho(MORPHO).market(MORPHO_WSTETH_WETH);
             pos = IMorpho(MORPHO).position(MORPHO_WSTETH_WETH, user);

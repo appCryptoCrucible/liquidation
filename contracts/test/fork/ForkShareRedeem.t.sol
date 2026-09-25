@@ -420,13 +420,17 @@ contract ForkShareRedeemTest is Test {
         vm.expectRevert(Executor.AllLegsFailed.selector);
         ex.execute(_liquityPlan(user, id));
 
+        // Local clock. Under via-IR `block.timestamp` can be read once and
+        // reused, so `warp(block.timestamp + dt)` in a loop never advances.
         uint256 t0 = block.timestamp;
+        uint256 t = t0;
         while (icr >= mcr) {
-            vm.warp(block.timestamp + 1 hours);
+            t += 1 hours;
+            vm.warp(t);
             (price, oracleDown) = IPriceFeed(LQ_FEED).fetchPrice();
             assertFalse(oracleDown, "chain: price feed failed before ICR crossed MCR");
             icr = ITroveManagerEx(LQ_TM).getCurrentICR(id, price);
-            assertLt(block.timestamp, t0 + 48 hours, "chain: interest never took ICR under MCR");
+            assertLt(t, t0 + 48 hours, "chain: interest never took ICR under MCR");
         }
 
         address gasPool = IRegistry(LQ_REG).gasPoolAddress();
