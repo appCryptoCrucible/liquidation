@@ -161,7 +161,7 @@ mod tests {
         assert_eq!(ExecutorAdapter::SiloV2.tail_len(), 0);
         assert_eq!(ExecutorAdapter::LiquityV2.tail_len(), 32);
         assert_eq!(ExecutorAdapter::Fluid.tail_len(), 32);
-        assert_eq!(ExecutorAdapter::Gearbox.tail_len(), 32);
+        assert_eq!(ExecutorAdapter::Gearbox.tail_len(), 33);
         assert_eq!(ExecutorAdapter::CompoundV2.tail_len(), 21);
     }
 }

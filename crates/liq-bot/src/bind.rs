@@ -1410,6 +1410,33 @@ mod tests {
             .unwrap()
     }
 
+    /// The committed protocol tomls bind the adapters that need no live
+    /// RPC. Before aave-v3/aave-v4/morpho-blue.toml existed, production
+    /// omitted all three ("toml absent").
+    #[test]
+    fn committed_tomls_bind_aave_and_morpho() {
+        let intern = Intern::from_registry(
+            &Registry::from_path(&root().join("registry/registry.json")).unwrap(),
+        )
+        .unwrap();
+        let out = load_protocols(&root().join("config"), &intern, None);
+        for name in ["aave-v3", "aave-v4", "morpho-blue", "spark"] {
+            assert!(
+                !out.omitted.iter().any(|(n, _)| *n == name),
+                "{name} omitted: {:?}",
+                out.omitted
+            );
+        }
+        let bound = |f: fn(&BoundProtocol) -> bool| out.protocols.iter().filter(|p| f(p)).count();
+        assert_eq!(
+            bound(|p| matches!(p, BoundProtocol::AaveV3(_))),
+            2,
+            "Aave V3 + Spark"
+        );
+        assert_eq!(bound(|p| matches!(p, BoundProtocol::AaveV4(_))), 1);
+        assert_eq!(bound(|p| matches!(p, BoundProtocol::MorphoBlue(_))), 1);
+    }
+
     /// Live: Gearbox v3.1 discovery through the address provider loads the
     /// real managers, including the ones holding debt, and maps their
     /// tokens from the committed intern.

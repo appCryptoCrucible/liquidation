@@ -1,0 +1,5 @@
+# Windows/MSVC only: link with the LLD that ships with the toolchain
+# (`rust-lld`, lld-link flavor) instead of MSVC `link.exe` — much faster on
+# the many test binaries. Other targets (CI on Linux) keep their default.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"

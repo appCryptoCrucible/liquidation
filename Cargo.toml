@@ -95,6 +95,15 @@ await_holding_lock = "deny"
 mutex_atomic = "warn"
 rc_buffer = "warn"
 
+# Dev/test builds: line tables only for workspace crates (backtraces keep
+# file:line), none for dependencies. Most test-build time was linking full
+# debug info.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 overflow-checks = true
 panic = "unwind"

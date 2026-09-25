@@ -40,6 +40,11 @@ fn spec() -> ExecutorSpec {
         router_a: ROUTER_A,
         router_b: ROUTER_B,
         weth: WETH,
+        univ2_factory: ExecutorSpec::UNIV2_FACTORY,
+        univ2_init_hash: ExecutorSpec::UNIV2_INIT_HASH,
+        sushi_factory: ExecutorSpec::SUSHI_FACTORY,
+        sushi_init_hash: ExecutorSpec::SUSHI_INIT_HASH,
+        curve_registry: ExecutorSpec::CURVE_META_REGISTRY,
     }
 }
 

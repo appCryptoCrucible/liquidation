@@ -27,6 +27,28 @@ pub struct ExecutorSpec {
     pub router_a: Address,
     pub router_b: Address,
     pub weth: Address,
+    /// Pool-direct V2/Sushi/Curve anchors (`MainnetVenues.sol`): each pair
+    /// is verified by CREATE2 against its factory, each Curve pool against
+    /// the MetaRegistry. The constructor refuses a zero anchor.
+    pub univ2_factory: Address,
+    pub univ2_init_hash: B256,
+    pub sushi_factory: Address,
+    pub sushi_init_hash: B256,
+    pub curve_registry: Address,
+}
+
+impl ExecutorSpec {
+    /// Mainnet venue anchors, as `contracts/src/lib/MainnetVenues.sol`.
+    pub const UNIV2_FACTORY: Address =
+        alloy_primitives::address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f");
+    pub const UNIV2_INIT_HASH: B256 =
+        alloy_primitives::b256!("96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f");
+    pub const SUSHI_FACTORY: Address =
+        alloy_primitives::address!("C0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac");
+    pub const SUSHI_INIT_HASH: B256 =
+        alloy_primitives::b256!("e18a34eb0e04b04f7a0ac29a6e80748dca96319b42c54d679cb821dca90c6303");
+    pub const CURVE_META_REGISTRY: Address =
+        alloy_primitives::address!("F98B45FA17DE75FB1aD0e7aFD971b0ca00e379fC");
 }
 
 /// Addresses kept resident across `verify` resets.
@@ -175,6 +197,11 @@ pub fn insert_executor<Ext: DatabaseRef<Error = SimError>>(
         spec.router_a,
         spec.router_b,
         spec.weth,
+        spec.univ2_factory,
+        spec.univ2_init_hash,
+        spec.sushi_factory,
+        spec.sushi_init_hash,
+        spec.curve_registry,
     )
         .abi_encode();
     let mut data = creation.to_vec();
