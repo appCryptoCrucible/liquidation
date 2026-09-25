@@ -352,8 +352,9 @@ fn spark_toml_matches_registry_and_on_chain_pins() {
     assert_eq!(spark_market.id, MarketId(3480));
     assert_eq!(intern.asset(SPARK_WETH), Some(AssetId(813)));
     assert_eq!(intern.asset(SPARK_DAI), Some(AssetId(454)));
-    assert_eq!(intern.asset(SPARK_GNO), None);
-    assert_eq!(intern.assets().len(), 1073);
+    // GNO joined the registry through the asset-id ledger at 1073 — the id
+    // spark.toml already reserved for it — so the pin now matches the intern.
+    assert_eq!(intern.asset(SPARK_GNO), Some(AssetId(1073)));
     let gno = cfg
         .assets
         .iter()

@@ -1006,7 +1006,7 @@ fn initial_px(
     block: u64,
     ts: u64,
 ) -> Result<PriceVector, LiteError> {
-    let n = intern.assets().len();
+    let n = intern.asset_id_capacity();
     let mut v = Vec::with_capacity(n);
     for i in 0..n {
         let id = AssetId(u16::try_from(i).map_err(|_| LiteError::Config("asset id".into()))?);

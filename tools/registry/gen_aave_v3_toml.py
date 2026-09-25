@@ -10,7 +10,7 @@ Every `aave-v3` registry entry is one pool. At one pinned block, per pool:
   oracle decimals = log10(Oracle.BASE_CURRENCY_UNIT()).
 
 Ids reproduce `liq_config::Intern::from_registry` exactly:
-  AssetId   = index of the token in registry `tokens` (BTreeMap: address order)
+  AssetId   = registry/asset-ids.json (append-only; not the token's sort index)
   ProtocolId= index of the family in the sorted family list
   MarketId  = index of the entry in registry `protocols` (BTreeMap: key order)
   FeedId    = index of the source in registry `oracles` (BTreeMap: proxy order);
@@ -45,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from discover_exits import Chain, sel, word  # noqa: E402
 
 REG = Path("registry/registry.json")
+LEDGER = Path("registry/asset-ids.json")
 OUT = Path("config/protocols/aave-v3.toml")
 ZERO = "0x0000000000000000000000000000000000000000"
 POOL_REVISION = 11
@@ -55,7 +56,15 @@ MIN_BASE_MAX_CLOSE = 2_000 * 10**8
 
 
 def intern_ids(reg: dict):
-    tokens = {a: i for i, a in enumerate(sorted(reg["tokens"], key=lambda a: int(a, 16)))}
+    ledger = json.loads(LEDGER.read_text(encoding="utf-8"))
+    by_addr = {a.lower(): int(i) for a, i in ledger["ids"].items()}
+    missing = [a for a in reg["tokens"] if a.lower() not in by_addr]
+    if missing:
+        raise SystemExit(
+            f"asset-ids.json has no id for {len(missing)} registry tokens "
+            f"(first {missing[0]}); refusing to renumber by sort order"
+        )
+    tokens = {a: by_addr[a.lower()] for a in reg["tokens"]}
     families = sorted({p["family"] for p in reg["protocols"].values()})
     protocols = {f: i for i, f in enumerate(families)}
     markets = {k: i for i, k in enumerate(sorted(reg["protocols"]))}
@@ -144,7 +153,7 @@ def main() -> int:
         f"# Values read on-chain at block {chain.block}. Pools at POOL_REVISION {POOL_REVISION}",
         "# (aave-v3-origin 3.7 @ 8305565): no isolation mode / siloed borrowing.",
         "# Liquidation constants: LiquidationLogic @ 8305565 = aave.com liquidation docs.",
-        "# Ids are the registry intern's (asset / market / feed order). Feed ids",
+        "# Asset ids are registry/asset-ids.json. Market and feed ids are sort order. Feed ids",
         f"# >= {len(feeds)} label sources absent from registry.oracles (informational).",
     ]
     if missing:

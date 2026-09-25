@@ -227,7 +227,12 @@ pub async fn run(
         }
     };
     let (warm_builder, routes) = warm_handles();
-    let shared = leak_shared(&loaded.config, lease, routes, loaded.intern.assets().len());
+    let shared = leak_shared(
+        &loaded.config,
+        lease,
+        routes,
+        loaded.intern.asset_id_capacity(),
+    );
     let mut index_load = crate::index::load_index(config_dir, &loaded.intern, &loaded.registry);
     seed_canonical(&mut index_load, &loaded.config.rpc_url).await;
     match liq_config::rpc::HttpRpc::connect(&loaded.config.rpc_url) {
@@ -395,7 +400,7 @@ pub async fn run(
         fee,
         oracle,
     )
-    .with_engine_capacity(loaded.intern.assets().len(), engine_positions)
+    .with_engine_capacity(loaded.intern.asset_id_capacity(), engine_positions)
     .with_assets(&loaded.intern)
     .with_gas_model(gas_model.as_ref(), &|f: &str| {
         bind::resolve_family(&loaded.intern, adapters, f)

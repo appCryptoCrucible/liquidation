@@ -114,3 +114,78 @@ standard_aggregator = "0x0e3dd634ffbf7ea89bbdcf09ccc463302fd5f903"
 decimals = 8
 heartbeat_secs = 86400
 deviation_bps = 30
+
+# Resolvable once Phase 1 added their tokens to the registry (2026-09-25).
+# Aave V3 Core sources checked on chain (getSourceOfAsset, proxy aggregator()).
+
+[[feed]]
+# SNX / USD
+protocol = "aave-v3"
+market = "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2"
+asset = "0xc011a73ee8576fb46f5e1c5751ca3b9fe0af2a6f"
+mechanism = "chainlink-push"
+proxy = "0xdc3ea94cd0ac27d9a86c180091e7f78c683d3699"
+standard_aggregator = "0xc778e9686f0fde6fe4d7d8fe4b481463fce898fd"
+decimals = 8
+heartbeat_secs = 86400
+deviation_bps = 100
+
+[[feed]]
+# ENS / USD
+protocol = "aave-v3"
+market = "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2"
+asset = "0xc18360217d8f7ab5e7c516566761ea12ce7f9d72"
+mechanism = "chainlink-push"
+proxy = "0x5c00128d4d1c2f4f652c267d7bcdd7ac99c16e16"
+standard_aggregator = "0x6cc5173ffd8d674c64f2dc7237730ff021829865"
+decimals = 8
+heartbeat_secs = 86400
+deviation_bps = 200
+
+[[feed]]
+# 1INCH / USD
+protocol = "aave-v3"
+market = "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2"
+asset = "0x111111111117dc0aa78b770fa6a738034120c302"
+mechanism = "chainlink-push"
+proxy = "0xc929ad75b72593967de83e7f7cda0493458261d9"
+standard_aggregator = "0x6ad3961c0348906504ff4125722e4aa5146ff529"
+decimals = 8
+heartbeat_secs = 86400
+deviation_bps = 100
+
+[[feed]]
+# STG / USD
+protocol = "aave-v3"
+market = "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2"
+asset = "0xaf5191b0de278c7286d6c7cc6ab6bb8a73ba2cd6"
+mechanism = "chainlink-push"
+proxy = "0x7a9f34a0aa917d438e9b6e630067062b7f8f6f3d"
+standard_aggregator = "0xfe5afc4225e2626eb40ca11a59962ebeeeb09e76"
+decimals = 8
+heartbeat_secs = 86400
+deviation_bps = 500
+
+[[feed]]
+# KNC / USD
+protocol = "aave-v3"
+market = "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2"
+asset = "0xdefa4e8a7bcba345f687a2f1456f5edd9ce97202"
+mechanism = "chainlink-push"
+proxy = "0xf8ff43e991a81e6ec886a3d281a2c6cc19ae70fc"
+standard_aggregator = "0x15d8aac71a442ece966576c85438b0dfa7fcabe1"
+decimals = 8
+heartbeat_secs = 86400
+deviation_bps = 100
+
+[[feed]]
+# FXS / USD
+protocol = "aave-v3"
+market = "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2"
+asset = "0x3432b6a60d23ca0dfca7761b7ab56459d9c964d0"
+mechanism = "chainlink-push"
+proxy = "0x6ebc52c8c1089be9eb3945c4350b68b8e4c2233f"
+standard_aggregator = "0xc1c54d09554cf65d74a289805c2731cf6ea57373"
+decimals = 8
+heartbeat_secs = 86400
+deviation_bps = 200

@@ -2,6 +2,7 @@
 //! JSON Schema at `registry/schema.json` is the same contract for non-Rust
 //! tools.
 
+use crate::asset_id::AssetLedger;
 use crate::error::ConfigError;
 use crate::Result;
 use alloy_primitives::{Address, B256};
@@ -24,6 +25,11 @@ pub struct Registry {
     pub flash_sources: BTreeMap<Address, serde_json::Value>,
     #[serde(default)]
     pub routers: BTreeMap<Address, serde_json::Value>,
+    /// Loaded from `asset-ids.json` beside the registry file. Absent on a
+    /// registry built from bytes; [`Intern::from_registry`] then assigns
+    /// ids in address order, which is only valid for a synthetic registry.
+    #[serde(skip)]
+    pub asset_ledger: Option<AssetLedger>,
 }
 
 /// One ERC-20 (or bytes32-metadata) token.
@@ -182,7 +188,17 @@ impl Registry {
     /// Load and serde-validate a committed registry file. Does not talk to chain.
     pub fn from_path(path: &Path) -> Result<Self> {
         let bytes = std::fs::read(path).map_err(|e| ConfigError::Load(e.to_string()))?;
-        Self::from_slice(&bytes)
+        let mut reg = Self::from_slice(&bytes)?;
+        let ledger_path = path
+            .parent()
+            .ok_or_else(|| {
+                ConfigError::AssetLedger(format!("{} has no directory", path.display()))
+            })?
+            .join("asset-ids.json");
+        let ledger = AssetLedger::load(&ledger_path)?;
+        ledger.check(&reg)?;
+        reg.asset_ledger = Some(ledger);
+        Ok(reg)
     }
 
     /// Deserialize from JSON bytes.

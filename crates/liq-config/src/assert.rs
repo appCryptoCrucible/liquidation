@@ -616,6 +616,7 @@ mod tests {
             pools,
             flash_sources: BTreeMap::new(),
             routers: BTreeMap::new(),
+            asset_ledger: None,
         }
     }
 

@@ -421,7 +421,7 @@ impl DrainJoin {
     /// Registry decimals and the WETH id, for `per_eth` from live prices.
     #[must_use]
     pub fn with_assets(mut self, intern: &liq_config::Intern) -> Self {
-        let n = intern.assets().len();
+        let n = intern.asset_id_capacity();
         self.prices.decimals = vec![0; n];
         for a in intern.assets() {
             if let Some(d) = self.prices.decimals.get_mut(usize::from(a.id.0)) {

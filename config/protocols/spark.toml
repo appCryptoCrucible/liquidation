@@ -4,11 +4,12 @@
 # (registry key spark:0xc13e21b648a5ee794902342038ff3adab66be987).
 # Liquidation constants from sparkdotfi/sparklend-v1-core LiquidationLogic
 # @ 900c189feef2fafb97dca24c7b6e502dd035925a (no MIN_BASE_MAX_CLOSE_FACTOR).
-# Intern ids: ProtocolId/MarketId/AssetId from registry intern order at this
-# commit. GNO 0x6810e776880c02933d47db1b9fc05908e5386b96 is a live Spark
-# reserve but is absent from registry.tokens; asset=1073 is the first unused
-# intern slot (len(tokens)=1073). Spark oracle adapters are not in
-# registry.oracles; feed ids start at 15 (after the 15 interned feeds).
+# Intern ids: ProtocolId/MarketId are still the sorted family and market
+# index. AssetId is registry/asset-ids.json. GNO
+# 0x6810e776880c02933d47db1b9fc05908e5386b96 is ledger id 1073, the next
+# id when it was appended, which is the id this file already used.
+# Spark oracle adapters are not in registry.oracles; feed ids start at 15
+# (after the 15 interned feeds).
 
 protocol = 8
 pinned_through = 26018679

@@ -1,4 +1,4 @@
-﻿//! Figment config load, Validate trait, ConfigVersion, and registry boot assertion.
+//! Figment config load, Validate trait, ConfigVersion, and registry boot assertion.
 //!
 //! Startup order (GUIDE 17): load → intern → a single `eth_chainId` checked
 //! against config and registry → token/pool/oracle views. A registry that
@@ -18,6 +18,7 @@
 )]
 
 pub mod assert;
+pub mod asset_id;
 pub mod config;
 pub mod error;
 pub mod intern;
@@ -30,6 +31,7 @@ pub mod version;
 use std::path::Path;
 
 pub use assert::assert_registry;
+pub use asset_id::AssetLedger;
 pub use config::{load, BotConfig, RiskConfig, VenuesConfig};
 pub use error::{ConfigError, Result};
 pub use intern::{AssetRec, FeedRec, Intern, MarketRec};

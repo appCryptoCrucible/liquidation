@@ -764,10 +764,12 @@ mod tests {
     fn committed_feeds_match_registry() {
         let (reg, feeds) = committed();
         let failures = feeds.assert_against_registry(&reg).unwrap();
-        assert_eq!(failures.len(), 6, "unresolved oracles returned to boot");
+        // Every committed registry oracle resolves to a token since the
+        // registry holds SNX/ENS/1INCH/STG/KNC/FXS (asset ledger 1073+).
+        assert!(failures.is_empty(), "unresolved oracles: {failures:?}");
         let intern = Intern::from_registry(&reg).unwrap();
         let set = super::FeedSet::bind(&feeds, &intern, &reg).unwrap();
-        assert_eq!(set.specs.len(), 10, "oracle: 9 assets, WETH × 2 markets");
+        assert_eq!(set.specs.len(), 16, "oracle: 15 assets, WETH × 2 markets");
         assert!(set.aggregators.contains(&WETH_AGG));
         let subs = set.subscriptions();
         assert!(
@@ -809,14 +811,34 @@ mod tests {
         }
     }
 
-    /// Oracle: committed registry.oracles. Pair prefixes that do not hit a
-    /// token are failures — we do not invent SNX/ENS/… addresses.
+    /// Oracle: committed registry.oracles — all 15 pair prefixes hit exactly
+    /// one token. Negative: drop those six tokens from a copy and each pair
+    /// is a failure, not a guessed address.
     #[test]
     fn unresolved_registry_oracles_are_failures_not_feeds() {
         let (reg, _) = committed();
         let (ok, fail) = resolve_registry(&reg);
+        assert_eq!(
+            ok.len(),
+            15,
+            "oracle: every pair prefix hits exactly one token"
+        );
+        assert!(fail.is_empty(), "{fail:?}");
+
+        let mut reg = reg;
+        for t in [
+            address!("0xc011a73ee8576fb46f5e1c5751ca3b9fe0af2a6f"),
+            address!("0xc18360217d8f7ab5e7c516566761ea12ce7f9d72"),
+            address!("0x111111111117dc0aa78b770fa6a738034120c302"),
+            address!("0xaf5191b0de278c7286d6c7cc6ab6bb8a73ba2cd6"),
+            address!("0xdefa4e8a7bcba345f687a2f1456f5edd9ce97202"),
+            address!("0x3432b6a60d23ca0dfca7761b7ab56459d9c964d0"),
+        ] {
+            reg.tokens.remove(&t);
+        }
+        let (ok, fail) = resolve_registry(&reg);
         assert_eq!(reg.oracles.len(), ok.len().saturating_add(fail.len()));
-        assert_eq!(ok.len(), 9, "oracle: 9 pair prefixes hit exactly one token");
+        assert_eq!(ok.len(), 9);
         assert_eq!(fail.len(), 6);
         let pairs: Vec<_> = fail.iter().map(|f| f.pair.as_str()).collect();
         for p in [

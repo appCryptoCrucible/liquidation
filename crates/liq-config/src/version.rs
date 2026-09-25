@@ -22,12 +22,22 @@ impl ConfigVersion {
             risk: &'a crate::config::RiskConfig,
             venues: &'a crate::config::VenuesConfig,
             registry: &'a Registry,
+            /// Present once the registry was loaded from disk. An id edit
+            /// must change the version even when `registry.json` did not.
+            asset_ids: Option<&'a std::collections::BTreeMap<alloy_primitives::Address, u16>>,
+            removed_asset_ids:
+                Option<&'a std::collections::BTreeMap<alloy_primitives::Address, u16>>,
+            asset_id_next: Option<u32>,
         }
+        let ledger = registry.asset_ledger.as_ref();
         let bytes = serde_json::to_vec(&Payload {
             chain_id: config.chain_id,
             risk: &config.risk,
             venues: &config.venues,
             registry,
+            asset_ids: ledger.map(|l| l.live()),
+            removed_asset_ids: ledger.map(|l| l.removed()),
+            asset_id_next: ledger.map(|l| l.next()),
         })
         .map_err(|e| ConfigError::Load(e.to_string()))?;
         Ok(Self(keccak256(&bytes)))

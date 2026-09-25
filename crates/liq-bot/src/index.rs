@@ -370,7 +370,7 @@ pub fn load_index(config_dir: &Path, intern: &Intern, registry: &Registry) -> In
         canonical,
         derived,
         omitted,
-        flash_assets: intern.assets().len(),
+        flash_assets: intern.asset_id_capacity(),
     }
 }
 

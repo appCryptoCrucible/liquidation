@@ -100,6 +100,10 @@ pub enum ConfigError {
     /// A protocol market id is neither a 20-byte address nor a 32-byte slot.
     #[error("unrecognised on-chain id {0:?}")]
     BadOnChainId(String),
+    /// `registry/asset-ids.json` is missing, unreadable, or disagrees with
+    /// the registry. Ids are not recovered by sorting.
+    #[error("asset id ledger: {0}")]
+    AssetLedger(String),
 }
 
 /// `Result` with [`ConfigError`].

@@ -122,13 +122,18 @@ impl CanonicalBook {
         intern: &Intern,
         reg: &Registry,
     ) -> Result<(Self, BTreeSet<AssetId>)> {
-        let n = intern.assets().len();
+        // Indexed by `AssetId`: slot `i` is id `i`. A retired id keeps an
+        // inert slot (zero address, never fed) so later ids stay aligned.
+        let n = intern.asset_id_capacity();
         let mut vector = Vec::with_capacity(n);
         let mut asset_addrs = Vec::with_capacity(n);
-        for a in intern.assets() {
-            asset_addrs.push(a.address);
+        for i in 0..n {
+            let id = AssetId(
+                u16::try_from(i).map_err(|_| OracleError::Load("asset id past u16".into()))?,
+            );
+            asset_addrs.push(intern.asset_rec(id).map_or(Address::ZERO, |a| a.address));
             vector.push(Price {
-                asset: a.id,
+                asset: id,
                 price: Ray::ZERO,
                 source: SourceKind::Canonical,
                 block: 0,
