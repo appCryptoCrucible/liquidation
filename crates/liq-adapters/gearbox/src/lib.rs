@@ -68,6 +68,50 @@ impl GearboxV3 {
     }
 }
 
+fn pull_seen() -> &'static std::sync::Mutex<std::collections::HashMap<(Address, Address), u64>> {
+    static SEEN: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<(Address, Address), u64>>,
+    > = std::sync::OnceLock::new();
+    SEEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// At most one coverage warning per account per hour. Returns whether this
+/// call emitted the warning.
+pub(crate) fn note_pull_warn(manager: Address, account: Address, token: Address) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    note_pull_warn_at(manager, account, token, now)
+}
+
+pub(crate) fn note_pull_warn_at(
+    manager: Address,
+    account: Address,
+    token: Address,
+    now: u64,
+) -> bool {
+    let mut seen = match pull_seen().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let key = (manager, account);
+    if let Some(prev) = seen.get(&key) {
+        if now.saturating_sub(*prev) < 3_600 {
+            return false;
+        }
+    }
+    seen.insert(key, now);
+    tracing::warn!(
+        target: "coverage",
+        %manager,
+        %account,
+        %token,
+        "gearbox account needs a pull-feed price payload — not liquidatable by this bot"
+    );
+    metrics::counter!("gearbox_pull_feed_blocked").increment(1);
+    true
+}
+
 #[must_use]
 pub fn alloc_meter() -> Option<&'static (dyn Fn() -> u64 + Sync)> {
     None
@@ -263,6 +307,17 @@ impl Protocol for GearboxV3 {
     }
 
     fn quote(&self, pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quote>> {
+        if let Some(mgr) = self
+            .cfg
+            .managers
+            .iter()
+            .find(|m| m.market == pos.key.market)
+        {
+            if let Some(tok) = health::blocking_pull(pos, &mgr.tokens) {
+                note_pull_warn(mgr.manager, pos.key.user, tok.token);
+                return Ok(None);
+            }
+        }
         quote::quote(pos, px)
     }
 
@@ -404,5 +459,21 @@ mod oracle_ray {
     #[test]
     fn zero_get_price_is_not_a_price() {
         assert_eq!(gearbox_ray(U256::ZERO), None);
+    }
+}
+
+#[cfg(test)]
+mod pull_alarm {
+    use super::note_pull_warn_at;
+    use alloy_primitives::Address;
+
+    #[test]
+    fn warns_once_per_hour_per_account() {
+        let manager = Address::repeat_byte(0x91);
+        let account = Address::repeat_byte(0x92);
+        let token = Address::repeat_byte(0x93);
+        assert!(note_pull_warn_at(manager, account, token, 1_000));
+        assert!(!note_pull_warn_at(manager, account, token, 1_001));
+        assert!(note_pull_warn_at(manager, account, token, 4_600));
     }
 }

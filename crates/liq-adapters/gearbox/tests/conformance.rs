@@ -288,6 +288,29 @@ fn health_unhealthy_and_expired_but_healthy() {
 }
 
 #[test]
+fn pull_fed_collateral_with_debt_is_not_a_candidate() {
+    let d = Deploy::new();
+    let (_plain, st) = full_store(&d, ALICE_COLL_LIQ, ALICE_DEBT_LIQ);
+    let px = prices(RAY_ONE, RAY_ONE);
+    let view = st.view(ALICE_ID, T0).unwrap();
+    let mut cfg = d.config();
+    cfg.managers[0].tokens[1].pull = true;
+    cfg.managers[0].tokens[1]
+        .pull_feeds
+        .push(Address::repeat_byte(0xee));
+    let blocked = GearboxV3::new(cfg).unwrap();
+    assert!(
+        blocked.quote(view, &px).unwrap().is_none(),
+        "a pull leaf in the enabled mask produces no candidate"
+    );
+    let open = d.adapter();
+    assert!(
+        open.quote(view, &px).unwrap().is_some(),
+        "the same account with only Chainlink feeds still quotes"
+    );
+}
+
+#[test]
 fn quote_partial_pin_math_and_full_unpriced() {
     let d = Deploy::new();
     let (p, st) = full_store(&d, ALICE_COLL_LIQ, ALICE_DEBT_LIQ);

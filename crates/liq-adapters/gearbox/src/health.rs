@@ -67,6 +67,17 @@ fn extra(pos: PositionRef<'_>) -> Result<&AccountExtra> {
     pos.extra.view()
 }
 
+/// Debt plus an enabled pull token: no candidate. A reverting extra, no debt,
+/// or a mask of only on-chain feeds is not this block.
+pub(crate) fn blocking_pull<'a>(
+    pos: PositionRef<'_>,
+    tokens: &'a [crate::config::TokenConfig],
+) -> Option<&'a crate::config::TokenConfig> {
+    let extra: &AccountExtra = pos.extra.view().ok()?;
+    let has_debt = pos.debt.iter().any(|d| *d != 0);
+    crate::config::enabled_pull(tokens, extra.enabled_tokens_mask, has_debt)
+}
+
 fn extra_quoted(pos: PositionRef<'_>, slot: u16) -> Result<bool> {
     let q: &QuotaExtra = pos
         .slot_extra

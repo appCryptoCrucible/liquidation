@@ -27,7 +27,8 @@ use liq_types::{AssetId, MarketId, ProtocolId};
 
 use crate::events::views::{
     IAddressProviderV31, IContractsRegister, ICreditFacadeV3, ICreditManagerV3,
-    IMarketConfigurator, IMarketConfiguratorFactory, IPoolV3, IVersion, IERC20,
+    IMarketConfigurator, IMarketConfiguratorFactory, IPoolV3, IPriceOracleV3, IUpdatablePriceFeed,
+    IVersion, IERC20,
 };
 use crate::layout::UNMAPPED_ASSET;
 use crate::math::PERCENTAGE_FACTOR;
@@ -75,6 +76,13 @@ pub struct TokenConfig {
     pub asset: AssetId,
     pub feed: FeedId,
     pub decimals: u8,
+    /// A leaf of this token's feed tree is Redstone, Pyth, or `updatable()`.
+    /// Those prices are not on chain until a payload is submitted in the same
+    /// transaction. This bot does not build that payload, so a token with
+    /// `pull` set is never quoted.
+    pub pull: bool,
+    /// The pull leaves, recorded so the alarm names the feed.
+    pub pull_feeds: Vec<Address>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -600,6 +608,12 @@ fn load_manager<R: RegistryRpc>(
     if count > 64 {
         return Err(ConfigError::TruncatingParam);
     }
+    let price_oracle = decode_addr(
+        provider,
+        manager,
+        block,
+        &ICreditManagerV3::priceOracleCall {}.abi_encode(),
+    )?;
     let mut tokens = Vec::with_capacity(usize::from(count));
     for i in 0u8..count {
         let mask = 1u64
@@ -639,6 +653,7 @@ fn load_manager<R: RegistryRpc>(
                 (UNMAPPED_ASSET, FeedId(0), decimals)
             }
         };
+        let (pull, pull_feeds) = pull_feeds_of(provider, price_oracle, token, block);
         tokens.push(TokenConfig {
             token,
             mask,
@@ -650,6 +665,8 @@ fn load_manager<R: RegistryRpc>(
             asset,
             feed,
             decimals,
+            pull,
+            pull_feeds,
         });
     }
     // G2. `ltParams(underlying)` reads `collateralTokensData[1]`, a slot
@@ -712,12 +729,6 @@ fn load_manager<R: RegistryRpc>(
     let min_debt = ICreditFacadeV3::debtLimitsCall::abi_decode_returns(&limits_raw)
         .map_err(|_| ConfigError::RegistryCall(facade))?
         .minDebt;
-    let price_oracle = decode_addr(
-        provider,
-        manager,
-        block,
-        &ICreditManagerV3::priceOracleCall {}.abi_encode(),
-    )?;
     Ok(ManagerConfig {
         market,
         manager,
@@ -778,6 +789,118 @@ fn decode_u8<R: RegistryRpc>(
     Ok(*raw.get(31).ok_or(ConfigError::RegistryCall(to))?)
 }
 
+/// The pull leaves under `token`'s oracle feed. A reverting child getter is
+/// not a child. A reverting `priceFeeds` is no pull feed (the oracle has no
+/// tree for that token).
+fn pull_feeds_of<R: RegistryRpc>(
+    provider: &R,
+    oracle: Address,
+    token: Address,
+    block: BlockNum,
+) -> (bool, Vec<Address>) {
+    let Ok(root) = decode_addr(
+        provider,
+        oracle,
+        block,
+        &IPriceOracleV3::priceFeedsCall { token }.abi_encode(),
+    ) else {
+        return (false, Vec::new());
+    };
+    if root == Address::ZERO {
+        return (false, Vec::new());
+    }
+    let mut leaves = Vec::new();
+    collect_pull(provider, root, 0, block, &mut leaves);
+    let pull = !leaves.is_empty();
+    (pull, leaves)
+}
+
+fn collect_pull<R: RegistryRpc>(
+    provider: &R,
+    feed: Address,
+    depth: u8,
+    block: BlockNum,
+    out: &mut Vec<Address>,
+) {
+    if depth >= 5 {
+        return;
+    }
+    let mut kids = Vec::new();
+    for data in [
+        IUpdatablePriceFeed::priceFeed0Call {}.abi_encode(),
+        IUpdatablePriceFeed::priceFeed1Call {}.abi_encode(),
+        IUpdatablePriceFeed::priceFeedCall {}.abi_encode(),
+        IUpdatablePriceFeed::underlyingPriceFeedCall {}.abi_encode(),
+    ] {
+        if let Ok(child) = decode_addr(provider, feed, block, &data) {
+            if child != Address::ZERO {
+                kids.push(child);
+            }
+        }
+    }
+    if !kids.is_empty() && depth < 5 {
+        let next = depth.saturating_add(1);
+        for child in kids {
+            collect_pull(provider, child, next, block, out);
+        }
+        return;
+    }
+    if is_pull_leaf(provider, feed, block) {
+        out.push(feed);
+    }
+}
+
+fn is_pull_leaf<R: RegistryRpc>(provider: &R, feed: Address, block: BlockNum) -> bool {
+    if let Ok(raw) = provider.eth_call(
+        feed,
+        &IUpdatablePriceFeed::contractTypeCall {}.abi_encode(),
+        block,
+    ) {
+        if let Ok(word) = IUpdatablePriceFeed::contractTypeCall::abi_decode_returns(&raw) {
+            if type_word_is_pull(word.as_slice()) {
+                return true;
+            }
+        }
+    }
+    if let Ok(raw) = provider.eth_call(
+        feed,
+        &IUpdatablePriceFeed::updatableCall {}.abi_encode(),
+        block,
+    ) {
+        if let Ok(flag) = IUpdatablePriceFeed::updatableCall::abi_decode_returns(&raw) {
+            return flag;
+        }
+    }
+    false
+}
+
+fn type_word_is_pull(word: &[u8]) -> bool {
+    let end = word
+        .iter()
+        .rposition(|b| *b != 0)
+        .map_or(0, |i| i.saturating_add(1));
+    let Some(text) = word.get(..end) else {
+        return false;
+    };
+    let Ok(s) = core::str::from_utf8(text) else {
+        return false;
+    };
+    s.contains("REDSTONE") || s.contains("PYTH")
+}
+
+/// A debt position whose enabled mask includes a pull token. No debt, or a
+/// mask that only enables Chainlink tokens, is not blocked.
+pub(crate) fn enabled_pull(
+    tokens: &[TokenConfig],
+    mask: u64,
+    has_debt: bool,
+) -> Option<&TokenConfig> {
+    if !has_debt {
+        return None;
+    }
+    tokens.iter().find(|t| t.pull && mask & t.mask != 0)
+}
+
 fn decode_u64<R: RegistryRpc>(
     rpc: &R,
     to: Address,
@@ -820,4 +943,123 @@ fn register_managers<R: RegistryRpc>(
     )?;
     IContractsRegister::getCreditManagersCall::abi_decode_returns(&raw)
         .map_err(|_| ConfigError::RegistryCall(register))
+}
+
+#[cfg(test)]
+mod pull_walk {
+    use super::*;
+    use std::collections::HashMap;
+
+    struct Answers(HashMap<(Address, Vec<u8>), Bytes>);
+
+    impl RegistryRpc for Answers {
+        fn eth_call(
+            &self,
+            to: Address,
+            data: &[u8],
+            _block: BlockNum,
+        ) -> core::result::Result<Bytes, ConfigError> {
+            self.0
+                .get(&(to, data.to_vec()))
+                .cloned()
+                .ok_or(ConfigError::RegistryCall(to))
+        }
+    }
+
+    fn type_word(label: &str) -> Bytes {
+        let mut raw = [0u8; 32];
+        let bytes = label.as_bytes();
+        let n = bytes.len().min(raw.len());
+        if let Some(dst) = raw.get_mut(..n) {
+            if let Some(src) = bytes.get(..n) {
+                dst.copy_from_slice(src);
+            }
+        }
+        Bytes::from(IUpdatablePriceFeed::contractTypeCall::abi_encode_returns(
+            &alloy_primitives::B256::from(raw),
+        ))
+    }
+
+    fn addr_word(a: Address) -> Bytes {
+        let mut raw = [0u8; 32];
+        if let Some(dst) = raw.get_mut(12..32) {
+            dst.copy_from_slice(a.as_slice());
+        }
+        Bytes::from(raw)
+    }
+
+    fn token(pull: bool, mask: u64) -> TokenConfig {
+        TokenConfig {
+            token: Address::repeat_byte(0x11),
+            mask,
+            slot: 1,
+            lt_initial: 0,
+            lt_final: 0,
+            ramp_start: 0,
+            ramp_duration: 0,
+            asset: AssetId(1),
+            feed: FeedId(0),
+            decimals: 18,
+            pull,
+            pull_feeds: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn redstone_leaf_is_pull_and_chainlink_is_not() {
+        let oracle = Address::repeat_byte(0xa1);
+        let composite = Address::repeat_byte(0xa2);
+        let leaf = Address::repeat_byte(0xa3);
+        let chainlink = Address::repeat_byte(0xa4);
+        let crv = Address::repeat_byte(0xb1);
+        let usdc = Address::repeat_byte(0xb2);
+        let mut answers = HashMap::new();
+        answers.insert(
+            (
+                oracle,
+                IPriceOracleV3::priceFeedsCall { token: crv }.abi_encode(),
+            ),
+            addr_word(composite),
+        );
+        answers.insert(
+            (
+                oracle,
+                IPriceOracleV3::priceFeedsCall { token: usdc }.abi_encode(),
+            ),
+            addr_word(chainlink),
+        );
+        answers.insert(
+            (
+                composite,
+                IUpdatablePriceFeed::priceFeed0Call {}.abi_encode(),
+            ),
+            addr_word(leaf),
+        );
+        answers.insert(
+            (leaf, IUpdatablePriceFeed::contractTypeCall {}.abi_encode()),
+            type_word("PRICE_FEED::REDSTONE"),
+        );
+        answers.insert(
+            (
+                chainlink,
+                IUpdatablePriceFeed::contractTypeCall {}.abi_encode(),
+            ),
+            type_word("PRICE_FEED::CHAINLINK"),
+        );
+        let rpc = Answers(answers);
+        let (pull, feeds) = pull_feeds_of(&rpc, oracle, crv, 1);
+        assert!(pull);
+        assert_eq!(feeds, vec![leaf]);
+        let (plain, none) = pull_feeds_of(&rpc, oracle, usdc, 1);
+        assert!(!plain);
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn enabled_pull_requires_debt_and_the_bit() {
+        let tokens = [token(true, 2), token(false, 1)];
+        assert!(enabled_pull(&tokens, 2, true).is_some());
+        assert!(enabled_pull(&tokens, 2, false).is_none());
+        assert!(enabled_pull(&tokens, 1, true).is_none());
+    }
 }

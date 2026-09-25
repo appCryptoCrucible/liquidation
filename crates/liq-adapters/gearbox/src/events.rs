@@ -223,6 +223,19 @@ pub mod views {
         interface IERC20 {
             function decimals() external view returns (uint8);
         }
+
+        interface IPriceOracleV3 {
+            function priceFeeds(address token) external view returns (address);
+        }
+
+        interface IUpdatablePriceFeed {
+            function contractType() external view returns (bytes32);
+            function priceFeed0() external view returns (address);
+            function priceFeed1() external view returns (address);
+            function priceFeed() external view returns (address);
+            function underlyingPriceFeed() external view returns (address);
+            function updatable() external view returns (bool);
+        }
     }
 }
 

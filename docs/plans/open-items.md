@@ -1,6 +1,6 @@
 # Open items: step-by-step plan
 
-Status as of 2026-09-25, later the same day. Phase 0 is on origin (`977242f`). Phase 1's ledger is on origin. Phase 2/3's getter overlay is in the tree (see the progress notes): each bound adapter except Silo publishes its own price getter, off the hot path, and the engine lays that over the canonical vector per market. Chainlink reproduction, Curve exits, unwraps, the docs audit, and the carry-forwards are not done. Tokens that failed the chain read are listed under Phase 1 and were not added.
+Status as of 2026-09-25. Phase 0 is on origin (`977242f`). Phase 1's ledger is on origin (`32113ef`). The getter overlay is on origin (`ae84bb5`): each bound adapter except Silo publishes its own price getter, off the hot path, and the engine lays that over the canonical vector per market. Gearbox G1 is in the tree: a Redstone, Pyth, or `updatable()` leaf marks the token, and a debt account with that token enabled is not a candidate (one coverage warning per account per hour). Chainlink reproduction, Curve exits, unwraps, the docs audit, G2–G6, and the other carry-forwards are not done. Tokens that failed the chain read are listed under Phase 1 and were not added.
 
 Each phase lists why it matters, what is true today, the steps in order, how we know it's done, and any decisions for you. Sizes are rough: **S** is under a day, **M** is a few days, **L** is a week or more.
 

@@ -22,7 +22,8 @@ use liq_adapters_gearbox::config::{
 };
 use liq_adapters_gearbox::events::views::ICreditManagerV3::{feesReturn, ltParamsReturn};
 use liq_adapters_gearbox::events::views::{
-    IContractsRegister, ICreditFacadeV3, ICreditManagerV3, IPoolV3,
+    IContractsRegister, ICreditFacadeV3, ICreditManagerV3, IPoolV3, IPriceOracleV3,
+    IUpdatablePriceFeed,
 };
 use liq_adapters_gearbox::events::{facade, factory, pool, quota};
 use liq_adapters_gearbox::math::STATIC_LT_RAMP_START;
@@ -99,6 +100,8 @@ impl Deploy {
                 asset: UNDERLYING,
                 feed: FeedId(0),
                 decimals: 6,
+                pull: false,
+                pull_feeds: Vec::new(),
             },
             TokenConfig {
                 token: self.coll,
@@ -111,6 +114,8 @@ impl Deploy {
                 asset: COLL,
                 feed: FeedId(0),
                 decimals: 18,
+                pull: false,
+                pull_feeds: Vec::new(),
             },
         ]
     }
@@ -409,6 +414,22 @@ pub fn mock_registry(d: &Deploy) -> MockRpc {
         d.manager,
         ICreditManagerV3::priceOracleCall {}.abi_encode(),
         pad_addr(d.price_oracle),
+    ));
+    let chainlink = Address::repeat_byte(0xb8);
+    let mut label = [0u8; 32];
+    label[..b"PRICE_FEED::CHAINLINK".len()].copy_from_slice(b"PRICE_FEED::CHAINLINK");
+    let type_ret = IUpdatablePriceFeed::contractTypeCall::abi_encode_returns(&B256::from(label));
+    for token in [d.underlying, d.coll] {
+        calls.push((
+            d.price_oracle,
+            IPriceOracleV3::priceFeedsCall { token }.abi_encode(),
+            pad_addr(chainlink),
+        ));
+    }
+    calls.push((
+        chainlink,
+        IUpdatablePriceFeed::contractTypeCall {}.abi_encode(),
+        Bytes::from(type_ret),
     ));
     calls.push((
         d.pool,
