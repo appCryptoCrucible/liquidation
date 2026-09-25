@@ -11,8 +11,8 @@ use liq_types::{AssetId, MarketId, PriceVector, Ray, Wad};
 use crate::config::Config;
 use crate::layout::{PoolMeta, Reserve, UserExtra, UserReserve, UNMAPPED_ASSET};
 use crate::math::{
-    a_token_balance, asset_unit, hf_wad_to_ray, mul_div_ceil, normalized_debt, normalized_income,
-    p_of, v_token_balance, wad_div, BPS,
+    asset_unit, debt_assets, hf_wad_to_ray, mul_div_ceil, normalized_debt, normalized_income, p_of,
+    supply_assets, wad_div, BPS,
 };
 
 #[derive(Copy, Clone, Debug)]
@@ -131,7 +131,12 @@ fn risk_params(meta: &PoolMeta, r: &Reserve, slot: u16, emode: u8) -> (u16, u16,
     (r.ltv, r.liq_threshold, r.liq_bonus)
 }
 
-pub(crate) fn walk<'a, F, P>(pos: &PositionRef<'a>, mut price_of: P, mut f: F) -> Result<()>
+pub(crate) fn walk<'a, F, P>(
+    model: crate::config::BalanceModel,
+    pos: &PositionRef<'a>,
+    mut price_of: P,
+    mut f: F,
+) -> Result<()>
 where
     F: FnMut(&SlotTerms<'a>) -> Result<()>,
     P: FnMut(AssetId) -> Result<U256>,
@@ -178,7 +183,7 @@ where
         let (_ltv, lt, bonus) = risk_params(meta, reserve, slot, extra.emode);
 
         let collateral = if counted && lt > 0 {
-            let assets = a_token_balance(U256::from(supply_scaled), liq_idx)?;
+            let assets = supply_assets(model, U256::from(supply_scaled), liq_idx)?;
             let value = assets
                 .checked_mul(p)
                 .ok_or(FixedError::Overflow)?
@@ -191,7 +196,7 @@ where
                 lt: U256::from(lt),
             })
         } else if counted {
-            let assets = a_token_balance(U256::from(supply_scaled), liq_idx)?;
+            let assets = supply_assets(model, U256::from(supply_scaled), liq_idx)?;
             let value = assets
                 .checked_mul(p)
                 .ok_or(FixedError::Overflow)?
@@ -208,7 +213,7 @@ where
         };
 
         let debt = if borrowing {
-            let assets = v_token_balance(U256::from(debt_scaled), debt_idx)?;
+            let assets = debt_assets(model, U256::from(debt_scaled), debt_idx)?;
             let value = mul_div_ceil(assets, p, unit)?;
             Some(Debt {
                 assets,
@@ -335,6 +340,7 @@ pub(crate) fn health_with(cfg: &Config, pos: PositionRef<'_>, px: &PriceVector) 
         cfg.liquidation.oracle_decimals,
     );
     walk(
+        cfg.liquidation.balance_model,
         &pos,
         |asset| price_p(px, asset, scale),
         |t| acc.add(t, pos.timestamp),

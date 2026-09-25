@@ -9,7 +9,7 @@ use liq_types::fixed::{mul_div, FixedError, Rounding};
 use liq_types::{AssetId, PriceVector, Ray};
 use smallvec::SmallVec;
 
-use crate::config::Config;
+use crate::config::{CloseFactorScope, Config};
 use crate::health::{finish, price_p, walk, Account, SlotTerms};
 use crate::layout::PoolMeta;
 use crate::math::{
@@ -39,6 +39,7 @@ struct AmountsIn<'a> {
     close_factor_bps: U256,
     close_hf: U256,
     min_base: U256,
+    scope: CloseFactorScope,
 }
 
 struct Amounts {
@@ -47,12 +48,11 @@ struct Amounts {
     seize: U256,
 }
 
-/// `LiquidationLogic._calculateDebt` (Aave >=3.2, pin 8305565ae):
-/// `maxLiquidatableDebt = vars.borrowerReserveDebt`, clamped to
-/// `vars.totalDebtInBaseCurrency.percentMul(DEFAULT_LIQUIDATION_CLOSE_FACTOR)`
-/// **only when the reserve's own debt exceeds that base-currency cap** — the
-/// cap is computed from the POSITION's total debt, not the reserve's. Aave
-/// 3.0/3.1 was per-reserve; >=3.2, which this adapter pins, is not.
+/// Aave >=3.2 (pin 8305565ae) caps from the position's total base-currency
+/// debt, and only when this reserve's value exceeds that cap. Spark's
+/// deployed `_calculateDebt` (pool impl `0x5ae329…`) ignores that and
+/// returns `(stable + variable of this reserve).percentMul(closeFactor)`
+/// whenever health is above the threshold.
 fn max_liquidatable_debt(p: &AmountsIn<'_>) -> Result<U256> {
     let Some(c) = p.coll.collateral else {
         return Err(ProtocolError::Internal);
@@ -60,6 +60,13 @@ fn max_liquidatable_debt(p: &AmountsIn<'_>) -> Result<U256> {
     let Some(d) = p.debt.debt else {
         return Err(ProtocolError::Internal);
     };
+    if p.scope == CloseFactorScope::ReserveDebt {
+        return if p.hf_wad > p.close_hf {
+            crate::math::percent_mul(d.assets, p.close_factor_bps)
+        } else {
+            Ok(d.assets)
+        };
+    }
     let mut max_d = d.assets;
     if c.value >= p.min_base && d.value >= p.min_base && p.hf_wad > p.close_hf {
         let cap_base = crate::math::percent_mul(p.total_debt_base, p.close_factor_bps)?;
@@ -174,6 +181,7 @@ pub(crate) fn quote(cfg: &Config, pos: PositionRef<'_>, px: &PriceVector) -> Res
     );
     let mut terms: Terms<'_> = SmallVec::new();
     walk(
+        cfg.liquidation.balance_model,
         &pos,
         |a| price_p(px, a, scale),
         |t| {
@@ -269,6 +277,7 @@ pub(crate) fn quote(cfg: &Config, pos: PositionRef<'_>, px: &PriceVector) -> Res
             close_factor_bps: U256::from(cfg.liquidation.close_factor_bps),
             close_hf: U256::from(cfg.liquidation.close_factor_hf_wad),
             min_base: U256::from(cfg.liquidation.min_base_max_close),
+            scope: cfg.liquidation.close_factor_scope,
         })?
         else {
             continue;
@@ -356,6 +365,7 @@ mod close_factor_boundary {
             close_factor_bps: U256::from(5_000u64),
             close_hf,
             min_base: U256::from(1u8),
+            scope: crate::config::CloseFactorScope::PositionBase,
         };
         assert_eq!(max_liquidatable_debt(&at_eq).unwrap(), U256::from(1_000u64));
         let at_above = AmountsIn {
@@ -381,6 +391,72 @@ mod close_factor_boundary {
             max_liquidatable_debt(&two_reserves).unwrap(),
             U256::from(1_000u64),
             "the close-factor cap is base-currency, computed off the position total"
+        );
+    }
+
+    /// Oracle: Spark `LiquidationLogic._calculateDebt` at pool impl
+    /// `0x5ae329…`. `percentMul(3, 5000) = (3 * 5000 + 5000) / 10000 = 2`.
+    /// The same numbers under the Aave position-base rule leave the reserve
+    /// uncapped, so a Spark config that still uses that rule stays green.
+    #[test]
+    fn spark_close_factor_is_half_up_on_this_reserves_debt() {
+        let row = MarketRow::blank(AssetId(0), 18);
+        let reserve = Reserve::zeroed();
+        let user = UserReserve::ZERO;
+        let unit = asset_unit(18).unwrap();
+        let coll = SlotTerms {
+            slot: 0,
+            row: &row,
+            reserve: &reserve,
+            user: &user,
+            supply_scaled: 0,
+            debt_scaled: 0,
+            p: unit,
+            liq_idx: U256::ZERO,
+            debt_idx: U256::ZERO,
+            collateral: Some(Collateral {
+                assets: U256::from(6u8),
+                per_price: U256::from(1u8),
+                value: U256::from(6u8),
+                lt: U256::from(8_000u64),
+            }),
+            debt: None,
+            liq_bonus: U256::ZERO,
+        };
+        let debt_side = SlotTerms {
+            collateral: None,
+            debt: Some(Debt {
+                assets: U256::from(3u8),
+                per_price: U256::from(1u8),
+                value: U256::from(3u8),
+            }),
+            ..coll
+        };
+        let close_hf = U256::from(9_500u64);
+        let spark = AmountsIn {
+            coll: &coll,
+            debt: &debt_side,
+            total_debt_base: U256::from(6u8),
+            hf_wad: close_hf + U256::from(1u8),
+            bonus_bps: U256::ZERO,
+            debt_to_cover: U256::ZERO,
+            close_factor_bps: U256::from(5_000u64),
+            close_hf,
+            min_base: U256::ZERO,
+            scope: crate::config::CloseFactorScope::ReserveDebt,
+        };
+        let half_up =
+            (U256::from(3u8) * U256::from(5_000u64) + U256::from(5_000u64)) / U256::from(10_000u64);
+        assert_eq!(half_up, U256::from(2u8));
+        assert_eq!(max_liquidatable_debt(&spark).unwrap(), half_up);
+        let aave = AmountsIn {
+            scope: crate::config::CloseFactorScope::PositionBase,
+            ..spark
+        };
+        assert_eq!(max_liquidatable_debt(&aave).unwrap(), U256::from(3u8));
+        assert_ne!(
+            max_liquidatable_debt(&spark).unwrap(),
+            max_liquidatable_debt(&aave).unwrap()
         );
     }
 }

@@ -32,6 +32,11 @@ pub fn ray_mul_ceil(a: U256, b: U256) -> Result<U256> {
 }
 
 #[inline]
+pub fn ray_div(a: U256, b: U256) -> Result<U256> {
+    Ok(mul_div(a, RAY, b, Rounding::HalfUp)?)
+}
+
+#[inline]
 pub fn ray_div_floor(a: U256, b: U256) -> Result<U256> {
     Ok(mul_div(a, RAY, b, Rounding::Down)?)
 }
@@ -74,6 +79,74 @@ pub fn percent_div_ceil(v: U256, p: U256) -> Result<U256> {
 #[inline]
 pub fn mul_div_ceil(a: U256, b: U256, c: U256) -> Result<U256> {
     Ok(mul_div(a, b, c, Rounding::Up)?)
+}
+
+#[inline]
+pub fn supply_assets(
+    model: crate::config::BalanceModel,
+    scaled: U256,
+    index: U256,
+) -> Result<U256> {
+    match model {
+        crate::config::BalanceModel::TokenMath35 => a_token_balance(scaled, index),
+        crate::config::BalanceModel::WadRayHalfUp => ray_mul(scaled, index),
+    }
+}
+
+#[inline]
+pub fn debt_assets(model: crate::config::BalanceModel, scaled: U256, index: U256) -> Result<U256> {
+    match model {
+        crate::config::BalanceModel::TokenMath35 => v_token_balance(scaled, index),
+        crate::config::BalanceModel::WadRayHalfUp => ray_mul(scaled, index),
+    }
+}
+
+#[inline]
+pub fn supply_mint_scaled(
+    model: crate::config::BalanceModel,
+    amount: U256,
+    index: U256,
+) -> Result<U256> {
+    match model {
+        crate::config::BalanceModel::TokenMath35 => a_token_mint_scaled(amount, index),
+        crate::config::BalanceModel::WadRayHalfUp => ray_div(amount, index),
+    }
+}
+
+#[inline]
+pub fn supply_burn_scaled(
+    model: crate::config::BalanceModel,
+    amount: U256,
+    index: U256,
+) -> Result<U256> {
+    match model {
+        crate::config::BalanceModel::TokenMath35 => a_token_burn_scaled(amount, index),
+        crate::config::BalanceModel::WadRayHalfUp => ray_div(amount, index),
+    }
+}
+
+#[inline]
+pub fn debt_mint_scaled(
+    model: crate::config::BalanceModel,
+    amount: U256,
+    index: U256,
+) -> Result<U256> {
+    match model {
+        crate::config::BalanceModel::TokenMath35 => v_token_mint_scaled(amount, index),
+        crate::config::BalanceModel::WadRayHalfUp => ray_div(amount, index),
+    }
+}
+
+#[inline]
+pub fn debt_burn_scaled(
+    model: crate::config::BalanceModel,
+    amount: U256,
+    index: U256,
+) -> Result<U256> {
+    match model {
+        crate::config::BalanceModel::TokenMath35 => v_token_burn_scaled(amount, index),
+        crate::config::BalanceModel::WadRayHalfUp => ray_div(amount, index),
+    }
 }
 
 #[inline]
@@ -209,7 +282,11 @@ const _: () = {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
 mod rounding_direction {
-    use super::{a_token_balance, v_token_balance, RAY};
+    use super::{
+        a_token_balance, debt_assets, supply_assets, supply_mint_scaled, v_token_balance, HALF_RAY,
+        RAY,
+    };
+    use crate::config::BalanceModel;
 
     use alloy_primitives::U256;
 
@@ -225,5 +302,67 @@ mod rounding_direction {
         assert_eq!(ceil, U256::from(2u8));
         assert_eq!(a_token_balance(scaled, index).unwrap(), floor);
         assert_eq!(v_token_balance(scaled, index).unwrap(), ceil);
+    }
+
+    /// Oracle: Spark aToken `balanceOf` is `scaled.rayMul(index)` with
+    /// `c = (a * b + HALF_RAY) / RAY` (deployed `WadRayMath` at aToken impl
+    /// `0x6175ddec…`). Remainder exactly `HALF_RAY` steps up. TokenMath floors it.
+    #[test]
+    fn spark_supply_half_up_is_not_the_token_math_floor() {
+        let scaled = U256::from(1u8);
+        let index = HALF_RAY;
+        let half_up = (scaled * index + HALF_RAY) / RAY;
+        assert_eq!(half_up, U256::from(1u8));
+        assert_eq!(
+            supply_assets(BalanceModel::WadRayHalfUp, scaled, index).unwrap(),
+            half_up
+        );
+        assert_eq!(
+            supply_assets(BalanceModel::TokenMath35, scaled, index).unwrap(),
+            U256::ZERO
+        );
+        assert_ne!(
+            supply_assets(BalanceModel::WadRayHalfUp, scaled, index).unwrap(),
+            U256::ZERO
+        );
+    }
+
+    /// Remainder 1 is below half a ray, so Spark debt stays on the floor.
+    /// TokenMath ceils it. A ceil mutation of the Spark path goes red.
+    #[test]
+    fn spark_debt_half_up_does_not_ceil_a_one_wei_remainder() {
+        let scaled = U256::from(1u8);
+        let index = U256::from(1u8);
+        let half_up = (scaled * index + HALF_RAY) / RAY;
+        let ceil = (scaled * index + RAY - U256::from(1u8)) / RAY;
+        assert_eq!(half_up, U256::ZERO);
+        assert_eq!(ceil, U256::from(1u8));
+        assert_eq!(
+            debt_assets(BalanceModel::WadRayHalfUp, scaled, index).unwrap(),
+            half_up
+        );
+        assert_ne!(
+            debt_assets(BalanceModel::WadRayHalfUp, scaled, index).unwrap(),
+            ceil
+        );
+    }
+
+    /// Oracle: Spark `_mintScaled` uses `amount.rayDiv(index)`, half-up both
+    /// ways. `(1 * RAY + index/2) / index` with index = RAY + 1 is 1.
+    /// TokenMath's supply mint floors that to 0.
+    #[test]
+    fn spark_mint_scaled_is_half_up_ray_div() {
+        let amount = U256::from(1u8);
+        let index = RAY + U256::from(1u8);
+        let half_up = (amount * RAY + index / U256::from(2u8)) / index;
+        assert_eq!(half_up, U256::from(1u8));
+        assert_eq!(
+            supply_mint_scaled(BalanceModel::WadRayHalfUp, amount, index).unwrap(),
+            half_up
+        );
+        assert_eq!(
+            supply_mint_scaled(BalanceModel::TokenMath35, amount, index).unwrap(),
+            U256::ZERO
+        );
     }
 }

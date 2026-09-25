@@ -28,6 +28,9 @@ close_factor_bps = 5000
 close_factor_hf_wad = 950000000000000000
 min_base_max_close = 0
 oracle_decimals = 8
+# Deployed pool impl 0x5ae32920…: WadRayMath.rayMul, close factor on this reserve's debt.
+balance_model = "wad-ray-half-up"
+close_factor_scope = "reserve-debt"
 
 [[assets]]
 underlying = "0x6b175474e89094c44da98b954eedeac495271d0f"

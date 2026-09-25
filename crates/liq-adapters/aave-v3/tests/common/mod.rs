@@ -17,7 +17,10 @@
 use alloy_primitives::{uint, Address, B256, U256};
 use alloy_sol_types::SolEvent;
 use liq_adapters_aave_v3::events::{cfg as ccfg, oracle, pool};
-use liq_adapters_aave_v3::{AaveV3, AssetConfig, Config, LiquidationParams, PoolConfig, SourcePin};
+use liq_adapters_aave_v3::{
+    AaveV3, AssetConfig, BalanceModel, CloseFactorScope, Config, LiquidationParams, PoolConfig,
+    SourcePin,
+};
 use liq_protocol::conformance::JournalStore;
 use liq_protocol::{DecodedLog, FeedId, Protocol};
 use liq_types::fixed::RAY;
@@ -136,6 +139,8 @@ impl Deploy {
                 close_factor_hf_wad: 950_000_000_000_000_000,
                 min_base_max_close: 2000 * 100_000_000,
                 oracle_decimals: 8,
+                balance_model: BalanceModel::TokenMath35,
+                close_factor_scope: CloseFactorScope::PositionBase,
             },
             pinned_through: DEPLOY_BLOCK,
         }

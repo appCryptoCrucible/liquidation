@@ -15,9 +15,7 @@ use smallvec::SmallVec;
 use crate::config::{Config, Emitter};
 use crate::events::{cfg as ccfg, halt, oracle, pool, provider, sentinel, token};
 use crate::layout::{EModeCat, PoolMeta, Reserve, UserExtra, UserReserve, META_ASSET};
-use crate::math::{
-    a_token_burn_scaled, a_token_mint_scaled, v_token_burn_scaled, v_token_mint_scaled,
-};
+use crate::math::{debt_burn_scaled, debt_mint_scaled, supply_burn_scaled, supply_mint_scaled};
 
 #[inline]
 fn decode<E: SolEvent>(log: &DecodedLog<'_>) -> Result<E> {
@@ -279,7 +277,7 @@ fn apply_pool(
                     .body::<Reserve>()?
                     .liquidity_index,
             );
-            let scaled = a_token_mint_scaled(ev.amount, idx)?;
+            let scaled = supply_mint_scaled(cfg.liquidation.balance_model, ev.amount, idx)?;
             let id = intern(cfg, st, market, ev.onBehalfOf)?;
             add_supply(st, id, slot, scaled, true)?;
             Ok(positions(&[id]))
@@ -292,7 +290,7 @@ fn apply_pool(
                     .body::<Reserve>()?
                     .liquidity_index,
             );
-            let scaled = a_token_burn_scaled(ev.amount, idx)?;
+            let scaled = supply_burn_scaled(cfg.liquidation.balance_model, ev.amount, idx)?;
             let id = intern(cfg, st, market, ev.user)?;
             add_supply(st, id, slot, scaled, false)?;
             Ok(positions(&[id]))
@@ -305,7 +303,7 @@ fn apply_pool(
                     .body::<Reserve>()?
                     .variable_borrow_index,
             );
-            let scaled = v_token_mint_scaled(ev.amount, idx)?;
+            let scaled = debt_mint_scaled(cfg.liquidation.balance_model, ev.amount, idx)?;
             let id = intern(cfg, st, market, ev.onBehalfOf)?;
             add_debt(st, id, slot, scaled, true)?;
             Ok(positions(&[id]))
@@ -318,7 +316,7 @@ fn apply_pool(
                     .body::<Reserve>()?
                     .variable_borrow_index,
             );
-            let scaled = v_token_burn_scaled(ev.amount, idx)?;
+            let scaled = debt_burn_scaled(cfg.liquidation.balance_model, ev.amount, idx)?;
             let id = intern(cfg, st, market, ev.user)?;
             add_debt(st, id, slot, scaled, false)?;
             if ev.useATokens {
@@ -327,7 +325,13 @@ fn apply_pool(
                         .body::<Reserve>()?
                         .liquidity_index,
                 );
-                add_supply(st, id, slot, a_token_burn_scaled(ev.amount, li)?, false)?;
+                add_supply(
+                    st,
+                    id,
+                    slot,
+                    supply_burn_scaled(cfg.liquidation.balance_model, ev.amount, li)?,
+                    false,
+                )?;
             }
             Ok(positions(&[id]))
         }
@@ -350,14 +354,18 @@ fn apply_pool(
                 st,
                 id,
                 cslot,
-                a_token_burn_scaled(ev.liquidatedCollateralAmount, li)?,
+                supply_burn_scaled(
+                    cfg.liquidation.balance_model,
+                    ev.liquidatedCollateralAmount,
+                    li,
+                )?,
                 false,
             )?;
             add_debt(
                 st,
                 id,
                 dslot,
-                v_token_burn_scaled(ev.debtToCover, di)?,
+                debt_burn_scaled(cfg.liquidation.balance_model, ev.debtToCover, di)?,
                 false,
             )?;
             Ok(positions(&[id]))

@@ -21,7 +21,10 @@ use liq_protocol::{
 };
 use liq_types::{AssetId, LogFilter, LogSubscriber, Price, PriceVector, ProtocolId, Ray};
 
-pub use config::{AssetConfig, Config, ConfigError, LiquidationParams, PoolConfig, SourcePin};
+pub use config::{
+    AssetConfig, BalanceModel, CloseFactorScope, Config, ConfigError, LiquidationParams,
+    PoolConfig, SourcePin,
+};
 
 use crate::events::{cfg as ccfg, halt, oracle, pool, provider, sentinel, token};
 use crate::math::hf_wad_to_ray;

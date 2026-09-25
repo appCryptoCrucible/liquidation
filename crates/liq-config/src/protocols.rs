@@ -52,6 +52,20 @@ pub struct AaveV3LiquidationToml {
     pub close_factor_hf_wad: u128,
     pub min_base_max_close: u128,
     pub oracle_decimals: u8,
+    /// Absent on Aave V3: `token-math-35`. Spark sets `wad-ray-half-up`.
+    #[serde(default = "default_balance_model")]
+    pub balance_model: String,
+    /// Absent on Aave V3: `position-base`. Spark sets `reserve-debt`.
+    #[serde(default = "default_close_scope")]
+    pub close_factor_scope: String,
+}
+
+fn default_balance_model() -> String {
+    "token-math-35".into()
+}
+
+fn default_close_scope() -> String {
+    "position-base".into()
 }
 
 impl AaveV3Toml {
@@ -169,6 +183,8 @@ mod tests {
         assert_eq!(cfg.liquidation.close_factor_hf_wad, 950_000_000_000_000_000);
         assert_eq!(cfg.liquidation.min_base_max_close, 0);
         assert_eq!(cfg.liquidation.oracle_decimals, 8);
+        assert_eq!(cfg.liquidation.balance_model, "wad-ray-half-up");
+        assert_eq!(cfg.liquidation.close_factor_scope, "reserve-debt");
     }
 
     /// Oracle: the committed registry's intern. Every pool market id, asset
@@ -209,6 +225,8 @@ mod tests {
         assert_eq!(cfg.liquidation.close_factor_bps, 5_000);
         assert_eq!(cfg.liquidation.close_factor_hf_wad, 950_000_000_000_000_000);
         assert_eq!(cfg.liquidation.min_base_max_close, 2_000 * 100_000_000);
+        assert_eq!(cfg.liquidation.balance_model, "token-math-35");
+        assert_eq!(cfg.liquidation.close_factor_scope, "position-base");
         assert!(cfg
             .price_sources
             .iter()

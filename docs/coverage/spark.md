@@ -7,7 +7,7 @@ DirtySet lives in `liq-protocol` (D46). This file names the variant; it does not
 
 topic0 = keccak256(canonical ABI signature). `DataTypes.InterestRateMode` -> `uint8`.
 
-Spark is **not** TokenMath 3.5: aToken/vToken mint-burn use WadRayMul, not ERC-4626 floor/ceil. Isolation / siloed / debt-ceiling configurator events **exist**. `StableDebtToken` still in the ABI. No deficit, no V3.2+ position manager, no liquidation grace period.
+Spark is **not** TokenMath 3.5. Deployed aToken impl `0x6175ddec3b9b38c88157c10a01ed4a3fa8639cc6` (Sourcify exact match) `balanceOf` is `scaled.rayMul(index)` with `rayMul = (a * b + HALF_RAY) / RAY`, for supply and for variable debt. Mint and burn scale with the same half-up `rayDiv`. Pool impl `0x5ae329203e00f76891094dcfedd5aca082a50e1b` `LiquidationLogic._calculateDebt` sets the close factor on **this reserve's** stable + variable debt (`percentMul`), not on the position's base-currency total. `spark.toml` selects `balance_model = wad-ray-half-up` and `close_factor_scope = reserve-debt`. Aave V3 keeps TokenMath floor/ceil and the position-base cap. On 2026-09-25 every Spark reserve's stable-debt `totalSupply` was 0, so stable balances are not a second slot; the token is still in the ABI. Isolation / siloed / debt-ceiling configurator events **exist**. No deficit, no V3.2+ position manager, no liquidation grace period.
 
 | DirtySet | when |
 |---|---|

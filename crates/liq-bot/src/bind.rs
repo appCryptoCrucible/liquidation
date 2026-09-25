@@ -417,7 +417,13 @@ fn push_spark(dir: &Path, intern: &Intern, out: &mut ProtocolLoad) {
             return;
         }
     }
-    let cfg = spark_to_config(&toml);
+    let cfg = match spark_to_config(&toml) {
+        Ok(c) => c,
+        Err(e) => {
+            omit(out, "spark", e);
+            return;
+        }
+    };
     match liq_adapters_aave_v3::AaveV3::new(cfg) {
         Ok(p) => out.protocols.push(BoundProtocol::AaveV3(p)),
         Err(e) => omit(out, "spark", e),
@@ -447,7 +453,13 @@ fn push_aave_v3(dir: &Path, intern: &Intern, out: &mut ProtocolLoad) {
             return;
         }
     }
-    let cfg = spark_to_config(&toml);
+    let cfg = match spark_to_config(&toml) {
+        Ok(c) => c,
+        Err(e) => {
+            omit(out, "aave-v3", e);
+            return;
+        }
+    };
     match liq_adapters_aave_v3::AaveV3::new(cfg) {
         Ok(p) => out.protocols.push(BoundProtocol::AaveV3(p)),
         Err(e) => omit(out, "aave-v3", e),
@@ -585,8 +597,18 @@ fn morpho_to_config(t: &MorphoBlueToml) -> liq_adapters_morpho_blue::Config {
     }
 }
 
-fn spark_to_config(t: &AaveV3Toml) -> liq_adapters_aave_v3::Config {
-    liq_adapters_aave_v3::Config {
+fn spark_to_config(t: &AaveV3Toml) -> Result<liq_adapters_aave_v3::Config, String> {
+    let balance_model = match t.liquidation.balance_model.as_str() {
+        "token-math-35" => liq_adapters_aave_v3::BalanceModel::TokenMath35,
+        "wad-ray-half-up" => liq_adapters_aave_v3::BalanceModel::WadRayHalfUp,
+        other => return Err(format!("unknown balance_model {other}")),
+    };
+    let close_factor_scope = match t.liquidation.close_factor_scope.as_str() {
+        "position-base" => liq_adapters_aave_v3::CloseFactorScope::PositionBase,
+        "reserve-debt" => liq_adapters_aave_v3::CloseFactorScope::ReserveDebt,
+        other => return Err(format!("unknown close_factor_scope {other}")),
+    };
+    Ok(liq_adapters_aave_v3::Config {
         protocol: ProtocolId(t.protocol),
         pools: t
             .pools
@@ -628,9 +650,11 @@ fn spark_to_config(t: &AaveV3Toml) -> liq_adapters_aave_v3::Config {
             close_factor_hf_wad: t.liquidation.close_factor_hf_wad,
             min_base_max_close: t.liquidation.min_base_max_close,
             oracle_decimals: t.liquidation.oracle_decimals,
+            balance_model,
+            close_factor_scope,
         },
         pinned_through: t.pinned_through,
-    }
+    })
 }
 
 fn push_euler(dir: &Path, intern: &Intern, out: &mut ProtocolLoad) {

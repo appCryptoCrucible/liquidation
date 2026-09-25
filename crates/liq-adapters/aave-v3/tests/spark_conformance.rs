@@ -17,7 +17,8 @@ use alloy_primitives::{address, uint, Address, B256, U256};
 use common::*;
 use liq_adapters_aave_v3::events::{halt, oracle, pool};
 use liq_adapters_aave_v3::{
-    alloc_meter, math, AaveV3, AssetConfig, Config, LiquidationParams, PoolConfig, SourcePin,
+    alloc_meter, math, AaveV3, AssetConfig, BalanceModel, CloseFactorScope, Config,
+    LiquidationParams, PoolConfig, SourcePin,
 };
 use liq_config::{AaveV3Toml, Intern, OnChainId, Registry};
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
@@ -91,6 +92,14 @@ fn to_config(t: &AaveV3Toml) -> Config {
             close_factor_hf_wad: t.liquidation.close_factor_hf_wad,
             min_base_max_close: t.liquidation.min_base_max_close,
             oracle_decimals: t.liquidation.oracle_decimals,
+            balance_model: match t.liquidation.balance_model.as_str() {
+                "wad-ray-half-up" => BalanceModel::WadRayHalfUp,
+                other => panic!("spark balance_model {other}"),
+            },
+            close_factor_scope: match t.liquidation.close_factor_scope.as_str() {
+                "reserve-debt" => CloseFactorScope::ReserveDebt,
+                other => panic!("spark close_factor_scope {other}"),
+            },
         },
         pinned_through: t.pinned_through,
     }

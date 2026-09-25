@@ -37,6 +37,28 @@ pub struct SourcePin {
     pub source: Address,
 }
 
+/// How scaled balances become token amounts. Aave 3.5 `TokenMath` floors
+/// supply and ceils debt. Spark's deployed aToken (`0x6175dd…`, Sourcify
+/// exact match) uses `WadRayMath.rayMul`: `(a * b + HALF_RAY) / RAY` for
+/// both.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum BalanceModel {
+    #[default]
+    TokenMath35,
+    WadRayHalfUp,
+}
+
+/// What the close-factor percent multiplies. Aave >= 3.2 caps from the
+/// position's total debt in base currency. Spark's deployed
+/// `LiquidationLogic._calculateDebt` (pool `0x5ae329…`) does
+/// `(stable + variable of this reserve).percentMul(closeFactor)`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum CloseFactorScope {
+    #[default]
+    PositionBase,
+    ReserveDebt,
+}
+
 /// Close-factor / dust thresholds from the **instance** (LiquidationLogic
 /// constants on origin; Spark may differ — never compile them in).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,6 +68,8 @@ pub struct LiquidationParams {
     pub min_base_max_close: u128,
     /// Oracle answer decimals (`AaveOracle.BASE_CURRENCY_UNIT` log10).
     pub oracle_decimals: u8,
+    pub balance_model: BalanceModel,
+    pub close_factor_scope: CloseFactorScope,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

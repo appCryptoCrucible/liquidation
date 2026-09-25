@@ -38,7 +38,12 @@ fn hf_wad_at(cfg: &Config, pos: PositionRef<'_>, px: &PriceVector, ts: Timestamp
         sentinel_ok(meta, ts),
         cfg.liquidation.oracle_decimals,
     );
-    walk(&at, |a| price_p(px, a, scale), |t| acc.add(t, ts))?;
+    walk(
+        cfg.liquidation.balance_model,
+        &at,
+        |a| price_p(px, a, scale),
+        |t| acc.add(t, ts),
+    )?;
     acc.hf_wad()
 }
 
@@ -98,6 +103,7 @@ fn hf_at_p(
         cfg.liquidation.oracle_decimals,
     );
     walk(
+        cfg.liquidation.balance_model,
         &pos,
         |a| price_p(&v, a, scale),
         |t| acc.add(t, pos.timestamp),
@@ -114,6 +120,7 @@ pub(crate) fn liquidation_price(
     let scale = U256::from(cfg.oracle_scale());
     let mut held = false;
     walk(
+        cfg.liquidation.balance_model,
         &pos,
         |a| price_p(px, a, scale),
         |t| {
