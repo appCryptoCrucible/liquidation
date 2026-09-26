@@ -135,12 +135,39 @@ mod tests {
     fn shipped_toml_loads_and_leaks() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/builders.toml");
         let set = load_builders(&path).expect("shipped builders.toml");
-        assert!(set.builders.len() >= 4);
+        assert_eq!(set.builders.len(), 7);
         assert_eq!(set.mevshare_relay, "https://relay.flashbots.net");
-        assert!(set.builders.iter().any(|b| b.name == "beaverbuild"));
-        assert!(set.builders.iter().any(|b| b.name == "rsync"));
-        assert!(set.builders.iter().any(|b| b.name == "titan"));
-        assert!(set.builders.iter().any(|b| b.name == "flashbots"));
+        let endpoint = |name: &str| {
+            set.builders
+                .iter()
+                .find(|b| b.name == name)
+                .map(|b| b.endpoint)
+        };
+        assert_eq!(endpoint("beaverbuild"), Some("https://rpc.beaverbuild.org/"));
+        assert_eq!(endpoint("rsync"), Some("https://rsync-builder.xyz"));
+        assert_eq!(
+            endpoint("titan-us"),
+            Some("https://us.rpc.titanbuilder.xyz")
+        );
+        assert_eq!(
+            endpoint("titan-eu"),
+            Some("https://eu.rpc.titanbuilder.xyz")
+        );
+        assert_eq!(endpoint("flashbots"), Some("https://relay.flashbots.net"));
+        assert_eq!(
+            endpoint("buildernet-us"),
+            Some("https://direct-us.buildernet.org")
+        );
+        assert_eq!(
+            endpoint("buildernet-eu"),
+            Some("https://direct-eu.buildernet.org")
+        );
+        let urls: Vec<_> = set.builders.iter().map(|b| b.endpoint).collect();
+        assert!(
+            !urls.contains(&"https://rpc.titanbuilder.xyz"),
+            "Titan's geo URL is documented to misroute"
+        );
+        assert!(!urls.iter().any(|u| u.contains("ap.rpc") || u.contains("direct-ap")));
         assert_eq!(
             PLANNED_EXECUTOR.to_string().to_ascii_lowercase(),
             "0xe0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0"

@@ -147,16 +147,19 @@ relay = "https://relay.flashbots.net"
 #[test]
 fn shipped_toml_has_every_builder_and_relay() {
     let r = NetRoster::load(&shipped_builders()).expect("shipped builders.toml");
-    assert_eq!(r.builders.len(), 4);
+    assert_eq!(r.builders.len(), 7);
     assert_eq!(r.mevshare_relay, "https://relay.flashbots.net");
     let names: Vec<_> = r.builders.iter().map(|b| b.name.as_str()).collect();
     assert!(names.contains(&"beaverbuild"));
     assert!(names.contains(&"rsync"));
-    assert!(names.contains(&"titan"));
+    assert!(names.contains(&"titan-us"));
+    assert!(names.contains(&"titan-eu"));
     assert!(names.contains(&"flashbots"));
+    assert!(names.contains(&"buildernet-us"));
+    assert!(names.contains(&"buildernet-eu"));
     let mon = RttMonitor::from_roster(r).unwrap();
     let rep = mon.report();
-    assert_eq!(rep.builders.len(), 4);
+    assert_eq!(rep.builders.len(), 7);
     for row in &rep.builders {
         assert_eq!(row.n, 0);
         assert!(row.p99_ns.is_none(), "empty window is ABSENT, not 0");

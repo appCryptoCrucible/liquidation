@@ -4,11 +4,22 @@
 #
 # Official published URLs only:
 #   beaverbuild  https://beaverbuild.org/docs.html
+#                one URL, `https://rpc.beaverbuild.org/`. No regional host.
 #   rsync        https://rsync-builder.xyz/docs
-#   Titan        https://docs.titanbuilder.xyz/api/eth_sendbundle
+#                method docs only; the site is the endpoint. No regional host.
+#   Titan        https://docs.titanbuilder.xyz/
+#                `rpc.titanbuilder.xyz` is AWS geo-routing and Titan says it
+#                can land in the wrong region. They say to use the regional
+#                hosts. Both US and EU are listed until the box location is
+#                chosen. Asia is not.
 #   Flashbots    https://docs.flashbots.net/flashbots-auction/advanced/rpc-endpoint
-#                (`relay.flashbots.net` is Flashbots' builder; the name predates
-#                the builder/relay split.)
+#                `relay.flashbots.net` is Flashbots' builder. No regional split
+#                on that host.
+#   BuilderNet   https://buildernet.org/docs/send-orderflow
+#                Flashbots' orderflow network. A submit to one region is
+#                propagated to the others; both directs are listed so the
+#                first hop is local whichever continent the box is in.
+#                The geo endpoint `rpc.buildernet.org` is not used.
 #
 # No public-RPC submit URL. No `eth_sendRawTransaction`. No
 # `eth_sendPrivateTransaction`. Strings leak once at load to `&'static str` (00C).
@@ -26,13 +37,28 @@ endpoint = "https://rsync-builder.xyz"
 
 [[builders]]
 id = 3
-name = "titan"
-endpoint = "https://rpc.titanbuilder.xyz"
+name = "titan-us"
+endpoint = "https://us.rpc.titanbuilder.xyz"
 
 [[builders]]
 id = 4
+name = "titan-eu"
+endpoint = "https://eu.rpc.titanbuilder.xyz"
+
+[[builders]]
+id = 5
 name = "flashbots"
 endpoint = "https://relay.flashbots.net"
+
+[[builders]]
+id = 6
+name = "buildernet-us"
+endpoint = "https://direct-us.buildernet.org"
+
+[[builders]]
+id = 7
+name = "buildernet-eu"
+endpoint = "https://direct-eu.buildernet.org"
 
 [mevshare]
 # `mev_sendBundle` (GUIDE 13 §2). Same Flashbots builder host; different method.
