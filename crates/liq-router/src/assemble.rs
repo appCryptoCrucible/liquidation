@@ -2,6 +2,7 @@
 //!
 //! Over-borrow, `minProfit` as the worst-acceptable-partial floor, UniV3
 //! pool-direct swaps from the exact quote, profit TAKE_BALANCE to WETH.
+//! Seized WETH is not closed by a swap: it is already the profit asset.
 //! The plan is refused unless [`liq_plan::validate`] accepts it.
 //!
 //! Venue is the 12A-1 closed enum: UniV3 → pool-direct; UniV2 / Curve →
@@ -455,7 +456,8 @@ fn shares_of_pull(
 }
 
 /// Encode **every** nonzero allocation. `amount` on each EXACT_OUT swap is
-/// that pool's share of `pull`. One TAKE_BALANCE closer per collateral.
+/// that pool's share of `pull`. One TAKE_BALANCE closer per non-WETH
+/// collateral. WETH collateral returns no closer.
 ///
 /// A Curve share cannot be exact-output: it sells the collateral that buys
 /// its share at the quoted rate, raised by `overshoot_bps` (flash fee +
@@ -470,7 +472,7 @@ fn swaps_for_leg(
     debt_addr: Address,
     coll_addr: Address,
     overshoot_bps: u16,
-) -> Result<(Vec<SwapLeg>, SwapLeg), AssembleError> {
+) -> Result<(Vec<SwapLeg>, Option<SwapLeg>), AssembleError> {
     let shares = shares_of_pull(&s.leg.exit, pull)?;
     let mut repay = Vec::with_capacity(shares.len());
     let mut last: Option<(u8, Vec<u8>)> = None;
@@ -491,6 +493,12 @@ fn swaps_for_leg(
         });
         last = Some((venue, data));
     }
+    // Residual seized WETH is the profit asset. A closer would name a
+    // WETH→WETH pool, which does not exist, and the liquidation would revert
+    // instead of sweeping.
+    if coll_addr == weth {
+        return Ok((repay, None));
+    }
     let (venue, data) = match closer_pair(book, coll_addr, weth) {
         Ok(v) => v,
         Err(_) => last.ok_or(AssembleError::Missing("allocation"))?,
@@ -503,7 +511,7 @@ fn swaps_for_leg(
         amount: 0,
         data,
     };
-    Ok((repay, profit))
+    Ok((repay, Some(profit)))
 }
 
 /// Collateral sold exact-in on Curve to buy `share` of debt: the quoted
@@ -771,12 +779,15 @@ fn assemble_one(
                 let (repay, profit) =
                     swaps_for_leg(s, book, weth, pull, debt_addr, coll_addr, overshoot)?;
                 repay_swaps.extend(repay);
-                // One TAKE_BALANCE closer per collateral across the whole plan.
-                if !profit_swaps
-                    .iter()
-                    .any(|x| x.token_in == coll_addr && x.flags & LEG_TAKE_BALANCE != 0)
-                {
-                    profit_swaps.push(profit);
+                // One TAKE_BALANCE closer per non-WETH collateral across the
+                // whole plan. WETH collateral has no closer.
+                if let Some(profit) = profit {
+                    if !profit_swaps
+                        .iter()
+                        .any(|x| x.token_in == coll_addr && x.flags & LEG_TAKE_BALANCE != 0)
+                    {
+                        profit_swaps.push(profit);
+                    }
                 }
             }
             if liqs.is_empty() {
@@ -1499,6 +1510,76 @@ mod tests {
         assert_eq!(plan.profit_swaps[0].token_out, tok(1));
         assert_eq!(plan.profit_swaps[0].venue, VENUE_UNIV3_POOL);
         assert!(plan.min_profit_wei > 0);
+    }
+
+    /// Collateral is WETH (A0). Repay still buys the debt token. No
+    /// WETH→WETH closer: the residual is already the profit asset.
+    #[test]
+    fn weth_collateral_has_repay_and_no_self_swap() {
+        let bk = book(vec![deep()]);
+        let (_s, flash) = idx();
+        let quote = q(1);
+        let input = PositionInput {
+            position: quote.position,
+            protocol: PROTO,
+            health: health(),
+            quote: &quote,
+            cause: TriggerKind::Stale,
+            p: learning_p(),
+            gas_success: None,
+            gas_failed: 50_000,
+        };
+        let mut world = World {
+            tokens: HashMap::new(),
+            metas: HashMap::new(),
+        };
+        world.tokens.insert(A0, tok(0));
+        world.tokens.insert(A1, tok(1));
+        world.metas.insert(
+            PositionId(1),
+            LegMeta {
+                adapter: ExecutorAdapter::AaveV3,
+                market: addr(0x51),
+                borrower: quote.key.user,
+                tail: LegTail::None,
+                protocol_pull: None,
+            },
+        );
+        let plans = select(&[input], &cfg(), &flash, H, &bk, None, &world, &GAS).unwrap();
+        assert_eq!(plans.len(), 1);
+        let mut c = cfg();
+        c.over_borrow = U256::ZERO;
+        let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
+        let price = gas_price_in_debt(&GAS).unwrap();
+        let weth = tok(0);
+        let assembled = assemble(
+            &plans,
+            &c,
+            &bk,
+            &world,
+            &vctx(weth),
+            &bd,
+            price,
+            &GAS,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let plan = &assembled[0].plan;
+        validate(plan, &vctx(weth)).unwrap();
+        assert_eq!(plan.groups[0].liqs[0].collateral_asset, weth);
+        let repay = &plan.groups[0].repay_swaps;
+        assert!(!repay.is_empty(), "debt token is still bought");
+        assert!(repay.iter().all(|s| s.token_in == weth && s.token_out != weth));
+        assert!(
+            plan.profit_swaps.iter().all(|s| s.token_in != s.token_out),
+            "no WETH to WETH leg"
+        );
+        assert!(
+            !plan.profit_swaps.iter().any(|s| s.token_in == weth),
+            "residual WETH is not swapped"
+        );
     }
 
     /// Over-borrow: flash_amount ≥ pull. With extra=1 and a zero-fee

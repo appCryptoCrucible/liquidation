@@ -237,7 +237,8 @@ fn plan_v3_legs(n: u8, min_profit_wei: u128, bid_bps: u16, gas_cost_wei: u128) -
             liqs,
             vec![exact_out(WETH, DAI, total)],
         )],
-        profit_swaps: vec![profit_tb(WETH)],
+        // Seized WETH is the profit asset. No WETH→WETH closer.
+        profit_swaps: vec![],
     }
 }
 
@@ -258,7 +259,7 @@ fn plan_v4_clamped() -> BatchPlan {
             vec![v4_leg(WETH, 0, 1, asked, pull)],
             vec![exact_out(WETH, USDC, pull)],
         )],
-        profit_swaps: vec![profit_tb(WETH)],
+        profit_swaps: vec![],
     };
     ensure_surplus_borrow_profit_legs(&mut p, WETH, USDC_WETH);
     p
@@ -334,7 +335,8 @@ fn plan_multi() -> BatchPlan {
                 vec![exact_out(WSTETH, WETH, 1)],
             ),
         ],
-        profit_swaps: vec![profit_tb(WETH), profit_tb(WSTETH)],
+        // WETH collateral is not closed by a swap. wstETH still is.
+        profit_swaps: vec![profit_tb(WSTETH)],
     };
     ensure_surplus_borrow_profit_legs(&mut p, WETH, USDC_WETH);
     p
@@ -445,7 +447,7 @@ fn encode_decode_10e_tails() {
                 liqs: vec![leg.clone()],
                 repay_swaps: vec![exact_out(WETH, DAI, asked)],
             }],
-            profit_swaps: vec![profit_tb(WETH)],
+            profit_swaps: vec![],
         };
         let bytes = EncodedPlan::encode(&p, &c).unwrap().into_bytes();
         let back = decode_batch(&bytes).unwrap();
@@ -475,7 +477,7 @@ fn one_leg_plan(leg: LiqLeg) -> BatchPlan {
             liqs: vec![leg],
             repay_swaps: vec![exact_out(WETH, DAI, asked)],
         }],
-        profit_swaps: vec![profit_tb(WETH)],
+        profit_swaps: vec![],
     }
 }
 
@@ -588,6 +590,20 @@ fn liquity_wrong_trove_id_rejected() {
         EncodedPlan::encode(&one_leg_plan(wrong_tm), &c),
         Err(liq_plan::EncodeError::LiquityMarketMismatch { .. })
     ));
+}
+
+#[test]
+fn weth_collateral_self_closer_is_rejected() {
+    let c = ctx();
+    let mut p = plan_v3();
+    p.profit_swaps = vec![profit_tb(WETH)];
+    match EncodedPlan::encode(&p, &c) {
+        Err(EncodeError::BadCollateralClosure { need, closers, .. }) => {
+            assert_eq!(need, 0);
+            assert_eq!(closers, 1);
+        }
+        other => panic!("expected BadCollateralClosure, got {other:?}"),
+    }
 }
 
 #[test]
@@ -723,7 +739,7 @@ fn aave_exact_out_must_include_premium() {
         gas_cost_wei: 1,
         min_profit_wei: 1,
         groups: vec![ok],
-        profit_swaps: vec![profit_tb(WETH)],
+        profit_swaps: vec![],
     };
     EncodedPlan::encode(&ok_plan, &c).unwrap();
     let mut over = group(
@@ -910,7 +926,11 @@ fn arb_plan() -> impl Strategy<Value = BatchPlan> {
                     }
                     groups.push(group(provider, src, debt, pull_sum, liqs, repay));
                 }
-                let mut profit: Vec<SwapLeg> = collaterals.into_iter().map(profit_tb).collect();
+                let mut profit: Vec<SwapLeg> = collaterals
+                    .into_iter()
+                    .filter(|coll| *coll != WETH)
+                    .map(profit_tb)
+                    .collect();
                 for _ in 0..n_profit_extra {
                     if !profit.iter().any(|s| s.token_in == DAI) {
                         profit.push(profit_tb(DAI));
@@ -1015,17 +1035,20 @@ fn varied_case(i: u32) -> BatchPlan {
         }
     }
     let mut profit = Vec::new();
-    if profit_extra {
-        profit.push(SwapLeg {
-            venue: VENUE_ROUTER,
-            token_in: coll,
-            token_out: WETH,
-            flags: LEG_EXACT_OUT,
-            amount: 1,
-            data: router_data_padded(pad),
-        });
+    // WETH collateral is already the profit asset. A closer is WETH→WETH.
+    if coll != WETH {
+        if profit_extra {
+            profit.push(SwapLeg {
+                venue: VENUE_ROUTER,
+                token_in: coll,
+                token_out: WETH,
+                flags: LEG_EXACT_OUT,
+                amount: 1,
+                data: router_data_padded(pad),
+            });
+        }
+        profit.push(profit_tb(coll));
     }
-    profit.push(profit_tb(coll));
     BatchPlan {
         flags: FLAG_SWEEP,
         bid_bps: 1u16.saturating_add(u16::try_from(i % 9_000).unwrap()),

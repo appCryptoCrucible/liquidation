@@ -1079,6 +1079,10 @@ contract Executor {
         for (uint256 i; i < legs; ++i) {
             (SwapLeg memory s, uint256 next) = plan.swapLeg(o);
             o = next;
+            // Seized WETH is already the profit asset. A WETH→WETH leg has
+            // no pool; executing it reverts the liquidation instead of
+            // leaving the residual to be swept.
+            if (s.tokenIn == WETH && s.tokenOut == WETH) continue;
 
             uint256 legAmt = (s.flags & L_TAKE_BALANCE != 0)
                 ? IERC20(s.tokenIn).balanceOf(address(this))

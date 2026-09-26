@@ -241,4 +241,56 @@ contract ProvidersAndAdaptersTest is ExecutorTestBase {
         assertEq(debt.balanceOf(address(pool)), poolDebt, "group 0 rolled back with group 1");
         assertLt(pool.hf(b1), 1e18, "b1 still liquidatable: nothing partial");
     }
+
+    /// Collateral is WETH. The repay leg buys the debt the flash is owed.
+    /// A WETH→WETH closer has no pool; it must not run. The residual WETH
+    /// is the profit and is swept. Same result with no closer at all.
+    function test_weth_collateral_residual_sweeps_without_self_swap() public {
+        uint256 seized = 20e18;
+        weth.mint(address(pool), seized * 2);
+        address b1 = makeAddr("weth-coll-1");
+        address b2 = makeAddr("weth-coll-2");
+        pool.setPosition(b1, 0.95e18, REPAY, seized);
+        pool.setPosition(b2, 0.95e18, REPAY, seized);
+        uint256 spent = _wethSpentForExactDebt(OWED);
+        uint256 profit = seized - spent;
+        assertGt(profit, 0, "seizure covers the repay");
+
+        bytes memory repay = PB.poolSwap(
+            address(pDebtWeth), address(weth), address(debt), PB.L_EXACT_OUT, OWED
+        );
+        bytes memory selfSwap = PB.poolSwap(
+            address(pDebtWeth), address(weth), address(weth), PB.L_TAKE_BALANCE, 0
+        );
+        _exec(bytes.concat(
+            PB.header(PB.F_SWEEP, 0, 0, 1, 1),
+            PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 1),
+            PB.legV3(address(pool), b1, address(weth), REPAY),
+            repay,
+            PB.profit(1, selfSwap)
+        ));
+        assertEq(pDebtWeth.swaps(), 1, "WETH to WETH leg did not swap");
+        assertEq(weth.balanceOf(sink), profit, "residual WETH swept");
+        _assertClean();
+
+        _exec(bytes.concat(
+            PB.header(PB.F_SWEEP, 0, 0, 1, 1),
+            PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 1),
+            PB.legV3(address(pool), b2, address(weth), REPAY),
+            repay,
+            PB.profit(0, "")
+        ));
+        assertEq(pDebtWeth.swaps(), 2, "only repay swaps ran");
+        assertEq(weth.balanceOf(sink), profit * 2, "second residual swept");
+        _assertClean();
+    }
+
+    /// Exact-output input of `pDebtWeth`, same ceiling the pool uses.
+    function _wethSpentForExactDebt(uint256 debtOut) internal view returns (uint256) {
+        bool zeroForOne = address(weth) == pDebtWeth.token0();
+        uint256 n = pDebtWeth.rateNum();
+        uint256 d = pDebtWeth.rateDen();
+        if (!zeroForOne) (n, d) = (d, n);
+        return (debtOut * d + n - 1) / n;
+    }
 }

@@ -17,8 +17,12 @@ pub enum EncodeError {
     TooManyLegs,
     #[error("swap data length {0} exceeds u16")]
     DataTooLong(usize),
-    #[error("collateral {collateral} closed by {closers} TAKE_BALANCE legs (need 1)")]
-    BadCollateralClosure { collateral: Address, closers: usize },
+    #[error("collateral {collateral} closed by {closers} TAKE_BALANCE legs (need {need})")]
+    BadCollateralClosure {
+        collateral: Address,
+        closers: usize,
+        need: usize,
+    },
     #[error("EXACT_OUT leg after TAKE_BALANCE in the same blob")]
     ExactOutAfterTakeBalance,
     #[error("repay swap tokenOut is not the group's debt asset {group}")]

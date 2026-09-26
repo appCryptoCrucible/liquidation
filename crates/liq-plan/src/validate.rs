@@ -146,7 +146,7 @@ pub fn validate(p: &BatchPlan, ctx: &ValidateCtx) -> Result<()> {
         }
     }
     assert_exact_out_first(&p.profit_swaps)?;
-    close_collaterals(p)?;
+    close_collaterals(p, ctx.weth)?;
     cascade_ok(&p.groups)?;
     Ok(())
 }
@@ -342,16 +342,21 @@ fn assert_exact_out_first(blob: &[SwapLeg]) -> Result<()> {
     Ok(())
 }
 
-fn close_collaterals(p: &BatchPlan) -> Result<()> {
+fn close_collaterals(p: &BatchPlan, weth: Address) -> Result<()> {
     for g in &p.groups {
         for l in &g.liqs {
             let closers = all_swaps(p)
                 .filter(|s| s.token_in == l.collateral_asset && s.flags & LEG_TAKE_BALANCE != 0)
                 .count();
-            if closers != 1 {
+            // Seized WETH is already the profit asset. A closer would be a
+            // WETH→WETH swap, which has no pool; the repay legs sold the debt
+            // that is owed and the residual WETH is swept.
+            let need = usize::from(l.collateral_asset != weth);
+            if closers != need {
                 return Err(EncodeError::BadCollateralClosure {
                     collateral: l.collateral_asset,
                     closers,
+                    need,
                 });
             }
         }
