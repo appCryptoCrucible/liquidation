@@ -1,0 +1,16 @@
+{
+  "source": "..\\docs\\audit\\slither-full.json",
+  "in_scope_medium_plus": 33,
+  "by_impact": {
+    "Critical": 0,
+    "High": 7,
+    "Medium": 26,
+    "Low": 260,
+    "Informational": 27,
+    "Optimization": 0
+  },
+  "scope_patterns": [
+    "src/Executor.sol",
+    "src/lib/"
+  ]
+}

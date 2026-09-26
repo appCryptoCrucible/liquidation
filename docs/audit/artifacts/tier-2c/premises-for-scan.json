@@ -1,0 +1,19 @@
+{
+  "premises": [
+    {
+      "id": "AS-01",
+      "entrypoint": "execute",
+      "claim": "OPERATOR can drain standing non-WETH via S_ROUTER + L_TAKE_BALANCE while keeping WETH gross ≥ minProfit"
+    },
+    {
+      "id": "AS-02",
+      "entrypoint": "uniswapV3FlashCallback",
+      "claim": "Malicious flashSource receiving repay without lending drains value funded by standing debt / seized collateral swaps"
+    },
+    {
+      "id": "AS-03",
+      "entrypoint": "execute",
+      "claim": "Standing WETH cannot be stolen via router without gross underflow revert"
+    }
+  ]
+}

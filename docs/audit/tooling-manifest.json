@@ -1,0 +1,30 @@
+{
+  "foundry_root": "C:/Users/Davina/Desktop/liquidation bot/contracts",
+  "workspace_root": "C:/Users/Davina/Desktop/liquidation bot",
+  "audit_artifacts_dir": "C:/Users/Davina/Desktop/liquidation bot/docs/audit",
+  "reconstructed": false,
+  "build_status": "ok",
+  "build_log": "docs/audit/build.log",
+  "compiler": {
+    "solc": "0.8.28",
+    "optimizer": true,
+    "optimizer_runs": 200,
+    "via_ir": true,
+    "evm_version": "cancun",
+    "source": "client-supplied foundry.toml"
+  },
+  "SLOW_BUILD": true,
+  "slither_high": "docs/audit/slither-high.json",
+  "slither_full": "docs/audit/slither-full.json",
+  "slither_summary": "docs/audit/slither-summary.md",
+  "slither_counts": "docs/audit/slither-counts.json",
+  "slither_status": "ok",
+  "slither_notes": "Used --foundry-ignore-compile after successful forge-driven compile; --foundry-out-path unsupported (use --foundry-out-directory); removed unavailable detector tainted-delegatecall",
+  "coverage_summary": "docs/audit/coverage-summary.txt",
+  "coverage_status": "failed",
+  "coverage_notes": "forge coverage failed: stack-too-deep without viaIR; --ir-minimum also failed (Yul swap depth in PlanDecode.t.sol). Coverage % unavailable — residual risk.",
+  "gas_snapshot": null,
+  "gas_snapshot_status": "skipped",
+  "in_scope_medium_plus_slither": 33,
+  "timestamp": "2026-09-26"
+}

@@ -1,0 +1,29 @@
+{
+  "merged": true,
+  "results": [
+    {
+      "premise_id": "AS-01",
+      "pass_a_auth": "requires OPERATOR",
+      "pass_b_ledger": "non-WETH balance → attacker; WETH profit path intact",
+      "pass_c": "confirmed_exploit",
+      "poc": "contracts/test/audit/OperatorRouterDrain.t.sol",
+      "poc_status": "confirmed"
+    },
+    {
+      "premise_id": "AS-02",
+      "pass_a_auth": "requires OPERATOR to set flashSource",
+      "pass_b_ledger": "repay tokens → Fake flashSource",
+      "pass_c": "confirmed_exploit",
+      "poc": "contracts/test/audit/FakeFlashSourceDrain.t.sol",
+      "poc_status": "confirmed"
+    },
+    {
+      "premise_id": "AS-03",
+      "pass_a_auth": "requires OPERATOR",
+      "pass_b_ledger": "WETH steal → gross underflow",
+      "pass_c": "falsified_as_exploit",
+      "poc": "test_poc_standing_weth_theft_via_router_reverts",
+      "poc_status": "confirmed_safe"
+    }
+  ]
+}

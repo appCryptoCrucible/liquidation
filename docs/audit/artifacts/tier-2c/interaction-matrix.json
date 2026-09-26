@@ -1,0 +1,34 @@
+{
+  "merged": true,
+  "source_graph": "docs/audit/artifacts/storage-access-graph.json",
+  "cells": [
+    {
+      "edge_id": "EDGE-01",
+      "verdict": "exploitable_with_operator_key",
+      "finding_ref": "DRAFT-02",
+      "notes": "flashSource plan-controlled; no CREATE2 on flash path"
+    },
+    {
+      "edge_id": "EDGE-02",
+      "verdict": "exploitable_with_operator_key",
+      "finding_ref": "DRAFT-01",
+      "notes": "non-WETH standing escapes WETH gross guard"
+    },
+    {
+      "edge_id": "EDGE-03",
+      "verdict": "exploitable_with_operator_key",
+      "finding_ref": "DRAFT-01",
+      "notes": "router arbitrary calldata under exact approve"
+    },
+    {
+      "edge_id": "EDGE-04",
+      "verdict": "safe",
+      "notes": "T_ENTERED blocks unauthenticated callbacks"
+    },
+    {
+      "edge_id": "EDGE-05",
+      "verdict": "safe",
+      "notes": "sweep destination immutable PROFIT_SINK"
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "shard": "SR-ALL",
+  "merged": true,
+  "states": [
+    {
+      "id": "AS-01",
+      "name": "standing_non_weth_positive",
+      "description": "Executor holds ERC-20 ≠ WETH while idle",
+      "reachability": "legal: leftover dust, donation, partial router consume",
+      "severity_premise": "high",
+      "needs_premise_scan": true,
+      "gated_for_depth_engine": true
+    },
+    {
+      "id": "AS-02",
+      "name": "armed_fake_flashSource",
+      "description": "T_EXPECTED_CALLER set to plan-controlled non-protocol address during execute",
+      "reachability": "legal: OPERATOR encodes arbitrary flashSource",
+      "severity_premise": "high",
+      "needs_premise_scan": true,
+      "gated_for_depth_engine": true
+    },
+    {
+      "id": "AS-03",
+      "name": "standing_weth_positive",
+      "description": "Executor holds WETH while idle",
+      "reachability": "legal: no F_SWEEP",
+      "severity_premise": "medium",
+      "needs_premise_scan": true,
+      "notes": "gross underflow protects against WETH standing theft via router"
+    },
+    {
+      "id": "AS-04",
+      "name": "t_swapping_set",
+      "description": "Mid _swap T_SWAPPING=1",
+      "reachability": "only during execute swap loop",
+      "severity_premise": "low",
+      "needs_premise_scan": false
+    }
+  ]
+}

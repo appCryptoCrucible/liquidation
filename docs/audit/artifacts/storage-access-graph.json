@@ -1,0 +1,42 @@
+{
+  "engagement_id": "liquidation-bot-executor",
+  "generated_at": "2026-09-26T05:28:00Z",
+  "shard_id": "IM-STATIC",
+  "mode": "static_graph",
+  "scope": [
+    "contracts/src/Executor.sol",
+    "contracts/src/lib/PlanDecoder.sol",
+    "contracts/src/lib/SafeTransfer.sol"
+  ],
+  "notes": "Executor has zero persistent mutable storage. Cross-entrypoint coupling via EIP-1153 transient slots. Economic ERC-20/router edges tracked in interaction-matrix.json cells (orchestrator).",
+  "functions": [
+    {"name": "Executor.execute", "contract": "Executor.sol", "storage_writes": ["transient.T_ENTERED", "transient.T_GROUP", "transient.T_FILLED", "transient.T_EXPECTED_CALLER", "transient.T_SWAPPING"], "storage_reads": ["transient.T_ENTERED", "transient.T_FILLED"]},
+    {"name": "Executor.executeOperation", "contract": "Executor.sol", "storage_writes": ["transient.T_FILLED", "transient.T_SWAPPING"], "storage_reads": ["transient.T_EXPECTED_CALLER", "transient.T_ENTERED", "transient.T_GROUP"]},
+    {"name": "Executor.uniswapV3FlashCallback", "contract": "Executor.sol", "storage_writes": ["transient.T_FILLED", "transient.T_SWAPPING"], "storage_reads": ["transient.T_EXPECTED_CALLER", "transient.T_ENTERED", "transient.T_GROUP"]},
+    {"name": "Executor.unlockCallback", "contract": "Executor.sol", "storage_writes": ["transient.T_FILLED", "transient.T_SWAPPING"], "storage_reads": ["transient.T_EXPECTED_CALLER", "transient.T_ENTERED", "transient.T_GROUP"]},
+    {"name": "Executor.onMorphoFlashLoan", "contract": "Executor.sol", "storage_writes": ["transient.T_FILLED", "transient.T_SWAPPING"], "storage_reads": ["transient.T_EXPECTED_CALLER", "transient.T_ENTERED", "transient.T_GROUP"]},
+    {"name": "Executor.onFlashLoan", "contract": "Executor.sol", "storage_writes": ["transient.T_FILLED", "transient.T_SWAPPING"], "storage_reads": ["transient.T_EXPECTED_CALLER", "transient.T_ENTERED", "transient.T_GROUP"]},
+    {"name": "Executor.uniswapV3SwapCallback", "contract": "Executor.sol", "storage_writes": [], "storage_reads": ["transient.T_SWAPPING"]},
+    {"name": "Executor.sweep", "contract": "Executor.sol", "storage_writes": [], "storage_reads": []},
+    {"name": "Executor.receive", "contract": "Executor.sol", "storage_writes": [], "storage_reads": []}
+  ],
+  "edges": [
+    {"id": "EDGE-01", "fn_a": "Executor.execute", "fn_b": "Executor.executeOperation", "shared_roots": ["transient.T_ENTERED", "transient.T_EXPECTED_CALLER", "transient.T_GROUP"], "relationship": "writer_consumer", "eval_priority": "primary"},
+    {"id": "EDGE-02", "fn_a": "Executor.execute", "fn_b": "Executor.uniswapV3FlashCallback", "shared_roots": ["transient.T_ENTERED", "transient.T_EXPECTED_CALLER", "transient.T_GROUP"], "relationship": "writer_consumer", "eval_priority": "primary"},
+    {"id": "EDGE-03", "fn_a": "Executor.execute", "fn_b": "Executor.unlockCallback", "shared_roots": ["transient.T_ENTERED", "transient.T_EXPECTED_CALLER", "transient.T_GROUP"], "relationship": "writer_consumer", "eval_priority": "primary"},
+    {"id": "EDGE-04", "fn_a": "Executor.execute", "fn_b": "Executor.onMorphoFlashLoan", "shared_roots": ["transient.T_ENTERED", "transient.T_EXPECTED_CALLER", "transient.T_GROUP"], "relationship": "writer_consumer", "eval_priority": "primary"},
+    {"id": "EDGE-05", "fn_a": "Executor.execute", "fn_b": "Executor.onFlashLoan", "shared_roots": ["transient.T_ENTERED", "transient.T_EXPECTED_CALLER", "transient.T_GROUP"], "relationship": "writer_consumer", "eval_priority": "primary"},
+    {"id": "EDGE-06", "fn_a": "Executor.execute", "fn_b": "Executor.uniswapV3SwapCallback", "shared_roots": ["transient.T_SWAPPING"], "relationship": "writer_consumer", "eval_priority": "primary"},
+    {"id": "EDGE-07", "fn_a": "Executor.executeOperation", "fn_b": "Executor.execute", "shared_roots": ["transient.T_FILLED"], "relationship": "writer_consumer", "eval_priority": "primary"},
+    {"id": "EDGE-08", "fn_a": "Executor.uniswapV3FlashCallback", "fn_b": "Executor.execute", "shared_roots": ["transient.T_FILLED"], "relationship": "writer_consumer", "eval_priority": "primary"},
+    {"id": "EDGE-09", "fn_a": "Executor.unlockCallback", "fn_b": "Executor.execute", "shared_roots": ["transient.T_FILLED"], "relationship": "writer_consumer", "eval_priority": "primary"},
+    {"id": "EDGE-10", "fn_a": "Executor.onMorphoFlashLoan", "fn_b": "Executor.execute", "shared_roots": ["transient.T_FILLED"], "relationship": "writer_consumer", "eval_priority": "primary"},
+    {"id": "EDGE-11", "fn_a": "Executor.onFlashLoan", "fn_b": "Executor.execute", "shared_roots": ["transient.T_FILLED"], "relationship": "writer_consumer", "eval_priority": "primary"},
+    {"id": "EDGE-12", "fn_a": "Executor.executeOperation", "fn_b": "Executor.uniswapV3SwapCallback", "shared_roots": ["transient.T_SWAPPING"], "relationship": "writer_consumer", "eval_priority": "primary"},
+    {"id": "EDGE-13", "fn_a": "Executor.uniswapV3FlashCallback", "fn_b": "Executor.uniswapV3SwapCallback", "shared_roots": ["transient.T_SWAPPING"], "relationship": "writer_consumer", "eval_priority": "primary"},
+    {"id": "EDGE-14", "fn_a": "Executor.unlockCallback", "fn_b": "Executor.uniswapV3SwapCallback", "shared_roots": ["transient.T_SWAPPING"], "relationship": "writer_consumer", "eval_priority": "primary"},
+    {"id": "EDGE-15", "fn_a": "Executor.onMorphoFlashLoan", "fn_b": "Executor.uniswapV3SwapCallback", "shared_roots": ["transient.T_SWAPPING"], "relationship": "writer_consumer", "eval_priority": "primary"},
+    {"id": "EDGE-16", "fn_a": "Executor.onFlashLoan", "fn_b": "Executor.uniswapV3SwapCallback", "shared_roots": ["transient.T_SWAPPING"], "relationship": "writer_consumer", "eval_priority": "primary"}
+  ],
+  "stats": {"edges_total": 16, "edges_primary": 16, "persistent_mutable_roots": 0, "transient_roots": 5}
+}

@@ -1,0 +1,24 @@
+{
+  "TIER_2C_ENABLED": true,
+  "TIER_2C_MAX_PARALLEL": 8,
+  "STATE_PARTITION_MODE": "single",
+  "INTERACTION_LLM_BATCH_SIZE": 30,
+  "PREMISE_ENTRYPOINT_SHARD_SIZE": 12,
+  "state_shards": [
+    {
+      "shard_id": "SR-ALL",
+      "mode": "all",
+      "state_budget": 256,
+      "module_paths": [
+        "contracts/src/Executor.sol",
+        "contracts/src/lib/PlanDecoder.sol",
+        "contracts/src/lib/SafeTransfer.sol"
+      ]
+    }
+  ],
+  "interaction_shards": [
+    { "shard_id": "IM-STATIC", "mode": "static_graph" }
+  ],
+  "premise_shards": [],
+  "notes": "Single immutable executor; no independent module seeds. Premise shards filled after 2c-merge."
+}
