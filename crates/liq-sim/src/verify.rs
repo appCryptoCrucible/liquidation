@@ -32,8 +32,11 @@ pub struct SimTx {
 /// Trigger applied *before* our calls.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Trigger {
-    /// MEV-Share SVR. Hint with `call_data` → reconstructed tx. Absent
-    /// calldata → predicted tx, outcome flagged low-confidence.
+    /// MEV-Share SVR. `reconstructed` is set only when the hint included
+    /// `from`, so `forward` can be replayed as that sender. Shared calldata
+    /// without a sender is the normal hint: the bundle references the event
+    /// by hash and this sim does not replay `forward`. Absent calldata is a
+    /// predicted tx, flagged low-confidence.
     Svr {
         hint: Box<MevShareHint>,
         reconstructed: Option<Box<SimTx>>,
@@ -133,11 +136,10 @@ fn trigger_tx(trigger: &Trigger) -> Result<(Option<&SimTx>, Confidence), SimErro
             reconstructed,
             predicted,
         } => {
-            if hint.call_data.is_some() {
-                let tx = reconstructed.as_deref().ok_or(SimError::Malformed(
-                    "SVR hint has calldata but no reconstructed tx",
-                ))?;
+            if let Some(tx) = reconstructed.as_deref() {
                 Ok((Some(tx), Confidence::CERTAIN))
+            } else if hint.call_data.is_some() {
+                Ok((None, Confidence::CERTAIN))
             } else {
                 let tx = predicted.as_deref().ok_or(SimError::Malformed(
                     "SVR partial hint requires predicted tx; refusing to invent one",
@@ -216,11 +218,12 @@ pub fn verify<P: DatabaseRef<Error = SimError> + Send + Sync>(
     }
 
     if matches!(
-        bundle.trigger,
+        &bundle.trigger,
         Trigger::Svr {
             reconstructed: None,
+            hint,
             ..
-        }
+        } if hint.call_data.is_none()
     ) {
         conf = Confidence(0);
     }

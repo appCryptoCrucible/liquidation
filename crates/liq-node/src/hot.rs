@@ -43,6 +43,10 @@ pub struct AfterBlockCtx<'a> {
 /// / halt behaviour is unchanged when this is `None`.
 pub trait AfterBlock: Send {
     fn after_block(&mut self, ctx: AfterBlockCtx<'_>);
+
+    /// Non-blocking. Called every hot-thread spin, including when the ExEx
+    /// ring is empty, so a private hint is applied before the next commit.
+    fn poll(&mut self, _store: &StateStore) {}
 }
 
 /// One drain of the ExEx ring. Arena and dirty buffers are reused.
@@ -66,6 +70,7 @@ pub fn drain(
                 .map(|b| (b.timestamp, b.gas_limit, b.gas_used, b.base_fee_per_gas)),
             Notification::Reverted { .. } => None,
         };
+        let expects_height = notif.committed_tip().is_some();
         let outcome = handle_notification(ctx, &notif, sink, protocols);
         for block in match notif {
             Notification::Committed { new } | Notification::Reorged { new, .. } => new.blocks,
@@ -94,8 +99,19 @@ pub fn drain(
                     });
                 }
             }
-            Ok(None) => break,
+            Ok(None) => {
+                if expects_height {
+                    if let Err(e) = ingress.refuse() {
+                        halt_reorg_too_deep(sink);
+                        return Err(e);
+                    }
+                } else {
+                    ingress.wake();
+                }
+                break;
+            }
             Err(e) => {
+                ingress.wake();
                 halt_reorg_too_deep(sink);
                 return Err(e);
             }
@@ -124,6 +140,14 @@ impl HotHandle {
     #[cfg(test)]
     pub fn join_no_stop(self) -> std::thread::Result<Result<()>> {
         self.handle.join()
+    }
+
+    /// The hot thread has returned. The ExEx must not wait for a confirmation
+    /// that will never arrive.
+    #[inline]
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.handle.is_finished()
     }
 }
 
@@ -205,6 +229,9 @@ pub fn spawn(cfg: HotSpawn) -> Result<HotHandle> {
                             .as_mut()
                             .map(|h| h.as_mut() as &mut dyn AfterBlock),
                     )?;
+                }
+                if let Some(hook) = after_block.as_mut() {
+                    hook.poll(&store);
                 }
                 std::hint::spin_loop();
             }
@@ -435,6 +462,10 @@ mod tests {
             hot.pop().is_some(),
             "must not consume the ring after the first Err"
         );
+        assert!(
+            !fwd.take_refused(),
+            "an unwind error is not a refused commit"
+        );
     }
 
     #[test]
@@ -502,6 +533,8 @@ mod tests {
         }
         assert!(sink.hits.load(Ordering::Relaxed) >= 1);
         assert!(hot.pop().is_some(), "must break on first Ok(false)");
+        assert!(fwd.take_refused(), "halted commit is not a FinishedHeight");
+        assert!(fwd.take_finished().is_none());
     }
 
     #[test]

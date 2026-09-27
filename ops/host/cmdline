@@ -1,0 +1,11 @@
+# AMD EPYC 4564P. Append this line to GRUB_CMDLINE_LINUX, then reboot.
+# Do not set CPUAffinity on reth-liq.service: the process must be able to
+# pin onto the isolated cores. Lighthouse is the unit that is confined
+# (ops/systemd/lighthouse.service).
+#
+# Isolated:
+#   0-7,16-23   CCD0 (hot). Only cores 0, 1, 2 are pinned.
+#   8-11,24-27  sim workers and their SMT siblings.
+#   12,13,28,29 router and submit, plus their SMT siblings (siblings unpinned).
+# Left for Reth, Lighthouse, IRQs, CEX, telemetry, drift: 14, 15, 30, 31.
+isolcpus=domain,managed_irq,0-13,16-29 nohz_full=0-13,16-29 rcu_nocbs=0-13,16-29 irqaffinity=14-15,30-31 processor.max_cstate=1 amd_idle.max_cstate=1

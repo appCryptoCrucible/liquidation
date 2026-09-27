@@ -30,6 +30,7 @@ members = [
     "crates/liq-replay",
     "crates/liq-books",
     "crates/liq-bot",
+    "crates/liq-reth",
 ]
 
 [workspace.package]
@@ -38,13 +39,13 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-alloy-primitives = { version = "=1.6.0", default-features = false }
-alloy-sol-types = { version = "=1.6.0", default-features = false }
+alloy-primitives = { version = "=1.6.1", default-features = false }
+alloy-sol-types = { version = "=1.6.1", default-features = false }
 alloy-provider = { version = "=2.4.2", default-features = false, features = ["reqwest", "reqwest-default-tls"] }
 alloy-rpc-types-eth = { version = "=2.4.2", default-features = false }
 alloy-signer = { version = "=1.6.1", default-features = false }
 alloy-signer-local = { version = "=1.6.1", default-features = false }
-tokio = { version = "=1.47.1", default-features = false, features = ["rt", "macros", "time"] }
+tokio = { version = "=1.52.3", default-features = false, features = ["rt", "macros", "time"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.145", default-features = false, features = ["std"] }
 reqwest = { version = "=0.12.23", default-features = false, features = ["json", "stream", "default-tls"] }

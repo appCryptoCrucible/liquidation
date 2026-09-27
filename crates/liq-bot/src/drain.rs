@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_primitives::{Address, Bytes, B256, U256};
 use arc_swap::ArcSwap;
 use liq_engine::{Candidate, Engine, EngineConfig, TriggerCause, World};
 use liq_exec::fee::FeeQuote;
@@ -35,6 +35,12 @@ use parking_lot::{Mutex, RwLock};
 use crate::assemble_view::{require_meta, require_token, ProcessAssembleView};
 use crate::bind::{BoundProtocol, SelectBind};
 use crate::index::{BoundIndex, FlashSources};
+
+/// Gas budget of one SVR backrun. The parent header is the whole block.
+/// This transaction lands behind the oracle update, so the plan stops at
+/// 12M. Every account that fits shares that one transaction. A second
+/// plan is not submitted on the same hint.
+const SVR_BACKRUN_GAS: u64 = 12_000_000;
 
 /// Inputs `select` / `assemble` refuse to default. Missing → skip, log.
 #[derive(Clone, Debug)]
@@ -129,6 +135,15 @@ pub struct DrainJoin {
     price_reader: Option<Arc<crate::protocol_prices::ReaderShared>>,
     /// Block the read set was last rebuilt (`0` = never).
     reads_at: u64,
+    /// MEV-Share hints. Popped on the hot thread. `None` when the reader
+    /// was not started.
+    svr_rx: Option<rtrb::Consumer<liq_types::MevShareHint>>,
+    svr_targets: Vec<liq_oracle::mevshare::SvrTarget>,
+    /// Header `gasLimit` of the last observed parent. `0` = not yet seen.
+    parent_gas_limit: u64,
+    last_block: u64,
+    last_ts: u64,
+    block_seen: bool,
 }
 
 /// The oracle books the ingest router writes, and the engine's view of them.
@@ -454,7 +469,25 @@ impl DrainJoin {
             protocol_moves: Vec::new(),
             price_reader: None,
             reads_at: 0,
+            svr_rx: None,
+            svr_targets: Vec::new(),
+            parent_gas_limit: 0,
+            last_block: 0,
+            last_ts: 0,
+            block_seen: false,
         }
+    }
+
+    /// SVR aggregators and the hint ring. Empty targets do not start a reader.
+    #[must_use]
+    pub fn with_svr(
+        mut self,
+        rx: rtrb::Consumer<liq_types::MevShareHint>,
+        targets: Vec<liq_oracle::mevshare::SvrTarget>,
+    ) -> Self {
+        self.svr_rx = Some(rx);
+        self.svr_targets = targets;
+        self
     }
 
     /// Price health from each protocol's own getters (read off the hot path
@@ -679,7 +712,9 @@ impl DrainJoin {
             cfg: SelectCfg {
                 cost: CostModel::FEE_ONLY,
                 close_bps: 0,
-                exact_k: EXACT_K,
+                exact_k: u8::try_from(u16::from(EXACT_K).saturating_mul(u16::from(NONCE_SLOTS)))
+                    .unwrap_or(u8::MAX),
+                legs_per_plan: EXACT_K,
                 nonce_slots: NONCE_SLOTS,
                 header_gas_limit,
                 wrap_gas: bind.wrap_gas,
@@ -714,6 +749,9 @@ impl DrainJoin {
         gas_limit: u64,
         parent_block: u64,
     ) {
+        if gas_limit != 0 {
+            self.parent_gas_limit = gas_limit;
+        }
         if base_fee_per_gas == 0 {
             tracing::error!("header base_fee_per_gas absent — observe_parent skipped");
             return;
@@ -776,14 +814,27 @@ impl DrainJoin {
         if proto_refs.is_empty() {
             tracing::error!("empty protocol list — on_dirty skipped (no invented adapter)");
         } else {
-            for set in as_dirty_sets(ctx.dirty) {
-                let Some(cause) = cause_for(&set) else {
+            let sets: Vec<DirtySet> = as_dirty_sets(ctx.dirty).collect();
+            let wide = sets.iter().any(|s| matches!(s, DirtySet::ProtocolWide));
+            for set in &sets {
+                if matches!(set, DirtySet::None | DirtySet::ProtocolWide) {
+                    continue;
+                }
+                let Some(cause) = cause_for(set) else {
                     continue;
                 };
                 for p in &proto_refs {
-                    if let Err(e) = self.engine.on_dirty(&world, p.id(), &set, &cause) {
+                    if let Err(e) = self.engine.on_dirty(&world, p.id(), set, &cause) {
                         tracing::error!(error = %e, protocol = p.id().0, "on_dirty failed");
                     }
+                }
+            }
+            // Grace period, sequencer, and any other protocol-wide log are
+            // already in the committed state. Resync folds every account;
+            // liquidatable ones come out as `Stale` and submit.
+            if wide {
+                if let Err(e) = self.engine.resync(&world) {
+                    tracing::error!(error = %e, "ProtocolWide resync failed");
                 }
             }
         }
@@ -803,6 +854,28 @@ impl DrainJoin {
         tip: u64,
         timestamp: u64,
         view: Option<&StateView<'_>>,
+    ) -> DrainStats {
+        self.enqueue(cands, tip, timestamp, view, false)
+    }
+
+    /// One hint, one transaction. `exact_k` is not the bound; [`SVR_BACKRUN_GAS`] is.
+    fn enqueue_svr(
+        &mut self,
+        cands: &[Candidate],
+        tip: u64,
+        timestamp: u64,
+        view: Option<&StateView<'_>>,
+    ) -> DrainStats {
+        self.enqueue(cands, tip, timestamp, view, true)
+    }
+
+    fn enqueue(
+        &mut self,
+        cands: &[Candidate],
+        tip: u64,
+        timestamp: u64,
+        view: Option<&StateView<'_>>,
+        svr: bool,
     ) -> DrainStats {
         let mut stats = DrainStats::default();
         if self.inbox.is_none() {
@@ -906,9 +979,10 @@ impl DrainJoin {
             Some(warm.as_ref())
         };
         let book = self.book.read();
+        let cfg = if svr { svr_select_cfg(ready.cfg) } else { ready.cfg };
         let plans = match select(
             &inputs,
-            &ready.cfg,
+            &cfg,
             flash.as_ref(),
             ready.haircut,
             &book,
@@ -1043,7 +1117,7 @@ impl DrainJoin {
             tracing::error!("no StateProvider — sim fail-closed, skip send");
             return Finish::Sim;
         };
-        let Some(trigger) = sim_trigger(cand) else {
+        let Some(trigger) = sim_trigger(cand, self.parent_gas_limit) else {
             return Finish::Sim;
         };
         if hop_and_wrap_gas == 0 {
@@ -1054,6 +1128,35 @@ impl DrainJoin {
             tracing::error!("operator absent — skip (no invented key)");
             return Finish::Exec;
         };
+        if matches!(
+            &trigger,
+            Trigger::Svr {
+                reconstructed: None,
+                predicted: None,
+                ..
+            }
+        ) {
+            let Some(job) = exec_job(
+                cand,
+                assembled,
+                &plan_bytes,
+                &calldata,
+                hop_and_wrap_gas,
+                self.fee,
+                operator,
+                self.chain_id,
+                tip,
+                bid,
+            ) else {
+                return Finish::Job;
+            };
+            return if inbox.try_send(job) {
+                Finish::Sent
+            } else {
+                tracing::error!("ExecInbox full — counted, not blocked");
+                Finish::Full
+            };
+        }
         let bundle = Bundle {
             trigger,
             calls: vec![SimTx {
@@ -1104,8 +1207,121 @@ impl DrainJoin {
     }
 }
 
+impl DrainJoin {
+    /// Apply decoded SVR reports to the engine. Does not block. Hints that
+    /// arrive before the first committed block are dropped: there is no
+    /// state to evaluate them against.
+    fn poll_svr(&mut self, store: &liq_state::StateStore) {
+        let Some(rx) = self.svr_rx.as_mut() else {
+            return;
+        };
+        if !self.block_seen || self.svr_targets.is_empty() {
+            let mut dropped = false;
+            while rx.pop().is_ok() {
+                dropped = true;
+            }
+            if dropped {
+                tracing::error!("SVR hint before a committed block — not applied");
+            }
+            return;
+        }
+        let mut ticks: Vec<PriceTick> = Vec::new();
+        let mut n = 0u32;
+        while n < 8 {
+            let hint = match rx.pop() {
+                Ok(h) => h,
+                Err(_) => break,
+            };
+            n = n.saturating_add(1);
+            match liq_oracle::mevshare::match_hint(&hint, &self.svr_targets) {
+                Ok(Some(m)) => {
+                    let source =
+                        liq_oracle::mevshare::publish_source(&m, std::time::Instant::now());
+                    ticks.push(PriceTick {
+                        asset: m.target.asset,
+                        price: m.price,
+                        source,
+                        block: self.last_block,
+                        ts: self.last_ts,
+                    });
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::error!(error = %e, hash = %hint.hash, "SVR hint decode failed");
+                }
+            }
+        }
+        if ticks.is_empty() {
+            return;
+        }
+        let proto_refs: Vec<&dyn Protocol> = self.protocols.iter().map(|p| p.as_dyn()).collect();
+        {
+            let flash = self.flash.load();
+            let world = World {
+                view: store.view(self.last_ts),
+                protocols: &proto_refs,
+                flash: flash.as_ref(),
+                routes: &self.routes,
+                haircut: self.world_haircut(),
+                overlay: Some(&self.protocol_prices),
+            };
+            for t in &ticks {
+                if let Err(e) = self.engine.on_price_tick(&world, t) {
+                    tracing::error!(error = %e, asset = t.asset.0, "SVR price tick refused");
+                }
+            }
+        }
+        let cands: Vec<Candidate> = self.engine.candidates().collect();
+        if cands.is_empty() {
+            return;
+        }
+        let (groups, other) = partition_by_hint(cands);
+        let view = store.view(self.last_ts);
+        let tip = store.tip();
+        for group in &groups {
+            let _ = self.enqueue_svr(group, tip, self.last_ts, Some(&view));
+        }
+        if !other.is_empty() {
+            let _ = self.enqueue_candidates(&other, tip, self.last_ts, Some(&view));
+        }
+    }
+}
+
+/// One bundle per oracle hint. Anything else stays on the ordinary drain.
+fn partition_by_hint(cands: Vec<Candidate>) -> (Vec<Vec<Candidate>>, Vec<Candidate>) {
+    let mut groups: Vec<(B256, Vec<Candidate>)> = Vec::new();
+    let mut other = Vec::new();
+    for c in cands {
+        if let TriggerCause::SvrAuction { hint, .. } = &c.cause {
+            let hint = *hint;
+            if let Some((_, group)) = groups.iter_mut().find(|(h, _)| *h == hint) {
+                group.push(c);
+            } else {
+                groups.push((hint, vec![c]));
+            }
+        } else {
+            other.push(c);
+        }
+    }
+    (groups.into_iter().map(|(_, group)| group).collect(), other)
+}
+
+fn svr_select_cfg(mut cfg: SelectCfg) -> SelectCfg {
+    // 255 does not bind: an Aave leg is several hundred thousand gas, so
+    // 12M fills first. One slot, and no 8-leg split: the accounts that do
+    // not fit are not a second bundle on this hint.
+    cfg.exact_k = u8::MAX;
+    cfg.nonce_slots = 1;
+    cfg.legs_per_plan = u8::MAX;
+    cfg.header_gas_limit = cfg.header_gas_limit.min(SVR_BACKRUN_GAS);
+    cfg
+}
+
 impl AfterBlock for DrainJoin {
     fn after_block(&mut self, ctx: AfterBlockCtx<'_>) {
+        self.block_seen = true;
+        self.last_block = ctx.block;
+        self.last_ts = ctx.timestamp;
         self.publish_flash();
         self.observe_parent_header(ctx.base_fee_per_gas, ctx.gas_used, ctx.gas_limit, ctx.block);
         self.refresh_select(ctx.gas_limit);
@@ -1119,6 +1335,10 @@ impl AfterBlock for DrainJoin {
         }
         let view = store.view(ts);
         let _ = self.enqueue_candidates(&cands, tip, ts, Some(&view));
+    }
+
+    fn poll(&mut self, store: &liq_state::StateStore) {
+        self.poll_svr(store);
     }
 }
 
@@ -1239,19 +1459,15 @@ fn plan_price_sync(
 
 fn cause_for(set: &DirtySet) -> Option<TriggerCause> {
     match set {
-        DirtySet::None => None,
+        DirtySet::None | DirtySet::ProtocolWide => None,
         DirtySet::MarketAccrual(_) => Some(TriggerCause::InterestDrift),
         DirtySet::MarketReprice(rows) => rows
             .first()
             .map(|r| TriggerCause::ParamChange { market: r.market }),
-        DirtySet::Positions(_) => {
-            tracing::error!("positions dirty without tx hash — UserAction not attached");
-            None
-        }
-        DirtySet::ProtocolWide => {
-            tracing::error!("ProtocolWide without scheduled param — skip");
-            None
-        }
+        // The borrower tx is already in this committed block. The collapsed
+        // dirty set does not carry its hash, so the cause has no parent.
+        // The account is still folded and, if liquidatable, submitted.
+        DirtySet::Positions(_) => Some(TriggerCause::UserAction { tx: None }),
     }
 }
 
@@ -1275,40 +1491,129 @@ fn pins_ready(view: &ProcessAssembleView, c: &Candidate) -> bool {
     true
 }
 
+/// Causes whose effect is already in the committed state. They submit as
+/// one transaction. Pre-inclusion causes (SVR, public transmit, pull
+/// payload) are not in this set: a naked tx would hit the old price.
+fn canonical_cause(kind: TriggerKind) -> bool {
+    matches!(
+        kind,
+        TriggerKind::InterestDrift
+            | TriggerKind::Stale
+            | TriggerKind::ParamChange
+            | TriggerKind::UserAction
+            | TriggerKind::DerivedRate
+            | TriggerKind::PoolStateChange
+    )
+}
+
 fn lead_candidate<'a>(
     plan: &liq_router::SelectedPlan,
     kept: &[&'a Candidate],
 ) -> Option<&'a Candidate> {
-    let mut lead: Option<&'a Candidate> = None;
+    let mut first: Option<&'a Candidate> = None;
+    let mut canonical: Option<&'a Candidate> = None;
+    let mut mixed = false;
+    let mut seen: Option<TriggerKind> = None;
     for g in &plan.groups {
         for s in &g.legs {
             let c = kept.iter().copied().find(|x| x.position == s.position)?;
-            match lead {
-                None => lead = Some(c),
-                Some(prev) if prev.cause.kind() != c.cause.kind() => {
-                    tracing::error!("mixed triggers in one plan — skip");
-                    return None;
-                }
+            if first.is_none() {
+                first = Some(c);
+            }
+            if canonical.is_none() && canonical_cause(c.cause.kind()) {
+                canonical = Some(c);
+            }
+            match seen {
+                None => seen = Some(c.cause.kind()),
+                Some(k) if k != c.cause.kind() => mixed = true,
                 Some(_) => {}
             }
         }
     }
-    lead
+    if mixed {
+        tracing::error!("mixed triggers in one plan — submitting the canonical leg");
+    }
+    canonical.or(first)
 }
 
-fn sim_trigger(c: &Candidate) -> Option<Trigger> {
+fn sim_trigger(c: &Candidate, trigger_gas: u64) -> Option<Trigger> {
     match &c.cause {
+        // State already committed. Simulate our call alone.
         TriggerCause::InterestDrift
         | TriggerCause::Stale { .. }
-        | TriggerCause::ParamChange { .. } => Some(Trigger::InterestDrift),
-        TriggerCause::SvrAuction { hint, .. } => {
-            tracing::error!(?hint, "SVR sim skipped — no reconstructed tx");
+        | TriggerCause::ParamChange { .. }
+        | TriggerCause::UserAction { .. }
+        | TriggerCause::DerivedRate { .. }
+        | TriggerCause::PoolStateChange { .. } => Some(Trigger::InterestDrift),
+        // Shared hint: event hash, forwarder, and `forward` calldata. `from`
+        // is optional. When it is present, replay `forward` as that sender.
+        // When it is absent, backrun the hash and do not invent a caller.
+        TriggerCause::SvrAuction {
+            hint,
+            forwarder,
+            call_data,
+            caller,
+            ..
+        } => {
+            if call_data.is_empty() {
+                tracing::error!(hash = %hint, "SVR hint has no calldata — skip");
+                return None;
+            }
+            let shared = Box::new(liq_types::MevShareHint {
+                hash: *hint,
+                to: if forwarder.is_zero() {
+                    None
+                } else {
+                    Some(*forwarder)
+                },
+                function_selector: Some(liq_oracle::mevshare::FORWARD_SELECTOR),
+                call_data: Some(call_data.clone()),
+                logs: None,
+                from: *caller,
+            });
+            if let Some(caller) = *caller {
+                if forwarder.is_zero() {
+                    tracing::error!(
+                        hash = %hint,
+                        "SVR hint has a sender but no forwarder — skip sim"
+                    );
+                    return None;
+                }
+                if trigger_gas == 0 {
+                    tracing::error!(hash = %hint, "parent gas limit absent — skip SVR sim");
+                    return None;
+                }
+                Some(Trigger::Svr {
+                    hint: shared,
+                    reconstructed: Some(Box::new(SimTx {
+                        caller,
+                        to: *forwarder,
+                        value: U256::ZERO,
+                        data: call_data.clone(),
+                        gas_limit: trigger_gas,
+                    })),
+                    predicted: None,
+                })
+            } else {
+                Some(Trigger::Svr {
+                    hint: shared,
+                    reconstructed: None,
+                    predicted: None,
+                })
+            }
+        }
+        TriggerCause::OraclePublic { tx } => {
+            tracing::error!(
+                ?tx,
+                "public transmit has no raw tx — canonical landing submits"
+            );
             None
         }
-        other => {
-            tracing::error!(kind = ?other.kind(), "sim trigger missing parent tx");
+        TriggerCause::OraclePullHeld { .. } => {
+            tracing::error!("pull-oracle update has no submitter tx — skip (no invented caller)");
             None
         }
+        TriggerCause::OraclePredicted { .. } => None,
     }
 }
 
@@ -1344,11 +1649,17 @@ fn exec_job(
             return None;
         }
     };
+    // `path.rs` accepts `max_block - target_block` in 2..=3. The hint does
+    // not carry a block range. Span 2 is that validator's minimum: the next
+    // block through two after it (`maxBlock` is inclusive).
     let max_block = match kind {
-        TriggerKind::SvrAuction => {
-            tracing::error!("SvrAuction inclusion window not observed — skip (no invented span)");
-            return None;
-        }
+        TriggerKind::SvrAuction => match target.checked_add(2) {
+            Some(m) => m,
+            None => {
+                tracing::error!("SVR max_block overflow — skip");
+                return None;
+            }
+        },
         _ => target,
     };
     let hint_hash = match &cand.cause {
@@ -1359,19 +1670,19 @@ fn exec_job(
         tracing::error!("SvrAuction missing hint — skip");
         return None;
     }
-    let backrun_tx = match kind {
-        TriggerKind::OraclePublic
-        | TriggerKind::OraclePullHeld
-        | TriggerKind::PoolStateChange
-        | TriggerKind::UserAction
-        | TriggerKind::DerivedRate => {
-            tracing::error!(kind = ?kind, "ordered trigger missing backrun tx — skip");
-            return None;
-        }
+    // Raw parent bytes only. A hash is not a transaction. Canonical causes
+    // submit with no parent; pre-inclusion causes never reach here without
+    // bytes because `sim_trigger` already refused them.
+    let backrun_tx = match &cand.cause {
+        TriggerCause::OraclePullHeld { payload } if !payload.is_empty() => Some(payload.clone()),
         _ => None,
     };
     let auction_bps = match kind {
-        TriggerKind::InterestDrift | TriggerKind::Stale => 0,
+        TriggerKind::InterestDrift
+        | TriggerKind::Stale
+        | TriggerKind::UserAction
+        | TriggerKind::DerivedRate
+        | TriggerKind::PoolStateChange => 0,
         _ => bid.refund_bps,
     };
     let g0 = assembled.plan.groups.first()?;
@@ -1393,7 +1704,6 @@ fn exec_job(
         max_block,
         fee,
         auction_bps,
-        refund_address: operator,
         calldata: calldata.clone(),
         gas_limit,
         chain_id,
@@ -1653,6 +1963,7 @@ mod tests {
                 cost: CostModel::FEE_ONLY,
                 close_bps: 0,
                 exact_k: 8,
+                legs_per_plan: u8::MAX,
                 nonce_slots: 1,
                 header_gas_limit: 30_000_000,
                 wrap_gas: wrap_gas(),
@@ -1936,6 +2247,59 @@ mod tests {
     }
 
     #[test]
+    fn position_dirty_is_a_user_action_without_an_invented_hash() {
+        let cause = cause_for(&DirtySet::Positions(Default::default())).unwrap();
+        assert!(matches!(cause, TriggerCause::UserAction { tx: None }));
+        assert!(cause_for(&DirtySet::ProtocolWide).is_none());
+    }
+
+    #[test]
+    fn canonical_triggers_send_without_a_parent_tx() {
+        let causes = [
+            TriggerCause::UserAction { tx: None },
+            TriggerCause::DerivedRate { source: A0 },
+            TriggerCause::PoolStateChange { pool: addr(1) },
+            TriggerCause::ParamChange {
+                market: liq_types::MarketId(0),
+            },
+        ];
+        for cause in causes {
+            let (inbox, rx) = ExecInbox::pair(4);
+            // Empty chain has no profit. OverlayGasSim keeps the measured
+            // gas and drops the profit floor, same as the interest-drift
+            // submit test. The assertion is that the cause is submitted.
+            let mut j = join_base(Some(inbox), false).with_sim(Box::new(OverlayGasSim {
+                inner: MemoryDrainSim::new(MemoryFactory::empty()),
+            }));
+            let mut c = candidate(1, cause);
+            c.quote.key.user = addr(0xB1);
+            let st = j.enqueue_candidates(&[c], 0, 1, None);
+            assert!(
+                st.jobs_sent >= 1,
+                "liquidatable canonical cause must submit, stats={st:?}"
+            );
+            assert!(rx.try_recv().is_ok());
+        }
+    }
+
+    #[test]
+    fn preinclusion_without_parent_bytes_does_not_send() {
+        let (inbox, rx) = ExecInbox::pair(4);
+        let mut j = join_base(Some(inbox), true);
+        let mut c = candidate(
+            1,
+            TriggerCause::OraclePublic {
+                tx: b256!("0x1111111111111111111111111111111111111111111111111111111111111111"),
+            },
+        );
+        c.quote.key.user = addr(0xB1);
+        let st = j.enqueue_candidates(&[c], 0, 1, None);
+        assert_eq!(st.jobs_sent, 0);
+        assert!(st.skipped_sim >= 1);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
     fn empty_tail_pins_and_intern_miss_zero_jobs() {
         let (inbox, rx) = ExecInbox::pair(4);
         let mut j = DrainJoin::live_noop(
@@ -2057,7 +2421,12 @@ mod tests {
         j.refresh_select(15_000_000);
         let ready = j.select.expect("SelectReady must form from bind+fee+bid");
         assert_eq!(ready.cfg.header_gas_limit, 15_000_000);
-        assert_eq!(ready.cfg.exact_k, EXACT_K);
+        assert_eq!(
+            ready.cfg.exact_k,
+            u8::try_from(u16::from(EXACT_K).saturating_mul(u16::from(NONCE_SLOTS)))
+                .unwrap_or(u8::MAX)
+        );
+        assert_eq!(ready.cfg.legs_per_plan, EXACT_K);
         assert_eq!(ready.cfg.nonce_slots, NONCE_SLOTS);
         assert_eq!(ready.gas_failed, 0);
         assert_eq!(

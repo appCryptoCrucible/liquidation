@@ -20,7 +20,7 @@ rtrb = { workspace = true }
 tracing = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 alloy-primitives = { workspace = true, features = ["std"] }

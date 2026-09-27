@@ -1,0 +1,36 @@
+[package]
+name = "liq-reth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reth execution client with the liquidation ExEx compiled in"
+
+[features]
+# Notification copy only. Does not build the node. On by the `node` feature.
+convert = ["dep:reth-execution-types", "dep:reth-primitives-traits"]
+# Compiles the `reth` binary. Off by default so workspace tests do not build Reth.
+node = ["dep:reth-ethereum", "dep:futures-util", "convert"]
+
+[dependencies]
+alloy-consensus = { version = "=2.4.2", default-features = false, features = ["std"] }
+alloy-eips = { version = "=2.4.2", default-features = false, features = ["std"] }
+alloy-primitives = { workspace = true, features = ["std"] }
+arrayvec = { workspace = true }
+eyre = { workspace = true }
+futures-util = { workspace = true, optional = true }
+liq-bot = { path = "../liq-bot" }
+liq-config = { path = "../liq-config" }
+liq-node = { path = "../liq-node" }
+reth-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v2.6.0", optional = true, features = ["full", "cli"] }
+reth-execution-types = { git = "https://github.com/paradigmxyz/reth", tag = "v2.6.0", optional = true }
+reth-primitives-traits = { version = "=0.7.1", default-features = false, features = ["std"], optional = true }
+tokio = { workspace = true, features = ["macros", "time"] }
+tracing = { workspace = true }
+
+[[bin]]
+name = "reth"
+path = "src/main.rs"
+required-features = ["node"]
+
+[lints]
+workspace = true

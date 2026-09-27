@@ -10,12 +10,13 @@ mod stream;
 pub use bundle::{post_signed, rpc_send_bundle, MevShareSubmitter, SendBundle, SignedRelayRequest};
 pub use history::{fetch_history, parse_history_body, HistoryQuery};
 pub use matcher::{
-    match_hint, publish_source, svr_targets, PriceOrigin, SvrMatch, SvrTarget, TRANSMIT_SELECTOR,
+    match_hint, publish_source, svr_targets, PriceOrigin, SvrMatch, SvrTarget, FORWARD_SELECTOR,
+    TRANSMIT_SECONDARY_SELECTOR,
 };
 pub use sign::{body_id_hex, flashbots_header, sign_body, verify_header, SearcherKey};
 pub use stream::{
-    backoff_delay, classify_sse_line, drain_connection, parse_hint_json, sse_client, SseItem,
-    MEV_SHARE_SSE, PING_IDLE,
+    backoff_delay, classify_sse_line, drain_connection, parse_event_hints, parse_hint_json,
+    spawn_hint_reader, sse_client, SseItem, MEV_SHARE_SSE, PING_IDLE,
 };
 
 use thiserror::Error;

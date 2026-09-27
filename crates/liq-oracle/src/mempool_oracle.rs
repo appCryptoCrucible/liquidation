@@ -16,7 +16,9 @@ use liq_types::{AssetId, Confidence, PriceTick, SourceKind};
 // other (06D review D1). Re-exported here to preserve the crate API.
 pub use liq_types::{PendingTx, RING_CAP};
 
-/// Selector `transmit(bytes32[3],bytes,bytes32[],bytes32[],bytes32)`.
+/// `6fadcf72` is `forward(address,bytes)` on the SVR path. Public OCR
+/// `transmit` is [`transmitCall::SELECTOR`]. This decoder accepts both and
+/// is not the SVR filter.
 pub const TRANSMIT_SELECTOR: [u8; 4] = [0x6f, 0xad, 0xcf, 0x72];
 
 alloy_sol_types::sol! {

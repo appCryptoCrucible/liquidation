@@ -188,6 +188,13 @@ impl CanonicalBook {
         ))
     }
 
+    /// Configured SVR aggregators. Push feeds are not included.
+    pub fn svr_targets(
+        &self,
+    ) -> std::result::Result<Vec<crate::mevshare::SvrTarget>, crate::mevshare::MevShareError> {
+        crate::mevshare::svr_targets(&self.feeds)
+    }
+
     /// `None` when the slot has never been written (`ts == 0`).
     #[must_use]
     pub fn price(&self, asset: AssetId) -> Option<&Price> {

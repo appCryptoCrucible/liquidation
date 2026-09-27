@@ -1,6 +1,7 @@
 //! Named threads, `cores.toml` topology, and fail-closed pinning.
 //!
-//! Live `/sys` topology is A1. This module reads the committed seam file only.
+//! The committed file is the EPYC 4564P map. On Linux, production compares
+//! each L3 list to sysfs and refuses to start if they differ.
 
 use core_affinity::CoreId;
 use serde::Deserialize;
@@ -159,6 +160,12 @@ pub enum ThreadError {
     BadName(String),
     #[error("unknown thread {0}")]
     UnknownThread(String),
+    #[error("cpu {cpu} L3 is {live}; cores.toml has {configured}")]
+    LiveL3Mismatch {
+        cpu: u16,
+        live: String,
+        configured: String,
+    },
     #[error("core {core} is not in any shared_cpu_list")]
     CoreNotInTopology { core: u16 },
     #[error("hot thread {name} core {core} is not on exclusive_hot CCX")]
@@ -279,6 +286,31 @@ impl CoreMap {
             .iter()
             .find(|t| t.name == name)
             .ok_or_else(|| ThreadError::UnknownThread(name.to_owned()))
+    }
+
+    /// The committed lists must be this machine's L3 groups. A pin onto the
+    /// wrong id still succeeds, so production compares each slice to sysfs.
+    #[cfg(target_os = "linux")]
+    pub fn assert_live_l3(&self) -> Result<(), ThreadError> {
+        for slice in &self.l3 {
+            let Some(&cpu) = slice.shared_cpu_list.as_slice().first() else {
+                return Err(ThreadError::BadCpuList {
+                    text: String::new(),
+                    why: "empty L3 list",
+                });
+            };
+            let path = format!("/sys/devices/system/cpu/cpu{cpu}/cache/index3/shared_cpu_list");
+            let raw = std::fs::read_to_string(&path)?;
+            let live = CpuList::parse(raw.trim())?;
+            if live.as_slice() != slice.shared_cpu_list.as_slice() {
+                return Err(ThreadError::LiveL3Mismatch {
+                    cpu,
+                    live: raw.trim().to_owned(),
+                    configured: format!("{:?}", slice.shared_cpu_list.as_slice()),
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -473,14 +505,22 @@ mod tests {
     }
 
     #[test]
-    fn load_committed_placeholder() {
+    fn load_committed_production_map() {
         let map = CoreMap::load(&committed_toml()).expect("committed cores.toml");
         assert_eq!(map.schema, 1);
-        assert!(map.l3().iter().any(|s| s.exclusive_hot));
+        assert_eq!(map.l3().len(), 2);
+        assert!(map.l3().iter().all(|s| s.numa == 0));
+        assert_eq!(map.l3().iter().filter(|s| s.exclusive_hot).count(), 1);
         assert_eq!(map.slot("liq-node-hot").unwrap().core, 0);
         assert_eq!(map.slot("liq-oracle-fusion").unwrap().core, 1);
         assert_eq!(map.slot("liq-engine-recompute").unwrap().core, 2);
         assert_eq!(map.slot("liq-sim-worker-0").unwrap().core, 8);
+        assert_eq!(map.slot("liq-sim-worker-3").unwrap().core, 11);
+        assert_eq!(map.slot("liq-router-cache").unwrap().core, 12);
+        assert_eq!(map.slot("liq-exec-submit").unwrap().core, 13);
+        assert_eq!(map.slot("liq-oracle-cex").unwrap().core, 14);
+        assert_eq!(map.slot("liq-obs-telemetry").unwrap().core, 30);
+        assert_eq!(map.slot("liq-obs-drift").unwrap().core, 31);
         assert!(map.slot("nope").is_err());
     }
 

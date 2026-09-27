@@ -61,7 +61,7 @@ async fn entry() -> Result<(), startup::StartupError> {
             .lease
             .live_send_permitted(started.shared.submit_enabled.get()),
         cold_restart_p99 = ?liq_bot::shared::COLD_RESTART_P99,
-        "liq-bot running (H4 not flipped; nonce resync ABSENT; same path as shadow)"
+        "liq-bot running without Reth (production entry is `reth node`; H4 not flipped; nonce resync ABSENT)"
     );
     let _ = started.forwarder;
     started

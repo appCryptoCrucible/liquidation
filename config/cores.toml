@@ -1,45 +1,38 @@
-# Placeholder CPU topology + thread pin map (WP 16A / GUIDE 16 §3b).
+# Production pin map: AMD EPYC 4564P (Zen 4 Raphael, 16 cores / 32 threads,
+# 2 CCDs x 8, 32 MB L3 each, one socket, one NUMA node).
 #
-# THIS FILE IS NOT A LIVE HARDWARE READ. A1 regenerates it on the box from
-# `/sys/devices/system/cpu/cpu*/cache/index3/shared_cpu_list` (and `lscpu -e` /
-# `lstopo` for NUMA). Do not guess production CCX grouping: core numbering is
-# not contiguous per CCX on every part (GUIDE 16 §2).
+# Standard Linux enumeration for this die: physical CPUs 0-15, SMT sibling
+# of N is N+16. CCD0 L3 is "0-7,16-23". CCD1 L3 is "8-15,24-31".
+# On Linux, startup (allow_unpinned = false) reads
+# /sys/devices/system/cpu/cpuN/cache/index3/shared_cpu_list and refuses
+# to start if a slice differs. Confirm once with `lscpu -e` before leaving
+# the node running. A pin that succeeds does not prove L3 placement until
+# that check passes.
 #
-# Layout below is an AMD EPYC-style template: 8-core L3 slices, NUMA 0 + 1,
-# CCX 0 exclusive for the hot path. Replace `[[l3]]` lists with the real
-# `shared_cpu_list` strings before going live.
+# Kernel isolcpus (ops/host/cmdline) is narrower than the CCD1 list:
+# isolated logical CPUs are 0-13 and 16-29. 14, 15, 30 and 31 stay for
+# Reth and Lighthouse. `isolated` below is the sim-worker rule, not the
+# kernel mask.
 
 schema = 1
 
 [[l3]]
-# CCX 0 — exclusive hot path (ExEx/hot, fusion, engine). Nothing else.
-shared_cpu_list = "0-7"
+# CCD0. Hot path only: cores 0, 1, 2. Cores 3-7 and SMT siblings 16-23
+# stay empty so this 32 MB L3 keeps the position columns.
+shared_cpu_list = "0-7,16-23"
 numa = 0
 isolated = true
 exclusive_hot = true
 
 [[l3]]
-# Isolated sim workers (revm warm cache). Same NUMA, not CCX 0.
-shared_cpu_list = "8-15"
+# CCD1. Sim workers on 8-11 (SMT siblings 24-27 unpinned). Router and
+# submit own physical cores 12 and 13. CEX, telemetry and drift share
+# the Reth/Lighthouse cores.
+shared_cpu_list = "8-15,24-31"
 numa = 0
 isolated = true
 exclusive_hot = false
 
-[[l3]]
-# Node B / non-isolated: route cache, submit runtime.
-shared_cpu_list = "16-23"
-numa = 1
-isolated = false
-exclusive_hot = false
-
-[[l3]]
-# Node B / non-isolated: telemetry, drift.
-shared_cpu_list = "24-31"
-numa = 1
-isolated = false
-exclusive_hot = false
-
-# One OS thread → one logical CPU. Names: liq-<crate>-<role>.
 [[thread]]
 name = "liq-node-hot"
 core = 0
@@ -70,20 +63,20 @@ core = 11
 
 [[thread]]
 name = "liq-router-cache"
-core = 16
+core = 12
 
 [[thread]]
 name = "liq-exec-submit"
-core = 17
+core = 13
 
 [[thread]]
 name = "liq-oracle-cex"
-core = 18
+core = 14
 
 [[thread]]
 name = "liq-obs-telemetry"
-core = 24
+core = 30
 
 [[thread]]
 name = "liq-obs-drift"
-core = 25
+core = 31

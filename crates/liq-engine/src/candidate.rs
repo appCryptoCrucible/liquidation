@@ -31,8 +31,18 @@ use liq_types::{AssetId, Confidence, MarketId, PositionId, ProtocolId, TraceId, 
 pub enum TriggerCause {
     // ── auctioned: bid against other searchers via the protocol's own
     //    recapture mechanism; margin compressed by design.
-    /// SVR update announced on MEV-Share; `hint` is the hint's hash.
-    SvrAuction { hint: B256, deadline: Instant },
+    /// SVR update announced on MEV-Share.
+    /// `hint` is the event hash (the backrun target).
+    /// `forwarder` is the transaction's `to` (the node forwarder).
+    /// `call_data` is `forward(address,bytes)`. The aggregator is inside it.
+    /// `caller` is the hint's `from` when the event included one.
+    SvrAuction {
+        hint: B256,
+        deadline: Instant,
+        forwarder: Address,
+        call_data: Bytes,
+        caller: Option<Address>,
+    },
 
     // ── contested but not auctioned: a latency/skill race.
     /// Public oracle transmit in the mempool; bundle behind it.
@@ -43,7 +53,10 @@ pub enum TriggerCause {
     /// TWAP / LP-collateral pool state moved.
     PoolStateChange { pool: Address },
     /// The borrower's own transaction moved them into range.
-    UserAction { tx: TxHash },
+    /// `Some` is the tx hash when ingest retained it. `None` means the
+    /// action is already in the committed block and no hash was kept —
+    /// the liquidation still submits, with no invented parent.
+    UserAction { tx: Option<TxHash> },
 
     // ── uncontested: won by breadth and correctness, not speed.
     /// A derived rate moved (wstETH `stEthPerToken`, sDAI `chi`, an LRT).
@@ -293,7 +306,7 @@ impl Drop for Drain<'_> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{Candidate, CandidateQueue, TriggerCause};
-    use alloy_primitives::{Address, B256, U256};
+    use alloy_primitives::{Address, Bytes, B256, U256};
     use liq_protocol::{
         AssetMask, CallbackShape, FlashRoute, Health, HealthState, LegChoice, Quote,
     };
@@ -356,6 +369,9 @@ mod tests {
                 TriggerCause::SvrAuction {
                     hint: B256::ZERO,
                     deadline: std::time::Instant::now(),
+                    forwarder: Address::ZERO,
+                    call_data: Bytes::new(),
+                    caller: None,
                 },
                 TriggerKind::SvrAuction,
             ),
@@ -376,7 +392,7 @@ mod tests {
                 TriggerKind::PoolStateChange,
             ),
             (
-                TriggerCause::UserAction { tx: B256::ZERO },
+                TriggerCause::UserAction { tx: None },
                 TriggerKind::UserAction,
             ),
             (

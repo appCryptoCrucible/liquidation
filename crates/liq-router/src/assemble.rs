@@ -1153,6 +1153,7 @@ mod tests {
             cost: CostModel::FEE_ONLY,
             close_bps: 0,
             exact_k: 8,
+            legs_per_plan: u8::MAX,
             nonce_slots: 4,
             header_gas_limit: 30_000_000,
             wrap_gas: [366_332, 355_632, 460_032, 370_435, 384_134],

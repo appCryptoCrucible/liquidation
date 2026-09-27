@@ -5,7 +5,7 @@ use super::{MevShareError, Result};
 use alloy_primitives::{Address, Bytes, Log, B256};
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
-use liq_types::{HaltReason, HaltScope, HaltSink, MevShareHint};
+use liq_types::{HaltReason, HaltScope, HaltSink, MevShareHint, TriggerKind};
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -78,6 +78,8 @@ struct RawHint {
     #[serde(default)]
     logs: Option<Vec<RawLog>>,
     #[serde(default)]
+    from: Option<Address>,
+    #[serde(default)]
     txs: Option<Vec<RawTx>>,
 }
 
@@ -89,6 +91,8 @@ struct RawTx {
     function_selector: Option<Bytes>,
     #[serde(default, rename = "callData")]
     call_data: Option<Bytes>,
+    #[serde(default)]
+    from: Option<Address>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,44 +104,79 @@ struct RawLog {
     data: Bytes,
 }
 
-/// Parse one stream / history hint object. `hash` is required (bundle ref).
+/// First transaction of an event. A bundle's later transactions are dropped.
+/// Prefer [`parse_event_hints`].
 pub fn parse_hint_json(data: &str) -> Result<MevShareHint> {
-    let raw: RawHint =
-        serde_json::from_str(data).map_err(|e| MevShareError::HintJson(e.to_string()))?;
-    hint_from_raw(raw)
+    parse_event_hints(data)?
+        .into_iter()
+        .next()
+        .ok_or(MevShareError::MissingHash)
 }
 
-fn hint_from_raw(raw: RawHint) -> Result<MevShareHint> {
+/// Every transaction in the event, each carrying the event hash.
+/// A bundle of several `forward` calls is one backrun target.
+pub fn parse_event_hints(data: &str) -> Result<Vec<MevShareHint>> {
+    let raw: RawHint =
+        serde_json::from_str(data).map_err(|e| MevShareError::HintJson(e.to_string()))?;
+    hints_from_raw(raw)
+}
+
+fn hints_from_raw(raw: RawHint) -> Result<Vec<MevShareHint>> {
     let hash = raw.hash.ok_or(MevShareError::MissingHash)?;
-    let tx = raw.txs.and_then(|mut t| {
-        if t.is_empty() {
-            None
-        } else {
-            Some(t.remove(0))
-        }
-    });
-    let to = raw.to.or(tx.as_ref().and_then(|t| t.to));
-    let sel_b = raw
-        .function_selector
-        .or(tx.as_ref().and_then(|t| t.function_selector.clone()));
-    let call_data = raw.call_data.or(tx.and_then(|t| t.call_data));
+    let logs = decode_logs(raw.logs)?;
+    let from = raw.from;
+    let txs = raw.txs.unwrap_or_default();
+    if txs.is_empty() {
+        let hint = one_hint(
+            hash,
+            raw.to,
+            raw.function_selector,
+            raw.call_data,
+            logs,
+            from,
+        )?;
+        return Ok(vec![hint]);
+    }
+    let mut out = Vec::with_capacity(txs.len());
+    for tx in txs {
+        let caller = tx.from.or(from);
+        out.push(one_hint(
+            hash,
+            tx.to,
+            tx.function_selector,
+            tx.call_data,
+            logs.clone(),
+            caller,
+        )?);
+    }
+    Ok(out)
+}
+
+fn decode_logs(raw_logs: Option<Vec<RawLog>>) -> Result<Option<Vec<Log>>> {
+    let Some(raw_logs) = raw_logs else {
+        return Ok(None);
+    };
+    let mut out = Vec::with_capacity(raw_logs.len());
+    for l in raw_logs {
+        let log = Log::new(l.address, l.topics, l.data).ok_or(MevShareError::BadLog)?;
+        out.push(log);
+    }
+    Ok(Some(out))
+}
+
+fn one_hint(
+    hash: alloy_primitives::B256,
+    to: Option<Address>,
+    sel_b: Option<Bytes>,
+    call_data: Option<Bytes>,
+    logs: Option<Vec<Log>>,
+    from: Option<Address>,
+) -> Result<MevShareHint> {
     let function_selector = match sel_b {
         None => None,
         Some(b) => {
-            let s = b.as_ref();
-            let four: [u8; 4] = s.try_into().map_err(|_| MevShareError::BadSelector)?;
+            let four: [u8; 4] = b.as_ref().try_into().map_err(|_| MevShareError::BadSelector)?;
             Some(four)
-        }
-    };
-    let logs = match raw.logs {
-        None => None,
-        Some(raw_logs) => {
-            let mut out = Vec::with_capacity(raw_logs.len());
-            for l in raw_logs {
-                let log = Log::new(l.address, l.topics, l.data).ok_or(MevShareError::BadLog)?;
-                out.push(log);
-            }
-            Some(out)
         }
     };
     Ok(MevShareHint {
@@ -146,6 +185,7 @@ fn hint_from_raw(raw: RawHint) -> Result<MevShareHint> {
         function_selector,
         call_data,
         logs,
+        from,
     })
 }
 
@@ -170,6 +210,10 @@ pub async fn drain_connection(
         sink.halt(HaltScope::Global, HaltReason::MevShareDisconnected);
         return Err(MevShareError::Http(format!("sse status {status}")));
     }
+    sink.clear(
+        HaltScope::Trigger(TriggerKind::SvrAuction),
+        HaltReason::MevShareDisconnected,
+    );
     let mut stream = resp.bytes_stream().eventsource();
     while let Some(item) = stream.next().await {
         match item {
@@ -177,7 +221,7 @@ pub async fn drain_connection(
                 if ev.data.is_empty() {
                     continue;
                 }
-                out.push(parse_hint_json(&ev.data)?);
+                out.extend(parse_event_hints(&ev.data)?);
             }
             Err(e) => {
                 sink.halt(HaltScope::Global, HaltReason::MevShareDisconnected);
@@ -187,6 +231,54 @@ pub async fn drain_connection(
     }
     sink.halt(HaltScope::Global, HaltReason::MevShareDisconnected);
     Ok(())
+}
+
+/// Blocking reader. Pushes every transaction of each event. On disconnect,
+/// backs off and reconnects. A full ring drops the hint that did not fit.
+pub fn spawn_hint_reader(
+    sink: &'static dyn HaltSink,
+    mut out: rtrb::Producer<MevShareHint>,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("liq-oracle-mevshare".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::error!(error = %e, "SVR stream runtime refused");
+                    sink.halt(HaltScope::Global, HaltReason::MevShareDisconnected);
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                let client = match sse_client() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::error!(error = %e, "SVR stream client refused");
+                        sink.halt(HaltScope::Global, HaltReason::MevShareDisconnected);
+                        return;
+                    }
+                };
+                let mut attempt = 0u32;
+                let mut buf = Vec::new();
+                loop {
+                    buf.clear();
+                    if let Err(e) = drain_connection(&client, MEV_SHARE_SSE, sink, &mut buf).await {
+                        tracing::error!(error = %e, "SVR stream disconnected");
+                    }
+                    for hint in buf.drain(..) {
+                        if out.push(hint).is_err() {
+                            tracing::error!("SVR hint ring full — hint dropped");
+                        }
+                    }
+                    tokio::time::sleep(backoff_delay(attempt)).await;
+                    attempt = attempt.saturating_add(1);
+                }
+            });
+        })
 }
 
 #[cfg(test)]
@@ -241,5 +333,21 @@ mod tests {
         assert_eq!(events[0].hash, hash);
         assert!(parse_hint_json("{}").is_err(), "oracle: Def — missing hash");
         let _ = sse_client;
+    }
+
+    /// A bundle event is one hash and one hint per transaction.
+    #[test]
+    fn bundle_event_keeps_every_tx() {
+        let hash = b256!("0x2222222222222222222222222222222222222222222222222222222222222222");
+        let raw = format!(
+            r#"{{"hash":"{hash:#x}","txs":[{{"to":"0x0000000000000000000000000000000000000001","functionSelector":"0x6fadcf72"}},{{"to":"0x0000000000000000000000000000000000000002","functionSelector":"0x6fadcf72"}}]}}"#
+        );
+        let hints = super::parse_event_hints(&raw).unwrap();
+        assert_eq!(hints.len(), 2);
+        assert_eq!(hints[0].hash, hash);
+        assert_eq!(hints[1].hash, hash);
+        assert_ne!(hints[0].to, hints[1].to);
+        let first = parse_hint_json(&raw).unwrap();
+        assert_eq!(first.to, hints[0].to);
     }
 }

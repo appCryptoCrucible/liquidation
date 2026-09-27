@@ -143,7 +143,10 @@ mod tests {
                 .find(|b| b.name == name)
                 .map(|b| b.endpoint)
         };
-        assert_eq!(endpoint("beaverbuild"), Some("https://rpc.beaverbuild.org/"));
+        assert_eq!(
+            endpoint("beaverbuild"),
+            Some("https://rpc.beaverbuild.org/")
+        );
         assert_eq!(endpoint("rsync"), Some("https://rsync-builder.xyz"));
         assert_eq!(
             endpoint("titan-us"),
@@ -167,7 +170,9 @@ mod tests {
             !urls.contains(&"https://rpc.titanbuilder.xyz"),
             "Titan's geo URL is documented to misroute"
         );
-        assert!(!urls.iter().any(|u| u.contains("ap.rpc") || u.contains("direct-ap")));
+        assert!(!urls
+            .iter()
+            .any(|u| u.contains("ap.rpc") || u.contains("direct-ap")));
         assert_eq!(
             PLANNED_EXECUTOR.to_string().to_ascii_lowercase(),
             "0xe0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0"

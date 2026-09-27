@@ -1,5 +1,5 @@
 [Unit]
-Description=Reth (liq-bot ExEx host)
+Description=Reth (liquidation ExEx host) on the EPYC 4564P box
 After=network-online.target
 Wants=network-online.target
 
@@ -8,8 +8,35 @@ Type=simple
 Restart=on-failure
 RestartSec=5
 WorkingDirectory=/opt/liq
-# Binary path is operator-local. Do not invent a public-mempool flag.
-ExecStart=/opt/liq/reth --chain mainnet
+# Binary is this repo's `liq-reth` bin (`cargo build -p liq-reth --release --features node`).
+# `node` is required: without it the Reth CLI does not start the execution client.
+# Do not set CPUAffinity. Isolated cores are in the kernel cmdline
+# (ops/host/cmdline); this process must still be allowed to pin onto them.
+#
+# JWT is created on the box before the first start, mode 0600, and is not in git.
+# Reth reads the file; it does not create it when this flag is set. A missing
+# file fails startup. Lighthouse `--execution-jwt` uses the same path.
+#   install -m 600 /dev/null /opt/liq/jwt.hex
+#   openssl rand -hex 32 > /opt/liq/jwt.hex
+#
+# HTTP is off in Reth unless `--http` is set. The ExEx waits on LIQ_RPC_URL
+# for eth_chainId before it attaches the liquidation loop. Keep that URL on
+# the same address this unit binds.
+#
+# Disks (ops/host/fstab). Mounts must exist before the first start.
+#   /var/reth          1.9 TB A   mdbx + rocksdb
+#   /var/reth-static   1.9 TB B   static files
+#   /var/liq/bot       480 GB B   snapshot.bin + wal.log
+Environment=LIQ_RPC_URL=http://127.0.0.1:8545
+Environment=LIQ_STATE_DIR=/var/liq/bot
+MemorySwapMax=0
+ExecStart=/opt/liq/reth node \
+  --chain mainnet \
+  --datadir /var/reth \
+  --datadir.static-files /var/reth-static \
+  --http --http.addr 127.0.0.1 --http.port 8545 --http.api eth \
+  --authrpc.addr 127.0.0.1 --authrpc.port 8551 \
+  --authrpc.jwtsecret /opt/liq/jwt.hex
 # submit_enabled is liq-bot config, not a Reth switch.
 
 [Install]

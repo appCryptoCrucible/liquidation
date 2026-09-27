@@ -5,8 +5,9 @@
 //! other protocol at 65% / 67%, split at 3 ETH of sized repay. [`F(β)`]
 //! fits are WP **12B** and are not implemented here.
 //!
-//! Three channels, one fraction: coinbase `bidBps`, the 1 gwei priority,
-//! and MEV-Share `refundConfig` as a refund percentage.
+//! Two channels, one fraction: coinbase `bidBps` of realized net, and the
+//! 1 gwei priority. MEV-Share's refund percent is not this fraction. The
+//! matchmaker sets it on the coinbase payment when it replaces the hash.
 
 use alloy_primitives::U256;
 use liq_types::ProtocolId;
@@ -140,8 +141,7 @@ pub struct Bid {
     pub coinbase_bps: u16,
     /// Wei per gas. Modest, nonzero; the coinbase transfer is the bid.
     pub priority_wei: u128,
-    /// MEV-Share / SVR `refundConfig` percentage (share of the backrun
-    /// returned to the hint). Same `β` — SVR is not a separate wei amount.
+    /// Same `β` as [`Self::coinbase_bps`]. Not the MEV-Share refund percent.
     pub refund_bps: u16,
 }
 
@@ -225,7 +225,7 @@ mod tests {
         let cfg = BidConfig::new(9_900, 9_900, 0, 0).unwrap();
         let b = bid(&cfg, 0, 1).unwrap();
         assert_eq!(b.coinbase_bps, 9_900);
-        assert_eq!(b.refund_bps, 9_900, "SVR refund is the same β");
+        assert_eq!(b.refund_bps, 9_900);
         assert_eq!(b.priority_wei, 1);
         assert_eq!(bid(&cfg, 10_001, 1), Err(BidError::BadDraw(10_001)));
         assert_eq!(bid(&cfg, 0, 0), Err(BidError::MissingPriority));

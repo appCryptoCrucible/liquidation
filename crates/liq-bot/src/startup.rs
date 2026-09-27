@@ -103,6 +103,8 @@ pub fn pin_threads(cores_path: &Path, allow_unpinned: bool) -> Result<CoreMap, S
     let hot = map.slot("liq-node-hot")?;
     configure_hot_pin(hot.core);
     if !allow_unpinned {
+        #[cfg(target_os = "linux")]
+        map.assert_live_l3()?;
         tracing::info!(core = hot.core, "hot pin configured; allow_unpinned=false");
     }
     Ok(map)
@@ -113,12 +115,15 @@ pub struct Started {
     pub shared: &'static Shared,
     pub hot: liq_node::HotHandle,
     pub forwarder: liq_node::ExExForwarder,
+    /// Union-filter addresses. The ExEx copies only these logs.
+    pub tracked: std::collections::HashSet<alloy_primitives::Address>,
     /// 13A path. `None` when secrets/builders are missing — not an invented signer.
     pub exec: Option<Arc<ExecPath<ShadowRecorder, &'static RiskGate>>>,
     pub assemble: ProcessAssembleView,
     /// Inclusion watcher threads. `None` when the feed could not be built.
     pub inclusion: Option<crate::inclusion_feed::InclusionJoin>,
     _stall: Option<std::thread::JoinHandle<()>>,
+    _svr: Option<std::thread::JoinHandle<()>>,
 }
 
 /// Step 5: split ExEx rings and spawn hot (pin asserted inside).
@@ -131,7 +136,14 @@ pub fn register_exex(
     index: &'static crate::index::BoundIndex,
     allow_unpinned: bool,
     after_block: Option<Box<dyn liq_node::AfterBlock>>,
-) -> Result<(liq_node::ExExForwarder, liq_node::HotHandle), StartupError> {
+) -> Result<
+    (
+        liq_node::ExExForwarder,
+        liq_node::HotHandle,
+        std::collections::HashSet<alloy_primitives::Address>,
+    ),
+    StartupError,
+> {
     let inst = prepare();
     if adapters.is_empty() {
         tracing::error!("empty protocol list — ExEx protocol ids empty");
@@ -141,6 +153,7 @@ pub fn register_exex(
     }
     let subs = bind::router_subscribers(adapters, index);
     let router = LogRouter::from_subscribers(&subs).map_err(StartupError::Ingest)?;
+    let tracked = router.tracked_addresses().clone();
     let handle = install_hot(
         store,
         router,
@@ -152,7 +165,7 @@ pub fn register_exex(
         allow_unpinned,
         after_block,
     )?;
-    Ok((inst.forwarder, handle))
+    Ok((inst.forwarder, handle, tracked))
 }
 
 /// `PROFIT_SINK` is the Executor's sink. Unset or zero leaves inclusion
@@ -402,6 +415,7 @@ pub async fn run(
             "protocol price reader not started — health priced from canonical feeds only"
         );
     }
+    let svr = start_svr_reader(index, shared.risk);
     let hook = DrainJoin::live(
         Arc::clone(&shared.flash),
         shared.routes.clone(),
@@ -423,9 +437,13 @@ pub async fn run(
     .with_bid_cfg(bid_cfg)
     .with_header_clock(clock)
     .with_price_reader(price_reader);
+    let (hook, svr_thread) = match svr {
+        Some((rx, targets, handle)) => (hook.with_svr(rx, targets), Some(handle)),
+        None => (hook, None),
+    };
     let _map = pin_threads(cores_path, allow_unpinned)?;
     let sink: &'static dyn liq_types::HaltSink = shared.risk;
-    let (forwarder, hot) = register_exex(
+    let (forwarder, hot, tracked) = register_exex(
         store,
         sink,
         adapters,
@@ -438,11 +456,48 @@ pub async fn run(
         shared,
         hot,
         forwarder,
+        tracked,
         exec,
         assemble,
         inclusion,
         _stall: stall,
+        _svr: svr_thread,
     })
+}
+
+/// MEV-Share reader for configured SVR aggregators. No targets, or a
+/// refused book, does not open the stream.
+fn start_svr_reader(
+    index: &'static crate::index::BoundIndex,
+    sink: &'static dyn liq_types::HaltSink,
+) -> Option<(
+    rtrb::Consumer<liq_types::MevShareHint>,
+    Vec<liq_oracle::mevshare::SvrTarget>,
+    std::thread::JoinHandle<()>,
+)> {
+    let Some(book) = index.canonical.as_ref() else {
+        tracing::error!("canonical book absent — MEV-Share reader not started");
+        return None;
+    };
+    let targets = match book.lock().svr_targets() {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(error = %e, "SVR targets refused — MEV-Share reader not started");
+            return None;
+        }
+    };
+    if targets.is_empty() {
+        tracing::error!("no chainlink-svr aggregators — MEV-Share reader not started");
+        return None;
+    }
+    let (tx, rx) = rtrb::RingBuffer::<liq_types::MevShareHint>::new(1024);
+    match liq_oracle::mevshare::spawn_hint_reader(sink, tx) {
+        Ok(handle) => Some((rx, targets, handle)),
+        Err(e) => {
+            tracing::error!(error = %e, "SVR stream thread refused");
+            None
+        }
+    }
 }
 
 /// 16D monitor. Empty window stays ABSENT. Does not write a numeric p99.

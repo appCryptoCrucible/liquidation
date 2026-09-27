@@ -1,9 +1,9 @@
 //! ExEx registration + `liq-node-hot` spawn seam (WP 03B, GUIDE 03 §1).
 //!
-//! A2 (Reth in-process) is deferred (D60). Pinning: [`HotSpawn::allow_unpinned`]
-//! is `true` until A1 `cores.toml` matches live `shared_cpu_list`; then 16A
-//! [`crate::threads::pin_to_core`] is wired with `allow_unpinned: false`
-//! (fail-closed). 17A binds the forwarder to `ExExContext`.
+//! Pinning: production passes `allow_unpinned: false`. Linux startup
+//! compares `cores.toml` to live `shared_cpu_list` and fails closed on a
+//! mismatch. The Reth process (`crates/liq-reth`) owns [`ExExForwarder`]
+//! and is the only producer.
 
 use std::sync::atomic::Ordering;
 use std::thread::{Builder, JoinHandle};

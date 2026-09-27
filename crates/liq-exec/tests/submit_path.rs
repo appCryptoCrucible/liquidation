@@ -67,7 +67,6 @@ fn job(kind: TriggerKind, hint: Option<B256>, backrun: Option<Bytes>) -> liq_exe
         max_block: max,
         fee: quote(100),
         auction_bps: 9_000,
-        refund_address: OPERATOR,
         calldata: Bytes::from_static(&[0x11, 0x22]),
         gas_limit: 200_000,
         chain_id: 1,

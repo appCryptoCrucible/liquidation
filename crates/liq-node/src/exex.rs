@@ -6,12 +6,15 @@
 //! is consistent — never before. Emitting early lets Reth prune a block we
 //! have not actually folded (GUIDE 03: crash then gaps).
 //!
-//! A2 (in-process Reth) is deferred (D60). Types here are the fork-fixture
-//! seam 17A binds to `ExExContext` once the node crate exists.
+//! `crates/liq-reth` (feature `node`) is the process that polls Reth and
+//! pushes into this ring. It may send `FinishedHeight` only after
+//! [`ExExForwarder::take_finished`].
 
 use alloy_primitives::B256;
 use arc_swap::ArcSwap;
 use rtrb::{Consumer, Producer, RingBuffer};
+use std::sync::Arc;
+use tokio::sync::Notify;
 
 use crate::source::OwnedBlock;
 use crate::{BlockNum, IngestError, Result};
@@ -97,6 +100,9 @@ pub struct ExExForwarder {
     to_hot: Producer<Notification>,
     from_hot: Consumer<FinishedUpTo>,
     recycle: Consumer<OwnedBlock>,
+    /// Hot thread rejected a commit/reorg (store not consistent).
+    refused: Consumer<()>,
+    wake: Arc<Notify>,
 }
 
 /// Hot-thread side.
@@ -104,6 +110,8 @@ pub struct HotIngress {
     pub from_exex: Consumer<Notification>,
     pub to_exex: Producer<FinishedUpTo>,
     pub recycle: Producer<OwnedBlock>,
+    refuse_tx: Producer<()>,
+    wake: Arc<Notify>,
 }
 
 /// Split both rings. Owned payloads only.
@@ -112,16 +120,22 @@ pub fn split_exex() -> (ExExForwarder, HotIngress) {
     let (to_hot, from_exex) = RingBuffer::<Notification>::new(NOTIF_CAP);
     let (to_exex, from_hot) = RingBuffer::<FinishedUpTo>::new(NOTIF_CAP);
     let (recycle_p, recycle_c) = RingBuffer::<OwnedBlock>::new(NOTIF_CAP);
+    let (refuse_tx, refused) = RingBuffer::<()>::new(NOTIF_CAP);
+    let wake = Arc::new(Notify::new());
     (
         ExExForwarder {
             to_hot,
             from_hot,
             recycle: recycle_c,
+            refused,
+            wake: Arc::clone(&wake),
         },
         HotIngress {
             from_exex,
             to_exex,
             recycle: recycle_p,
+            refuse_tx,
+            wake,
         },
     )
 }
@@ -137,9 +151,31 @@ impl ExExForwarder {
         })
     }
 
+    /// Free slots in the hot-bound ring. The producer is the only writer, so a
+    /// positive count stays positive until [`Self::push`].
+    #[inline]
+    #[must_use]
+    pub fn has_capacity(&self) -> bool {
+        self.to_hot.slots() > 0
+    }
+
+    /// Permit registered by [`Notify::notified`]. Create this *before* checking
+    /// the rings so a wake between the check and the await is not lost.
+    /// The returned permit is itself `must_use`.
+    pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.wake.notified()
+    }
+
     /// Non-blocking. The ExEx future sends `FinishedHeight` for each.
     pub fn take_finished(&mut self) -> Option<FinishedUpTo> {
         self.from_hot.pop().ok()
+    }
+
+    /// Hot thread consumed a commit or reorg without making the store consistent.
+    #[inline]
+    #[must_use]
+    pub fn take_refused(&mut self) -> bool {
+        self.refused.pop().is_ok()
     }
 
     /// Recycle an [`OwnedBlock`] buffer from the hot thread (03A return-ring).
@@ -158,7 +194,26 @@ impl HotIngress {
         self.to_exex.push(done).map_err(|_| {
             tracing::error!("hot → ExEx FinishedHeight ring full");
             IngestError::HotStalled
-        })
+        })?;
+        self.wake.notify_one();
+        Ok(())
+    }
+
+    /// Commit or reorg was consumed and the store is not at its tip.
+    /// No [`FinishedUpTo`] is published.
+    pub fn refuse(&mut self) -> Result<()> {
+        self.refuse_tx.push(()).map_err(|_| {
+            tracing::error!("hot → ExEx refuse ring full");
+            IngestError::HotStalled
+        })?;
+        self.wake.notify_one();
+        Ok(())
+    }
+
+    /// Wake the ExEx future. Reverts confirm nothing; this is their completion signal.
+    #[inline]
+    pub fn wake(&self) {
+        self.wake.notify_one();
     }
 
     pub fn recycle_block(&mut self, mut block: OwnedBlock) {
@@ -234,5 +289,16 @@ mod tests {
         let got = fwd.take_finished().unwrap();
         assert_eq!(got.num_hash.number, 1);
         assert!(fwd.take_finished().is_none());
+        assert!(!fwd.take_refused());
+    }
+
+    /// Oracle: a refused commit must not look like a height Reth may prune to.
+    #[test]
+    fn refuse_is_not_finished_height() {
+        let (mut fwd, mut hot) = split_exex();
+        hot.refuse().unwrap();
+        assert!(fwd.take_finished().is_none());
+        assert!(fwd.take_refused());
+        assert!(!fwd.take_refused());
     }
 }

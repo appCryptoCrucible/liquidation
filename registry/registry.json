@@ -58722,21 +58722,21 @@
    "aggregator": "0x7c7fdfca295a787ded12bb5c1a49a8d2cc20e3f8",
    "pair": "aave-v3/0xc02aaa39",
    "decimals": 8,
-   "svr": false,
+   "svr": true,
    "source": "aave-v3:getSourceOfAsset"
   },
   "0xc7e9b623ed51f033b32ae7f1282b1ad62c28c183": {
    "aggregator": "0x64c67984a458513c6bab23a815916b1b1075cf3a",
    "pair": "aave-v3/0x51491077",
    "decimals": 8,
-   "svr": false,
+   "svr": true,
    "source": "aave-v3:getSourceOfAsset"
   },
   "0xf02c1e2a3b77c1cacc72f72b44f7d0a4c62e4a85": {
    "aggregator": "0xcd07b31d85756098334eddc92de755deae8fe62f",
    "pair": "aave-v3/0x7fc66500",
    "decimals": 8,
-   "svr": false,
+   "svr": true,
    "source": "aave-v3:getSourceOfAsset"
   },
   "0xcd627aa160a6fa45eb793d19ef54f5062f20f33f": {
@@ -58813,7 +58813,7 @@
    "aggregator": "0xdc715c751f1cc129a6b47fedc87d9918a4580502",
    "pair": "aave-v3/0x18084fba",
    "decimals": 8,
-   "svr": false,
+   "svr": true,
    "source": "aave-v3:getSourceOfAsset"
   },
   "0x214ed9da11d2fbe465a6fc601a91e62ebec1a0d6": {

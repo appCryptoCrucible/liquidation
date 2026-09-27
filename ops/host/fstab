@@ -1,0 +1,19 @@
+# EPYC 4564P disk roles. Label the filesystems on the box; do not put
+# /dev/nvme* names here (enumeration reorders). No swap partition.
+# Do not mirror or stripe the 1.9 TB pair: a mirror is the size that fills
+# during `reth download --with-receipts-since`, and either volume dying is
+# a re-download (`reth download` is the recovery).
+#
+#   480 GB A   /                 OS (already mounted; not listed)
+#   480 GB B   /var/liq          Lighthouse datadir + bot state (snapshot, WAL)
+#   1.9 TB A   /var/reth         Reth datadir (mdbx + rocksdb)
+#   1.9 TB B   /var/reth-static  Reth static files
+#
+#   mkfs.ext4 -L liq-local    <480 GB B by-id>
+#   mkfs.ext4 -L reth-hot     <1.9 TB A by-id>
+#   mkfs.ext4 -L reth-static  <1.9 TB B by-id>
+#   mkdir -p /var/liq/bot /var/liq/lighthouse /var/reth /var/reth-static
+
+LABEL=liq-local    /var/liq          ext4  noatime          0 2
+LABEL=reth-hot     /var/reth         ext4  noatime,discard  0 2
+LABEL=reth-static  /var/reth-static  ext4  noatime,discard  0 2

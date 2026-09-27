@@ -1,5 +1,5 @@
 [Unit]
-Description=liq-bot (ExEx / supervisor)
+Description=liq-bot standalone (does not start Reth)
 Documentation=file:liquidator-guides/GUIDE-17-operations.md
 After=network-online.target
 Wants=network-online.target
@@ -8,8 +8,11 @@ Wants=network-online.target
 Type=simple
 Restart=on-failure
 RestartSec=5
+# Production process is reth-liq.service. This unit starts the standalone
+# binary, which does not start Reth or Lighthouse.
 # Live send stays off. Do not set this true here — H4 only, via config reload.
 Environment=LIQ_SUBMIT_ENABLED=false
+Environment=LIQ_STATE_DIR=/var/liq/bot
 WorkingDirectory=/opt/liq
 ExecStart=/opt/liq/target/release/liq-bot
 # Operator keys are 17B. This unit does not generate them.

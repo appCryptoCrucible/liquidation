@@ -27,10 +27,14 @@ impl Confidence {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MevShareHint {
     pub hash: B256,
+    /// Transaction destination. For an SVR update this is the node forwarder,
+    /// not the aggregator.
     pub to: Option<Address>,
     pub function_selector: Option<[u8; 4]>,
     pub call_data: Option<Bytes>,
     pub logs: Option<Vec<Log>>,
+    /// Present only when the event included `from`. Absent is not a guessed sender.
+    pub from: Option<Address>,
 }
 
 /// How a price was obtained. The executor branches on this (GUIDE 06 §1).

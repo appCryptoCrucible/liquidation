@@ -17,7 +17,7 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use alloy_primitives::{B256, U256};
+use alloy_primitives::{Address, Bytes, B256, U256};
 use common::*;
 use liq_engine::{classify, EngineError, TriggerCause};
 use liq_protocol::{DirtySet, MarketSlot, Protocol};
@@ -184,6 +184,7 @@ fn predicted_prewarms_announced_fires_canonical_commits() {
                 function_selector: None,
                 call_data: None,
                 logs: None,
+                from: None,
             },
             deadline,
         },
@@ -197,7 +198,10 @@ fn predicted_prewarms_announced_fires_canonical_commits() {
             c.cause,
             TriggerCause::SvrAuction {
                 hint: B256::repeat_byte(0xaa),
-                deadline
+                deadline,
+                forwarder: Address::ZERO,
+                call_data: Bytes::new(),
+                caller: None,
             }
         );
         assert_eq!(c.deadline, Some(deadline));
@@ -515,7 +519,7 @@ fn dirty_sets_fold_the_right_positions_with_the_given_cause() {
     let folds = |rig: &Rig| rig.engine.stats().folds;
 
     let tx = B256::repeat_byte(0x77);
-    let cause = TriggerCause::UserAction { tx };
+    let cause = TriggerCause::UserAction { tx: Some(tx) };
     let f = folds(&rig);
     rig.with_world(T0, |e, w| {
         e.on_dirty(w, PROTOCOL, &DirtySet::Positions(smallvec![pid(3)]), &cause)
@@ -525,7 +529,7 @@ fn dirty_sets_fold_the_right_positions_with_the_given_cause() {
     let got: Vec<_> = rig.engine.candidates().collect();
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].position, pid(3));
-    assert_eq!(got[0].cause, TriggerCause::UserAction { tx });
+    assert_eq!(got[0].cause, TriggerCause::UserAction { tx: Some(tx) });
 
     // Accrual on the DAI row: Hot (0..=3) + Warm/Cool holders of DAI debt.
     let dai_row = MarketSlot {

@@ -10,7 +10,7 @@ use crate::fee::FeeQuote;
 use crate::inclusion::{spawn_watch, Tracked, WatchCmd};
 use crate::nonce::{AllocatedNonce, NonceAllocator, NonceMode};
 use crate::submit::{
-    bid_policy, refund_percent, route, BuilderBundle, LiveSendBits, MevShare, SubmitEnabled,
+    bid_policy, route, BuilderBundle, LiveSendBits, MevShare, SubmitEnabled,
 };
 use crate::template::{sign_call, CallSpec, PrecomputedSigner, SignedTx};
 use alloy_primitives::{Address, Bytes, B256, U256};
@@ -51,9 +51,9 @@ pub struct ExecJob {
     pub target_block: u64,
     pub max_block: u64,
     pub fee: FeeQuote,
-    /// Bid-channel auction bps. Forced to 0 for InterestDrift / Stale.
+    /// Coinbase bid in bps of realized net. Forced to 0 for InterestDrift / Stale.
+    /// Not the MEV-Share refund percent.
     pub auction_bps: u16,
-    pub refund_address: Address,
     pub calldata: Bytes,
     pub gas_limit: u64,
     pub chain_id: u64,
@@ -299,7 +299,7 @@ where
         }
 
         if let Err(e) = self
-            .send_signed(job, &routed.venue, &signed, &routed.policy)
+            .send_signed(job, &routed.venue, &signed)
             .await
         {
             self.mark_nonce_dropped(&allocated);
@@ -357,19 +357,15 @@ where
         job: &ExecJob,
         venue: &Venue,
         signed: &SignedTx,
-        policy: &crate::submit::BidPolicy,
     ) -> Result<()> {
         match venue {
             Venue::MevShare { .. } => {
                 let hint = job.hint_hash.ok_or(ExecError::MissingHintHash)?;
-                let pct = refund_percent(policy.auction_bps)?;
                 let bundle = SendBundle {
                     block: job.target_block,
                     max_block: job.max_block,
                     hint_hash: hint,
                     signed_liquidation: signed.raw.clone(),
-                    refund_address: job.refund_address,
-                    refund_percent: pct,
                 };
                 let req = self.mevshare.sign(&bundle)?;
                 let _ = self.mevshare.send(&self.http, &req).await?;
@@ -457,13 +453,14 @@ pub fn require_venue_inputs(job: &ExecJob, venue: &Venue) -> Result<()> {
                 return Err(ExecError::MissingHintHash);
             }
         }
-        TriggerKind::InterestDrift | TriggerKind::Stale | TriggerKind::ParamChange => {}
-        TriggerKind::OraclePredicted => return Err(ExecError::PredictedNotSubmittable),
-        TriggerKind::OraclePublic
-        | TriggerKind::OraclePullHeld
-        | TriggerKind::PoolStateChange
+        TriggerKind::InterestDrift
+        | TriggerKind::Stale
+        | TriggerKind::ParamChange
         | TriggerKind::UserAction
-        | TriggerKind::DerivedRate => {
+        | TriggerKind::DerivedRate
+        | TriggerKind::PoolStateChange => {}
+        TriggerKind::OraclePredicted => return Err(ExecError::PredictedNotSubmittable),
+        TriggerKind::OraclePublic | TriggerKind::OraclePullHeld => {
             if matches!(venue, Venue::BuilderBundle { .. }) {
                 match &job.backrun_tx {
                     Some(b) if !b.is_empty() => {}
@@ -480,16 +477,18 @@ pub fn require_venue_inputs(job: &ExecJob, venue: &Venue) -> Result<()> {
 
 fn bundle_txs(job: &ExecJob, signed: &SignedTx) -> Result<Vec<Bytes>> {
     match job.trigger {
-        TriggerKind::InterestDrift | TriggerKind::Stale | TriggerKind::ParamChange => {
-            Ok(vec![signed.raw.clone()])
-        }
+        TriggerKind::InterestDrift
+        | TriggerKind::Stale
+        | TriggerKind::ParamChange
+        | TriggerKind::UserAction
+        | TriggerKind::DerivedRate
+        | TriggerKind::PoolStateChange => match &job.backrun_tx {
+            Some(parent) if !parent.is_empty() => Ok(vec![parent.clone(), signed.raw.clone()]),
+            _ => Ok(vec![signed.raw.clone()]),
+        },
         TriggerKind::SvrAuction => Err(ExecError::WrongVenueBuilder),
         TriggerKind::OraclePredicted => Err(ExecError::PredictedNotSubmittable),
-        TriggerKind::OraclePublic
-        | TriggerKind::OraclePullHeld
-        | TriggerKind::PoolStateChange
-        | TriggerKind::UserAction
-        | TriggerKind::DerivedRate => {
+        TriggerKind::OraclePublic | TriggerKind::OraclePullHeld => {
             let parent = job.backrun_tx.clone().ok_or(ExecError::MissingBackrunTx)?;
             if parent.is_empty() {
                 return Err(ExecError::MissingBackrunTx);
@@ -667,6 +666,42 @@ mod tests {
     }
 
     #[test]
+    fn user_action_without_parent_is_one_tx() {
+        let job = dummy_job(TriggerKind::UserAction);
+        let builders = crate::builders::BuilderSet::from_parts(
+            vec![crate::builders::BuilderEndpoint {
+                id: liq_types::BuilderId(1),
+                name: "t",
+                endpoint: crate::builders::leak_str("http://127.0.0.1:1/".into()),
+            }],
+            crate::builders::leak_str("http://127.0.0.1:2/".into()),
+        )
+        .unwrap();
+        let routed = crate::submit::route(job.trigger, &builders, 9_000, 10, 2).unwrap();
+        assert!(routed.policy.one_tx);
+        assert_eq!(routed.policy.auction_bps, 0);
+        require_venue_inputs(&job, &routed.venue).unwrap();
+        let signed = crate::template::sign_call(
+            &PrecomputedSigner::from_secret(b256!(
+                "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+            ))
+            .unwrap(),
+            crate::template::CallSpec {
+                chain_id: 1,
+                nonce: 0,
+                to: address!("0x0000000000000000000000000000000000000001"),
+                input: Bytes::from_static(&[0x01]),
+                gas_limit: 100_000,
+                fees: &job.fee.bind(job.target_block, job.max_block).unwrap(),
+                priority: 2,
+            },
+        )
+        .unwrap();
+        let txs = bundle_txs(&job, &signed).unwrap();
+        assert_eq!(txs.len(), 1);
+    }
+
+    #[test]
     fn oracle_public_without_backrun_fails_before_record() {
         let job = dummy_job(TriggerKind::OraclePublic);
         let builders = crate::builders::BuilderSet::from_parts(
@@ -716,7 +751,6 @@ mod tests {
             max_block: 101,
             fee: quote(100),
             auction_bps: 9_000,
-            refund_address: Address::ZERO,
             calldata: Bytes::from_static(&[0xab]),
             gas_limit: 200_000,
             chain_id: 1,

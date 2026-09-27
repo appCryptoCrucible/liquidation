@@ -781,7 +781,16 @@ mod tests {
         assert!(weth_rows.iter().all(|s| s.spec.proxy == WETH_PROXY));
         assert!(weth_rows
             .iter()
-            .all(|s| s.spec.mechanism == Mechanism::ChainlinkPush));
+            .all(|s| s.spec.mechanism == Mechanism::ChainlinkSvr));
+        assert!(weth_rows
+            .iter()
+            .all(|s| s.spec.svr_aggregator == Some(WETH_AGG)));
+        let svr = set
+            .specs
+            .iter()
+            .filter(|s| s.spec.mechanism == Mechanism::ChainlinkSvr)
+            .count();
+        assert_eq!(svr, 5, "WETH × 2 markets plus LINK, AAVE, tBTC");
     }
 
     /// Oracle: GUIDE 06 §2 + WP 06A-1 mutation. Flip WETH aggregator's

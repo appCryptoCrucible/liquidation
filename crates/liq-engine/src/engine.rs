@@ -37,7 +37,7 @@
 
 use std::time::Instant;
 
-use alloy_primitives::U256;
+use alloy_primitives::{Address, Bytes, U256};
 use fixedbitset::FixedBitSet;
 use liq_flash::{is_eligible, Eligibility, FlashIndex, Haircut};
 use liq_protocol::{
@@ -372,6 +372,9 @@ impl Engine {
                 let cause = TriggerCause::SvrAuction {
                     hint: hint.hash,
                     deadline: *deadline,
+                    forwarder: hint.to.unwrap_or(Address::ZERO),
+                    call_data: hint.call_data.clone().unwrap_or_else(Bytes::new),
+                    caller: hint.from,
                 };
                 self.announce(w, tick, i, canonical, &cause, Some(*deadline))
             }
@@ -696,6 +699,7 @@ fn slim(p: &Price) -> Price {
                 function_selector: hint.function_selector,
                 call_data: None,
                 logs: None,
+                from: None,
             },
             deadline: *deadline,
         },
@@ -842,12 +846,16 @@ fn fold(
             }
         }
     }
-    // Heap: only a healthy position has a future crossing; a liquidatable
-    // one is `Hot` and folded every block anyway.
+    // Heap: a liquidatable position is `Hot` and folded every block.
+    // A healthy one with a closed-form crossing is scheduled at that time.
+    // Adapters with no rate in their events return `None` (Compound, Fluid,
+    // Silo, and a Gearbox account that is not yet expired). Schedule those
+    // at the observed timestamp so the next block recomputes them. That
+    // timestamp is not a predicted crossing.
     if debt && h.hf >= Ray::ONE {
         match p.time_to_cross(pos, px)? {
             Some(at) => t.heap.push(at, id),
-            None => t.heap.invalidate(id),
+            None => t.heap.push(w.view.timestamp(), id),
         }
     } else {
         t.heap.invalidate(id);

@@ -164,7 +164,8 @@ pub fn admit<'a>(p: &'a PositionInput<'a>) -> Option<Eligible<'a>> {
     Some(Eligible { pos: p })
 }
 
-/// 07B cascade `MAX_CANDIDATES` — exact-solve K. Not a bid parameter.
+/// Legs in one ordinary bundle. The drain exact-solves `EXACT_K * NONCE_SLOTS`
+/// so every bundle goes out in the same block. Not a bid parameter.
 pub const EXACT_K: u8 = 8;
 /// GUIDE 13 nonce-slot budget (one plan per slot).
 pub const NONCE_SLOTS: u8 = 20;
@@ -185,6 +186,9 @@ pub struct SelectCfg {
     pub close_bps: u16,
     /// Exact-solve the top `exact_k` after a warm crude rank. `0` refused.
     pub exact_k: u8,
+    /// Legs in one plan. The next leg opens another nonce slot.
+    /// [`u8::MAX`] does not split on count (the SVR backrun).
+    pub legs_per_plan: u8,
     /// Max bundles this drain may emit (GUIDE 13 nonce slots).
     pub nonce_slots: u8,
     pub header_gas_limit: u64,
@@ -533,6 +537,22 @@ fn pack(
                 };
             }
         }
+        if cfg.legs_per_plan != u8::MAX
+            && plan_leg_count(&cur) >= usize::from(cfg.legs_per_plan)
+            && !cur.groups.is_empty()
+        {
+            seal_cascades(&mut cur, cfg, flash, book, gas)?;
+            if !cur.groups.is_empty() {
+                plans.push(cur);
+            }
+            if plans.len() >= usize::from(cfg.nonce_slots) {
+                return Ok(plans);
+            }
+            cur = SelectedPlan {
+                groups: SmallVec::new(),
+                hop_and_wrap_gas: 0,
+            };
+        }
         let liq = cfg.liq_gas.get(s.protocol)?;
         let incr_for = |same_debt: bool| -> u64 {
             if same_debt {
@@ -545,6 +565,14 @@ fn pack(
         let mut incr = incr_for(same);
         let new_gas = cur.hop_and_wrap_gas.saturating_add(incr);
         if new_gas > cfg.header_gas_limit {
+            // Last plan this drain may send. This leg does not fit in the
+            // gas left. A later leg, already behind it in the rank, may.
+            // Sealing here would leave that residual empty.
+            if !cur.groups.is_empty()
+                && plans.len().saturating_add(1) >= usize::from(cfg.nonce_slots)
+            {
+                continue;
+            }
             if !cur.groups.is_empty() {
                 seal_cascades(&mut cur, cfg, flash, book, gas)?;
                 if !cur.groups.is_empty() {
@@ -583,6 +611,10 @@ fn pack(
 
 fn cur_bid_bps(plan: &SelectedPlan) -> Option<u16> {
     plan.groups.first()?.legs.first()?.bid_bps
+}
+
+fn plan_leg_count(plan: &SelectedPlan) -> usize {
+    plan.groups.iter().map(|g| g.legs.len()).sum()
 }
 
 fn push_leg(plan: &mut SelectedPlan, s: Scored, incr: u64) {
@@ -915,6 +947,7 @@ mod tests {
             cost: CostModel::FEE_ONLY,
             close_bps: 0,
             exact_k: 8,
+            legs_per_plan: u8::MAX,
             nonce_slots: 4,
             header_gas_limit: 30_000_000,
             wrap_gas: [366_332, 355_632, 460_032, 370_435, 384_134],
@@ -1003,6 +1036,116 @@ mod tests {
         assert_eq!(plans[0].groups[0].legs.len(), 1);
         assert_eq!(plans[0].groups[0].debt, A1);
         assert!(!plans[0].groups[0].cascade.groups.is_empty());
+    }
+
+    /// SVR: `exact_k` of 8 drops accounts that still fit. With the cap
+    /// lifted, every leg that fits the gas budget is one plan. A budget
+    /// that holds two legs does not open a second plan.
+    #[test]
+    fn gas_budget_keeps_one_plan_past_eight_legs() {
+        let quotes: Vec<Quote> = (0..9u32).map(|i| q(20 + i, e18(10))).collect();
+        let inputs: Vec<PositionInput<'_>> = quotes
+            .iter()
+            .map(|quote| inp(quote, true, learning_p(), 50_000))
+            .collect();
+        let bk = book(vec![deep()]);
+        let (_s, flash) = idx();
+
+        let mut eight = cfg();
+        eight.exact_k = 8;
+        let capped = select(&inputs, &eight, &flash, H, &bk, None, &Mkt, &GAS).unwrap();
+        let n8: usize = capped
+            .iter()
+            .flat_map(|p| p.groups.iter())
+            .map(|g| g.legs.len())
+            .sum();
+        assert_eq!(n8, 8);
+
+        let mut open = cfg();
+        open.exact_k = u8::MAX;
+        open.nonce_slots = 1;
+        let all = select(&inputs, &open, &flash, H, &bk, None, &Mkt, &GAS).unwrap();
+        let n_all: usize = all
+            .iter()
+            .flat_map(|p| p.groups.iter())
+            .map(|g| g.legs.len())
+            .sum();
+        assert_eq!(all.len(), 1);
+        assert_eq!(n_all, 9);
+
+        let pair = select(&inputs[..2], &open, &flash, H, &bk, None, &Mkt, &GAS).unwrap();
+        open.header_gas_limit = pair[0].hop_and_wrap_gas;
+        let tight = select(&inputs, &open, &flash, H, &bk, None, &Mkt, &GAS).unwrap();
+        let n_tight: usize = tight
+            .iter()
+            .flat_map(|p| p.groups.iter())
+            .map(|g| g.legs.len())
+            .sum();
+        assert_eq!(tight.len(), 1);
+        assert_eq!(n_tight, 2);
+    }
+
+    /// Outside an SVR backrun each bundle holds [`EXACT_K`] legs and the
+    /// next leg is another bundle in the same drain.
+    #[test]
+    fn eight_legs_open_the_next_bundle() {
+        let quotes: Vec<Quote> = (0..9u32).map(|i| q(70 + i, e18(10))).collect();
+        let inputs: Vec<PositionInput<'_>> = quotes
+            .iter()
+            .map(|quote| inp(quote, true, learning_p(), 50_000))
+            .collect();
+        let mut open = cfg();
+        open.exact_k = 160;
+        open.nonce_slots = 20;
+        open.legs_per_plan = EXACT_K;
+        let bk = book(vec![deep()]);
+        let (_s, flash) = idx();
+        let plans = select(&inputs, &open, &flash, H, &bk, None, &Mkt, &GAS).unwrap();
+        let counts: Vec<usize> = plans
+            .iter()
+            .map(|p| p.groups.iter().map(|g| g.legs.len()).sum())
+            .collect();
+        assert_eq!(counts, vec![8, 1]);
+    }
+
+    /// Legs are packed in contribution-per-gas order. On the only plan a
+    /// leg that does not fit is skipped, and a later leg that does fit
+    /// still goes in. Stopping at the first miss would leave the residual
+    /// gas empty.
+    #[test]
+    fn residual_gas_keeps_the_next_leg_that_fits() {
+        let big = q(1, e18(100));
+        let mid = q(2, e18(90));
+        let small = q(3, e18(1));
+        let mut open = cfg();
+        open.exact_k = u8::MAX;
+        open.nonce_slots = 1;
+        open.liq_gas.set(ProtocolId(1), 8_000_000);
+        let bk = book(vec![deep()]);
+        let (_s, flash) = idx();
+
+        let mut a = inp(&big, true, learning_p(), 0);
+        let mut c = inp(&small, true, learning_p(), 0);
+        a.protocol = ProtocolId(0);
+        c.protocol = ProtocolId(2);
+        let pair = select(&[a, c], &open, &flash, H, &bk, None, &Mkt, &GAS).unwrap();
+        open.header_gas_limit = pair[0].hop_and_wrap_gas;
+
+        let mut a = inp(&big, true, learning_p(), 0);
+        let mut b = inp(&mid, true, learning_p(), 0);
+        let mut c = inp(&small, true, learning_p(), 0);
+        a.protocol = ProtocolId(0);
+        b.protocol = ProtocolId(1);
+        c.protocol = ProtocolId(2);
+        let packed = select(&[a, b, c], &open, &flash, H, &bk, None, &Mkt, &GAS).unwrap();
+        let ids: Vec<u32> = packed
+            .iter()
+            .flat_map(|p| p.groups.iter())
+            .flat_map(|g| g.legs.iter())
+            .map(|s| s.position.0)
+            .collect();
+        assert_eq!(packed.len(), 1);
+        assert_eq!(ids, vec![1, 3]);
     }
 
     /// A protocol with no measured liquidation gas is skipped, not sized at

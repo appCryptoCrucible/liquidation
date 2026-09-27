@@ -112,6 +112,7 @@ fn partial_hint_is_low_confidence_not_error() {
                 function_selector: None,
                 call_data: None,
                 logs: None,
+                from: None,
             }),
             reconstructed: None,
             predicted: Some(Box::new(call(target))),
@@ -144,6 +145,7 @@ fn missing_predicted_on_partial_hint_fails_closed() {
                 function_selector: None,
                 call_data: None,
                 logs: None,
+                from: None,
             }),
             reconstructed: None,
             predicted: None,
@@ -156,6 +158,39 @@ fn missing_predicted_on_partial_hint_fails_closed() {
         Err(SimError::Malformed(_)) => {}
         other => panic!("expected malformed, got {other:?}"),
     }
+}
+
+/// Shared `forward` calldata without `from`. The parent is not replayed.
+#[test]
+fn shared_calldata_without_sender_does_not_replay_forward() {
+    let mut cache = CacheDB::new(EmptyDB::default());
+    let target = address!("00000000000000000000000000000000000000c1");
+    insert_code(&mut cache, target, Bytecode::new_raw(bytes!("00")));
+    let factory = MemoryFactory::from_cache(cache);
+    let mut warm = WarmSet::new();
+    warm.insert(target);
+    let mut sim =
+        Simulator::from_factory(&factory, warm, PLANNED_EXECUTOR, &spec(), DEPLOYER).expect("boot");
+    let bundle = Bundle {
+        trigger: Trigger::Svr {
+            hint: Box::new(MevShareHint {
+                hash: Default::default(),
+                to: Some(target),
+                function_selector: Some([0x6f, 0xad, 0xcf, 0x72]),
+                call_data: Some(Bytes::from_static(&[0x6f, 0xad, 0xcf, 0x72])),
+                logs: None,
+                from: None,
+            }),
+            reconstructed: None,
+            predicted: None,
+        },
+        calls: vec![call(target)],
+        min_profit: U256::ZERO,
+        health: None,
+    };
+    let out = verify(&mut sim, &bundle, block()).expect("hash backrun sims our call only");
+    assert_eq!(out.confidence, Confidence::CERTAIN);
+    assert!(out.gas_used > 0);
 }
 
 #[test]

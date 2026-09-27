@@ -2,19 +2,24 @@
 
 use super::sign::{sign_body, SearcherKey};
 use super::{MevShareError, Result, FLASHBOTS_RELAY};
-use alloy_primitives::{Address, Bytes, B256};
+use alloy_primitives::{Bytes, B256};
 use liq_types::{IntendedSubmission, SubmitReceipt, Submitter, Venue};
 use serde_json::json;
 
-/// Bundle params GUIDE 06 §4 / 13 §2. Hinted tx by hash, then signed liquidation.
+/// Bundle params. Hinted oracle tx by hash, then one signed liquidation.
+///
+/// No `validity.refund` and no `refundConfig`. The matchmaker writes
+/// `validity.refund` when it replaces the hash: the oracle bundle's
+/// `privacy.wantRefund`, otherwise the node default. That percent is a
+/// split of this liquidation's coinbase payment, and the SSE hint does
+/// not carry it. `refundConfig` is the originator's address split of
+/// that refund.
 #[derive(Clone, Debug)]
 pub struct SendBundle {
     pub block: u64,
     pub max_block: u64,
     pub hint_hash: B256,
     pub signed_liquidation: Bytes,
-    pub refund_address: Address,
-    pub refund_percent: u8,
 }
 
 /// Signed JSON-RPC body + `X-Flashbots-Signature` value.
@@ -27,9 +32,6 @@ pub struct SignedRelayRequest {
 
 /// JSON-RPC `mev_sendBundle` UTF-8 body (the bytes that are signed).
 pub fn rpc_send_bundle(b: &SendBundle) -> Result<Vec<u8>> {
-    if b.refund_percent > 100 {
-        return Err(MevShareError::BadRefundPercent(b.refund_percent));
-    }
     let payload = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -43,12 +45,6 @@ pub fn rpc_send_bundle(b: &SendBundle) -> Result<Vec<u8>> {
                 { "hash": format!("{:#x}", b.hint_hash) },
                 { "tx": format!("{:#x}", b.signed_liquidation), "canRevert": false },
             ],
-            "validity": {
-                "refundConfig": [{
-                    "address": format!("{:#x}", b.refund_address),
-                    "percent": b.refund_percent,
-                }],
-            },
         }],
     });
     serde_json::to_vec(&payload).map_err(|e| MevShareError::HintJson(e.to_string()))
@@ -138,7 +134,7 @@ pub async fn post_signed(
 mod tests {
     use super::{rpc_send_bundle, MevShareSubmitter, SendBundle};
     use crate::mevshare::sign::{verify_header, SearcherKey};
-    use alloy_primitives::{address, b256, Bytes};
+    use alloy_primitives::{b256, Bytes};
     use liq_types::{IntendedSubmission, Submitter, TraceId, Venue};
 
     const SECRET: alloy_primitives::B256 =
@@ -153,8 +149,6 @@ mod tests {
             max_block: 20_000_002,
             hint_hash: b256!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
             signed_liquidation: Bytes::from(vec![0x02, 0xf8]),
-            refund_address: address!("0x1111111111111111111111111111111111111111"),
-            refund_percent: 90,
         };
         let signed = sub.sign_send_bundle(&bundle).unwrap();
         assert_eq!(signed.relay, crate::mevshare::FLASHBOTS_RELAY);
@@ -166,7 +160,7 @@ mod tests {
             format!("{:#x}", bundle.hint_hash)
         );
         assert_eq!(v["params"][0]["body"][1]["canRevert"], false);
-        assert_eq!(v["params"][0]["validity"]["refundConfig"][0]["percent"], 90);
+        assert!(v["params"][0].get("validity").is_none());
 
         let intended = IntendedSubmission {
             plan: Bytes::new(),

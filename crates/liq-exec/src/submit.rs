@@ -255,7 +255,11 @@ pub fn bid_policy(
         return Err(ExecError::AuctionBpsRange(auction_bps));
     }
     match kind {
-        TriggerKind::InterestDrift | TriggerKind::Stale => {
+        TriggerKind::InterestDrift
+        | TriggerKind::Stale
+        | TriggerKind::UserAction
+        | TriggerKind::DerivedRate
+        | TriggerKind::PoolStateChange => {
             if modest_priority_wei == 0 {
                 return Err(ExecError::MissingModestPriority);
             }
@@ -421,6 +425,15 @@ mod tests {
             Venue::MevShare { .. } => {}
             Venue::BuilderBundle { .. } => panic!("SvrAuction must route to MevShare"),
         }
+    }
+
+    #[test]
+    fn user_action_is_one_tx_modest() {
+        let r = route(TriggerKind::UserAction, &builders(), 9_000, 50, 2).unwrap();
+        assert_eq!(r.policy.auction_bps, 0);
+        assert!(r.policy.modest);
+        assert!(r.policy.one_tx);
+        assert_eq!(r.intended_bid, U256::from(2u64));
     }
 
     #[test]

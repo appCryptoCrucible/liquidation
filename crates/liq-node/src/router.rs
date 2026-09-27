@@ -83,6 +83,13 @@ impl LogRouter {
         self.tracked.contains(&address)
     }
 
+    /// Addresses the union filter keeps. The ExEx copies only these logs.
+    #[inline]
+    #[must_use]
+    pub fn tracked_addresses(&self) -> &HashSet<Address> {
+        &self.tracked
+    }
+
     /// Route one log. Copies into `arena`. Does not error on unknown topic0
     /// at a tracked address.
     pub fn route<'a>(&'a self, arena: &'a DecodeArena, log: &OwnedLog) -> Result<Route<'a>> {

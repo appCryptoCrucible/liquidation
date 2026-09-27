@@ -1,0 +1,29 @@
+[Unit]
+Description=Lighthouse beacon node (no validator keys)
+After=network-online.target reth-liq.service
+Wants=network-online.target reth-liq.service
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=5
+# Upstream Lighthouse binary, not built by this repo. Beacon node only.
+# No validator client, no --genesis-backfill. Blob pruning stays at the
+# Lighthouse default. Datadir is the 480 GB state disk (ops/host/fstab).
+# JWT is the file created for reth-liq.service.
+# Checkpoint sync is required by Lighthouse since v4.6.0. The URL is
+# Sigma Prime's public mainnet checkpoint. If it does not answer, this
+# unit fails; do not replace it with an unchecked endpoint.
+CPUAffinity=14 15 30 31
+MemorySwapMax=0
+ExecStart=/usr/local/bin/lighthouse bn \
+  --network mainnet \
+  --datadir /var/liq/lighthouse \
+  --execution-endpoint http://127.0.0.1:8551 \
+  --execution-jwt /opt/liq/jwt.hex \
+  --checkpoint-sync-url https://mainnet.checkpoint.sigp.io \
+  --http \
+  --http-address 127.0.0.1
+
+[Install]
+WantedBy=multi-user.target
