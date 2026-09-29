@@ -23,7 +23,7 @@ use reth_ethereum::{
 /// Not a timeout, and not used for any price or size.
 const RPC_BIND_POLL: Duration = Duration::from_millis(200);
 
-pub async fn liquidator_exex<Node>(mut ctx: ExExContext<Node>) -> eyre::Result<()>
+pub(crate) async fn liquidator_exex<Node>(mut ctx: ExExContext<Node>) -> eyre::Result<()>
 where
     Node: FullNodeComponents<Types: NodeTypes<Primitives = EthPrimitives>>,
 {
