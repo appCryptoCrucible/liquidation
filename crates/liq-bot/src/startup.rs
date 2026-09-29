@@ -46,6 +46,13 @@ pub enum StartupError {
     Ingest(#[from] liq_node::IngestError),
     #[error("startup: {0}")]
     Other(String),
+    /// The snapshot was built by a different set of adapter bindings.
+    /// The caller discards its head and rebuilds.
+    #[error("snapshot bindings {snapshot} differ from the bound adapters {bound}")]
+    StaleSnapshot {
+        snapshot: alloy_primitives::B256,
+        bound: alloy_primitives::B256,
+    },
 }
 
 /// Recorded step for tests. Production runs them in this order only.
@@ -228,6 +235,37 @@ fn ledger_path_from_env() -> Option<String> {
     }
 }
 
+/// [`run`] on a state that exists and matches the bound adapters. No
+/// snapshot yet: build it first. A snapshot from different bindings
+/// ([`StartupError::StaleSnapshot`]): discard its head, rebuild, start again.
+/// Nothing plans or sends while a build runs.
+pub async fn run_on_built_state(
+    config_dir: &Path,
+    cores_path: &Path,
+    state: &StatePaths,
+    allow_unpinned: bool,
+) -> Result<Started, StartupError> {
+    let build = || async {
+        crate::state_build::build_first_snapshot(config_dir, state)
+            .await
+            .map_err(|e| StartupError::Other(format!("state build: {e}")))
+    };
+    if !crate::state_build::head_path(state).exists() {
+        tracing::info!("no state snapshot — building it from the node's receipts first");
+        build().await?;
+    }
+    match run(config_dir, cores_path, state, allow_unpinned).await {
+        Err(StartupError::StaleSnapshot { .. }) => {
+            tracing::warn!("rebuilding the state for the new adapter bindings");
+            crate::state_build::discard_head(state)
+                .map_err(|e| StartupError::Other(e.to_string()))?;
+            build().await?;
+            run(config_dir, cores_path, state, allow_unpinned).await
+        }
+        other => other,
+    }
+}
+
 /// Full production order. RPC/registry failure refuses. Lease gates submit.
 pub async fn run(
     config_dir: &Path,
@@ -242,6 +280,59 @@ pub async fn run(
         tracing::error!(error = %e, "no snapshot head — the state has not been built");
         StartupError::Other(e.to_string())
     })?;
+    // Live RPC for the four adapters (Liquity/Fluid/Gearbox/Compound V2)
+    // whose `Config::new` refuses without a live-registry assertion. Reuses
+    // `loaded.config.rpc_url` — the same node `boot()` already asserted the
+    // token registry against. A connect/block-number failure here omits
+    // those four (named reason), and any omission refuses the start below.
+    let live_rpc = match liq_config::rpc::HttpRpc::connect(&loaded.config.rpc_url) {
+        Ok(rpc) => match rpc.block_number().await {
+            Ok(block) => Some((crate::live_rpc::LiveRpc::new(rpc), block)),
+            Err(e) => {
+                tracing::error!(error = %e, "live RPC block number unavailable — Liquity/Fluid/Gearbox/Compound omitted");
+                None
+            }
+        },
+        Err(e) => {
+            tracing::error!(error = %e, "live RPC connect failed — Liquity/Fluid/Gearbox/Compound omitted");
+            None
+        }
+    };
+    let live = live_rpc.as_ref().map(|(rpc, block)| (rpc, *block));
+    let mut loaded_proto = bind::load_protocols(config_dir, &loaded.intern, live);
+    bind::retry_live_omitted(config_dir, &loaded.intern, live, &mut loaded_proto, 3);
+    // The snapshot holds every adapter's positions. Running without one would
+    // advance the snapshot past blocks whose events for it were never folded,
+    // and a later start would plan on those gaps. Refuse instead.
+    if !loaded_proto.omitted.is_empty() {
+        let names: Vec<String> = loaded_proto
+            .omitted
+            .iter()
+            .map(|(n, why)| format!("{n}: {why}"))
+            .collect();
+        tracing::error!(omitted = ?names, "adapter bind failed — refusing to start on partial state");
+        return Err(StartupError::Other(format!(
+            "adapter(s) omitted at bind: {}",
+            names.join("; ")
+        )));
+    }
+    let adapters = bind::leak_protocols(loaded_proto);
+    // The snapshot was folded by adapters bound to a fingerprinted set of
+    // contracts. A different set (a new Gearbox manager, a new adapter, a
+    // changed event list) means moved MarketIds or contracts with no history
+    // in the snapshot: refuse it before anything is spawned.
+    let bindings = crate::state_build::bindings_fingerprint(adapters);
+    if bindings != head.bindings {
+        tracing::error!(
+            snapshot = %head.bindings,
+            bound = %bindings,
+            "adapter bindings changed since the snapshot — it must be rebuilt"
+        );
+        return Err(StartupError::StaleSnapshot {
+            snapshot: head.bindings,
+            bound: bindings,
+        });
+    }
     let probe = crate::lease::HeadProbe {
         number: head.number,
     };
@@ -318,43 +409,6 @@ pub async fn run(
         tracing::error!("ExecPath unbound — ingest/lease continue; no invented key");
     }
     let mut assemble = bind::intern_view(&loaded.intern).with_bands(band_shared);
-    // Live RPC for the four adapters (Liquity/Fluid/Gearbox/Compound V2)
-    // whose `Config::new` refuses without a live-registry assertion. Reuses
-    // `loaded.config.rpc_url` — the same node `boot()` already asserted the
-    // token registry against. A connect/block-number failure here omits
-    // those four (named reason), and any omission refuses the start below.
-    let live_rpc = match liq_config::rpc::HttpRpc::connect(&loaded.config.rpc_url) {
-        Ok(rpc) => match rpc.block_number().await {
-            Ok(block) => Some((crate::live_rpc::LiveRpc::new(rpc), block)),
-            Err(e) => {
-                tracing::error!(error = %e, "live RPC block number unavailable — Liquity/Fluid/Gearbox/Compound omitted");
-                None
-            }
-        },
-        Err(e) => {
-            tracing::error!(error = %e, "live RPC connect failed — Liquity/Fluid/Gearbox/Compound omitted");
-            None
-        }
-    };
-    let live = live_rpc.as_ref().map(|(rpc, block)| (rpc, *block));
-    let mut loaded_proto = bind::load_protocols(config_dir, &loaded.intern, live);
-    bind::retry_live_omitted(config_dir, &loaded.intern, live, &mut loaded_proto, 3);
-    // The snapshot holds every adapter's positions. Running without one would
-    // advance the snapshot past blocks whose events for it were never folded,
-    // and a later start would plan on those gaps. Refuse instead.
-    if !loaded_proto.omitted.is_empty() {
-        let names: Vec<String> = loaded_proto
-            .omitted
-            .iter()
-            .map(|(n, why)| format!("{n}: {why}"))
-            .collect();
-        tracing::error!(omitted = ?names, "adapter bind failed — refusing to start on partial state");
-        return Err(StartupError::Other(format!(
-            "adapter(s) omitted at bind: {}",
-            names.join("; ")
-        )));
-    }
-    let adapters = bind::leak_protocols(loaded_proto);
     bind::intern_adapter_tokens(&mut assemble, adapters);
     let gas_model = crate::gas_model::GasModel::load(&config_dir.join("liq-gas.toml"));
     let wrap = gas_model.as_ref().map_or_else(
@@ -528,6 +582,7 @@ pub async fn run(
     let hook = match crate::state_build::SnapshotWriter::spawn(
         state.clone(),
         loaded.config.snapshot_every_blocks,
+        bindings,
     ) {
         Ok(w) => hook.with_snapshots(w),
         Err(e) => {

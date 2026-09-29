@@ -14,8 +14,8 @@
 # `liquidate` / `simulateLiquidate`, then the DEX's one-token estimate on a
 # smart side) — `docs/coverage/fluid.md`.
 #
-# Intern: ProtocolId 10. MarketIds 4000..=4199 (catalog 4000; vault N → 4000+N).
-# Never 0..=3480, 3481..=3999, or 4200+ (Gearbox).
+# Intern: ProtocolId 10. MarketIds 4000..=4999 (catalog 4000; vault N → 4000+N).
+# Never 0..=3480 or 3481..=3999 (registry, Euler); Morpho owns 5000+.
 
 protocol = 10
 factory = "0x324c5Dc1fC42c7a4D43d92df1eBA58A54d13Bf2d"

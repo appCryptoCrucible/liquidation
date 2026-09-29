@@ -1,8 +1,8 @@
 //! Gearbox V3 adapter (WP 15C-gearbox).
 //!
 //! Pin: `Gearbox-protocol/core-v3` @ `510fc6541c3767ce825929b4c311826fe81d6fa5`.
-//! ProtocolId **11**. MarketIds **4200..=4299** (catalog 4200 reserved;
-//! credit managers 4201..=4299).
+//! ProtocolId **11**. MarketIds **71000..=71999** (catalog 71000 reserved;
+//! credit managers 71001..=71999).
 //!
 //! Liquidator entry is **CreditFacadeV3**, never the manager
 //! (`creditFacadeOnly`). Partial `encode` emits [`ExecutorAdapter::Gearbox`]

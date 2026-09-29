@@ -29,6 +29,9 @@ const HTTP_POOL_IDLE: Duration = Duration::from_secs(90);
 const HTTP_TCP_KEEPALIVE: Duration = Duration::from_secs(10);
 const HTTP_POOL_MAX_IDLE_PER_HOST: usize = 8;
 
+/// Logs the undeployed-Executor refusal once per process.
+static UNDEPLOYED_WARNED: AtomicBool = AtomicBool::new(false);
+
 /// Job built off the hot path (or moved onto the exec task). All fee and
 /// bid fields are required inputs — nothing is defaulted.
 #[derive(Clone, Debug)]
@@ -339,6 +342,17 @@ where
             || !self.lease_held.load(Ordering::Acquire)
             || !self.nonce_resync.load(Ordering::Acquire)
         {
+            self.track(&allocated, &signed, job);
+            return Ok(SubmitReceipt::Recorded);
+        }
+        // No deployed Executor (`venues.executor` unset): the placeholder
+        // has no code on mainnet, so a send would only spend gas.
+        if self.executor == PLANNED_EXECUTOR {
+            if !UNDEPLOYED_WARNED.swap(true, Ordering::Relaxed) {
+                tracing::error!(
+                    "venues.executor is unset — bundles are recorded, not sent, until the Executor is deployed"
+                );
+            }
             self.track(&allocated, &signed, job);
             return Ok(SubmitReceipt::Recorded);
         }

@@ -304,6 +304,9 @@ mod tests {
             lease,
         )
         .unwrap()
+        .with_executor(alloy_primitives::address!(
+            "0x1111111111111111111111111111111111111111"
+        ))
     }
 
     fn builders_for(url: &str) -> BuilderSet {

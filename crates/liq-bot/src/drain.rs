@@ -1766,13 +1766,7 @@ impl AfterBlock for DrainJoin {
         let ts = ctx.timestamp;
         let store = ctx.store;
         if let Some(w) = self.snapshots.as_mut() {
-            w.after_block(
-                store,
-                crate::state_build::SnapshotHead {
-                    number: ctx.block,
-                    hash: ctx.hash,
-                },
-            );
+            w.after_block(store, ctx.block, ctx.hash);
         }
         self.feed_engine(ctx);
         let cands: Vec<Candidate> = self.engine.candidates().collect();

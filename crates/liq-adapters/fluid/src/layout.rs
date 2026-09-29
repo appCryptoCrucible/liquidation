@@ -18,12 +18,12 @@ use alloy_primitives::{address, Address};
 use bytemuck::{Pod, Zeroable};
 use liq_types::{AssetId, MarketId};
 
-/// Factory/catalog index. Not a vault. Allocator: Fluid 4000..=4199.
+/// Factory/catalog index. Not a vault. Allocator: Fluid 4000..=4999.
 pub const CATALOG_MARKET: MarketId = MarketId(4000);
 /// First vault MarketId: `4000 + vaultId` for `vaultId >= 1` ⇒ 4001.
 pub const FIRST_VAULT_MARKET: MarketId = MarketId(4001);
-/// Inclusive max Fluid MarketId (Gearbox owns 4200..=4299).
-pub const LAST_VAULT_MARKET: MarketId = MarketId(4199);
+/// Inclusive max Fluid MarketId: vault ids up to 999 (Morpho owns 5000+).
+pub const LAST_VAULT_MARKET: MarketId = MarketId(4999);
 
 /// `FluidProtocolTypes.VAULT_T1_TYPE`.
 pub const VAULT_T1: u32 = 10_000;

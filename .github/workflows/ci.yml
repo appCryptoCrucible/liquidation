@@ -137,16 +137,11 @@ jobs:
       - name: generate PlanEncodingRoundTrip vectors
         run: cargo test -p liq-plan write_solidity_roundtrip_cases -- --exact
 
+      # Fork tests (test/fork) pin historical blocks and need an archive RPC.
+      # They run locally with MAINNET_RPC_URL, not in CI.
       - name: forge test (unit + invariant)
         working-directory: contracts
         run: forge test --no-match-path "test/{fork,differential}/*"
-
-      - name: forge test fork
-        working-directory: contracts
-        env:
-          # Public endpoint. A repo secret overrides it; the URL is not a credential.
-          MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL || 'https://ethereum-rpc.publicnode.com' }}
-        run: forge test --match-path "test/fork/*"
 
       - name: forge snapshot --check (2%)
         working-directory: contracts

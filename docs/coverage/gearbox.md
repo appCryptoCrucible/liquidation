@@ -46,7 +46,7 @@ Then `Err(ExecutorUnwired)`:
 - Phantom tokens: `WithdrawPhantomToken` subtracts when the token is listed; unlisted phantom is intern-only.
 - Forbidden tokens still count toward value on-chain; adapter does not model `forbiddenTokenMask`.
 - W has no Gearbox decoder. Leave W alone.
-- MarketId **4200** is the ContractsRegister catalog (reserved, not a credit manager). Managers are **4201..=4299** as discovered. Never intern 0..=3480, 3481..=4199, or 4300+.
+- MarketId **71000** is the ContractsRegister catalog (reserved, not a credit manager). Managers are **71001..=71999** in discovery order. The state snapshot records a fingerprint of every bound subscription, so a new or removed manager (which shifts the ids after it) rebuilds the state instead of reusing a snapshot under moved ids.
 - D15 manager count 34 is a cardinality check on `getCreditManagers()`, not a hand-list universe.
 
 | DirtySet | when |

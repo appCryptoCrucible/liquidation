@@ -13,9 +13,16 @@
 //!   as the ExEx head; Reth re-executes the blocks after it and delivers them
 //!   before live ones.
 //!
-//! Files: `snapshot.bin` (the store), `snapshot.head` (its block number and
-//! hash), `wal.log` (kept empty: Reth's replay replaces it). Each is written
-//! to a temporary file and renamed into place.
+//! * **Bindings changed** ([`bindings_fingerprint`]): the head records a hash
+//!   of every bound subscription. A start whose adapters bind to a different
+//!   set (a new Gearbox manager, a new adapter, a changed event list) cannot
+//!   use the snapshot: ids may have moved and the new contracts have no
+//!   history in it. Startup refuses it
+//!   ([`crate::startup::StartupError::StaleSnapshot`]) and the caller rebuilds.
+//!
+//! Files: `snapshot.bin` (the store), `snapshot.head` (its block number,
+//! hash and bindings fingerprint), `wal.log` (kept empty: Reth's replay
+//! replaces it). Each is written to a temporary file and renamed into place.
 //!
 //! [`BotConfig::backfill_from`]: liq_config::BotConfig::backfill_from
 //! [`BotConfig::snapshot_every_blocks`]: liq_config::BotConfig::snapshot_every_blocks
@@ -29,15 +36,49 @@ use liq_state::{StateStore, StoreConfig, StoreSnapshot, UndoCapacity};
 use liq_types::{LogFilter, LogSubscriber};
 use thiserror::Error;
 
-use crate::bind::{ingest_handlers, leak_protocols, load_protocols, subscriber_refs};
+use crate::bind::{
+    ingest_handlers, leak_protocols, load_protocols, subscriber_refs, BoundProtocol,
+};
 use crate::lease::{write_empty_wal, StatePaths};
 use crate::live_rpc::LiveRpc;
 
-/// The block a snapshot holds the state after.
+/// The block a snapshot holds the state after, and what it was bound to.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct SnapshotHead {
     pub number: u64,
     pub hash: B256,
+    /// [`bindings_fingerprint`] of the adapters that folded it.
+    pub bindings: B256,
+}
+
+/// Bump when a fold changes what a stored row means without changing any
+/// subscription, so every snapshot written before it is rebuilt.
+pub const STATE_EPOCH: u32 = 1;
+
+/// Hash of [`STATE_EPOCH`] and every `(protocol, address, topic0)` the bound
+/// adapters subscribe to, sorted. Equal fingerprints mean the same contracts
+/// in the same discovery order, so the same MarketIds.
+#[must_use]
+pub fn bindings_fingerprint(protocols: &[BoundProtocol]) -> B256 {
+    let mut rows: Vec<(u16, alloy_primitives::Address, B256)> = protocols
+        .iter()
+        .flat_map(|p| {
+            let id = p.id().0;
+            p.subscriptions()
+                .into_iter()
+                .map(move |f| (id, f.address, f.topic0))
+        })
+        .collect();
+    rows.sort_unstable();
+    rows.dedup();
+    let mut buf = Vec::with_capacity(rows.len().saturating_mul(54).saturating_add(4));
+    buf.extend_from_slice(&STATE_EPOCH.to_be_bytes());
+    for (id, a, t) in &rows {
+        buf.extend_from_slice(&id.to_be_bytes());
+        buf.extend_from_slice(a.as_slice());
+        buf.extend_from_slice(t.as_slice());
+    }
+    alloy_primitives::keccak256(&buf)
 }
 
 #[derive(Debug, Error)]
@@ -67,18 +108,30 @@ pub fn head_path(paths: &StatePaths) -> PathBuf {
     paths.snapshot.with_extension("head")
 }
 
-/// Read the head record: `<number> <hash>`.
+/// Read the head record: `<number> <hash> <bindings>`.
 pub fn read_head(paths: &StatePaths) -> Result<SnapshotHead, BuildError> {
     let p = head_path(paths);
     let raw = std::fs::read_to_string(&p).map_err(|e| io(&p, e))?;
     let mut it = raw.split_whitespace();
-    let (Some(n), Some(h), None) = (it.next(), it.next(), it.next()) else {
-        return Err(io(&p, "expected `<number> <hash>`"));
+    let (Some(n), Some(h), Some(b), None) = (it.next(), it.next(), it.next(), it.next()) else {
+        return Err(io(&p, "expected `<number> <hash> <bindings>`"));
     };
     Ok(SnapshotHead {
         number: n.parse().map_err(|e| io(&p, e))?,
         hash: h.parse().map_err(|e| io(&p, e))?,
+        bindings: b.parse().map_err(|e| io(&p, e))?,
     })
+}
+
+/// Remove the head record so the next start rebuilds. The snapshot itself
+/// is overwritten by the rebuild.
+pub fn discard_head(paths: &StatePaths) -> Result<(), BuildError> {
+    let p = head_path(paths);
+    match std::fs::remove_file(&p) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(io(&p, e)),
+    }
 }
 
 fn write_atomic(
@@ -115,8 +168,11 @@ pub fn write_snapshot(
     })?;
     let hp = head_path(paths);
     write_atomic(&hp, |tmp| {
-        std::fs::write(tmp, format!("{} {:#x}\n", head.number, head.hash))
-            .map_err(|e| e.to_string())
+        std::fs::write(
+            tmp,
+            format!("{} {:#x} {:#x}\n", head.number, head.hash, head.bindings),
+        )
+        .map_err(|e| e.to_string())
     })?;
     if !paths.wal.exists() {
         write_empty_wal(&paths.wal).map_err(|e| io(&paths.wal, e))?;
@@ -230,6 +286,7 @@ async fn replay_to_snapshot(
         return Err(BuildError::Omitted(load.omitted.len(), names.join("; ")));
     }
     let protocols = leak_protocols(load);
+    let bindings = bindings_fingerprint(protocols);
 
     let provider = alloy_provider::ProviderBuilder::new()
         .disable_recommended_fillers()
@@ -248,6 +305,7 @@ async fn replay_to_snapshot(
     let head = SnapshotHead {
         number: finalized.header.number,
         hash: finalized.header.hash,
+        bindings,
     };
     if head.number < from {
         return Err(BuildError::Config(format!(
@@ -328,11 +386,13 @@ pub struct SnapshotWriter {
     tx: SyncSender<(StoreSnapshot, SnapshotHead)>,
     every: u64,
     last: u64,
+    bindings: B256,
 }
 
 impl SnapshotWriter {
-    /// Spawn the writer thread for `paths`.
-    pub fn spawn(paths: StatePaths, every: u64) -> std::io::Result<Self> {
+    /// Spawn the writer thread for `paths`. `bindings` is this process's
+    /// [`bindings_fingerprint`], recorded in every head it writes.
+    pub fn spawn(paths: StatePaths, every: u64, bindings: B256) -> std::io::Result<Self> {
         let (tx, rx) = sync_channel::<(StoreSnapshot, SnapshotHead)>(1);
         std::thread::Builder::new()
             .name("liq-bot-snapshot".into())
@@ -348,11 +408,17 @@ impl SnapshotWriter {
             tx,
             every: every.max(1),
             last: 0,
+            bindings,
         })
     }
 
-    /// Called after each consistent block with the store at `head`.
-    pub fn after_block(&mut self, store: &StateStore, head: SnapshotHead) {
+    /// Called after each consistent block with the store at `number`/`hash`.
+    pub fn after_block(&mut self, store: &StateStore, number: u64, hash: B256) {
+        let head = SnapshotHead {
+            number,
+            hash,
+            bindings: self.bindings,
+        };
         if self.last != 0 && head.number < self.last.saturating_add(self.every) {
             return;
         }
@@ -402,6 +468,7 @@ mod tests {
         let p = paths();
         is_send(&build_first_snapshot(dir, &p));
         is_send(&crate::startup::run(dir, dir, &p, false));
+        is_send(&crate::startup::run_on_built_state(dir, dir, &p, false));
         fn started_is_send<T: Send>() {}
         started_is_send::<crate::startup::Started>();
         // The ExEx loop's own reads: `wait_for_rpc` and the catch-up check.
@@ -416,6 +483,7 @@ mod tests {
         let head = SnapshotHead {
             number: 21_000_000,
             hash: B256::repeat_byte(0xab),
+            bindings: B256::repeat_byte(0xcd),
         };
         write_snapshot(&p, &store_at(head.number).snapshot(), head).unwrap();
         assert_eq!(read_head(&p).unwrap(), head);
@@ -432,9 +500,43 @@ mod tests {
         let head = SnapshotHead {
             number: 10,
             hash: B256::ZERO,
+            bindings: B256::ZERO,
         };
         assert!(write_snapshot(&p, &store_at(9).snapshot(), head).is_err());
         assert!(!head_path(&p).exists());
+    }
+
+    /// The offline-bound adapters (no live RPC): the same set hashes the
+    /// same, and dropping one adapter changes the hash.
+    #[test]
+    fn fingerprint_follows_the_bound_set() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let intern = liq_config::Intern::from_registry(
+            &liq_config::Registry::from_path(&root.join("registry/registry.json")).unwrap(),
+        )
+        .unwrap();
+        let load = load_protocols(&root.join("config"), &intern, None);
+        let all = load.protocols.as_slice();
+        assert!(all.len() >= 2, "offline bind yields several adapters");
+        let fp = bindings_fingerprint(all);
+        let again = load_protocols(&root.join("config"), &intern, None);
+        assert_eq!(fp, bindings_fingerprint(&again.protocols));
+        assert_ne!(fp, bindings_fingerprint(all.get(1..).unwrap()));
+        assert_ne!(fp, bindings_fingerprint(&[]));
+    }
+
+    #[test]
+    fn discarded_head_is_gone_and_discarding_twice_is_fine() {
+        let p = paths();
+        let head = SnapshotHead {
+            number: 5,
+            hash: B256::ZERO,
+            bindings: B256::ZERO,
+        };
+        write_snapshot(&p, &store_at(5).snapshot(), head).unwrap();
+        discard_head(&p).unwrap();
+        assert!(read_head(&p).is_err());
+        discard_head(&p).unwrap();
     }
 
     #[test]
@@ -442,8 +544,15 @@ mod tests {
         let p = paths();
         let hp = head_path(&p);
         std::fs::create_dir_all(hp.parent().unwrap()).unwrap();
-        for bad in ["", "12", "12 0x00 extra", "x 0x00"] {
-            std::fs::write(&hp, bad).unwrap();
+        let h = format!("{:#x}", B256::ZERO);
+        for bad in [
+            String::new(),
+            "12".into(),
+            format!("12 {h}"),
+            format!("12 {h} {h} extra"),
+            format!("x {h} {h}"),
+        ] {
+            std::fs::write(&hp, &bad).unwrap();
             assert!(read_head(&p).is_err(), "{bad:?} parsed");
         }
     }
@@ -451,23 +560,21 @@ mod tests {
     #[test]
     fn writer_waits_the_interval_between_snapshots() {
         let p = paths();
-        let mut w = SnapshotWriter::spawn(p.clone(), 100).unwrap();
-        let at = |n: u64| SnapshotHead {
-            number: n,
-            hash: B256::repeat_byte(1),
-        };
-        w.after_block(&store_at(1_000), at(1_000));
+        let fp = B256::repeat_byte(7);
+        let mut w = SnapshotWriter::spawn(p.clone(), 100, fp).unwrap();
+        let h = B256::repeat_byte(1);
+        w.after_block(&store_at(1_000), 1_000, h);
         assert_eq!(w.last, 1_000);
-        w.after_block(&store_at(1_050), at(1_050));
+        w.after_block(&store_at(1_050), 1_050, h);
         assert_eq!(w.last, 1_000, "inside the interval: no snapshot");
         // Let the first write finish so the channel has room.
         for _ in 0..200 {
-            if read_head(&p).is_ok_and(|h| h.number == 1_000) {
+            if read_head(&p).is_ok_and(|h| h.number == 1_000 && h.bindings == fp) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        w.after_block(&store_at(1_100), at(1_100));
+        w.after_block(&store_at(1_100), 1_100, h);
         assert_eq!(w.last, 1_100);
     }
 }

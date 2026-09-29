@@ -14,8 +14,8 @@ collateral tokens are both interned and its oracle is non-zero:
 
 Market ids: the adapter assigns its own from `CreateMarket` logs, starting at
 `first_market`. Allocation (see docs/coverage): 0..=3480 registry intern,
-3508..=3510 Liquity, 3511..=3999 Euler, 4000..=4199 Fluid, 4200..=4299
-Gearbox — Morpho takes catalog 5000, markets from 5001.
+3508..=3510 Liquity, 3511..=3999 Euler, 4000..=4999 Fluid — Morpho takes
+catalog 5000, markets from 5001 (up to 70536); Gearbox 71000..=71999.
 
 `feed` is informational (nothing joins on `MarketRow.price_feed`; Morpho
 health prices through each market's own oracle): FeedId 0, as Gearbox does.
@@ -88,7 +88,7 @@ def main() -> int:
         f"# {len(assets)} assets. Not pinned: {skipped['idle']} idle (no oracle/collateral),",
         f"# {skipped['unmapped']} with a token outside the registry, {skipped['read']} unreadable.",
         f"# Registry copy disagreed with the chain on {skipped['registry_mismatch']} market(s); chain wins.",
-        "# MarketIds: catalog 5000, markets from 5001 (after Gearbox 4200..=4299).",
+        "# MarketIds: catalog 5000, markets from 5001 (after Fluid 4000..=4999; Gearbox is 71000+).",
         "# feed = 0 is informational only (Morpho prices through each market oracle).",
         "",
         f"protocol = {protocols['morpho-blue']}",

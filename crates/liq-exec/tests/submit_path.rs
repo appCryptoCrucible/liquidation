@@ -104,7 +104,12 @@ fn path(
         live,
     )
     .unwrap()
+    .with_executor(DEPLOYED)
 }
+
+/// Stands in for a deployed Executor. The placeholder never sends.
+const DEPLOYED: alloy_primitives::Address =
+    alloy_primitives::address!("0x1111111111111111111111111111111111111111");
 
 fn set_from_urls(builder: &'static str, relay: &'static str) -> BuilderSet {
     BuilderSet::from_parts(
@@ -448,4 +453,19 @@ fn shadow_recorder_still_shadow() {
     };
     assert_eq!(rec.submit(&sub).unwrap(), SubmitReceipt::Shadow);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn undeployed_executor_is_recorded_not_sent() {
+    let mock = spawn_mock(Duration::ZERO).await;
+    let relay = leak_str(mock.url.clone());
+    let builders = set_from_urls(relay, relay);
+    let p = path(true, live_bits(true, true), builders, AllowAll)
+        .with_executor(liq_exec::builders::PLANNED_EXECUTOR);
+    let rec = p
+        .submit_path(&job(TriggerKind::InterestDrift, None, None))
+        .await
+        .unwrap();
+    assert_eq!(rec, SubmitReceipt::Recorded);
+    assert_eq!(mock.hits.load(std::sync::atomic::Ordering::Relaxed), 0);
 }

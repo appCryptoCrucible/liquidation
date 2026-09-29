@@ -7,7 +7,7 @@ Source: `Instadapp/fluid-contracts-public` @ `9496626f71a761fc296dc3b2efbfd54c50
 
 Fluid liquidates a vault's whole underwater tick range at once; `liquidate` takes no position id. The adapter keeps **one position per vault** and asks the vault, every block, what a full liquidation is. Nothing of Fluid's tick tree, branches or oracle is reproduced.
 
-**Bind** (`Config::bind_live`, Multicall3 at the boot block): factory `totalVaults` / `getVaultAddress`; per vault `TYPE()` (T1 has none) and `constantsView()` in that type's shape; ERC-20 `decimals()` for smart-side tokens. Tokens map through the registry intern; native ETH (`0xEeee…`) maps to WETH, since the Executor pays and receives it as WETH. A vault with no interned token on one side is not read. A vault id past the 4001..=4199 MarketId band is left out and logged.
+**Bind** (`Config::bind_live`, Multicall3 at the boot block): factory `totalVaults` / `getVaultAddress`; per vault `TYPE()` (T1 has none) and `constantsView()` in that type's shape; ERC-20 `decimals()` for smart-side tokens. Tokens map through the registry intern; native ETH (`0xEeee…`) maps to WETH, since the Executor pays and receives it as WETH. A vault with no interned token on one side is not read. A vault id past the 4001..=4999 MarketId band (vault 999) is left out and logged.
 
 **Every block** (`liq-bot-state` thread, pinned to the head; folded on the ingest thread into that block's undo record, only while it is still the tip):
 

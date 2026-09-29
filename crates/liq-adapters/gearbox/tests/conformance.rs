@@ -504,10 +504,10 @@ fn missing_price_is_missing_price() {
 fn market_ids_stay_in_band() {
     let d = Deploy::new();
     let cfg = d.config();
-    assert_eq!(cfg.catalog.0, 4200);
+    assert_eq!(cfg.catalog.0, 71_000);
     for m in &cfg.managers {
-        assert!(m.market.0 >= 4201 && m.market.0 <= 4299);
-        assert_ne!(m.market.0, 4200);
+        assert!(m.market.0 >= 71_001 && m.market.0 <= 71_999);
+        assert_ne!(m.market.0, 71_000);
     }
 }
 
@@ -575,7 +575,7 @@ fn assert_live_registry_fees_then_new() {
     assert!(cfg.live_fees_asserted);
     assert_eq!(cfg.managers.len(), 1);
     assert_eq!(cfg.managers[0].fees.liquidation_discount, DISCOUNT);
-    assert_eq!(cfg.managers[0].market.0, 4201);
+    assert_eq!(cfg.managers[0].market.0, 71_001);
     // G2. `ltParams(underlying)` reads an unwritten storage slot on the real
     // contract and the mock now returns 0 for it (see the comment at the
     // call site in `common/mod.rs`), so a correct `lt_underlying` here proves

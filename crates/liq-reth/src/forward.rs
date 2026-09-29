@@ -32,15 +32,9 @@ where
     let url = rpc_url(&config_dir)?;
     wait_for_rpc(&url).await?;
     let state = state_paths(&root)?;
-    // First start: build the state from the node's receipts before anything
-    // folds, plans or sends. Nothing else of the bot runs meanwhile.
-    if !liq_bot::state_build::head_path(&state).exists() {
-        tracing::info!("no state snapshot — building it from the node's receipts first");
-        liq_bot::state_build::build_first_snapshot(&config_dir, &state)
-            .await
-            .map_err(|e| eyre!("state build: {e}"))?;
-    }
-    let mut started = startup::run(
+    // First start, or adapter bindings changed: build the state from the
+    // node's receipts before anything folds, plans or sends.
+    let mut started = startup::run_on_built_state(
         &config_dir,
         &config_dir.join("cores.toml"),
         &state,

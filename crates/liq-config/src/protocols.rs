@@ -278,8 +278,8 @@ mod tests {
             intern.protocol("morpho-blue")
         );
         assert!(
-            m.catalog > 4299 && m.first_market > m.catalog,
-            "above Gearbox's band"
+            m.catalog > 4999 && m.first_market > m.catalog,
+            "above Fluid's band"
         );
         for a in &m.assets {
             let id = intern.asset(a.underlying).expect("asset interned");

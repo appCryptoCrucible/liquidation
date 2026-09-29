@@ -2,9 +2,9 @@
 //!
 //! # MarketId allocator (intern-global)
 //!
-//! Fluid is not in `registry.json`. ProtocolId **10**. Markets **4000..=4199**:
+//! Fluid is not in `registry.json`. ProtocolId **10**. Markets **4000..=4999**:
 //! catalog = 4000; vault `vaultId` → `4000 + vaultId` (vault 1 → 4001).
-//! Never intern 0..=3480, never 3481..=3999, never 4200+ (Gearbox).
+//! Never intern 0..=3480 or 3481..=3999 (registry, Euler); Morpho owns 5000+.
 //!
 //! Boot: [`Config::from_toml`] → [`Config::bind_live`] (every vault the
 //! factory has deployed: type, tokens, decimals, DEX sides; tokens mapped
@@ -111,7 +111,7 @@ pub struct Config {
 pub enum ConfigError {
     #[error("fluid factory is the zero address")]
     ZeroFactory,
-    #[error("catalog/first_market outside Fluid 4000..=4199")]
+    #[error("catalog/first_market outside Fluid 4000..=4999")]
     MarketRange,
     #[error("market {0:?} configured twice")]
     DuplicateMarket(MarketId),
@@ -263,7 +263,7 @@ impl Config {
                     target: "coverage",
                     vault = %v,
                     vault_id = id,
-                    "fluid vault id past the 4001..=4199 MarketId band — left out"
+                    "fluid vault id past the 4001..=4999 MarketId band — left out"
                 ),
                 Ok(p) => {
                     for t in [p.supply0, p.supply1, p.borrow0, p.borrow1] {

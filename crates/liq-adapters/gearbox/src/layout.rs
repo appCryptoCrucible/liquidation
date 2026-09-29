@@ -1,7 +1,7 @@
 //! Store layout for one Gearbox V3 `CreditManagerV3`
 //! (`Gearbox-protocol/core-v3` @ `510fc6541c3767ce825929b4c311826fe81d6fa5`).
 //!
-//! One interned [`liq_types::MarketId`] per credit manager (4201..=4299).
+//! One interned [`liq_types::MarketId`] per credit manager (71001..=71999).
 //! Slot 0 is the manager underlying (`UNDERLYING_TOKEN_MASK = 1`). Later
 //! slots follow `getTokenByMask(1 << slot)` order.
 

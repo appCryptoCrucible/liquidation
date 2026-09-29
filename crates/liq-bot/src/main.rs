@@ -39,12 +39,8 @@ async fn entry() -> Result<(), startup::StartupError> {
         snapshot: data.join("snapshot.bin"),
         wal: data.join("wal.log"),
     };
-    if !liq_bot::state_build::head_path(&state).exists() {
-        liq_bot::state_build::build_first_snapshot(&config_dir, &state)
-            .await
-            .map_err(|e| startup::StartupError::Other(e.to_string()))?;
-    }
-    let started = startup::run(&config_dir, &cores, &state, PROD_ALLOW_UNPINNED).await?;
+    let started =
+        startup::run_on_built_state(&config_dir, &cores, &state, PROD_ALLOW_UNPINNED).await?;
     // No ExEx here: nothing further to catch up on.
     started.shared.lease.grant();
     let flag_file = config_dir.join("node.toml");

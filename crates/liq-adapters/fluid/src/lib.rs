@@ -13,7 +13,7 @@
 //! one collateral token out. Native ETH is priced and routed as WETH; the
 //! Executor unwraps and wraps around the call.
 //!
-//! ProtocolId **10**. MarketIds **4000..=4199** (catalog 4000, vault 1 → 4001).
+//! ProtocolId **10**. MarketIds **4000..=4999** (catalog 4000, vault 1 → 4001).
 
 #![forbid(unsafe_code)]
 
