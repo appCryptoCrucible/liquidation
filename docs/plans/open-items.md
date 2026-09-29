@@ -269,7 +269,13 @@ Aave and Morpho also list PTs and LSTs. We can liquidate these accounts, but the
 
 **Why.** Your standing rule is that every adapter must match the protocol's real, deployed liquidation process, checked against official docs *and* the deployed source (Sourcify, `version()`, live probes), not just a pinned repo branch. This session's Gearbox and Aave checks both found real mismatches.
 
-**Done so far.** Aave V3 (docs page, `LiquidationLogic` at the pin, live pools at revision 11, all matching). Gearbox v3.1 (fixed: discovery, partial rules, full path).
+**Done 2026-09-29 — every bound protocol.** Aave V3 (docs page, `LiquidationLogic` at the pin, live pools at revision 11, all matching). Gearbox v3.1 (fixed: discovery, partial rules, full path). Each other protocol was checked rule by rule against its docs and the **deployed** source (Sourcify), recorded under `## Liquidation rules audit` in `docs/coverage/<protocol>.md`:
+- **Morpho Blue:** matches; **fixed** the bad-debt fold (shares were left in the totals when `badDebtAssets` was 0). Pre-liquidation contracts (opt-in, factory `0x6FF3…3476`) are not tracked.
+- **Euler V2:** matches (discount, LTV ramp, cool-off, max repay/yield, socialization).
+- **Compound V2:** **fixed** the seize: `seizeInternal` keeps `protocolSeizeShareMantissa` (2.8% on 11 of 18 cTokens) — the bonus and max seize now pay what reaches the liquidator.
+- **Silo V2:** **fixed** the payout: with `receiveSToken = false` the hook redeems seized shares, which the silo pays only up to its liquidity; the quote now caps there (scaled repay) or refuses when the hook forces the whole debt.
+- **Liquity V2, Spark, Fluid:** match.
+- **Aave V4:** all 58 deployed source files on all 13 spokes are byte-identical to the `40232a0a` pin; docs agree (target HF, Dutch-auction bonus, $1,000 dust rule).
 
 **For each remaining protocol** (Aave V4, Spark, Morpho, Euler V2, Compound V2, Silo V2, Liquity V2, Fluid):
 1. Read the official liquidation docs page, and note close factor, bonus, fees, dust and minimum rules, bad-debt handling, and who may liquidate.

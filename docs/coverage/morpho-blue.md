@@ -39,3 +39,23 @@ topic0 = keccak256(canonical ABI signature). `Id` → `bytes32`.
 | proxy.upgraded | ERC1967 → Upgraded | 0xbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b | halt | |
 | proxy.adminChanged | ERC1967 → AdminChanged | 0x7e644d79422f17c01e4894b5f4f588d331ebfa28653d42ae832dc59e38c9798f | halt | |
 | proxy.initialized | Initializable → Initialized | 0xc7f505b2f371ae2175ee4913f4499e1f2633a7b5936321eed1cdaeb6115181d2 | halt | |
+
+## Liquidation rules audit (2026-09-29)
+
+Checked against the docs page (docs.morpho.org, "Liquidation") and the **deployed** singleton `0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb` (Sourcify-verified `src/Morpho.sol`, solc 0.8.19; immutable, no proxy).
+
+| rule | deployed | adapter |
+|---|---|---|
+| liquidatable | `!_isHealthy`: `toAssetsUp(borrowShares) > mulDivDown(collateral, price, 1e36).wMulDown(lltv)` | `health.rs` H1, same directions |
+| incentive | `min(1.15e18, WAD.wDivDown(WAD − 0.3e18.wMulDown(WAD − lltv)))`; docs: `min(M, 1/(β·LLTV + (1−β)))`, β 0.3, M 1.15 | `math::liquidation_incentive_factor`, pinned by `lif_pin` |
+| close factor | none; exactly one of `seizedAssets` / `repaidShares` | full debt, or all collateral when the debt's seize exceeds it |
+| seize from shares | `toAssetsDown · LIF (wMulDown) · 1e36 / price (mulDivDown)` | `quote.rs`, same order and directions |
+| shares from seize | `mulDivUp(seized, price, 1e36).wDivUp(LIF).toSharesUp` | same |
+| repaid assets | `repaidShares.toAssetsUp` | same |
+| bad debt | when collateral reaches 0: remaining shares removed, `badDebtAssets = min(totalBorrowAssets, toAssetsUp(shares))` from borrow and supply totals | **fixed**: the fold removed the shares only when `badDebtAssets > 0`; now always (`bad_debt_shares_leave_the_totals_even_with_zero_bad_debt_assets`) |
+| who | anyone; callback optional | Executor via callback |
+| fee | none to the protocol | — |
+
+**Interest between events.** Health accrues with the last `AccrueInterest.prevBorrowRate`. The AdaptiveCurveIRM moves its rate at target by at most ~50×/year, so over the minutes-to-hours between a market's events the rate difference changes accrued interest by a negligible fraction; the Executor's simulation is the final check.
+
+**Not covered: pre-liquidations.** Borrowers can opt in to a `PreLiquidation` contract (factory `0x6FF33615e792E35ed1026ea7cACCf42D9BF83476`, `morpho-org/pre-liquidation`) that allows partial liquidation between `preLltv` and `lltv` with a linear close factor (`preLCF1..2`) and incentive (`preLIF1..2`). The adapter does not track these contracts or authorizations; opted-in borrowers are only seen once they cross the market's LLTV.

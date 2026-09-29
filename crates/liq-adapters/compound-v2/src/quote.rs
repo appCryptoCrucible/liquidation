@@ -1,14 +1,18 @@
 //! Close-factor capped repay + seize options. Close factor and incentive
 //! come from the comptroller store (admin file), not a `1.08` constant.
 
+use alloy_primitives::Address;
 use alloy_primitives::U256;
 use liq_protocol::SlotRef;
 use liq_protocol::{
     BonusCurve, HealthState, MarketRow, PositionRef, ProtocolError, Quote, RepayOption, Result,
     SeizeOption,
 };
+use liq_types::fixed::{mul_div, FixedError, Rounding, WAD};
 use liq_types::PriceVector;
 use smallvec::SmallVec;
+
+use crate::config::Config;
 
 use crate::health::{finish, price_ray};
 use crate::layout::{CTokenRow, META_SLOT, UNMAPPED_ASSET};
@@ -42,7 +46,19 @@ fn borrow_now(pos: PositionRef<'_>, slot: u16, body: &CTokenRow) -> Result<U256>
     )
 }
 
-pub(crate) fn quote(pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quote>> {
+/// The incentive the liquidator actually receives from `ctoken`:
+/// `seizeInternal` keeps `protocolSeizeShareMantissa` of `seizeTokens`.
+fn paid_incentive(cfg: &Config, ctoken: Address, incentive: U256) -> Result<(U256, U256)> {
+    let share = cfg
+        .ctoken_seed(ctoken)
+        .map_or(0, |(_, pin)| pin.protocol_seize_share);
+    let keep = WAD
+        .checked_sub(U256::from(share))
+        .ok_or(FixedError::Underflow)?;
+    Ok((mul_div(incentive, keep, WAD, Rounding::Down)?, keep))
+}
+
+pub(crate) fn quote(cfg: &Config, pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quote>> {
     let (t, health) = finish(pos, px, None)?;
     if health.state != HealthState::Liquidatable {
         return Ok(None);
@@ -114,12 +130,24 @@ pub(crate) fn quote(pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quo
             }
             let underlying =
                 ctokens_to_underlying(ctokens, U256::from(body.exchange_rate_mantissa))?;
-            if !underlying.is_zero() {
+            // What reaches the liquidator: the protocol keeps its seize
+            // share of every seized token, so both the bonus and the most
+            // that can arrive shrink by it. Seizing the whole balance pays
+            // `balance · keep`, at the protocol's own repay for that balance.
+            let ctoken = crate::math::addr_from(body.ctoken);
+            let (paid, keep) = paid_incentive(cfg, ctoken, incentive)?;
+            let paid_bonus = if paid > WAD {
+                bonus_ray(paid)?
+            } else {
+                liq_types::Ray::from_raw(U256::ZERO)
+            };
+            let arrives = mul_div(underlying, keep, WAD, Rounding::Down)?;
+            if !arrives.is_zero() {
                 seize_options.push(SeizeOption {
                     asset: row.asset,
-                    max_seize: underlying,
-                    bonus,
-                    curve,
+                    max_seize: arrives,
+                    bonus: paid_bonus,
+                    curve: BonusCurve::Static { bonus: paid_bonus },
                     call_target: alloy_primitives::Address::ZERO,
                     // Same as the repay side (P6), and additionally this is
                     // the `cTokenCollateral` argument the liquidation call

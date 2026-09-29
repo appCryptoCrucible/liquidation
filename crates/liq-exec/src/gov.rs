@@ -304,9 +304,14 @@ where
             self.nonces
                 .allocate_run(0, u64::try_from(n).map_err(|_| ExecError::NonceOverflow)?)?;
         }
+        // No deployed Executor: the placeholder has no code on mainnet, so
+        // the bundle is recorded like a closed send gate (see `submit_path`).
+        let undeployed = self.executor == crate::builders::PLANNED_EXECUTOR
+            || target.executor == crate::builders::PLANNED_EXECUTOR;
         if !self.submit_enabled.get()
             || !self.lease_held.load(Ordering::Acquire)
             || !self.nonce_resync.load(Ordering::Acquire)
+            || undeployed
         {
             self.track_all(tracked);
             return Ok(GovReceipt::Recorded { txs: n });

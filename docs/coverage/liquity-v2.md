@@ -54,3 +54,17 @@ Boot is fail-closed: `Config::from_toml` then `Config::assert_live_registry(prov
 | proxy.upgraded | ERC1967 → Upgraded | 0xbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b | halt | |
 | proxy.adminChanged | ERC1967 → AdminChanged | 0x7e644d79422f17c01e4894b5f4f588d331ebfa28653d42ae832dc59e38c9798f | halt | |
 | proxy.initialized | Initializable → Initialized | 0xc7f505b2f371ae2175ee4913f4499e1f2633a7b5936321eed1cdaeb6115181d2 | halt | |
+
+## Liquidation rules audit (2026-09-29)
+
+Checked against the **deployed** WETH-branch `TroveManager` `0x7bcb64b2c9206a5b699ed43363f6f98d4776cf5a` (Sourcify-verified `TroveManager.sol`, `Constants.sol`).
+
+| rule | deployed | adapter |
+|---|---|---|
+| liquidatable | per id: `Status.active` or `zombie`, `getCurrentICR(id, price) < MCR` (WETH 110%, stETH-type 120%); price from `priceFeed.fetchPrice()` | `health.rs` with the branch's live MCR (asserted at bind) |
+| batch | `batchLiquidateTroves(ids)`; none liquidatable → `NothingToLiquidate` | one trove per leg |
+| SP offset | `boldInSPForOffsets = total − min(1e18, total)`; `debtToOffset = min(debt, remaining)` across the batch | `math::bold_in_sp_for_offsets` |
+| liquidator pay | `ETH_GAS_COMPENSATION` 0.0375 WETH + `collGasCompensation = min(collSPPortion/200, 2 ETH)` where `collSPPortion = coll·debtToOffset/debt`; nothing without an SP offset | `ETH_GAS_COMPENSATION`, `coll_gas_from_offset` |
+| penalties | SP 5%, redistribution 10% (WETH) / 20% (stETH-type); surplus to `CollSurplusPool` | not the liquidator's; folded via `Liquidation` / `TroveUpdated` |
+
+No mismatch found.

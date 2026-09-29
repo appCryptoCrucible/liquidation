@@ -46,3 +46,7 @@ State: debt cell per debt-token slot = what the full liquidation costs **in that
 | factory.VaultDeployed | IFluidVaultFactory → VaultDeployed | 0x00fa89a51ae01c150bfde909191818194382d30b43b645428ed6a71f19551073 | None | vault rows for a bound vault; a vault deployed after bind is logged, not read |
 
 Every other vault or factory event is intentionally unsubscribed: the per-block read is the source of truth.
+
+## Liquidation rules audit (2026-09-29)
+
+The adapter does not reproduce Fluid's liquidation math: every block it reads each vault's own `liquidate` / `simulateLiquidate` result (and the DEX's one-token estimates on smart sides), which is the deployed code's answer by construction; the read is live-tested against `VaultResolver.getVaultLiquidation` / `DexResolver`, and T1–T3 fork-tested through the Executor. Limits accepted (2026-09-29): vaults deployed after bind are read from the next restart, a DEX-refused one-token estimate drops that option, T1 can leave one wei, T4 has no fork test of its own.

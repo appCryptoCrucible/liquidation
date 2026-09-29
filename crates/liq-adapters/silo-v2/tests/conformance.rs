@@ -587,3 +587,53 @@ fn unexpected_emitter_is_refused() {
 }
 
 use common::OwnedLog;
+
+/// The hook redeems seized collateral shares for assets
+/// (`receiveSToken = false`), which the collateral silo pays only up to its
+/// liquidity (collateral assets − debt assets). A quote past that would
+/// revert on chain: it is scaled down, or refused when the hook requires the
+/// whole debt.
+#[test]
+fn seize_is_capped_by_the_collateral_silos_liquidity() {
+    let d = Deploy::new();
+    let px = prices(RAY_ONE, RAY_ONE);
+    let (p, st0) = full_store(&d, ALICE_DEBT_LIQ);
+    let q0 = p
+        .quote(st0.view(ALICE_ID, T0).unwrap(), &px)
+        .unwrap()
+        .expect("liquidatable");
+    let seize0 = q0.seize_options[0].max_seize;
+    let repay0 = q0.repay_options[0].max_repay;
+
+    // Someone borrows the collateral silo down to half the seize.
+    let total = BOB_COLL + ALICE_COLL;
+    let left = seize0 / U256::from(2u8);
+    let mut logs = listing_logs(&d);
+    logs.extend(activity_logs(&d, ALICE_DEBT_LIQ));
+    logs.push(log(
+        d.silo0,
+        &silo::Borrow {
+            sender: d.bob,
+            receiver: d.bob,
+            owner: d.bob,
+            assets: total - left,
+            shares: total - left,
+        },
+        DEPLOY_BLOCK + 1,
+        T0,
+    ));
+    let st = store_after(&p, &logs);
+    match p.quote(st.view(ALICE_ID, T0).unwrap(), &px) {
+        Ok(Some(q)) => {
+            let seize = q.seize_options[0].max_seize;
+            let repay = q.repay_options[0].max_repay;
+            assert!(seize + math::UNDERESTIMATION <= left, "{seize} vs {left}");
+            assert!(repay < repay0 && seize < seize0);
+            assert!(repay > U256::ZERO);
+        }
+        Err(ProtocolError::EmptyQuote) => {
+            panic!("a partial liquidation ({repay0}) must scale, not refuse")
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}

@@ -354,11 +354,12 @@ fn liquidate(cfg: &Config, st: &mut dyn StateWriter, log: &DecodedLog<'_>) -> Re
         let ba = U256::from(b.total_borrow_assets);
         b.total_borrow_assets = narrow(ba.saturating_sub(ev.repaidAssets))?;
         b.total_borrow_shares = add_u128(b.total_borrow_shares, ev.repaidShares, false)?;
-        if !ev.badDebtAssets.is_zero() {
-            b.total_borrow_assets = add_u128(b.total_borrow_assets, ev.badDebtAssets, false)?;
-            b.total_supply_assets = add_u128(b.total_supply_assets, ev.badDebtAssets, false)?;
-            b.total_borrow_shares = add_u128(b.total_borrow_shares, ev.badDebtShares, false)?;
-        }
+        // `Morpho.liquidate` removes the bad-debt shares whenever collateral
+        // reaches zero; `badDebtAssets` is `min(totalBorrowAssets, …)` and
+        // can be zero while shares remain.
+        b.total_borrow_assets = add_u128(b.total_borrow_assets, ev.badDebtAssets, false)?;
+        b.total_supply_assets = add_u128(b.total_supply_assets, ev.badDebtAssets, false)?;
+        b.total_borrow_shares = add_u128(b.total_borrow_shares, ev.badDebtShares, false)?;
         Ok(())
     })?;
     let _ = UNMAPPED_ASSET;

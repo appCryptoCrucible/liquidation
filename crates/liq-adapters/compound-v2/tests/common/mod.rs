@@ -90,10 +90,12 @@ impl Deploy {
                     CTokenPin {
                         ctoken: self.ceth,
                         underlying: Address::ZERO,
+                        protocol_seize_share: 0,
                     },
                     CTokenPin {
                         ctoken: self.cusdc,
                         underlying: self.usdc,
+                        protocol_seize_share: 0,
                     },
                 ],
             }],

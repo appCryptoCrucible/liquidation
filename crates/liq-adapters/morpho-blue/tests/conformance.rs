@@ -571,3 +571,38 @@ fn assert_last_healthy(
         lp.price
     );
 }
+
+/// `Morpho.liquidate` removes the bad-debt shares whenever the collateral
+/// reaches zero, even when `badDebtAssets` (`min(totalBorrowAssets, …)`) is
+/// zero because the repay already took every borrowed asset.
+#[test]
+fn bad_debt_shares_leave_the_totals_even_with_zero_bad_debt_assets() {
+    use liq_adapters_morpho_blue::layout::{LoanRow, LOAN_SLOT};
+    use liq_protocol::StateWriter;
+    let d = Deploy::new();
+    let p = d.adapter();
+    let mut logs = listing_logs(&d);
+    logs.extend(activity_logs(&d));
+    let shares = ALICE_DAI_DEBT * uint!(1_000_000_U256);
+    let half = shares / U256::from(2u8);
+    logs.push(log(
+        d.morpho,
+        &ev::Liquidate {
+            id: MARKET_ID,
+            caller: Address::repeat_byte(0xee),
+            borrower: d.alice,
+            repaidAssets: ALICE_DAI_DEBT,
+            repaidShares: half,
+            seizedAssets: ALICE_WETH,
+            badDebtAssets: U256::ZERO,
+            badDebtShares: shares - half,
+        },
+        DEPLOY_BLOCK + 2,
+        T0,
+    ));
+    let st = store_after(&p, &logs);
+    let rows = st.markets(FIRST).unwrap();
+    let loan: &LoanRow = rows[usize::from(LOAN_SLOT)].body().unwrap();
+    assert_eq!(loan.total_borrow_shares, 0);
+    assert_eq!(loan.total_borrow_assets, 0);
+}

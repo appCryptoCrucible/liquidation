@@ -104,3 +104,7 @@ Spark is **not** TokenMath 3.5. Deployed aToken impl `0x6175ddec3b9b38c88157c10a
 | irs.rateDataUpdate | DefaultReserveInterestRateStrategyV2 not this pin |
 | TokenMath 3.5 rounding | Spark aToken/vToken still WadRayMul |
 | MIN_BASE_MAX_CLOSE_FACTOR_THRESHOLD | not in Spark `LiquidationLogic`; TOML `min_base_max_close = 0` |
+
+## Liquidation rules audit (2026-09-29)
+
+Covered by the 2026-09-29 work in `docs/plans/open-items.md` Phase 7: pre-3.5 Aave code (`WadRayHalfUp` rounding, per-reserve close factor `ReserveDebt`), stable debt disabled on all 20 reserves (tracked, fails closed with `UntrackedDebt`), aToken `BalanceTransfer` subscribed. Each rule has a test (`spark_conformance.rs`, `aave-v3/tests/tokens.rs`). No further mismatch.

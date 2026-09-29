@@ -84,3 +84,21 @@ W decoder: `Liquidate(address indexed liquidator, address indexed violator, addr
 | proxy.upgraded | ERC1967 → Upgraded | 0xbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b | halt | |
 | proxy.adminChanged | ERC1967 → AdminChanged | 0x7e644d79422f17c01e4894b5f4f588d331ebfa28653d42ae832dc59e38c9798f | halt | |
 | proxy.initialized | Initializable → Initialized | 0xc7f505b2f371ae2175ee4913f4499e1f2633a7b5936321eed1cdaeb6115181d2 | halt | |
+
+## Liquidation rules audit (2026-09-29)
+
+Checked against the **deployed** modules: `GenericFactory.implementation()` = `0x8ff1c814719096b61abf00bb46ead0c9a529dd7d`, `MODULE_LIQUIDATION()` = `0x16fa62d8c322a6156fb5ef267342a3c7952ad23c` (Sourcify-verified `EVault/modules/Liquidation.sol`, `LiquidityUtils.sol`, `LTVConfig.sol`, `BorrowUtils.sol`).
+
+| rule | deployed | adapter |
+|---|---|---|
+| liquidatable | `calculateLiquidity(…, liquidation=true)` with mid-point quotes; violation when `collateralAdjustedValue <= liabilityValue` and liability > 0 | `health.rs`, same predicate |
+| gates | not self; collateral recognized (`targetTimestamp != 0`); vault is controller; collateral enabled; checks not deferred; not in cool-off since the last status check | recognized + enabled mask + cool-off (`liquidation_cool_off`, `last_status_check`) |
+| liquidation LTV | ramps linearly from `initialLiquidationLTV` to `liquidationLTV` until `targetTimestamp` (only when lowered) | `math::current_liquidation_ltv`, same integer steps |
+| discount | `df = max(collAdj·1e18/liability (floor), 1e18 − 1e18·maxLiquidationDiscount/1e4)`; bonus `1/df − 1` | `discount_factor`, `min_discount_factor`, `BonusCurve::Reciprocal` |
+| max repay / yield | `maxYield = liabilityValue·1e18/df`; capped at the collateral's value, then `repay = maxRepayValue·liability/liabilityValue`, `yield = maxYieldValue·balance/collateralValue` (all floor) | `math::max_liquidation`, line for line |
+| desired repay | above the max reverts `E_ExcessiveRepayAmount`; below scales yield pro rata | quote keeps 1 bp headroom (E3) |
+| worthless collateral | value 0 → yield the whole balance for no repay | skipped (no repay, no profit) |
+| debt movement | `transferBorrow` emits `Repay` (violator) and `Borrow` (liquidator); `Liquidate` carries no amounts the fold needs | fold reads `Repay`/`Borrow`; `Liquidate` only marks both accounts dirty |
+| socialization | no recognized collateral left, liability ≥ min, flag not set → `decreaseBorrow` (emits `Repay`) + `DebtSocialized` | folded through that `Repay` |
+
+No mismatch found. Known gap (unchanged): only the registry's admitted vaults are subscribed; a vault created after the registry pin is not tracked until the registry is regenerated (the bindings fingerprint then rebuilds the state).

@@ -91,3 +91,7 @@ SignatureGateway and NativeTokenGateway declare no events; they call Spoke and t
 | InitializableAdminUpgradeabilityProxy | V4 deploy uses OZ `TransparentUpgradeableProxy` (IERC1967.Upgraded) |
 
 HubConfigurator / SpokeConfigurator emit nothing; they call Hub/Spoke which emit the rows above.
+
+## Deployed-code audit (2026-09-29)
+
+All 13 tracked spokes are ERC-1967 proxies with their own implementation (13 distinct addresses, Sourcify-verified, 58 `src/` files each). Every one of those 58 files is **byte-identical** to `aave/aave-v4` @ `40232a0a` (and `LiquidationLogic.sol` is also identical to today's `main`), so the adapter's pin is exactly what runs. The docs page (aave.com/docs/aave-v4/positions/liquidations) matches: HF < 1, repay up to the target health factor, a Dutch-auction bonus rising as HF falls, and a remaining debt under $1,000 (`DUST_LIQUIDATION_THRESHOLD = 1000e26`) forcing the whole reserve's debt, which `quote.rs` implements (`leaves_dust`). No mismatch.

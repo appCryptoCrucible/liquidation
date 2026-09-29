@@ -94,6 +94,7 @@ pub mod views {
         function liquidationIncentiveMantissa() external view returns (uint256);
         function oracle() external view returns (address);
         function underlying() external view returns (address);
+        function protocolSeizeShareMantissa() external view returns (uint256);
         function getAccountLiquidity(address account)
             external
             view

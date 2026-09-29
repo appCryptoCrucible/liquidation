@@ -598,6 +598,59 @@ fn live_unitroller_matches_toml_or_fills() {
     cfg.assert_live_registry(&rpc, cfg.pinned_through)
         .expect("live Unitroller views");
     assert!(cfg.forks[0].close_factor_mantissa != 0);
+    let shares: Vec<u64> = cfg.forks[0]
+        .ctokens
+        .iter()
+        .map(|c| c.protocol_seize_share)
+        .collect();
+    eprintln!(
+        "protocolSeizeShareMantissa: {} of {} cTokens at 2.8e16, {} without the getter",
+        shares
+            .iter()
+            .filter(|s| **s == 28_000_000_000_000_000)
+            .count(),
+        shares.len(),
+        shares.iter().filter(|s| **s == 0).count()
+    );
+    assert!(shares.contains(&28_000_000_000_000_000));
+    assert!(shares.iter().all(|s| *s <= 28_000_000_000_000_000));
     assert!(cfg.forks[0].liquidation_incentive_mantissa != 0);
     CompoundV2::new(cfg).expect("live-asserted config boots");
+}
+
+/// `seizeInternal` keeps `protocolSeizeShareMantissa` of `seizeTokens` as
+/// reserves. The seize option must price what reaches the liquidator: the
+/// incentive and the most that can arrive both scale by `1 − share`.
+#[test]
+fn seize_option_pays_the_incentive_after_the_protocol_share() {
+    const SHARE: u64 = 28_000_000_000_000_000; // 2.8%
+    let d = Deploy::new();
+    let (p0, st) = full_store(&d, ALICE_DEBT_LIQ);
+    let px = prices(RAY_ONE, RAY_ONE);
+    let q0 = p0
+        .quote(st.view(ALICE_ID, T0).unwrap(), &px)
+        .unwrap()
+        .expect("liquidatable");
+
+    let mut cfg = assert_pin_registry(d.config());
+    for f in &mut cfg.forks {
+        for c in &mut f.ctokens {
+            c.protocol_seize_share = SHARE;
+        }
+    }
+    let p = CompoundV2::new(cfg).unwrap();
+    let q = p
+        .quote(st.view(ALICE_ID, T0).unwrap(), &px)
+        .unwrap()
+        .expect("liquidatable");
+    let wad = U256::from(1_000_000_000_000_000_000u64);
+    let keep = wad - U256::from(SHARE);
+    let paid = U256::from(INCENTIVE) * keep / wad;
+    assert_eq!(q.seize_options[0].bonus, math::bonus_ray(paid).unwrap());
+    assert_eq!(
+        q.seize_options[0].max_seize,
+        q0.seize_options[0].max_seize * keep / wad
+    );
+    assert_eq!(q.repay_options[0].max_repay, q0.repay_options[0].max_repay);
+    assert!(q.seize_options[0].bonus < q0.seize_options[0].bonus);
 }

@@ -55,3 +55,17 @@ W decoder: `LiquidateBorrow(address liquidator, address borrower, uint256 repayA
 | proxy.upgraded | ERC1967 → Upgraded | 0xbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b | halt | |
 | proxy.adminChanged | ERC1967 → AdminChanged | 0x7e644d79422f17c01e4894b5f4f588d331ebfa28653d42ae832dc59e38c9798f | halt | |
 | proxy.initialized | Initializable → Initialized | 0xc7f505b2f371ae2175ee4913f4499e1f2633a7b5936321eed1cdaeb6115181d2 | halt | |
+
+## Liquidation rules audit (2026-09-29)
+
+Checked against the **deployed** Unitroller implementation `comptrollerImplementation()` = `0xbafe01ff935c7305907c33bf824352ee5979b526` (Sourcify-verified `Comptroller.sol`, `CToken.sol`) and live views (`closeFactorMantissa` 0.5e18, `liquidationIncentiveMantissa` 1.08e18).
+
+| rule | deployed | adapter |
+|---|---|---|
+| liquidatable | `getAccountLiquidityInternal` shortfall > 0 (collateral factors, oracle `getUnderlyingPrice`, `exchangeRateStored`) | `health.rs` shortfall |
+| deprecated market | `collateralFactor == 0 ∧ borrowGuardianPaused ∧ reserveFactor == 1e18` → any borrower, repay up to the whole borrow | `is_deprecated`, repay = whole borrow |
+| close factor | `repay <= closeFactor · borrowBalanceStored` (truncate) | `mul_scalar_truncate(close, borrow)` |
+| seize tokens | `repay · (incentive·priceBorrowed) / (priceCollateral·exchangeRate)` (truncate) | `liquidate_calculate_seize_tokens` |
+| **protocol seize share** | `seizeInternal` keeps `protocolSeizeTokens = seizeTokens · protocolSeizeShareMantissa` as reserves; the liquidator gets the rest | **fixed**: the quote used the full incentive. Each cToken's `protocolSeizeShareMantissa()` is now read at bind (0 when the getter is absent) and each seize option pays `incentive·(1 − share)` with `max_seize = balance·(1 − share)`. Live: 11 of 18 cTokens at 2.8e16, 7 without the getter (`live_unitroller_matches_toml_or_fills`; `seize_option_pays_the_incentive_after_the_protocol_share`) |
+| seize paused | `seizeGuardianPaused` reverts | `ComptrollerMeta::SEIZE_PAUSED` |
+| fold | `Transfer(borrower→cToken)` and `Transfer(cToken→liquidator)` move balances; the gap is the protocol share | P3/P5 in `apply.rs` |

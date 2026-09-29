@@ -8,8 +8,10 @@ use liq_protocol::{
 use liq_types::PriceVector;
 use smallvec::SmallVec;
 
-use crate::health::{finish, terms};
-use crate::math::{bonus_ray, max_liquidation};
+use alloy_primitives::U256;
+
+use crate::health::{finish, terms, Terms};
+use crate::math::{bonus_ray, max_liquidation, mul_div_down, UNDERESTIMATION};
 
 pub(crate) fn quote(pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quote>> {
     let t0 = terms(pos)?;
@@ -43,7 +45,9 @@ pub(crate) fn quote(pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quo
         return Err(ProtocolError::EmptyQuote);
     }
     // No caller-side notional cap (GUIDE 12 §4b): `repay`/`seize` are the
-    // protocol's own ceiling from `max_liquidation` above.
+    // protocol's own ceiling from `max_liquidation` above — except where the
+    // collateral silo cannot pay it out.
+    let (repay, seize) = within_liquidity(&t, repay, seize)?;
 
     let mut repay_options = SmallVec::new();
     repay_options.push(RepayOption {
@@ -68,4 +72,39 @@ pub(crate) fn quote(pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quo
         repay_options,
         seize_options,
     }))
+}
+
+/// The Executor liquidates with `receiveSToken = false`, so the hook redeems
+/// what it seized: protected collateral first (never lent out), then
+/// collateral shares, which redeem only up to the silo's `getLiquidity()`
+/// (collateral assets − debt assets). A seize past that reverts. Scale the
+/// liquidation down to what can be paid out; the hook honours a smaller
+/// `maxDebtToCover` unless it requires the whole debt (below bad debt, a
+/// repay of more than 90% is rounded up to the whole debt), in which case
+/// there is no quote.
+fn within_liquidity(t: &Terms<'_>, repay: U256, seize: U256) -> Result<(U256, U256)> {
+    let liquidity = U256::from(t.coll_body.total_collateral_assets)
+        .saturating_sub(U256::from(t.coll_body.total_debt_assets));
+    // The hook seizes `seize + UNDERESTIMATION`; a basis point of the
+    // liquidity covers fees accrued before inclusion.
+    let payable = t.prot_assets.saturating_add(mul_div_down(
+        liquidity,
+        U256::from(9_999u32),
+        U256::from(10_000u32),
+    )?);
+    let needed = seize.saturating_add(UNDERESTIMATION);
+    if needed <= payable {
+        return Ok((repay, seize));
+    }
+    let bad_debt = t.debt_value >= t.coll_value;
+    if repay >= t.debt_assets && !bad_debt {
+        return Err(ProtocolError::EmptyQuote);
+    }
+    let cap = payable.saturating_sub(UNDERESTIMATION);
+    let scaled_repay = mul_div_down(repay, cap, seize)?;
+    let scaled_seize = mul_div_down(seize, scaled_repay, repay)?;
+    if scaled_repay.is_zero() || scaled_seize.is_zero() {
+        return Err(ProtocolError::EmptyQuote);
+    }
+    Ok((scaled_repay, scaled_seize))
 }

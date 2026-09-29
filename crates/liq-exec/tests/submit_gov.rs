@@ -35,7 +35,8 @@ use std::time::Duration;
 
 const SECRET: B256 = b256!("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
 const OPERATOR: Address = address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
-const EXECUTOR: Address = address!("0xe0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0");
+/// Stands in for a deployed Executor (the placeholder never sends).
+const EXECUTOR: Address = address!("0x1111111111111111111111111111111111111111");
 const EXEC_GAS: u64 = 2_436_297;
 const CHAIN_NONCE: u64 = 42;
 
@@ -133,6 +134,7 @@ fn path(
         },
     )
     .unwrap()
+    .with_executor(EXECUTOR)
 }
 
 fn target() -> GovTarget {

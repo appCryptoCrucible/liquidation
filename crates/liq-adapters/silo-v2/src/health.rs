@@ -19,7 +19,6 @@ pub(crate) struct Terms<'a> {
     pub coll_row: &'a MarketRow,
     #[allow(dead_code)]
     pub debt_body: &'a SiloRow,
-    #[allow(dead_code)]
     pub coll_body: &'a SiloRow,
     pub debt_shares: U256,
     #[allow(dead_code)]
@@ -29,7 +28,6 @@ pub(crate) struct Terms<'a> {
     pub debt_assets: U256,
     #[allow(dead_code)]
     pub coll_assets: U256,
-    #[allow(dead_code)]
     pub prot_assets: U256,
     pub sum_coll_assets: U256,
     pub lt: U256,

@@ -88,3 +88,16 @@ The 2.24e9 USDC row is an outlier vs the other two. Adapter re-reads storage tot
 | proxy.upgraded | ERC1967 → Upgraded | 0xbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b | halt | after pin |
 | proxy.adminChanged | ERC1967 → AdminChanged | 0x7e644d79422f17c01e4894b5f4f588d331ebfa28653d42ae832dc59e38c9798f | halt | after pin |
 | proxy.initialized | Initializable → Initialized | 0xc7f505b2f371ae2175ee4913f4499e1f2633a7b5936321eed1cdaeb6115181d2 | halt | after pin |
+
+## Liquidation rules audit (2026-09-29)
+
+Checked against the **deployed** hook receiver: pair `0x61de…c191` is an EIP-1167 clone of `0x346241e638d1ad3015c2e95c69cf54668de68302` (Sourcify-verified `SiloHookV1` → `PartialLiquidation.sol`, `PartialLiquidationLib.sol`, `PartialLiquidationExecLib.sol`).
+
+| rule | deployed | adapter |
+|---|---|---|
+| liquidatable | `ltv > collateralConfig.lt` (solvency oracle), debt > 0 | `health.rs` |
+| max repay | `estimateMaxRepayValue`: whole debt when debt ≥ collateral or target LTV 0; else `(D·1e18 − LTV·C)/(1e18 − (LTV + LTV·fee))`, whole debt past 90% | `math::estimate_max_repay_value`, same branches |
+| seize | `repay·(1 + fee)` capped at collateral value, to assets by ratio, minus `_UNDERESTIMATION` (2) | `math::max_liquidation` |
+| cover | `repayDebtAssets <= maxDebtToCover` else `FullLiquidationRequired`; below bad debt the whole-debt branch ignores a smaller cover | quote refuses a scaled cover there |
+| payout | protected collateral first, then collateral shares; with `receiveSToken = false` the hook **redeems** them, which the silo pays only up to `getLiquidity()` (`maxLiquidation` reports `sTokenRequired`) | **fixed**: the quote now caps the seize at protected + 99.99% of (collateral assets − debt assets), scaling the repay pro rata, and refuses when the hook would require the whole debt (`seize_is_capped_by_the_collateral_silos_liquidity`) |
+| fee | `collateralConfig.liquidationFee`, all to the liquidator | bonus = fee |

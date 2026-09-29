@@ -50,6 +50,11 @@ pub struct CTokenPin {
     pub ctoken: Address,
     /// `Address::ZERO` = CEther (no ERC-20 `underlying`). Not a symbol.
     pub underlying: Address,
+    /// `protocolSeizeShareMantissa()` (1e18 scale): the part of `seizeTokens`
+    /// `seizeInternal` keeps as reserves instead of paying the liquidator.
+    /// 2.8e16 on the current cToken code; 0 on cTokens without the getter.
+    /// Read by [`Config::assert_live_registry`]; 0 before it.
+    pub protocol_seize_share: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -132,6 +137,8 @@ pub enum ConfigError {
     UnderlyingMismatch(Address),
     #[error("CEther cToken {0} returned an ERC-20 underlying()")]
     CetherHasUnderlying(Address),
+    #[error("cToken {0} protocolSeizeShareMantissa() is above 1e18")]
+    SeizeShareBounds(Address),
     #[error("failed to load {0}")]
     Load(&'static str),
     #[error("protocol toml is malformed")]
@@ -360,7 +367,8 @@ impl Config {
             if f.liquidation_incentive_mantissa == 0 {
                 return Err(ConfigError::ZeroIncentive);
             }
-            for c in &f.ctokens {
+            for c in &mut f.ctokens {
+                c.protocol_seize_share = seize_share(provider, c.ctoken, block)?;
                 if c.underlying == Address::ZERO {
                     match provider.eth_call(c.ctoken, &underlyingCall {}.abi_encode(), block) {
                         Ok(raw) if raw.len() >= 32 => {
@@ -469,6 +477,7 @@ impl Config {
                         None | Some("") => Address::ZERO,
                         Some(u) => parse_addr(u)?,
                     },
+                    protocol_seize_share: 0,
                 });
             }
             forks.push(ForkConfig {
@@ -605,4 +614,27 @@ struct TomlFork {
 struct TomlCToken {
     address: String,
     underlying: Option<String>,
+}
+
+/// `protocolSeizeShareMantissa()`. A cToken built before the getter existed
+/// reverts on it and pays the liquidator the whole seize: 0.
+fn seize_share<R: RegistryRpc>(
+    provider: &R,
+    ctoken: Address,
+    block: BlockNum,
+) -> core::result::Result<u64, ConfigError> {
+    let raw = match provider.eth_call(
+        ctoken,
+        &crate::events::views::protocolSeizeShareMantissaCall {}.abi_encode(),
+        block,
+    ) {
+        Ok(raw) if raw.len() >= 32 => raw,
+        Ok(_) | Err(_) => return Ok(0),
+    };
+    let word = raw.get(..32).ok_or(ConfigError::RegistryCall(ctoken))?;
+    let share = U256::from_be_slice(word);
+    if share > U256::from(1_000_000_000_000_000_000u64) {
+        return Err(ConfigError::SeizeShareBounds(ctoken));
+    }
+    u64::try_from(share).map_err(|_| ConfigError::SeizeShareBounds(ctoken))
 }

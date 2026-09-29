@@ -200,7 +200,7 @@ impl Protocol for CompoundV2 {
     }
 
     fn quote(&self, pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Quote>> {
-        quote::quote(pos, px)
+        quote::quote(&self.cfg, pos, px)
     }
 
     /// 10E: `CErc20.liquidateBorrow(borrower, repayAmount, cTokenCollateral)`
