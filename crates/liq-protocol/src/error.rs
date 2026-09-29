@@ -98,6 +98,11 @@ pub enum ProtocolError {
     /// was not). The parameters were read wrong; never silently continue.
     #[error("adapter internal invariant violated")]
     Internal,
+
+    /// The position holds debt the adapter does not model (Aave stable
+    /// debt). Its health would be understated, so it is not evaluated.
+    #[error("position holds debt this adapter does not model")]
+    UntrackedDebt,
     /// A fixed-capacity adapter table is full. Distinct from [`Self::Internal`]
     /// because it is a sizing decision that was outgrown, not a broken
     /// invariant: the fix is to raise the table, and the message has to say

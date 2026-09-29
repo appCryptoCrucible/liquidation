@@ -353,7 +353,7 @@ fn constants_match_plan_decoder() {
     assert_eq!(ExecutorAdapter::EulerV2.tail_len(), 52);
     assert_eq!(ExecutorAdapter::SiloV2.tail_len(), 0);
     assert_eq!(ExecutorAdapter::LiquityV2.tail_len(), 32);
-    assert_eq!(ExecutorAdapter::Fluid.tail_len(), 32);
+    assert_eq!(ExecutorAdapter::Fluid.tail_len(), 98);
     assert_eq!(ExecutorAdapter::Gearbox.tail_len(), 33);
     assert_eq!(ExecutorAdapter::CompoundV2.tail_len(), 21);
 }
@@ -403,7 +403,11 @@ fn encode_decode_10e_tails() {
             collateral_asset: WETH,
             repay_amount: asked,
             tail: LegTail::Fluid {
+                kind: liq_wire::wire::FLUID_T4,
+                flags: liq_wire::wire::FLUID_DEBT_TOKEN1 | liq_wire::wire::FLUID_ABSORB,
                 col_per_unit_debt: WAD,
+                debt_shares_min_per_token: U256::from(2_254_704u64),
+                col_per_share_min: U256::from(2_142_145u64),
             },
             protocol_pull: asked,
         },
@@ -454,10 +458,6 @@ fn encode_decode_10e_tails() {
         assert_eq!(back.groups[0].liqs[0].adapter, leg.adapter);
         assert_eq!(back.groups[0].liqs[0].tail, leg.tail);
         assert_eq!(back.groups[0].liqs[0].market, leg.market);
-        if let LegTail::Fluid { col_per_unit_debt } = leg.tail {
-            assert_eq!(col_per_unit_debt, WAD);
-            assert!(col_per_unit_debt < RAY);
-        }
     }
 }
 
@@ -481,37 +481,80 @@ fn one_leg_plan(leg: LiqLeg) -> BatchPlan {
     }
 }
 
+/// The Fluid tail is checked against the vault type: per-share figures on
+/// the smart sides and only there, token1 only on a smart side, no unknown
+/// flag bit or type. `colPerUnitDebt` is a raw-unit ratio, so a figure above
+/// 1e27 (col shares per 6-decimal debt token) is valid.
 #[test]
-fn fluid_1e27_tail_rejected_1e18_helper_is_wire_unit() {
+fn fluid_tail_is_checked_against_the_vault_type() {
+    use liq_plan::EncodeError;
+    use liq_wire::wire::{FLUID_COL_TOKEN1, FLUID_DEBT_TOKEN1, FLUID_T1, FLUID_T2, FLUID_T3};
     let c = ctx();
     let asked = 1_000_000u128;
     let vault = address!("1111111111111111111111111111111111111111");
-    let base = LiqLeg {
+    let leg = |kind: u8, flags: u8, colper: U256, dps: U256, cps: U256| LiqLeg {
         adapter: ExecutorAdapter::Fluid,
         market: vault,
         borrower: USER,
         collateral_asset: WETH,
         repay_amount: asked,
         tail: LegTail::Fluid {
-            col_per_unit_debt: RAY,
+            kind,
+            flags,
+            col_per_unit_debt: colper,
+            debt_shares_min_per_token: dps,
+            col_per_share_min: cps,
         },
         protocol_pull: asked,
     };
+    let enc = |l: LiqLeg| EncodedPlan::encode(&one_leg_plan(l), &c).err();
+    let one = U256::from(1u8);
+    let z = U256::ZERO;
+    assert_eq!(enc(leg(FLUID_T1, 0, one, z, z)), None);
     assert_eq!(
-        EncodedPlan::encode(&one_leg_plan(base.clone()), &c),
-        Err(liq_plan::EncodeError::FluidColPerNot1e18)
+        enc(leg(
+            FLUID_T2,
+            FLUID_COL_TOKEN1,
+            RAY * U256::from(1000u32),
+            z,
+            one
+        )),
+        None
     );
-    let wire = col_per_unit_debt_1e18(WAD, WAD).unwrap();
-    assert_eq!(wire, WAD);
-    assert!(
-        wire < RAY,
-        "1e27 would fail pin (actualCol*1e18)/actualDebt"
+    assert_eq!(enc(leg(FLUID_T3, FLUID_DEBT_TOKEN1, one, one, z)), None);
+    assert_eq!(
+        enc(leg(0, 0, one, z, z)),
+        Some(EncodeError::FluidBadKind(0))
     );
-    let mut ok = base;
-    ok.tail = LegTail::Fluid {
-        col_per_unit_debt: wire,
-    };
-    EncodedPlan::encode(&one_leg_plan(ok), &c).expect("1e18 tail encodes");
+    assert_eq!(
+        enc(leg(5, 0, one, z, z)),
+        Some(EncodeError::FluidBadKind(5))
+    );
+    assert_eq!(
+        enc(leg(FLUID_T1, 0, z, z, z)),
+        Some(EncodeError::FluidZeroColPer)
+    );
+    assert_eq!(
+        enc(leg(FLUID_T1, 0x20, one, z, z)),
+        Some(EncodeError::FluidBadFlags(0x20))
+    );
+    assert_eq!(
+        enc(leg(FLUID_T1, FLUID_DEBT_TOKEN1, one, z, z)),
+        Some(EncodeError::FluidBadFlags(FLUID_DEBT_TOKEN1))
+    );
+    assert_eq!(
+        enc(leg(FLUID_T3, 0, one, z, z)),
+        Some(EncodeError::FluidPerShare(FLUID_T3))
+    );
+    assert_eq!(
+        enc(leg(FLUID_T1, 0, one, one, z)),
+        Some(EncodeError::FluidPerShare(FLUID_T1))
+    );
+    assert_eq!(
+        enc(leg(FLUID_T2, 0, one, z, z)),
+        Some(EncodeError::FluidPerShare(FLUID_T2))
+    );
+    assert_eq!(col_per_unit_debt_1e18(WAD, WAD).unwrap(), WAD);
 }
 
 #[test]

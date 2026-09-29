@@ -106,7 +106,8 @@ pub struct ExecPath<R, G> {
     pub submit_enabled: Arc<SubmitEnabled>,
     /// Process lease held bit. Default false (unbound path cannot POST).
     pub lease_held: Arc<AtomicBool>,
-    /// Chain-nonce resync bit (H4). Default false; 17A never stores true.
+    /// Chain-nonce resync bit. False until [`Self::sync_nonce`] reads the
+    /// chain nonce for the target block; false again when a read fails.
     pub nonce_resync: Arc<AtomicBool>,
     pub nonce_mode: NonceMode,
     pub nonces: NonceAllocator,
@@ -192,15 +193,26 @@ where
     /// once per target block. Every job and bundle for `target` then
     /// allocates from it, so they never reuse a nonce, and a bundle that did
     /// not land leaves no gap for the next block.
+    ///
+    /// `nonce_resync` (third bit of the
+    /// live-send conjunction) is stored true after a successful read and
+    /// false when the read fails, so a node that cannot be read stops POSTs.
     pub async fn sync_nonce(&self, chain: &crate::chain::ChainClient, target: u64) -> Result<()> {
         if *self.nonce_synced_for.lock() == target {
             return Ok(());
         }
         let base = target.checked_sub(1).ok_or(ExecError::FeeOverflow)?;
         let addr = self.nonces.address(0)?;
-        let n = chain.nonce_at(addr, base).await?;
+        let n = match chain.nonce_at(addr, base).await {
+            Ok(n) => n,
+            Err(e) => {
+                self.nonce_resync.store(false, Ordering::Release);
+                return Err(e);
+            }
+        };
         self.nonces.set_next(0, n)?;
         *self.nonce_synced_for.lock() = target;
+        self.nonce_resync.store(true, Ordering::Release);
         tracing::debug!(target, nonce = n, "operator nonce resynced from chain");
         Ok(())
     }
@@ -423,7 +435,9 @@ where
         }
     }
 
-    /// Allocate-mode only. Logs [`crate::nonce::GapFill`]; does not POST it (H4).
+    /// Allocate-mode only. Logs [`crate::nonce::GapFill`]; does not POST it:
+    /// the next target block's [`Self::sync_nonce`] reallocates from the chain
+    /// nonce, so the dropped nonce is reused there.
     fn mark_nonce_dropped(&self, allocated: &AllocatedNonce) {
         if self.nonce_mode != NonceMode::Allocate {
             return;
@@ -436,7 +450,7 @@ where
                     from = ?fill.from,
                     to = ?fill.to,
                     value = %fill.value,
-                    "gap-fill prepared after deny/send-fail; not POSTed (H4)"
+                    "nonce dropped after deny/send-fail; next block's resync reuses it"
                 );
                 metrics::counter!("nonce_gap_fill").increment(1);
             }

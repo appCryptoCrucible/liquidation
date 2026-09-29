@@ -1,5 +1,9 @@
 # Fluid rounding (`Instadapp/fluid-contracts-public` @ `9496626f`)
 
+> **Historical (2026-09-29).** The adapter no longer reproduces Fluid's tick
+> math. Each vault's liquidation is read from the vault itself every block
+> (`docs/coverage/fluid.md`), so these formulas are reference only.
+
 Source: `contracts/protocols/vault/vaultT1/coreModule/main.sol` `liquidate` / `operate`, `contracts/libraries/tickMath.sol`, T2/T3/T4 `coreModule/main.sol` @ `9496626f71a761fc296dc3b2efbfd54c504e18f0`.
 
 All `/` in the pin are Solidity floor (`Rounding.Down`). TickMath uses wrapping `mul`/`shr` then round-up remainder on the positive `getRatioAtTick` path.

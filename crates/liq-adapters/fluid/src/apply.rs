@@ -1,685 +1,468 @@
-//! `Protocol::apply_log` for Fluid vaults. Journal-before-write is the writer.
+//! Fluid state: vault rows from the bind-time read, and each vault's
+//! liquidation as the vault itself reports it every block.
+//!
+//! Every block, per vault, two dead-address simulations (`liquidate` on T1,
+//! `simulateLiquidate` on T2–T4; with and without `absorb_`) give the
+//! liquidation in the vault's own units. A smart side's shares are then
+//! priced in each of its two tokens by the DEX's own estimate
+//! (`paybackPerfectInOneToken` / `withdrawPerfectInOneToken`), at the same
+//! block. Nothing about Fluid's tick tree is reproduced.
 
-use alloy_primitives::{Address, B256, I256, U256};
-use alloy_sol_types::SolEvent;
+use alloy_primitives::{Address, Bytes, U256};
+use alloy_sol_types::{SolCall, SolError, SolEvent};
 use liq_protocol::{
-    DecodedLog, DirtyPositions, DirtyRows, DirtySet, MarketFlags, MarketRow, MarketSlot,
-    ProtocolError, Result, StateWriter,
+    DecodedLog, DirtyPositions, DirtySet, MarketFlags, MarketRow, MarketSlot, PositionExtraRepr,
+    ProtocolError, Result, StateAnswer, StateRead, StateWriter, Timestamp,
 };
-use liq_types::fixed::FixedError;
 use liq_types::{MarketId, PositionId, PositionKey};
 
-use crate::config::{Config, Emitter, VaultPin};
-use crate::events::{admin, factory, halt, vault};
-use bytemuck::Zeroable;
+use crate::config::{Config, VaultPin};
+use crate::events::{dex, factory, vault};
+use crate::layout::{CatalogEntry, VaultExtra, VaultRow, CATALOG_ASSET, UNMAPPED_ASSET, VAULT_T1};
 
-use crate::layout::{CatalogEntry, VaultExtra, VaultRow, CATALOG_ASSET, SLOT0, UNMAPPED_ASSET};
-use crate::math::{
-    addr20, addr_from, market_from_vault_id, pack_penalty_from_event, pack_threshold_from_event,
-    tick_from_raw, to_raw, NATIVE_TOKEN, TICK_STATUS_LIQUIDATED, TICK_STATUS_PERFECT,
-};
+/// Fluid `X128`: `liquidate`'s "everything" debt amount (resolver pin).
+const X128: U256 = U256::from_limbs([u64::MAX, u64::MAX, 0, 0]);
+/// Dead address: Fluid simulations revert with the result when `to_` is it.
+const DEAD: Address = alloy_primitives::address!("0x000000000000000000000000000000000000dEaD");
+/// Maximum for a one-token payback estimate (only the estimate is read).
+const ESTIMATE_MAX: U256 = U256::from_limbs([0, 0, 0, 1 << 63]);
 
-#[inline]
-fn decode<E: SolEvent>(log: &DecodedLog<'_>) -> Result<E> {
-    E::decode_raw_log(log.topics.iter().copied(), log.data).map_err(|_| ProtocolError::MalformedLog)
-}
-
-#[inline]
-fn last_update(ts: u64) -> Result<u32> {
-    u32::try_from(ts).map_err(|_| ProtocolError::Fixed(FixedError::Overflow))
-}
+// Read tags: `pin index << 8 | kind`.
+const K_SIM: u64 = 0; // + absorb
+const K_PAYBACK: u64 = 2; // + absorb * 4 + token
+const K_WITHDRAW: u64 = 4; // + absorb * 4 + token
 
 #[inline]
-fn positions(ids: &[PositionId]) -> DirtySet {
-    DirtySet::Positions(DirtyPositions::from_slice(ids))
+fn tag(pin: usize, kind: u64) -> u64 {
+    (u64::try_from(pin).unwrap_or(u64::MAX >> 8) << 8) | kind
 }
 
+/// `base + absorb·4 + token`: which follow-up a tag is.
 #[inline]
-fn dirty_slot(market: MarketId, slot: u16) -> DirtyRows {
-    let mut d = DirtyRows::new();
-    d.push(MarketSlot { market, slot });
-    d
-}
-
-fn intern_vault(
-    cfg: &Config,
-    st: &mut dyn StateWriter,
-    market: MarketId,
-    vault: Address,
-) -> Result<PositionId> {
-    st.intern(&PositionKey {
-        protocol: cfg.protocol,
-        market,
-        user: vault,
-    })
-}
-
-fn extra(st: &dyn StateWriter, pos: PositionId) -> Result<VaultExtra> {
-    Ok(*st.extra(pos)?.view::<VaultExtra>()?)
-}
-
-fn set_extra(st: &mut dyn StateWriter, pos: PositionId, e: VaultExtra) -> Result<()> {
-    let mut repr = *st.extra(pos)?;
-    *repr.view_mut::<VaultExtra>()? = e;
-    st.set_extra(pos, repr)
-}
-
-fn lookup_vault(cfg: &Config, st: &dyn StateWriter, vault: Address) -> Result<Option<MarketId>> {
-    let rows = match st.markets(cfg.catalog) {
-        Ok(r) => r,
-        Err(ProtocolError::UnknownMarket(_)) => return Ok(None),
-        Err(e) => return Err(e),
-    };
-    for row in rows {
-        let e: &CatalogEntry = row.body()?;
-        if addr_from(e.vault) == vault {
-            return Ok(Some(MarketId(e.market)));
-        }
-    }
-    Ok(None)
-}
-
-fn emitter(cfg: &Config, st: &dyn StateWriter, address: Address) -> Result<Option<Emitter>> {
-    if address == cfg.factory {
-        return Ok(Some(Emitter::Factory));
-    }
-    if let Some(m) = lookup_vault(cfg, st, address)? {
-        return Ok(Some(Emitter::Vault(m)));
-    }
-    if cfg.is_vault(address) {
-        return Ok(Some(Emitter::Pending));
-    }
-    Ok(None)
-}
-
-fn derive_flags(v: &VaultRow) -> MarketFlags {
-    if v.flags & VaultRow::PRICED == 0 {
-        MarketFlags::UNPRICED
-    } else {
-        MarketFlags::NONE
-    }
-}
-
-fn add_i256(cur: u128, delta: I256) -> Result<u128> {
-    let cur = I256::try_from(cur).map_err(|_| ProtocolError::Fixed(FixedError::Overflow))?;
-    let n = cur
-        .checked_add(delta)
-        .ok_or(ProtocolError::Fixed(FixedError::Overflow))?;
-    if n.is_negative() {
-        return Err(ProtocolError::Fixed(FixedError::Underflow));
-    }
-    u128::try_from(n).map_err(|_| ProtocolError::Fixed(FixedError::Overflow))
-}
-
-/// Pin `amt * EXCHANGE_PRICES_PRECISION / exPrice` (floor) on the
-/// signed LogOperate token delta. Sign is preserved; I256::MIN fails closed.
-fn token_delta_to_raw(delta: I256, ex_price: u128) -> Result<I256> {
-    if delta.is_zero() {
-        return Ok(I256::ZERO);
-    }
-    let raw = to_raw(delta.unsigned_abs(), U256::from(ex_price))?;
-    let signed = I256::try_from(raw).map_err(|_| ProtocolError::Fixed(FixedError::Overflow))?;
-    if delta.is_negative() {
-        signed
-            .checked_neg()
-            .ok_or(ProtocolError::Fixed(FixedError::Underflow))
-    } else {
-        Ok(signed)
-    }
+fn kind_of(base: u64, absorb: u64, token: u64) -> u64 {
+    base.saturating_add(absorb.saturating_mul(4))
+        .saturating_add(token)
 }
 
 #[inline]
-fn require_t1_ex(v: &VaultRow) -> Result<()> {
-    if !v.is_t1_token_pair() {
-        return Err(ProtocolError::OracleSourceMismatch);
-    }
-    if v.flags & VaultRow::EX_KNOWN == 0 || v.supply_ex_price == 0 || v.borrow_ex_price == 0 {
-        return Err(ProtocolError::OracleSourceMismatch);
-    }
-    Ok(())
+fn untag(t: u64) -> (usize, u64) {
+    (usize::try_from(t >> 8).unwrap_or(usize::MAX), t & 0xff)
 }
 
-fn sub_u256(cur: u128, amt: U256) -> Result<u128> {
-    let c = U256::from(cur);
-    let n = c
-        .checked_sub(amt)
-        .ok_or(ProtocolError::Fixed(FixedError::Underflow))?;
-    u128::try_from(n).map_err(|_| ProtocolError::MalformedLog)
+fn addr20(a: Address) -> [u8; 20] {
+    a.into_array()
 }
 
-type TokenDec = (Address, u8);
-
-fn pin_tokens(pin: &VaultPin) -> Result<(Vec<TokenDec>, u8, u8)> {
-    let mut col = vec![(pin.supply0, pin.supply_decimals0)];
-    if pin.supply1 != Address::ZERO {
-        col.push((pin.supply1, pin.supply_decimals1));
-    }
-    let mut debt = vec![(pin.borrow0, pin.borrow_decimals0)];
-    if pin.borrow1 != Address::ZERO {
-        debt.push((pin.borrow1, pin.borrow_decimals1));
-    }
-    let n_col = u8::try_from(col.len()).map_err(|_| ProtocolError::Internal)?;
-    let n_debt = u8::try_from(debt.len()).map_err(|_| ProtocolError::Internal)?;
-    col.extend(debt);
-    Ok((col, n_col, n_debt))
-}
-
-fn priced_tokens(cfg: &Config, tokens: &[TokenDec]) -> bool {
-    tokens.iter().all(|(t, _)| {
-        *t != Address::ZERO && *t != NATIVE_TOKEN && cfg.asset_by_underlying(*t).is_some()
-    })
-}
-
-fn vault_body_from_pin(pin: &VaultPin, n_col: u8, n_debt: u8, priced: bool) -> VaultRow {
-    let mut v = VaultRow::zeroed(); // bytemuck::Zeroable
-    v.vault = addr20(pin.vault);
-    v.oracle = addr20(pin.oracle);
-    v.supply0 = addr20(pin.supply0);
-    v.supply1 = addr20(pin.supply1);
-    v.borrow0 = addr20(pin.borrow0);
-    v.borrow1 = addr20(pin.borrow1);
-    v.vault_id = pin.vault_id;
-    v.vault_type = pin.vault_type;
-    v.liq_threshold = pin.liq_threshold;
-    v.liq_max_limit = pin.liq_max_limit;
-    v.liq_penalty = pin.liq_penalty;
-    v.n_col = n_col;
-    v.n_debt = n_debt;
-    v.flags = VaultRow::VIEWED;
-    if priced {
-        v.flags |= VaultRow::PRICED;
-    }
-    v
-}
-
-fn push_vault_slots(
-    cfg: &Config,
-    st: &mut dyn StateWriter,
-    market: MarketId,
-    pin: &VaultPin,
-    ts: u32,
-) -> Result<DirtyRows> {
-    let (tokens, n_col, n_debt) = pin_tokens(pin)?;
-    let priced = priced_tokens(cfg, &tokens);
-    let body = vault_body_from_pin(pin, n_col, n_debt, priced);
-    let mut dirty = DirtyRows::new();
-    for (i, (token, decimals)) in tokens.iter().enumerate() {
-        let tok = cfg.asset_by_underlying(*token);
-        let (asset, dec, feed) = match tok {
-            Some(t) => (t.asset, t.decimals, t.feed),
-            None => (UNMAPPED_ASSET, *decimals, liq_protocol::FeedId(0)),
-        };
-        let mut row = MarketRow::blank(asset, dec);
-        row.price_feed = feed;
-        row.last_update = ts;
-        *row.body_mut::<VaultRow>()? = body;
-        row.flags = derive_flags(&body);
-        let at = st.push_market(market, row)?;
-        if u16::try_from(i).map_err(|_| ProtocolError::Internal)? != at.slot {
-            return Err(ProtocolError::SlotMismatch {
-                expected: u16::try_from(i).map_err(|_| ProtocolError::Internal)?,
-                got: at.slot,
-            });
-        }
-        dirty.push(at);
-    }
-    Ok(dirty)
-}
-
-fn ensure_vault(
-    cfg: &Config,
-    st: &mut dyn StateWriter,
-    vault_addr: Address,
-    vault_id: u32,
-    ts: u32,
-) -> Result<(MarketId, DirtyRows)> {
-    if let Some(m) = lookup_vault(cfg, st, vault_addr)? {
-        return Ok((m, DirtyRows::new()));
-    }
-    let market = market_from_vault_id(vault_id)?;
-    let n = match st.markets(cfg.catalog) {
-        Ok(r) => r.len(),
-        Err(ProtocolError::UnknownMarket(_)) => 0,
-        Err(e) => return Err(e),
-    };
-    let cat_slot = u16::try_from(n).map_err(|_| ProtocolError::MalformedLog)?;
-    let mut cat = MarketRow::blank(CATALOG_ASSET, 0);
-    {
-        let e: &mut CatalogEntry = cat.body_mut()?;
-        e.vault = addr20(vault_addr);
-        e.vault_id = vault_id;
-        e.market = market.0;
-    }
-    st.push_market(cfg.catalog, cat)?;
-    let mut dirty = dirty_slot(cfg.catalog, cat_slot);
-    if let Some(pin) = cfg.pin_of(vault_addr) {
-        if pin.vault_id != vault_id {
-            return Err(ProtocolError::OracleSourceMismatch);
-        }
-        dirty.extend(push_vault_slots(cfg, st, market, pin, ts)?);
-    } else {
-        let mut row = MarketRow::blank(UNMAPPED_ASSET, 0);
-        row.last_update = ts;
-        row.flags = MarketFlags::UNPRICED;
-        {
-            let v: &mut VaultRow = row.body_mut()?;
-            v.vault = addr20(vault_addr);
-            v.vault_id = vault_id;
-        }
-        st.push_market(market, row)?;
-        dirty.push(MarketSlot {
-            market,
-            slot: SLOT0,
-        });
-    }
-    let _ = intern_vault(cfg, st, market, vault_addr)?;
-    Ok((market, dirty))
-}
-
-fn patch_vault(
-    st: &mut dyn StateWriter,
-    market: MarketId,
-    ts: Option<u32>,
-    f: impl FnOnce(&mut VaultRow) -> Result<()>,
-) -> Result<DirtyRows> {
-    let rows = st.markets(market)?;
-    let n = u16::try_from(rows.len()).map_err(|_| ProtocolError::Internal)?;
-    if n == 0 {
-        return Err(ProtocolError::UnknownMarket(market));
-    }
-    let mut first = *st.market(MarketSlot {
-        market,
-        slot: SLOT0,
-    })?;
-    f(first.body_mut::<VaultRow>()?)?;
-    if let Some(t) = ts {
-        first.last_update = t;
-    }
-    let body = *first.body::<VaultRow>()?;
-    let flags = derive_flags(&body);
-    first.flags = flags;
-    st.set_market(
-        MarketSlot {
-            market,
-            slot: SLOT0,
-        },
-        first,
-    )?;
-    let mut dirty = dirty_slot(market, SLOT0);
-    for slot in 1..n {
-        let at = MarketSlot { market, slot };
-        let mut row = *st.market(at)?;
-        *row.body_mut::<VaultRow>()? = body;
-        row.flags = flags;
-        if let Some(t) = ts {
-            row.last_update = t;
-        }
-        st.set_market(at, row)?;
-        dirty.push(at);
-    }
-    Ok(dirty)
-}
-
-fn vault_row(st: &dyn StateWriter, market: MarketId) -> Result<VaultRow> {
-    Ok(*st
-        .market(MarketSlot {
-            market,
-            slot: SLOT0,
-        })?
-        .body::<VaultRow>()?)
-}
-
-fn refresh_top_tick(st: &mut dyn StateWriter, pos: PositionId, market: MarketId) -> Result<()> {
-    let v = vault_row(st, market)?;
-    let mut e = extra(st, pos)?;
-    if v.n_nfts != 1 || v.flags & VaultRow::EX_KNOWN == 0 {
-        e.flags &= !VaultExtra::TOP_KNOWN;
-        return set_extra(st, pos, e);
-    }
-    let col = st.supply(pos, SLOT0)?;
-    let dslot = v.debt_slot();
-    let debt = st.debt(pos, dslot)?;
-    if col == 0 || debt == 0 {
-        e.flags &= !VaultExtra::TOP_KNOWN;
-        return set_extra(st, pos, e);
-    }
-    // Columns hold pin raw (`vaultVariables` bits 82/146). Tick is a raw
-    // ratio and does not move when only exchange prices update.
-    e.top_tick = tick_from_raw(U256::from(col), U256::from(debt))?;
-    e.tick_status = TICK_STATUS_PERFECT;
-    e.flags |= VaultExtra::TOP_KNOWN;
-    set_extra(st, pos, e)
-}
-
-const HALT: &[B256] = &[
-    halt::Upgraded::SIGNATURE_HASH,
-    halt::AdminChanged::SIGNATURE_HASH,
-    halt::Initialized::SIGNATURE_HASH,
-];
+// ---------------------------------------------------------------------------
+// Logs
+// ---------------------------------------------------------------------------
 
 pub(crate) fn apply_log(
     cfg: &Config,
     st: &mut dyn StateWriter,
     log: &DecodedLog<'_>,
 ) -> Result<DirtySet> {
-    let Some(em) = emitter(cfg, st, log.address)? else {
+    if log.address != cfg.factory {
         return Err(ProtocolError::UnexpectedLog);
-    };
+    }
     let topic0 = *log.topics.first().ok_or(ProtocolError::MalformedLog)?;
-    if HALT.contains(&topic0) {
-        return if log.block <= cfg.pinned_through {
-            Ok(DirtySet::None)
-        } else {
-            Err(ProtocolError::HaltSignal)
-        };
+    if topic0 != factory::VaultDeployed::SIGNATURE_HASH {
+        return Err(ProtocolError::UnexpectedLog);
     }
-    match em {
-        Emitter::Factory => factory_log(cfg, st, log, topic0),
-        Emitter::Vault(m) => vault_log(cfg, st, log, m, topic0),
-        Emitter::Pending => pending_log(cfg, st, log, topic0),
-    }
-}
-
-fn pending_log(
-    cfg: &Config,
-    st: &mut dyn StateWriter,
-    log: &DecodedLog<'_>,
-    topic0: B256,
-) -> Result<DirtySet> {
-    let Some(pin) = cfg.pin_of(log.address) else {
-        return Ok(DirtySet::None);
-    };
-    let ts = last_update(log.timestamp)?;
-    let (m, mut d) = ensure_vault(cfg, st, pin.vault, pin.vault_id, ts)?;
-    let inner = vault_log(cfg, st, log, m, topic0)?;
-    if !d.is_empty() {
-        match inner {
-            DirtySet::None => Ok(DirtySet::MarketReprice(d)),
-            DirtySet::MarketReprice(mut r) => {
-                d.append(&mut r);
-                Ok(DirtySet::MarketReprice(d))
-            }
-            DirtySet::MarketAccrual(mut r) => {
-                d.append(&mut r);
-                Ok(DirtySet::MarketReprice(d))
-            }
-            other => Ok(other),
+    let ev = factory::VaultDeployed::decode_raw_log(log.topics.iter().copied(), log.data)
+        .map_err(|_| ProtocolError::MalformedLog)?;
+    match cfg.pin_of(ev.vault) {
+        Some(pin) => {
+            ensure_vault(cfg, st, pin)?;
         }
-    } else {
-        Ok(inner)
+        None => tracing::warn!(
+            target: "coverage",
+            vault = %ev.vault,
+            vault_id = %ev.vaultId,
+            "fluid vault deployed after bind — not read until the next restart"
+        ),
     }
+    Ok(DirtySet::None)
 }
 
-fn factory_log(
+/// Catalog entry + the vault's market rows, once. Returns its market.
+pub(crate) fn ensure_vault(
     cfg: &Config,
     st: &mut dyn StateWriter,
-    log: &DecodedLog<'_>,
-    topic0: B256,
-) -> Result<DirtySet> {
-    if topic0 == factory::VaultDeployed::SIGNATURE_HASH {
-        let ev = decode::<factory::VaultDeployed>(log)?;
-        let vault_id = u32::try_from(ev.vaultId).map_err(|_| ProtocolError::MalformedLog)?;
-        let ts = last_update(log.timestamp)?;
-        let (_, dirty) = ensure_vault(cfg, st, ev.vault, vault_id, ts)?;
-        return Ok(DirtySet::MarketReprice(dirty));
+    pin: &VaultPin,
+) -> Result<MarketId> {
+    let market = pin.market();
+    if st.markets(market).is_ok_and(|r| !r.is_empty()) {
+        return Ok(market);
     }
-    if topic0 == factory::NewPositionMinted::SIGNATURE_HASH {
-        let ev = decode::<factory::NewPositionMinted>(log)?;
-        let Some(market) = lookup_vault(cfg, st, ev.vault)? else {
-            return Ok(DirtySet::None);
-        };
-        let dirty = patch_vault(st, market, Some(last_update(log.timestamp)?), |v| {
-            v.n_nfts = v
-                .n_nfts
-                .checked_add(1)
-                .ok_or(ProtocolError::Fixed(FixedError::Overflow))?;
-            Ok(())
-        })?;
-        let pos = intern_vault(cfg, st, market, ev.vault)?;
-        refresh_top_tick(st, pos, market)?;
-        return Ok(DirtySet::MarketReprice(dirty));
-    }
-    if topic0 == factory::Transfer::SIGNATURE_HASH
-        || topic0 == factory::LogSetDeployer::SIGNATURE_HASH
-        || topic0 == factory::LogSetGlobalAuth::SIGNATURE_HASH
-        || topic0 == factory::LogSetVaultAuth::SIGNATURE_HASH
-        || topic0 == factory::LogSetVaultDeploymentLogic::SIGNATURE_HASH
+    let mut cat = MarketRow::blank(CATALOG_ASSET, 0);
     {
-        decode_factory_known(log, topic0)?;
-        return Ok(DirtySet::None);
+        let e: &mut CatalogEntry = cat.body_mut()?;
+        e.vault = addr20(pin.vault);
+        e.vault_id = pin.vault_id;
+        e.market = market.0;
     }
-    Err(ProtocolError::UnexpectedLog)
-}
-
-fn decode_factory_known(log: &DecodedLog<'_>, topic0: B256) -> Result<()> {
-    if topic0 == factory::Transfer::SIGNATURE_HASH {
-        let _ = decode::<factory::Transfer>(log)?;
-        return Ok(());
-    }
-    if topic0 == factory::LogSetDeployer::SIGNATURE_HASH {
-        let _ = decode::<factory::LogSetDeployer>(log)?;
-        return Ok(());
-    }
-    if topic0 == factory::LogSetGlobalAuth::SIGNATURE_HASH {
-        let _ = decode::<factory::LogSetGlobalAuth>(log)?;
-        return Ok(());
-    }
-    if topic0 == factory::LogSetVaultAuth::SIGNATURE_HASH {
-        let _ = decode::<factory::LogSetVaultAuth>(log)?;
-        return Ok(());
-    }
-    if topic0 == factory::LogSetVaultDeploymentLogic::SIGNATURE_HASH {
-        let _ = decode::<factory::LogSetVaultDeploymentLogic>(log)?;
-        return Ok(());
-    }
-    Err(ProtocolError::UnexpectedLog)
-}
-
-fn vault_log(
-    cfg: &Config,
-    st: &mut dyn StateWriter,
-    log: &DecodedLog<'_>,
-    market: MarketId,
-    topic0: B256,
-) -> Result<DirtySet> {
-    if topic0 == vault::LogOperate::SIGNATURE_HASH {
-        return operate(cfg, st, log, market);
-    }
-    if topic0 == vault::LogUpdateExchangePrice::SIGNATURE_HASH {
-        let ev = decode::<vault::LogUpdateExchangePrice>(log)?;
-        let supply = u128::try_from(ev.supplyExPrice_).map_err(|_| ProtocolError::MalformedLog)?;
-        let borrow = u128::try_from(ev.borrowExPrice_).map_err(|_| ProtocolError::MalformedLog)?;
-        if supply == 0 || borrow == 0 {
-            return Err(ProtocolError::MalformedLog);
+    st.push_market(cfg.catalog, cat)?;
+    let cols = pin.col_tokens();
+    let debts = pin.debt_tokens();
+    let body = VaultRow {
+        vault: addr20(pin.vault),
+        supply: addr20(pin.supply),
+        borrow: addr20(pin.borrow),
+        supply0: addr20(pin.supply0),
+        supply1: addr20(pin.supply1),
+        borrow0: addr20(pin.borrow0),
+        borrow1: addr20(pin.borrow1),
+        vault_id: pin.vault_id,
+        vault_type: pin.vault_type,
+        n_col: u8::try_from(cols.len()).map_err(|_| ProtocolError::Internal)?,
+        n_debt: u8::try_from(debts.len()).map_err(|_| ProtocolError::Internal)?,
+        position_plus1: 0,
+        _pad: [0; 2],
+    };
+    for (i, (tok, dec)) in cols.iter().chain(debts.iter()).enumerate() {
+        let mapped = cfg.asset_of_token(*tok);
+        let mut row = MarketRow::blank(
+            mapped.map_or(UNMAPPED_ASSET, |a| a.asset),
+            mapped.map_or(*dec, |a| a.decimals),
+        );
+        if mapped.is_none() {
+            row.flags = MarketFlags::UNPRICED;
         }
-        let dirty = patch_vault(st, market, Some(last_update(log.timestamp)?), |v| {
-            v.supply_ex_price = supply;
-            v.borrow_ex_price = borrow;
-            v.flags |= VaultRow::EX_KNOWN;
-            Ok(())
-        })?;
-        let v = vault_row(st, market)?;
-        let pos = intern_vault(cfg, st, market, addr_from(v.vault))?;
-        refresh_top_tick(st, pos, market)?;
-        return Ok(DirtySet::MarketAccrual(dirty));
-    }
-    if topic0 == vault::LogLiquidate::SIGNATURE_HASH {
-        return liquidate_log(cfg, st, log, market);
-    }
-    if topic0 == vault::LogAbsorb::SIGNATURE_HASH {
-        let ev = decode::<vault::LogAbsorb>(log)?;
-        let v = vault_row(st, market)?;
-        let pos = intern_vault(cfg, st, market, addr_from(v.vault))?;
-        let mut e = extra(st, pos)?;
-        e.absorbed_col_raw =
-            u128::try_from(ev.colAbsorbedRaw_).map_err(|_| ProtocolError::MalformedLog)?;
-        e.absorbed_debt_raw =
-            u128::try_from(ev.debtAbsorbedRaw_).map_err(|_| ProtocolError::MalformedLog)?;
-        set_extra(st, pos, e)?;
-        return Ok(positions(&[pos]));
-    }
-    if topic0 == vault::LogRebalance::SIGNATURE_HASH {
-        let _ = decode::<vault::LogRebalance>(log)?;
-        return Ok(DirtySet::None);
-    }
-    if topic0 == admin::LogUpdateLiquidationThreshold::SIGNATURE_HASH {
-        let ev = decode::<admin::LogUpdateLiquidationThreshold>(log)?;
-        let packed = pack_threshold_from_event(ev.liquidationThreshold_)?;
-        let dirty = patch_vault(st, market, Some(last_update(log.timestamp)?), |v| {
-            v.liq_threshold = packed;
-            Ok(())
-        })?;
-        return Ok(DirtySet::MarketReprice(dirty));
-    }
-    if topic0 == admin::LogUpdateLiquidationMaxLimit::SIGNATURE_HASH {
-        let ev = decode::<admin::LogUpdateLiquidationMaxLimit>(log)?;
-        let packed = pack_threshold_from_event(ev.liquidationMaxLimit_)?;
-        let dirty = patch_vault(st, market, Some(last_update(log.timestamp)?), |v| {
-            v.liq_max_limit = packed;
-            Ok(())
-        })?;
-        return Ok(DirtySet::MarketReprice(dirty));
-    }
-    if topic0 == admin::LogUpdateLiquidationPenalty::SIGNATURE_HASH {
-        let ev = decode::<admin::LogUpdateLiquidationPenalty>(log)?;
-        let packed = pack_penalty_from_event(ev.liquidationPenalty_)?;
-        let dirty = patch_vault(st, market, Some(last_update(log.timestamp)?), |v| {
-            v.liq_penalty = packed;
-            Ok(())
-        })?;
-        return Ok(DirtySet::MarketReprice(dirty));
-    }
-    if topic0 == admin::LogUpdateOracle::SIGNATURE_HASH {
-        if log.block > cfg.pinned_through {
-            return Err(ProtocolError::HaltSignal);
+        if i == 0 {
+            *row.body_mut::<VaultRow>()? = body;
         }
-        let ev = decode::<admin::LogUpdateOracle>(log)?;
-        let dirty = patch_vault(st, market, Some(last_update(log.timestamp)?), |v| {
-            v.oracle = addr20(ev.newOracle_);
-            Ok(())
-        })?;
-        return Ok(DirtySet::MarketReprice(dirty));
+        st.push_market(market, row)?;
     }
-    if topic0 == admin::LogUpdateCoreSettings::SIGNATURE_HASH {
-        let ev = decode::<admin::LogUpdateCoreSettings>(log)?;
-        let thr = pack_threshold_from_event(ev.liquidationThreshold_)?;
-        let max = pack_threshold_from_event(ev.liquidationMaxLimit_)?;
-        let pen = pack_penalty_from_event(ev.liquidationPenalty_)?;
-        let dirty = patch_vault(st, market, Some(last_update(log.timestamp)?), |v| {
-            v.liq_threshold = thr;
-            v.liq_max_limit = max;
-            v.liq_penalty = pen;
-            Ok(())
-        })?;
-        return Ok(DirtySet::MarketReprice(dirty));
-    }
-    if is_admin_none(topic0) {
-        decode_admin_none(log, topic0)?;
-        return Ok(DirtySet::None);
-    }
-    Err(ProtocolError::UnexpectedLog)
+    Ok(market)
 }
 
-fn is_admin_none(topic0: B256) -> bool {
-    topic0 == admin::LogUpdateSupplyRateMagnifier::SIGNATURE_HASH
-        || topic0 == admin::LogUpdateBorrowRateMagnifier::SIGNATURE_HASH
-        || topic0 == admin::LogUpdateCollateralFactor::SIGNATURE_HASH
-        || topic0 == admin::LogUpdateWithdrawGap::SIGNATURE_HASH
-        || topic0 == admin::LogUpdateBorrowFee::SIGNATURE_HASH
-        || topic0 == admin::LogUpdateRebalancer::SIGNATURE_HASH
-        || topic0 == admin::LogRescueFunds::SIGNATURE_HASH
-        || topic0 == admin::LogAbsorbDustDebt::SIGNATURE_HASH
+// ---------------------------------------------------------------------------
+// Reads
+// ---------------------------------------------------------------------------
+
+fn quotable(cfg: &Config, pin: &VaultPin) -> bool {
+    pin.col_tokens()
+        .iter()
+        .any(|(t, _)| cfg.asset_of_token(*t).is_some())
+        && pin
+            .debt_tokens()
+            .iter()
+            .any(|(t, _)| cfg.asset_of_token(*t).is_some())
 }
 
-fn decode_admin_none(log: &DecodedLog<'_>, topic0: B256) -> Result<()> {
-    if topic0 == admin::LogUpdateSupplyRateMagnifier::SIGNATURE_HASH {
-        let _ = decode::<admin::LogUpdateSupplyRateMagnifier>(log)?;
-        return Ok(());
+/// Two simulations per vault with at least one mapped token on each side.
+pub(crate) fn state_reads(cfg: &Config) -> Vec<StateRead> {
+    let mut out = Vec::new();
+    for (i, pin) in cfg.vault_pins.iter().enumerate() {
+        if !quotable(cfg, pin) {
+            continue;
+        }
+        for absorb in [false, true] {
+            let calldata = if pin.vault_type == VAULT_T1 {
+                vault::liquidateCall {
+                    debtAmt_: X128,
+                    colPerUnitDebt_: U256::ZERO,
+                    to_: DEAD,
+                    absorb_: absorb,
+                }
+                .abi_encode()
+            } else {
+                vault::simulateLiquidateCall {
+                    debtAmt_: U256::ZERO,
+                    absorb_: absorb,
+                }
+                .abi_encode()
+            };
+            out.push(StateRead {
+                market: pin.market(),
+                target: pin.vault,
+                calldata: Bytes::from(calldata),
+                tag: tag(i, kind_of(K_SIM, 0, u64::from(absorb))),
+            });
+        }
     }
-    if topic0 == admin::LogUpdateBorrowRateMagnifier::SIGNATURE_HASH {
-        let _ = decode::<admin::LogUpdateBorrowRateMagnifier>(log)?;
-        return Ok(());
-    }
-    if topic0 == admin::LogUpdateCollateralFactor::SIGNATURE_HASH {
-        let _ = decode::<admin::LogUpdateCollateralFactor>(log)?;
-        return Ok(());
-    }
-    if topic0 == admin::LogUpdateWithdrawGap::SIGNATURE_HASH {
-        let _ = decode::<admin::LogUpdateWithdrawGap>(log)?;
-        return Ok(());
-    }
-    if topic0 == admin::LogUpdateBorrowFee::SIGNATURE_HASH {
-        let _ = decode::<admin::LogUpdateBorrowFee>(log)?;
-        return Ok(());
-    }
-    if topic0 == admin::LogUpdateRebalancer::SIGNATURE_HASH {
-        let _ = decode::<admin::LogUpdateRebalancer>(log)?;
-        return Ok(());
-    }
-    if topic0 == admin::LogRescueFunds::SIGNATURE_HASH {
-        let _ = decode::<admin::LogRescueFunds>(log)?;
-        return Ok(());
-    }
-    if topic0 == admin::LogAbsorbDustDebt::SIGNATURE_HASH {
-        let _ = decode::<admin::LogAbsorbDustDebt>(log)?;
-        return Ok(());
-    }
-    Err(ProtocolError::UnexpectedLog)
+    out
 }
 
-fn operate(
+/// `FluidLiquidateResult(col, debt)` from a simulation's revert data.
+fn sim_result(a: &StateAnswer<'_>) -> Option<(U256, U256)> {
+    if a.success {
+        return None;
+    }
+    let e = vault::FluidLiquidateResult::abi_decode(a.data).ok()?;
+    Some((e.colLiquidated, e.debtLiquidated))
+}
+
+fn one_token(a: &StateAnswer<'_>, withdraw: bool) -> Option<U256> {
+    if a.success {
+        return None;
+    }
+    if withdraw {
+        dex::FluidDexLiquidityOutput::abi_decode(a.data)
+            .ok()
+            .map(|e| e.tokenAmt)
+    } else {
+        dex::FluidDexSingleTokenOutput::abi_decode(a.data)
+            .ok()
+            .map(|e| e.tokenAmt)
+    }
+}
+
+/// On a smart side, what the simulated shares are in each of its tokens.
+pub(crate) fn state_follow_ups(cfg: &Config, a: StateAnswer<'_>) -> Vec<StateRead> {
+    let (pi, kind) = untag(a.read.tag);
+    let Some(pin) = cfg.vault_pins.get(pi) else {
+        return Vec::new();
+    };
+    if kind > K_SIM + 1 {
+        return Vec::new();
+    }
+    let Some((col, debt)) = sim_result(&a) else {
+        return Vec::new();
+    };
+    if col.is_zero() || debt.is_zero() {
+        return Vec::new();
+    }
+    let absorb = kind.saturating_sub(K_SIM);
+    let mut out = Vec::new();
+    let smart_debt = pin.debt_tokens().len() == 2;
+    let smart_col = pin.col_tokens().len() == 2;
+    for t in 0..2u64 {
+        if smart_debt {
+            out.push(StateRead {
+                market: pin.market(),
+                target: pin.borrow,
+                calldata: Bytes::from(
+                    dex::paybackPerfectInOneTokenCall {
+                        shares_: debt,
+                        maxToken0_: if t == 0 { ESTIMATE_MAX } else { U256::ZERO },
+                        maxToken1_: if t == 1 { ESTIMATE_MAX } else { U256::ZERO },
+                        estimate_: true,
+                    }
+                    .abi_encode(),
+                ),
+                tag: tag(pi, kind_of(K_PAYBACK, absorb, t)),
+            });
+        }
+        if smart_col {
+            out.push(StateRead {
+                market: pin.market(),
+                target: pin.supply,
+                calldata: Bytes::from(
+                    dex::withdrawPerfectInOneTokenCall {
+                        shares_: col,
+                        minToken0_: if t == 0 { U256::from(1u8) } else { U256::ZERO },
+                        minToken1_: if t == 1 { U256::from(1u8) } else { U256::ZERO },
+                        to_: DEAD,
+                    }
+                    .abi_encode(),
+                ),
+                tag: tag(pi, kind_of(K_WITHDRAW, absorb, t)),
+            });
+        }
+    }
+    out
+}
+
+/// One vault's answers, gathered.
+#[derive(Default, Clone, Copy)]
+struct VaultRead {
+    /// `[no absorb, absorb]` → `(col units, debt units)`.
+    sim: [Option<(U256, U256)>; 2],
+    /// `[absorb][token]` one-token payback.
+    pay: [[Option<U256>; 2]; 2],
+    /// `[absorb][token]` one-token withdraw.
+    out: [[Option<U256>; 2]; 2],
+}
+
+/// Fluid's liquidation resolver: absorb when the plain liquidation is empty,
+/// or when absorb adds size at no worse collateral-per-debt.
+fn choose_absorb(sim: &[Option<(U256, U256)>; 2]) -> Option<bool> {
+    let plain = sim[0].filter(|(c, d)| !c.is_zero() && !d.is_zero());
+    let abs = sim[1].filter(|(c, d)| !c.is_zero() && !d.is_zero());
+    match (plain, abs) {
+        (None, None) => None,
+        (Some(_), None) => Some(false),
+        (None, Some(_)) => Some(true),
+        (Some((c0, d0)), Some((c1, d1))) => {
+            let bigger = d1 > d0;
+            // c1/d1 >= c0/d0 without division.
+            let not_worse = c1
+                .checked_mul(d0)
+                .zip(c0.checked_mul(d1))
+                .is_some_and(|(l, r)| l >= r);
+            Some(bigger && not_worse)
+        }
+    }
+}
+
+fn u128_of(v: U256) -> Result<u128> {
+    u128::try_from(v).map_err(|_| ProtocolError::AmountTooLarge)
+}
+
+/// Fold one block's answers into each vault's position.
+pub(crate) fn apply_state_reads(
     cfg: &Config,
     st: &mut dyn StateWriter,
-    log: &DecodedLog<'_>,
-    market: MarketId,
+    ts: Timestamp,
+    answers: &[StateAnswer<'_>],
 ) -> Result<DirtySet> {
-    let ev = decode::<vault::LogOperate>(log)?;
-    let v = vault_row(st, market)?;
-    require_t1_ex(&v)?;
-    let pos = intern_vault(cfg, st, market, addr_from(v.vault))?;
-    // Pin: token → raw at the *then-current* ex. Persist raw. A later
-    // `LogUpdateExchangePrice` must not invert stored amounts through the
-    // new ex (`updateExchangePrices` writes supplyExPrice/borrowExPrice only).
-    let col = add_i256(
-        st.supply(pos, SLOT0)?,
-        token_delta_to_raw(ev.colAmt_, v.supply_ex_price)?,
-    )?;
-    st.set_supply(pos, SLOT0, col)?;
-    let dslot = v.debt_slot();
-    let debt = add_i256(
-        st.debt(pos, dslot)?,
-        token_delta_to_raw(ev.debtAmt_, v.borrow_ex_price)?,
-    )?;
-    st.set_debt(pos, dslot, debt)?;
-    refresh_top_tick(st, pos, market)?;
-    Ok(positions(&[pos]))
+    let mut reads: Vec<(usize, VaultRead)> = Vec::new();
+    for a in answers {
+        let (pi, kind) = untag(a.read.tag);
+        let slot = match reads.iter().position(|(i, _)| *i == pi) {
+            Some(s) => s,
+            None => {
+                reads.push((pi, VaultRead::default()));
+                reads.len().saturating_sub(1)
+            }
+        };
+        let Some((_, r)) = reads.get_mut(slot) else {
+            continue;
+        };
+        let (absorb, t) = if kind >= K_PAYBACK {
+            let k = kind.saturating_sub(K_PAYBACK);
+            (
+                usize::try_from(k / 4).unwrap_or(2),
+                usize::try_from(k % 4).unwrap_or(4),
+            )
+        } else {
+            (usize::try_from(kind).unwrap_or(2), 0)
+        };
+        match kind {
+            0 | 1 => {
+                if let Some(s) = r.sim.get_mut(absorb) {
+                    *s = sim_result(a);
+                }
+            }
+            _ => {
+                // t: 0/1 payback token, 2/3 withdraw token.
+                let withdraw = t >= 2;
+                let token = t % 2;
+                let v = one_token(a, withdraw);
+                let table = if withdraw { &mut r.out } else { &mut r.pay };
+                if let Some(cell) = table.get_mut(absorb).and_then(|x| x.get_mut(token)) {
+                    *cell = v;
+                }
+            }
+        }
+    }
+    let mut dirty = DirtyPositions::new();
+    for (pi, r) in reads {
+        let Some(pin) = cfg.vault_pins.get(pi) else {
+            continue;
+        };
+        if let Some(id) = fold_vault(cfg, st, pin, &r, ts)? {
+            dirty.push(id);
+        }
+    }
+    Ok(if dirty.is_empty() {
+        DirtySet::None
+    } else {
+        DirtySet::Positions(dirty)
+    })
 }
 
-fn liquidate_log(
+/// Write one vault's liquidation into its position. `Some(id)` when anything
+/// the engine reads changed (or it is liquidatable and was re-read).
+fn fold_vault(
     cfg: &Config,
     st: &mut dyn StateWriter,
-    log: &DecodedLog<'_>,
-    market: MarketId,
-) -> Result<DirtySet> {
-    let ev = decode::<vault::LogLiquidate>(log)?;
-    let v = vault_row(st, market)?;
-    require_t1_ex(&v)?;
-    let pos = intern_vault(cfg, st, market, addr_from(v.vault))?;
-    // Event is token `actualAmt = rawLiq * ex / 1e12`. Subtract pin raw.
-    let col = sub_u256(
-        st.supply(pos, SLOT0)?,
-        to_raw(ev.colAmt_, U256::from(v.supply_ex_price))?,
-    )?;
-    st.set_supply(pos, SLOT0, col)?;
-    let dslot = v.debt_slot();
-    let debt = sub_u256(
-        st.debt(pos, dslot)?,
-        to_raw(ev.debtAmt_, U256::from(v.borrow_ex_price))?,
-    )?;
-    st.set_debt(pos, dslot, debt)?;
-    let mut e = extra(st, pos)?;
-    e.tick_status = TICK_STATUS_LIQUIDATED;
-    set_extra(st, pos, e)?;
-    refresh_top_tick(st, pos, market)?;
-    Ok(positions(&[pos]))
+    pin: &VaultPin,
+    r: &VaultRead,
+    ts: Timestamp,
+) -> Result<Option<PositionId>> {
+    let cols = pin.col_tokens();
+    let debts = pin.debt_tokens();
+    let n_col = u16::try_from(cols.len()).map_err(|_| ProtocolError::Internal)?;
+    let mut col_amt = [0u128; 2];
+    let mut debt_amt = [0u128; 2];
+    let mut extra = VaultExtra {
+        debt_units: 0,
+        col_units: 0,
+        read_ts: ts,
+        flags: 0,
+        _pad: [0; 7],
+    };
+    if let Some(absorb) = choose_absorb(&r.sim) {
+        let v = usize::from(absorb);
+        let (col, debt) = r.sim.get(v).copied().flatten().unwrap_or_default();
+        extra.col_units = u128_of(col)?;
+        extra.debt_units = u128_of(debt)?;
+        if absorb {
+            extra.flags |= VaultExtra::ABSORB;
+        }
+        if debts.len() == 2 {
+            for (t, slot) in debt_amt.iter_mut().enumerate() {
+                let p = r.pay.get(v).and_then(|x| x.get(t)).copied().flatten();
+                *slot = p.map(u128_of).transpose()?.unwrap_or(0);
+            }
+        } else {
+            debt_amt[0] = extra.debt_units;
+        }
+        if cols.len() == 2 {
+            for (t, slot) in col_amt.iter_mut().enumerate() {
+                let o = r.out.get(v).and_then(|x| x.get(t)).copied().flatten();
+                *slot = o.map(u128_of).transpose()?.unwrap_or(0);
+            }
+        } else {
+            col_amt[0] = extra.col_units;
+        }
+    }
+    let live = debt_amt.iter().any(|d| *d != 0) && col_amt.iter().any(|c| *c != 0);
+    let market = pin.market();
+    let key = PositionKey {
+        protocol: cfg.protocol,
+        market,
+        user: pin.vault,
+    };
+    let head = MarketSlot { market, slot: 0 };
+    let existing = st
+        .market(head)
+        .ok()
+        .and_then(|row| row.body::<VaultRow>().ok())
+        .and_then(|b| b.position_plus1.checked_sub(1))
+        .map(PositionId);
+    if existing.is_none() && !live {
+        return Ok(None);
+    }
+    ensure_vault(cfg, st, pin)?;
+    let id = match existing {
+        Some(id) => id,
+        None => {
+            let id = st.intern(&key)?;
+            let mut row = *st.market(head)?;
+            row.body_mut::<VaultRow>()?.position_plus1 =
+                id.0.checked_add(1).ok_or(ProtocolError::Internal)?;
+            st.set_market(head, row)?;
+            id
+        }
+    };
+    let mut changed = false;
+    for (i, amt) in col_amt.iter().take(cols.len()).enumerate() {
+        let slot = u16::try_from(i).map_err(|_| ProtocolError::Internal)?;
+        if st.supply(id, slot)? != *amt {
+            st.set_supply(id, slot, *amt)?;
+            changed = true;
+        }
+    }
+    for (i, amt) in debt_amt.iter().take(debts.len()).enumerate() {
+        let slot = n_col.saturating_add(u16::try_from(i).map_err(|_| ProtocolError::Internal)?);
+        if st.debt(id, slot)? != *amt {
+            st.set_debt(id, slot, *amt)?;
+            changed = true;
+        }
+    }
+    let old: VaultExtra = *st.extra(id)?.view::<VaultExtra>()?;
+    if !live {
+        extra.read_ts = old.read_ts;
+    }
+    if old != extra {
+        let mut repr = PositionExtraRepr::ZERO;
+        *repr.view_mut::<VaultExtra>()? = extra;
+        st.set_extra(id, repr)?;
+        changed = changed || live || old.debt_units != 0;
+    }
+    Ok(changed.then_some(id))
 }

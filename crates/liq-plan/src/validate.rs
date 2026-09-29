@@ -4,7 +4,7 @@ use alloy_primitives::{keccak256, Address, B256, U256};
 use alloy_sol_types::sol;
 use liq_flash::fee_amount;
 use liq_protocol::ExecutorAdapter;
-use liq_types::fixed::{mul_div, Rounding, RAY, WAD};
+use liq_types::fixed::{mul_div, Rounding, WAD};
 use liq_wire::wire::{
     LegTail, LEG_EXACT_OUT, LEG_TAKE_BALANCE, V2_FACTORY_SUSHI, VENUE_CURVE_POOL, VENUE_ROUTER,
     VENUE_UNIV2_POOL, VENUE_UNIV3_POOL,
@@ -92,15 +92,22 @@ pub fn validate(p: &BatchPlan, ctx: &ValidateCtx) -> Result<()> {
                     check_liquity(ctx, l.market, *trove_id, l.borrower)?;
                 }
                 (ExecutorAdapter::LiquityV2, _) => return Err(EncodeError::LiquityTailShape),
-                (ExecutorAdapter::Fluid, LegTail::Fluid { col_per_unit_debt }) => {
-                    if col_per_unit_debt.is_zero() {
-                        return Err(EncodeError::FluidZeroColPer);
-                    }
-                    // Pin slip is 1e18. A 1e27-scale tail ExcessSlippage's every T1 leg.
-                    if *col_per_unit_debt >= RAY {
-                        return Err(EncodeError::FluidColPerNot1e18);
-                    }
-                }
+                (
+                    ExecutorAdapter::Fluid,
+                    LegTail::Fluid {
+                        kind,
+                        flags,
+                        col_per_unit_debt,
+                        debt_shares_min_per_token,
+                        col_per_share_min,
+                    },
+                ) => check_fluid(
+                    *kind,
+                    *flags,
+                    *col_per_unit_debt,
+                    *debt_shares_min_per_token,
+                    *col_per_share_min,
+                )?,
                 (ExecutorAdapter::Fluid, _) => return Err(EncodeError::FluidTailShape),
                 (ExecutorAdapter::Gearbox, LegTail::Gearbox { min_seized, .. }) => {
                     if min_seized.is_zero() {
@@ -260,6 +267,42 @@ fn check_liquity(
             pinned: pin.borrower,
             got: borrower,
         });
+    }
+    Ok(())
+}
+
+/// The Fluid tail the Executor can act on: a known vault type; a nonzero
+/// slippage floor; the per-share figure on each smart side and only there;
+/// a token1 choice only on a smart side; no undefined flag bit.
+fn check_fluid(
+    kind: u8,
+    flags: u8,
+    col_per_unit_debt: U256,
+    debt_shares_min_per_token: U256,
+    col_per_share_min: U256,
+) -> Result<()> {
+    use liq_wire::wire::{
+        FLUID_COL_TOKEN1, FLUID_DEBT_TOKEN1, FLUID_FLAGS, FLUID_T1, FLUID_T2, FLUID_T3, FLUID_T4,
+    };
+    if !(FLUID_T1..=FLUID_T4).contains(&kind) {
+        return Err(EncodeError::FluidBadKind(kind));
+    }
+    if flags & !FLUID_FLAGS != 0 {
+        return Err(EncodeError::FluidBadFlags(flags));
+    }
+    if col_per_unit_debt.is_zero() {
+        return Err(EncodeError::FluidZeroColPer);
+    }
+    let smart_debt = kind == FLUID_T3 || kind == FLUID_T4;
+    let smart_col = kind == FLUID_T2 || kind == FLUID_T4;
+    if smart_debt == debt_shares_min_per_token.is_zero() || smart_col == col_per_share_min.is_zero()
+    {
+        return Err(EncodeError::FluidPerShare(kind));
+    }
+    if (!smart_debt && flags & FLUID_DEBT_TOKEN1 != 0)
+        || (!smart_col && flags & FLUID_COL_TOKEN1 != 0)
+    {
+        return Err(EncodeError::FluidBadFlags(flags));
     }
     Ok(())
 }

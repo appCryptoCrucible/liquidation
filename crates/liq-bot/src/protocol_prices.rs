@@ -37,9 +37,14 @@ const BATCH: usize = 300;
 /// Every adapter's reads: `(index into the bound protocols, read)`.
 pub type ReadSet = Vec<(usize, PriceRead)>;
 
-/// One decoded protocol price. `usd` is false for ratio protocols
-/// (Morpho, Silo, Fluid, Liquity): their prices reconstruct a health
-/// ratio and are not dollars.
+/// One decoded protocol price. `usd` is false for protocols whose getter is
+/// not a dollar price (Morpho, Silo, Liquity); they never size.
+///
+/// `scale` is set on ratio reads (Morpho `price()`): the read's numeraire
+/// asset and the price the decode gave it (Morpho's loan at `10^36`-scale).
+/// Fluid publishes no price: its health is the vault's own liquidation,
+/// read every block as state (`state_reads`). [`to_usd`] restates the pair in USD with the numeraire's own USD
+/// price, which keeps the ratio health uses and makes values dollars.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QuotedPrice {
     pub protocol: ProtocolId,
@@ -47,6 +52,58 @@ pub struct QuotedPrice {
     pub asset: AssetId,
     pub price: Ray,
     pub usd: bool,
+    pub scale: Option<(AssetId, Ray)>,
+}
+
+/// The numeraire of a ratio read's decoded pair: Morpho publishes the loan
+/// first. `None` for protocols that quote dollars.
+fn ratio_numeraire(p: &BoundProtocol, decoded: &[(AssetId, Ray)]) -> Option<(AssetId, Ray)> {
+    match p {
+        BoundProtocol::MorphoBlue(_) => decoded.first().copied(),
+        _ => None,
+    }
+}
+
+/// Ratio prices restated in USD: each price times the numeraire's USD price
+/// over the price the decode gave the numeraire (so the numeraire becomes
+/// exactly its USD price and the pair's ratio is kept, to one unit of the
+/// USD-scaled collateral price). A read whose numeraire has no USD price is
+/// left out, not given one: its market stays on the canonical vector.
+pub fn to_usd(
+    entries: &[QuotedPrice],
+    usd_of: impl Fn(AssetId) -> Option<Ray>,
+) -> Vec<QuotedPrice> {
+    let mut out = Vec::with_capacity(entries.len());
+    for e in entries {
+        let Some((num, published)) = e.scale else {
+            out.push(*e);
+            continue;
+        };
+        let Some(usd) = usd_of(num).filter(|p| !p.raw().is_zero()) else {
+            tracing::debug!(
+                market = e.market.0,
+                asset = num.0,
+                "ratio numeraire has no USD price — market not overlaid"
+            );
+            continue;
+        };
+        let Ok(price) = liq_types::fixed::mul_div(
+            e.price.raw(),
+            usd.raw(),
+            published.raw(),
+            liq_types::fixed::Rounding::Down,
+        ) else {
+            continue;
+        };
+        if price.is_zero() {
+            continue;
+        }
+        out.push(QuotedPrice {
+            price: Ray::from_raw(price),
+            ..*e
+        });
+    }
+    out
 }
 
 /// One block's decoded protocol prices.
@@ -131,6 +188,7 @@ pub async fn read_block(
             match proto.decode_prices(read, &row.returnData, &mut decoded) {
                 Ok(()) => {
                     let usd = quotes_in_usd(p);
+                    let scale = ratio_numeraire(p, &decoded);
                     batch
                         .entries
                         .extend(decoded.iter().map(|&(asset, price)| QuotedPrice {
@@ -139,6 +197,7 @@ pub async fn read_block(
                             asset,
                             price,
                             usd,
+                            scale,
                         }));
                 }
                 Err(e) => {
@@ -302,6 +361,7 @@ mod tests {
 
     fn quote(p: ProtocolId, m: MarketId, a: AssetId, price: Ray, usd: bool) -> QuotedPrice {
         QuotedPrice {
+            scale: None,
             protocol: p,
             market: m,
             asset: a,
@@ -862,5 +922,339 @@ mod tests {
             batch.failed, reverted,
             "decode failures beyond reverted oracles"
         );
+    }
+
+    /// One protocol bound as production binds it, with a live RPC at `block`.
+    fn bind_live(
+        push: impl FnOnce(
+            &std::path::Path,
+            (&crate::live_rpc::LiveRpc, u64),
+            &mut crate::bind::ProtocolLoad,
+        ),
+    ) -> (
+        &'static [BoundProtocol],
+        tokio::runtime::Runtime,
+        HttpRpc,
+        u64,
+    ) {
+        let (rt, rpc, block) = live_http();
+        let url = std::env::var("MAINNET_RPC_URL").unwrap();
+        let live = crate::live_rpc::LiveRpc::new(HttpRpc::connect(&url).unwrap());
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut out = crate::bind::ProtocolLoad::default();
+        push(&root.join("config/protocols"), (&live, block), &mut out);
+        assert!(out.omitted.is_empty(), "omitted: {:?}", out.omitted);
+        let protocols: &'static [BoundProtocol] = Box::leak(out.protocols.into_boxed_slice());
+        (protocols, rt, rpc, block)
+    }
+
+    /// Chain: each branch's `PriceFeed.fetchPrice()` at the same block,
+    /// × 1e9; BOLD at exactly 1 RAY.
+    #[test]
+    #[ignore = "needs MAINNET_RPC_URL"]
+    fn live_liquity_branches_match_fetch_price() {
+        use alloy_primitives::U256;
+        use alloy_sol_types::{sol, SolCall};
+        sol! { function fetchPrice() external returns (uint256 price, bool newOracleFailureDetected); }
+        let (protocols, rt, rpc, block) =
+            bind_live(|dir, live, out| crate::bind::push_liquity(dir, Some(live), out));
+        let BoundProtocol::LiquityV2(l) = &protocols[0] else {
+            panic!("liquity not bound");
+        };
+        let reads: Vec<_> = l.price_reads(&NoRows).into_iter().map(|r| (0, r)).collect();
+        assert_eq!(reads.len(), l.config().branches.len());
+        let batch = rt.block_on(read_block(protocols, &rpc, &reads, block));
+        assert_eq!(batch.failed, 0);
+        for b in &l.config().branches {
+            let raw = call_retry(
+                &rt,
+                &rpc,
+                b.price_feed,
+                fetchPriceCall {}.abi_encode().into(),
+                block,
+            )
+            .unwrap();
+            let want = fetchPriceCall::abi_decode_returns(&raw).unwrap().price;
+            assert!(!want.is_zero(), "{} fetchPrice is zero", b.coll_symbol);
+            let got = batch
+                .entries
+                .iter()
+                .find(|e| e.market == b.market && e.asset == b.coll_asset)
+                .unwrap();
+            assert_eq!(
+                got.price.raw(),
+                want.checked_mul(U256::from(1_000_000_000u64)).unwrap(),
+                "{} at block {block}",
+                b.coll_symbol
+            );
+            let bold = batch
+                .entries
+                .iter()
+                .find(|e| e.market == b.market && e.asset == l.config().bold.asset)
+                .unwrap();
+            assert_eq!(bold.price.raw(), liq_types::fixed::RAY);
+        }
+    }
+
+    /// Chain: `PriceOracleV3.convertToUSD(10^decimals, token)` (the call
+    /// `calcDebtAndCollateral` values collateral with) at the same block,
+    /// for every mapped token of every manager. A token whose feed reverts
+    /// must not be published.
+    #[test]
+    #[ignore = "needs MAINNET_RPC_URL"]
+    fn live_gearbox_prices_match_convert_to_usd() {
+        use alloy_primitives::U256;
+        use alloy_sol_types::{sol, SolCall};
+        sol! { function convertToUSD(uint256 amount, address token) external view returns (uint256); }
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let intern = liq_config::Intern::from_registry(
+            &liq_config::Registry::from_path(&root.join("registry/registry.json")).unwrap(),
+        )
+        .unwrap();
+        let (protocols, rt, rpc, block) =
+            bind_live(|dir, live, out| crate::bind::push_gearbox(dir, &intern, Some(live), out));
+        let BoundProtocol::Gearbox(g) = &protocols[0] else {
+            panic!("gearbox not bound");
+        };
+        let reads: Vec<_> = g.price_reads(&NoRows).into_iter().map(|r| (0, r)).collect();
+        assert!(!reads.is_empty());
+        let batch = rt.block_on(read_block(protocols, &rpc, &reads, block));
+        // One chain call per (oracle, token): managers share 12 oracles.
+        let mut chain: std::collections::HashMap<
+            (alloy_primitives::Address, alloy_primitives::Address),
+            Option<U256>,
+        > = std::collections::HashMap::new();
+        let (mut matched, mut reverted, mut zero) = (0usize, 0usize, 0usize);
+        for m in &g.config().managers {
+            for t in m
+                .tokens
+                .iter()
+                .filter(|t| t.asset != liq_adapters_gearbox::UNMAPPED_ASSET && !t.token.is_zero())
+            {
+                let usd8 = *chain.entry((m.price_oracle, t.token)).or_insert_with(|| {
+                    let unit = U256::from(10u64).pow(U256::from(t.decimals));
+                    let data = convertToUSDCall {
+                        amount: unit,
+                        token: t.token,
+                    }
+                    .abi_encode()
+                    .into();
+                    match call_retry(&rt, &rpc, m.price_oracle, data, block) {
+                        Ok(raw) => Some(convertToUSDCall::abi_decode_returns(&raw).unwrap()),
+                        Err(liq_config::ConfigError::CallFailed { .. }) => None,
+                        Err(e) => panic!("rpc error on {} {}: {e}", m.price_oracle, t.token),
+                    }
+                });
+                let got = batch
+                    .entries
+                    .iter()
+                    .find(|e| e.market == m.market && e.asset == t.asset);
+                let Some(usd8) = usd8.filter(|p| !p.is_zero()) else {
+                    if usd8.is_some() {
+                        zero = zero.saturating_add(1);
+                    } else {
+                        reverted = reverted.saturating_add(1);
+                    }
+                    assert!(
+                        got.is_none(),
+                        "reverting or zero token {} was published",
+                        t.token
+                    );
+                    continue;
+                };
+                let want = usd8
+                    .checked_mul(U256::from(10u64).pow(U256::from(19u64)))
+                    .unwrap();
+                assert_eq!(
+                    got.expect("priced token not published").price.raw(),
+                    want,
+                    "manager {} token {}",
+                    m.manager,
+                    t.token
+                );
+                matched = matched.saturating_add(1);
+            }
+        }
+        eprintln!(
+            "gearbox block {block}: {matched} prices matched, {reverted} reverted, {zero} zero, {} failed reads, {} distinct calls",
+            batch.failed,
+            chain.len()
+        );
+        assert!(matched > 0);
+        assert_eq!(
+            batch.failed, reverted,
+            "failed reads beyond reverting feeds"
+        );
+    }
+
+    /// Chain: admitted Euler vaults with the USD unit of account. The
+    /// overlay's debt-asset price equals `getQuote(10^decimals, asset, USD)`
+    /// on the vault's own oracle router, × 1e9, at the same block.
+    #[test]
+    #[ignore = "needs MAINNET_RPC_URL"]
+    fn live_euler_debt_prices_match_get_quote() {
+        use alloy_primitives::{Address, U256};
+        use alloy_sol_types::{sol, SolCall};
+        use liq_adapters_euler_v2::layout::VaultRow;
+        use liq_config::{Intern, Registry};
+        use liq_protocol::MarketRow;
+        sol! {
+            function asset() external view returns (address);
+            function oracle() external view returns (address);
+            function unitOfAccount() external view returns (address);
+            function getQuote(uint256 inAmount, address base, address quote) external view returns (uint256);
+        }
+        struct Book(Vec<(MarketId, Vec<MarketRow>)>);
+        impl MarketRows for Book {
+            fn rows(&self, m: MarketId) -> Option<&[MarketRow]> {
+                self.0
+                    .iter()
+                    .find(|(id, _)| *id == m)
+                    .map(|(_, r)| r.as_slice())
+            }
+        }
+        let usd = alloy_primitives::address!("0x0000000000000000000000000000000000000348");
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let reg = Registry::from_path(&root.join("registry/registry.json")).unwrap();
+        let intern = Intern::from_registry(&reg).unwrap();
+        let load = crate::bind::load_protocols(&root.join("config"), &intern, None);
+        let protocols: &'static [BoundProtocol] = Box::leak(load.protocols.into_boxed_slice());
+        let idx = protocols
+            .iter()
+            .position(|p| matches!(p, BoundProtocol::EulerV2(_)))
+            .unwrap();
+        let BoundProtocol::EulerV2(e) = &protocols[idx] else {
+            unreachable!("just found");
+        };
+        let cfg = e.config();
+        let (rt, rpc, block) = live_http();
+        let get = |to: Address, data: Vec<u8>| call_retry(&rt, &rpc, to, data.into(), block);
+        let word = |b: alloy_primitives::Bytes| Address::from_slice(&b[12..32]);
+        let mut book = Vec::new();
+        let mut expect = Vec::new();
+        for &(vault, market) in &cfg.interned {
+            let (Ok(a), Ok(o), Ok(u)) = (
+                get(vault, assetCall {}.abi_encode()),
+                get(vault, oracleCall {}.abi_encode()),
+                get(vault, unitOfAccountCall {}.abi_encode()),
+            ) else {
+                continue;
+            };
+            let (asset, oracle, unit) = (word(a), word(o), word(u));
+            if unit != usd || oracle.is_zero() {
+                continue;
+            }
+            let Some(ac) = cfg.assets.iter().find(|x| x.underlying == asset) else {
+                continue;
+            };
+            let mut row = MarketRow::blank(ac.asset, ac.decimals);
+            let v = row.body_mut::<VaultRow>().unwrap();
+            v.vault.copy_from_slice(vault.as_slice());
+            v.underlying.copy_from_slice(asset.as_slice());
+            v.oracle.copy_from_slice(oracle.as_slice());
+            v.unit_of_account.copy_from_slice(unit.as_slice());
+            v.flags = VaultRow::PRICED;
+            book.push((market, vec![row]));
+            expect.push((market, ac.asset, asset, ac.decimals, oracle));
+            if expect.len() >= 8 {
+                break;
+            }
+        }
+        assert!(
+            !expect.is_empty(),
+            "no admitted USD-unit vault with an interned asset"
+        );
+        let reads: Vec<_> = e
+            .price_reads(&Book(book))
+            .into_iter()
+            .map(|r| (idx, r))
+            .collect();
+        let batch = rt.block_on(read_block(protocols, &rpc, &reads, block));
+        let mut matched = 0usize;
+        for (market, id, asset, dec, oracle) in expect {
+            let got = batch
+                .entries
+                .iter()
+                .find(|x| x.market == market && x.asset == id);
+            let q = getQuoteCall {
+                inAmount: U256::from(10u64).pow(U256::from(dec)),
+                base: asset,
+                quote: usd,
+            };
+            let Ok(raw) = get(oracle, q.abi_encode()) else {
+                assert!(got.is_none(), "reverting quote for {asset} was published");
+                continue;
+            };
+            let want = getQuoteCall::abi_decode_returns(&raw).unwrap();
+            if want.is_zero() {
+                assert!(got.is_none());
+                continue;
+            }
+            let want = want.checked_mul(U256::from(1_000_000_000u64)).unwrap();
+            assert_eq!(
+                got.unwrap().price.raw(),
+                want,
+                "market {market:?} asset {asset}"
+            );
+            matched = matched.saturating_add(1);
+        }
+        eprintln!("euler block {block}: {matched} vault prices matched");
+        assert!(matched > 0);
+    }
+
+    fn usd_ray(dollars: u64) -> Ray {
+        Ray::from_raw(alloy_primitives::U256::from(dollars) * liq_types::fixed::RAY)
+    }
+
+    /// Morpho: the pair the decode builds reproduces `price()` exactly; after
+    /// restating in USD the loan is its dollar price and `oracle_price` still
+    /// reproduces `price()` to within one unit of the collateral price, i.e.
+    /// a relative error below 1e-24 — far under the WAD health factor.
+    #[test]
+    fn morpho_pair_restated_in_usd_keeps_the_oracle_price() {
+        use liq_adapters_morpho_blue::health::{oracle_price, prices_matching_oracle};
+        let (loan, coll, m) = (AssetId(0), AssetId(1), MarketId(5001));
+        // wstETH (18) in WETH (18): price() = 1.2 * 1e36 plus odd wei.
+        let price = alloy_primitives::U256::from(1_200_000_000_000_000_123u64)
+            * alloy_primitives::U256::from(10u64).pow(alloy_primitives::U256::from(18u64));
+        let (p_loan, p_coll) = prices_matching_oracle(price, 18, 18).unwrap();
+        let scale = Some((loan, Ray::from_raw(p_loan)));
+        let q = |asset, p| QuotedPrice {
+            scale,
+            ..quote(ProtocolId(9), m, asset, Ray::from_raw(p), false)
+        };
+        let out = to_usd(&[q(loan, p_loan), q(coll, p_coll)], |a| {
+            (a == loan).then(|| usd_ray(3_000))
+        });
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].price, usd_ray(3_000), "the loan is its dollar price");
+        let back = oracle_price(out[1].price.raw(), out[0].price.raw(), 18, 18).unwrap();
+        let diff = if back > price {
+            back - price
+        } else {
+            price - back
+        };
+        assert!(
+            diff * alloy_primitives::U256::from(10u64).pow(alloy_primitives::U256::from(24u64))
+                < price
+        );
+        // Collateral in dollars: 1.2 * 3000.
+        let usd = out[1].price.raw() / liq_types::fixed::RAY;
+        assert_eq!(usd, alloy_primitives::U256::from(3_600u64));
+    }
+
+    /// No USD price for the numeraire: the read is left out, not priced at 1.
+    /// Dollar quotes pass through untouched.
+    #[test]
+    fn ratio_without_a_numeraire_price_is_left_out() {
+        let (a, b, m) = (AssetId(0), AssetId(1), MarketId(1));
+        let scale = Some((a, ray(10)));
+        let ratio = |asset| QuotedPrice {
+            scale,
+            ..quote(ProtocolId(9), m, asset, ray(10), false)
+        };
+        let dollar = quote(ProtocolId(1), m, b, ray(7), true);
+        let out = to_usd(&[ratio(a), ratio(b), dollar], |_| None);
+        assert_eq!(out, vec![dollar]);
     }
 }

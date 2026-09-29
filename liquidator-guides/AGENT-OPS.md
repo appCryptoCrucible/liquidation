@@ -69,6 +69,11 @@ externally." §5 is the enforcement.
 
 ## 3. Phases
 
+> **D64 (2026-09-29):** the bot goes live when the code is complete, with no
+> shadow phase (P0/P1 are not run as stages). The user monitors live manually.
+> The authority limits for P2/P3 still apply to any agent acting on the live
+> system.
+
 Authority tightens as capital comes online, rather than starting tight and
 loosening. During shadow there is nothing to lose, so restraint there buys
 nothing and costs experimental signal.

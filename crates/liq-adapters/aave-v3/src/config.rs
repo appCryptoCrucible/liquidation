@@ -17,6 +17,10 @@ pub struct PoolConfig {
     pub sentinel: Address,
     /// Sequencer feed the sentinel reads; `address(0)` when unused.
     pub sequencer_oracle: Address,
+    /// The pool's aTokens (and, on pools that have them, stable debt
+    /// tokens). Subscribed for `BalanceTransfer` and stable `Mint`/`Burn`;
+    /// which reserve each belongs to comes from `ReserveInitialized`.
+    pub tokens: Vec<Address>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,6 +96,7 @@ pub enum Emitter {
     Sequencer(usize),
     AToken { pool: usize, slot: u16 },
     VToken { pool: usize, slot: u16 },
+    SToken { pool: usize, slot: u16 },
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]

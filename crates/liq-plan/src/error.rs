@@ -73,13 +73,21 @@ pub enum EncodeError {
     LiquityTailShape,
     #[error("Liquity V2 troveId is zero (EmptyData on-chain)")]
     LiquityZeroTrove,
-    #[error("Fluid T1 leg tail is not a uint256 colPerUnitDebt")]
+    #[error(
+        "Fluid leg tail is not type ‖ flags ‖ colPerUnitDebt ‖ debtPerShareMax ‖ colPerShareMin"
+    )]
     FluidTailShape,
-    #[error("Fluid T1 colPerUnitDebt is zero")]
+    #[error("Fluid colPerUnitDebt is zero")]
     FluidZeroColPer,
-    #[error("Fluid T1 colPerUnitDebt is 1e27-scale; wire unit is 1e18")]
-    FluidColPerNot1e18,
-    #[error("Fluid T1 colPerUnitDebt 1e18 conversion failed")]
+    #[error("Fluid vault type {0} is not 1..=4")]
+    FluidBadKind(u8),
+    #[error("Fluid tail flags {0:#04x} set an undefined bit or a token1 choice on a normal side")]
+    FluidBadFlags(u8),
+    #[error(
+        "Fluid type {0}: a per-share figure is missing on a smart side or set on a normal one"
+    )]
+    FluidPerShare(u8),
+    #[error("Fluid colPerUnitDebt 1e18 conversion failed")]
     FluidColPerConvert,
     #[error("Gearbox leg tail is not a uint256 minSeizedAmount")]
     GearboxTailShape,

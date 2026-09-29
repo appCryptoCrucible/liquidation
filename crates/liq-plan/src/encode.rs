@@ -138,8 +138,21 @@ fn encode_liq(b: &mut Vec<u8>, l: &LiqLeg) -> Result<()> {
         (ExecutorAdapter::LiquityV2, LegTail::Liquity { trove_id }) => {
             b.extend_from_slice(&trove_id.to_be_bytes::<32>());
         }
-        (ExecutorAdapter::Fluid, LegTail::Fluid { col_per_unit_debt }) => {
+        (
+            ExecutorAdapter::Fluid,
+            LegTail::Fluid {
+                kind,
+                flags,
+                col_per_unit_debt,
+                debt_shares_min_per_token,
+                col_per_share_min,
+            },
+        ) => {
+            b.push(*kind);
+            b.push(*flags);
             b.extend_from_slice(&col_per_unit_debt.to_be_bytes::<32>());
+            b.extend_from_slice(&debt_shares_min_per_token.to_be_bytes::<32>());
+            b.extend_from_slice(&col_per_share_min.to_be_bytes::<32>());
         }
         (ExecutorAdapter::Gearbox, LegTail::Gearbox { min_seized, full }) => {
             b.extend_from_slice(&min_seized.to_be_bytes::<32>());

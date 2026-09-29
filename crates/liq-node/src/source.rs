@@ -147,6 +147,9 @@ pub struct RpcPoll<P> {
     page: u64,
     ready: Vec<OwnedBlock>,
     ready_at: usize,
+    /// Fetch each block's header for its gas fields. Replay folds only the
+    /// logs and needs the timestamp, which the log carries: off there.
+    headers: bool,
 }
 
 impl<P> RpcPoll<P> {
@@ -179,7 +182,17 @@ impl<P> RpcPoll<P> {
             page: page.max(1),
             ready: Vec::new(),
             ready_at: 0,
+            headers: true,
         }
+    }
+
+    /// State replay: skip the per-block header read when the node puts
+    /// `blockTimestamp` on each log (gas fields stay 0, which replay never
+    /// reads). A log without it still fetches its header.
+    #[must_use]
+    pub const fn replay_only(mut self) -> Self {
+        self.headers = false;
+        self
     }
 
     #[inline]
@@ -288,7 +301,11 @@ impl<P: Provider> RpcPoll<P> {
                 return Err(IngestError::MalformedLog);
             };
             let meta = if let Some(t) = rpc.block_timestamp {
-                let mut m = self.header_obs_or_zero(block, &mut header_cache).await;
+                let mut m = if self.headers {
+                    self.header_obs_or_zero(block, &mut header_cache).await
+                } else {
+                    HeaderObs::ABSENT
+                };
                 m.timestamp = t;
                 m
             } else {

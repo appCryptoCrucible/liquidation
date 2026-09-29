@@ -55,9 +55,13 @@ aave-v4 = 425_009
 # mainnet frame p75 191_343 (median 127_424, n 15). Morpho's guard reads are
 # inside the measured wraps (wrap was derived on Morpho).
 morpho-blue = 191_343
-# mainnet frame p75 255_683 (median 189_024, n 7). No Executor guard: the
-# call is the guard.
-fluid = 255_683
+# Fork, real vaults through the Executor (ForkFluid.t.sol at 26_081_900;
+# tools/gas-measure/fork-trace-fluid.txt), fixed − wrap(aave) 198_065:
+# T1 native collateral 264_933, T2 smart collateral in ETH 273_399, T3 smart
+# debt in USDC 261_729 (the WETH wrap/unwrap and the DEX one-token step are
+# inside). The largest of the three; one figure covers every vault type.
+# Mainnet T1 frame p75 was 255_683 (n 7). No Executor guard: the call is the guard.
+fluid = 273_399
 # mainnet frame p75 234_040 (n 5) + fork guard and vault-share redeem
 # 347_284 (ForkShareRedeem at 26_019_284: fixed 778_933 − wrap 198_065 −
 # frame 233_584).

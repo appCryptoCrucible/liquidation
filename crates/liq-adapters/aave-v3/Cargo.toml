@@ -12,6 +12,7 @@ alloy-sol-types = { workspace = true, features = ["std"] }
 bytemuck = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 liq-config = { path = "../../liq-config" }

@@ -1,6 +1,9 @@
 <!-- mechanism-review protocol=fluid repo=Instadapp/fluid-contracts-public commit=9496626f71a761fc296dc3b2efbfd54c504e18f0 date=2026-09-20 verdict=admit -->
 # Fluid — admit (not in registry.json)
 
+> **Implementation (2026-09-29):** all four types are quoted and executed from
+> each vault's own per-block liquidation answer; see `docs/coverage/fluid.md`.
+
 Source: `Instadapp/fluid-contracts-public` @ `9496626f71a761fc296dc3b2efbfd54c504e18f0` (`main`, 2026-09-16). T1: `contracts/protocols/vault/vaultT1/coreModule/main.sol`. T2–T4: `vaultT2|T3|T4/coreModule/main.sol`. Factory: `contracts/protocols/vault/factory/main.sol` + `interfaces/iVaultFactory.sol`.
 
 GUIDE-15 §1: "Novel collateral mechanics; read carefully." Not `SoftLiquidating`. Not in `registry.json` (D15 enumerated vaults; 15C still needs discovery wired).

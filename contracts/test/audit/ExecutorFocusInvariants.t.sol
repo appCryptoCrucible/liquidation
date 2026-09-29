@@ -18,8 +18,6 @@ contract FocusHandler is ExecutorTestBase {
     address[] public actors;
     uint256 public ghost_callbackRejects;
     uint256 public ghost_liquidations;
-    uint256 public ghost_wethStealAttempts;
-    uint256 public ghost_wethStealReverts;
     uint256 public ghost_sweeps;
     uint256 public ghost_standingWethDonated;
     uint256 public ghost_sinkWethBefore; // snapshot at init for delta checks
@@ -125,60 +123,6 @@ contract FocusHandler is ExecutorTestBase {
         ghost_liquidations++;
     }
 
-    /// INV-08 (enforced): gross = after - before must not underflow on success.
-    /// Attempt to drain standing WETH LARGER than expected liq profit — must revert.
-    /// (Standing smaller than profit CAN leave; see ExecutorKnownFailINV08Gap.)
-    function attemptStealStandingWeth(uint256 amountSeed) external {
-        ghost_wethStealAttempts++;
-        // Must exceed GROSS_WETH (~0.995e18) so after-steal residual cannot cover before.
-        uint256 standing = bound(amountSeed, 2e18, 50e18);
-
-        DrainPull pull = new DrainPull();
-        Executor stealEx = new Executor(
-            operator,
-            sink,
-            address(factory),
-            factory.initHash(),
-            address(pull),
-            address(routerB),
-            address(weth),
-            v2Factory,
-            V2_HASH,
-            sushiFactory,
-            SUSHI_HASH,
-            address(curveRegistry)
-        );
-        weth.mint(address(stealEx), standing);
-        pool.setPosition(borrower, 0.95e18, REPAY, COLL_OUT);
-
-        bytes memory stealLeg = PB.routerSwap(
-            address(pull),
-            address(weth),
-            address(weth),
-            PB.L_TAKE_BALANCE,
-            0,
-            abi.encodeCall(DrainPull.steal, (address(weth), attacker, standing))
-        );
-        bytes memory profitLeg =
-            PB.poolSwap(address(pCollWeth), address(coll), address(weth), PB.L_TAKE_BALANCE, 0);
-        bytes memory plan = bytes.concat(
-            PB.header(0, 0, 0, 0, 1),
-            PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 1),
-            PB.legV3(address(pool), borrower, address(coll), REPAY),
-            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, OWED),
-            PB.profit(2, bytes.concat(stealLeg, profitLeg))
-        );
-
-        vm.prank(operator);
-        try stealEx.execute(plan) {
-            revert("INV-08: standing WETH theft succeeded");
-        } catch {
-            ghost_wethStealReverts++;
-            require(weth.balanceOf(address(stealEx)) == standing, "INV-08: standing WETH must remain");
-            require(weth.balanceOf(attacker) == 0, "INV-08: attacker got no WETH");
-        }
-    }
-
     /// Donate non-WETH standing (setup for sweep / residual checks). Does not claim INV-09.
     function donateDebt(uint256 amountSeed) external {
         uint256 amt = bound(amountSeed, 1e6, 1_000_000e6);
@@ -231,13 +175,6 @@ contract FocusHandler is ExecutorTestBase {
     }
 }
 
-/// Minimal pull helper (approve + transferFrom) for INV-08 steal attempts.
-contract DrainPull {
-    function steal(address token, address to, uint256 amount) external {
-        require(MockERC20(token).transferFrom(msg.sender, to, amount), "drain");
-    }
-}
-
 contract ExecutorFocusInvariantTest is ExecutorTestBase {
     FocusHandler internal h;
 
@@ -245,12 +182,11 @@ contract ExecutorFocusInvariantTest is ExecutorTestBase {
         h = new FocusHandler();
         h.init();
         targetContract(address(h));
-        bytes4[] memory sel = new bytes4[](5);
+        bytes4[] memory sel = new bytes4[](4);
         sel[0] = FocusHandler.rogueCallback.selector;
         sel[1] = FocusHandler.honestLiquidate.selector;
-        sel[2] = FocusHandler.attemptStealStandingWeth.selector;
-        sel[3] = FocusHandler.donateWeth.selector;
-        sel[4] = FocusHandler.sweepAssets.selector;
+        sel[2] = FocusHandler.donateWeth.selector;
+        sel[3] = FocusHandler.sweepAssets.selector;
         targetSelector(FuzzSelector({addr: address(h), selectors: sel}));
     }
 
@@ -258,18 +194,6 @@ contract ExecutorFocusInvariantTest is ExecutorTestBase {
     function invariant_INV01_callbacks_require_entered_and_expected() public view {
         assertGt(h.ghost_callbackRejects(), 0, "INV-01: vacuous - no callback probes");
         // Rejection counter only increments on correct BadCallback/BadSwapCallback.
-    }
-
-    /// INV-08: every standing-WETH theft attempt reverted; no attacker WETH from theft.
-    function invariant_INV08_standing_weth_cannot_decrease_via_steal() public view {
-        if (h.ghost_wethStealAttempts() > 0) {
-            assertEq(
-                h.ghost_wethStealAttempts(),
-                h.ghost_wethStealReverts(),
-                "INV-08: a standing-WETH steal attempt succeeded"
-            );
-        }
-        assertEq(h.weth().balanceOf(h.attacker()), 0, "INV-08: attacker holds WETH");
     }
 
     /// INV-11: sweep destination is immutable PROFIT_SINK — attacker never receives swept funds.

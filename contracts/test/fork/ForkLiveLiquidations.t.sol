@@ -241,15 +241,9 @@ contract ForkLiveLiquidationsTest is Test {
         _runOne(PB.A_MORPHO, PB.P_MORPHO, WETH, false);
     }
 
-    /// Fluid T1 and Gearbox still have no fork proof. Compound, Euler, and
-    /// Liquity are proved in ForkShareRedeem (Compound at block 22_000_000,
-    /// where mint is live); Silo V2 in ForkSiloGearbox.
-    function test_fork_fluid_t1_cannot_open_without_invented_state() public onFork {
-        vm.skip(true); // FluidOracle 1e27 / tick tree not opened from this fork
-    }
-    function test_fork_gearbox_cannot_open_without_invented_state() public onFork {
-        vm.skip(true); // CreditFacade open+borrow not wired without invented fills
-    }
+    /// Compound, Euler and Liquity are proved in ForkShareRedeem (Compound
+    /// at block 22_000_000, where mint is live); Silo V2 and Gearbox in
+    /// ForkSiloGearbox; Fluid T1/T2/T3 in ForkFluid.
 
     function _allowed(uint8 adapter, uint8 provider, address debt) internal pure returns (bool) {
         if (provider == PB.P_SKY && debt != DAI) return false;

@@ -101,6 +101,7 @@ impl Deploy {
                 configurator: self.configurator,
                 sentinel: Address::ZERO,
                 sequencer_oracle: Address::ZERO,
+                tokens: vec![self.a_weth, self.a_dai],
             }],
             assets: vec![
                 AssetConfig {

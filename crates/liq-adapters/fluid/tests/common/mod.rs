@@ -1,5 +1,6 @@
-//! Fixtures from Fluid T1/T3 published rules
-//! (`vaultT1|T3/coreModule/main.sol` @ `9496626f`).
+//! Fixtures from the Fluid vault ABI (`vaultT1|T2|T3/coreModule/main.sol`,
+//! `dex/poolT1`, `periphery/resolvers` @ `9496626f`): the answers a vault's
+//! dead-address liquidation and a DEX's one-token estimate revert with.
 
 #![allow(
     dead_code,
@@ -8,176 +9,202 @@
     clippy::expect_used,
     clippy::panic,
     clippy::arithmetic_side_effects,
-    clippy::indexing_slicing,
-    clippy::inconsistent_digit_grouping,
-    clippy::vec_init_then_push,
-    clippy::cast_possible_truncation
+    clippy::indexing_slicing
 )]
 
-use alloy_primitives::{uint, Address, Bytes, B256, I256, U256};
-use alloy_sol_types::{SolCall, SolEvent};
-use liq_adapters_fluid::config::{ConfigError, FactoryRpc};
-use liq_adapters_fluid::events::{factory, vault};
-use liq_adapters_fluid::layout::{VAULT_T1, VAULT_T3};
-use liq_adapters_fluid::{AssetConfig, Config, Fluid, VaultPin};
+use alloy_primitives::{Address, B256, U256};
+use alloy_sol_types::{SolError, SolEvent};
+use liq_adapters_fluid::events::{dex, factory, vault};
+use liq_adapters_fluid::{
+    AssetConfig, Config, Fluid, VaultPin, NATIVE_TOKEN, VAULT_T1, VAULT_T2, VAULT_T3,
+};
 use liq_protocol::conformance::JournalStore;
-use liq_protocol::{DecodedLog, FeedId, Protocol};
-use liq_types::{AssetId, MarketId, PositionId, Price, PriceVector, ProtocolId, Ray, SourceKind};
+use liq_protocol::{DecodedLog, FeedId, MarketRows, Protocol, StateAnswer, StateRead};
+use liq_types::{AssetId, MarketId, Price, PriceVector, ProtocolId, Ray, SourceKind};
 
 pub const PROTOCOL: ProtocolId = ProtocolId(10);
-pub const CATALOG: MarketId = MarketId(4000);
-pub const MARKET_T1: MarketId = MarketId(4001);
-pub const MARKET_T3: MarketId = MarketId(4002);
-pub const COLL: AssetId = AssetId(0);
-pub const DEBT: AssetId = AssetId(1);
-pub const DEPLOY_BLOCK: u64 = 100;
-pub const PIN_BLOCK: u64 = 26_015_175;
+pub const WETH_A: AssetId = AssetId(0);
+pub const USDC_A: AssetId = AssetId(1);
+pub const USDT_A: AssetId = AssetId(2);
 pub const T0: u64 = 1_700_000_000;
-pub const RAY_ONE: U256 = uint!(1_000_000_000_000_000_000_000_000_000_U256);
-pub const ETH_USD: U256 = uint!(2_000_000_000_000_000_000_000_000_000_000_U256);
-pub const EX_PRICE: U256 = uint!(1_000_000_000_000_U256);
-pub const ALICE_COLL: U256 = uint!(1_000_000_000_000_000_000_U256);
-pub const ALICE_DEBT_OK: U256 = uint!(1_000_000_000_U256);
-pub const ALICE_DEBT_LIQ: U256 = uint!(1_900_000_000_U256);
-pub const T1_ID: PositionId = PositionId(0);
-pub const T3_ID: PositionId = PositionId(1);
-pub const THRESHOLD: u16 = 900;
-pub const MAX_LIMIT: u16 = 990;
-pub const PENALTY: u16 = 100;
+pub const BLOCK: u64 = 100;
+/// 1 RAY = $1; ETH at $2,000.
+pub const RAY: U256 = liq_types::fixed::RAY;
 
 pub struct Deploy {
     pub factory: Address,
-    pub vault_t1: Address,
-    pub vault_t3: Address,
-    pub oracle: Address,
     pub weth: Address,
     pub usdc: Address,
+    pub usdt: Address,
+    pub unknown: Address,
+    pub liquidity: Address,
+    /// T1: native ETH collateral, USDC debt.
+    pub v1: Address,
+    /// T3: WETH collateral, USDC/USDT smart debt.
+    pub v3: Address,
+    pub dex_debt: Address,
+    /// T2: USDT/WETH smart collateral, USDC debt.
+    pub v2: Address,
+    pub dex_col: Address,
+    /// T1 whose collateral the registry does not know.
+    pub vx: Address,
 }
 
 impl Deploy {
     pub fn new() -> Self {
         Self {
             factory: Address::repeat_byte(0xf1),
-            vault_t1: Address::repeat_byte(0xa1),
-            vault_t3: Address::repeat_byte(0xa3),
-            oracle: Address::repeat_byte(0xd1),
             weth: Address::repeat_byte(0xc0),
             usdc: Address::repeat_byte(0xc1),
+            usdt: Address::repeat_byte(0xc2),
+            unknown: Address::repeat_byte(0xe5),
+            liquidity: Address::repeat_byte(0x11),
+            v1: Address::repeat_byte(0xa1),
+            v3: Address::repeat_byte(0xa3),
+            dex_debt: Address::repeat_byte(0xd3),
+            v2: Address::repeat_byte(0xa2),
+            dex_col: Address::repeat_byte(0xd2),
+            vx: Address::repeat_byte(0xa9),
         }
+    }
+
+    pub fn pins(&self) -> Vec<VaultPin> {
+        let base = |vault, id, ty| VaultPin {
+            vault,
+            vault_id: id,
+            vault_type: ty,
+            supply: self.liquidity,
+            borrow: self.liquidity,
+            supply0: Address::ZERO,
+            supply1: Address::ZERO,
+            borrow0: Address::ZERO,
+            borrow1: Address::ZERO,
+            supply_decimals0: 0,
+            supply_decimals1: 0,
+            borrow_decimals0: 0,
+            borrow_decimals1: 0,
+        };
+        let mut t1 = base(self.v1, 1, VAULT_T1);
+        (t1.supply0, t1.supply_decimals0) = (NATIVE_TOKEN, 18);
+        (t1.borrow0, t1.borrow_decimals0) = (self.usdc, 6);
+        let mut t3 = base(self.v3, 2, VAULT_T3);
+        t3.borrow = self.dex_debt;
+        (t3.supply0, t3.supply_decimals0) = (self.weth, 18);
+        (t3.borrow0, t3.borrow_decimals0) = (self.usdc, 6);
+        (t3.borrow1, t3.borrow_decimals1) = (self.usdt, 6);
+        let mut t2 = base(self.v2, 3, VAULT_T2);
+        t2.supply = self.dex_col;
+        (t2.supply0, t2.supply_decimals0) = (self.usdt, 6);
+        (t2.supply1, t2.supply_decimals1) = (self.weth, 18);
+        (t2.borrow0, t2.borrow_decimals0) = (self.usdc, 6);
+        let mut tx = base(self.vx, 4, VAULT_T1);
+        (tx.supply0, tx.supply_decimals0) = (self.unknown, 18);
+        (tx.borrow0, tx.borrow_decimals0) = (self.usdc, 6);
+        vec![t1, t3, t2, tx]
     }
 
     pub fn config(&self) -> Config {
         Config {
             protocol: PROTOCOL,
             factory: self.factory,
-            catalog: CATALOG,
+            catalog: MarketId(4000),
             first_market: MarketId(4001),
-            d15_vaults: 2,
-            vaults: vec![self.vault_t1, self.vault_t3],
-            vault_pins: vec![self.pin_t1(), self.pin_t3()],
+            weth: self.weth,
+            vault_pins: self.pins(),
             assets: vec![
                 AssetConfig {
                     underlying: self.weth,
-                    asset: COLL,
+                    asset: WETH_A,
                     feed: FeedId(0),
                     decimals: 18,
                 },
                 AssetConfig {
                     underlying: self.usdc,
-                    asset: DEBT,
+                    asset: USDC_A,
+                    feed: FeedId(0),
+                    decimals: 6,
+                },
+                AssetConfig {
+                    underlying: self.usdt,
+                    asset: USDT_A,
                     feed: FeedId(0),
                     decimals: 6,
                 },
             ],
-            pinned_through: DEPLOY_BLOCK,
-            live_factory_asserted: false,
-        }
-    }
-
-    pub fn pin_t1(&self) -> VaultPin {
-        VaultPin {
-            vault: self.vault_t1,
-            vault_id: 1,
-            vault_type: VAULT_T1,
-            supply0: self.weth,
-            supply1: Address::ZERO,
-            borrow0: self.usdc,
-            borrow1: Address::ZERO,
-            supply_decimals0: 18,
-            supply_decimals1: 0,
-            borrow_decimals0: 6,
-            borrow_decimals1: 0,
-            liq_threshold: THRESHOLD,
-            liq_max_limit: MAX_LIMIT,
-            liq_penalty: PENALTY,
-            oracle: self.oracle,
-        }
-    }
-
-    pub fn pin_t3(&self) -> VaultPin {
-        VaultPin {
-            vault: self.vault_t3,
-            vault_id: 2,
-            vault_type: VAULT_T3,
-            supply0: self.weth,
-            supply1: Address::ZERO,
-            borrow0: self.usdc,
-            borrow1: Address::ZERO,
-            supply_decimals0: 18,
-            supply_decimals1: 0,
-            borrow_decimals0: 6,
-            borrow_decimals1: 0,
-            liq_threshold: THRESHOLD,
-            liq_max_limit: MAX_LIMIT,
-            liq_penalty: PENALTY,
-            oracle: self.oracle,
-        }
-    }
-
-    pub fn rpc(&self) -> PinRpc {
-        PinRpc {
-            factory: self.factory,
-            total: U256::from(2u8),
-            vault1: self.vault_t1,
+            live_bound: true,
         }
     }
 
     pub fn adapter(&self) -> Fluid {
-        let mut cfg = self.config();
-        cfg.assert_live_factory(&self.rpc(), DEPLOY_BLOCK)
-            .expect("fixture factory assert");
-        Fluid::new(cfg).expect("fixture config boots")
+        Fluid::new(self.config()).expect("fixture config boots")
     }
 }
 
-pub struct PinRpc {
-    pub factory: Address,
-    pub total: U256,
-    pub vault1: Address,
+pub struct NoRows;
+impl MarketRows for NoRows {
+    fn rows(&self, _: MarketId) -> Option<&[liq_protocol::MarketRow]> {
+        None
+    }
 }
 
-impl FactoryRpc for PinRpc {
-    fn eth_call(
-        &self,
-        to: Address,
-        data: &[u8],
-        _block: u64,
-    ) -> core::result::Result<Bytes, ConfigError> {
-        use liq_adapters_fluid::events::views::{getVaultAddressCall, totalVaultsCall};
-        if to != self.factory {
-            return Err(ConfigError::FactoryCall(to));
-        }
-        let sel = data.get(..4).ok_or(ConfigError::FactoryCall(to))?;
-        if sel == totalVaultsCall::SELECTOR {
-            return Ok(Bytes::copy_from_slice(&self.total.to_be_bytes::<32>()));
-        }
-        if sel == getVaultAddressCall::SELECTOR {
-            let mut out = [0u8; 32];
-            out[12..32].copy_from_slice(self.vault1.as_slice());
-            return Ok(Bytes::copy_from_slice(&out));
-        }
-        Err(ConfigError::FactoryCall(to))
+/// `FluidLiquidateResult(col, debt)` revert data.
+pub fn sim(col: u128, debt: u128) -> Vec<u8> {
+    vault::FluidLiquidateResult {
+        colLiquidated: U256::from(col),
+        debtLiquidated: U256::from(debt),
     }
+    .abi_encode()
+}
+
+pub fn payback(amt: u128) -> Vec<u8> {
+    dex::FluidDexSingleTokenOutput {
+        tokenAmt: U256::from(amt),
+    }
+    .abi_encode()
+}
+
+pub fn withdraw(amt: u128) -> Vec<u8> {
+    dex::FluidDexLiquidityOutput {
+        tokenAmt: U256::from(amt),
+    }
+    .abi_encode()
+}
+
+/// What the chain answers, by read: `answer(read) -> revert data`.
+pub type Chain<'a> = &'a dyn Fn(&StateRead) -> Vec<u8>;
+
+/// Run the adapter's two read stages against `chain` and fold the result,
+/// as the reader thread and the ingest thread do.
+pub fn read_block(
+    p: &Fluid,
+    st: &mut JournalStore,
+    chain: Chain<'_>,
+    ts: u64,
+) -> liq_protocol::DirtySet {
+    let first = p.state_reads(&NoRows);
+    let mut all: Vec<(StateRead, Vec<u8>)> = first.iter().map(|r| (r.clone(), chain(r))).collect();
+    let mut follow = Vec::new();
+    for (r, data) in &all {
+        let a = StateAnswer {
+            read: r,
+            success: false,
+            data,
+        };
+        for f in p.state_follow_ups(a) {
+            let d = chain(&f);
+            follow.push((f, d));
+        }
+    }
+    all.extend(follow);
+    let answers: Vec<StateAnswer<'_>> = all
+        .iter()
+        .map(|(r, d)| StateAnswer {
+            read: r,
+            success: false,
+            data: d,
+        })
+        .collect();
+    p.apply_state_reads(st, ts, &answers).expect("answers fold")
 }
 
 #[derive(Clone, Debug)]
@@ -201,155 +228,27 @@ impl OwnedLog {
     }
 }
 
-pub fn log<E: SolEvent>(address: Address, ev: &E, block: u64, timestamp: u64) -> OwnedLog {
+pub fn deployed(d: &Deploy, vault: Address, id: u64) -> OwnedLog {
+    let ev = factory::VaultDeployed {
+        vault,
+        vaultId: U256::from(id),
+    };
     OwnedLog {
-        address,
+        address: d.factory,
         topics: ev.encode_topics().into_iter().map(|t| t.0).collect(),
         data: ev.encode_data(),
-        block,
-        timestamp,
+        block: BLOCK,
+        timestamp: T0,
     }
 }
 
-fn i256(v: U256) -> I256 {
-    I256::try_from(v).expect("fixture amount fits i256")
-}
-
-pub fn listing_logs(d: &Deploy) -> Vec<OwnedLog> {
-    vec![
-        log(
-            d.factory,
-            &factory::VaultDeployed {
-                vault: d.vault_t1,
-                vaultId: U256::from(1u8),
-            },
-            DEPLOY_BLOCK,
-            T0,
-        ),
-        log(
-            d.factory,
-            &factory::VaultDeployed {
-                vault: d.vault_t3,
-                vaultId: U256::from(2u8),
-            },
-            DEPLOY_BLOCK,
-            T0,
-        ),
-        log(
-            d.vault_t1,
-            &vault::LogUpdateExchangePrice {
-                supplyExPrice_: EX_PRICE,
-                borrowExPrice_: EX_PRICE,
-            },
-            DEPLOY_BLOCK,
-            T0,
-        ),
-        log(
-            d.vault_t3,
-            &vault::LogUpdateExchangePrice {
-                supplyExPrice_: EX_PRICE,
-                borrowExPrice_: EX_PRICE,
-            },
-            DEPLOY_BLOCK,
-            T0,
-        ),
-    ]
-}
-
-pub fn activity_logs(d: &Deploy, vault: Address, coll: U256, debt: U256) -> Vec<OwnedLog> {
-    let (b, t) = (DEPLOY_BLOCK + 1, T0);
-    vec![
-        log(
-            d.factory,
-            &factory::NewPositionMinted {
-                vault,
-                user: Address::repeat_byte(0x11),
-                tokenId: U256::from(1u8),
-            },
-            b,
-            t,
-        ),
-        log(
-            vault,
-            &vault::LogOperate {
-                user_: Address::repeat_byte(0x11),
-                nftId_: U256::from(1u8),
-                colAmt_: i256(coll),
-                debtAmt_: i256(debt),
-                to_: Address::repeat_byte(0x11),
-            },
-            b,
-            t,
-        ),
-    ]
-}
-
-pub fn store_after(p: &Fluid, logs: &[OwnedLog]) -> JournalStore {
-    let mut st = JournalStore::default();
-    for l in logs {
-        p.apply_log(&mut st, &l.view()).expect("fixture log folds");
-    }
-    st
-}
-
-pub fn prices(coll: U256, debt: U256) -> PriceVector {
-    PriceVector(vec![
-        Price {
-            asset: COLL,
-            price: Ray::from_raw(coll),
-            source: SourceKind::Canonical,
-            block: DEPLOY_BLOCK,
-            ts: T0,
-        },
-        Price {
-            asset: DEBT,
-            price: Ray::from_raw(debt),
-            source: SourceKind::Canonical,
-            block: DEPLOY_BLOCK,
-            ts: T0,
-        },
-    ])
-}
-
-pub fn coverage_ranks() -> Vec<(B256, u8)> {
-    const DOC: &str = include_str!("../../../../../docs/coverage/fluid.md");
-    let mut out = Vec::new();
-    for line in DOC.lines() {
-        if !line.starts_with('|') || line.contains("---") || line.contains("path |") {
-            continue;
-        }
-        let cols: Vec<&str> = line
-            .split('|')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .collect();
-        if cols.len() < 4 {
-            continue;
-        }
-        let topic_cell = cols[2];
-        if !topic_cell.starts_with("0x") || topic_cell.len() < 66 {
-            continue;
-        }
-        let topic: B256 = topic_cell[..66].parse().expect("coverage topic parses");
-        let rank = match cols[3] {
-            "None" => 0,
-            "Positions" => 1,
-            "MarketAccrual" => 2,
-            "MarketReprice" => 3,
-            "ProtocolWide" => 4,
-            "halt" => 0,
-            other => panic!("unknown DirtySet class {other:?} in coverage table"),
-        };
-        out.push((topic, rank));
-    }
-    assert!(out.len() >= 16, "coverage table parsed {} rows", out.len());
-    out
-}
-
-pub fn rank_of(ranks: &[(B256, u8)], topic0: B256) -> u8 {
-    ranks
-        .iter()
-        .find(|(t, _)| *t == topic0)
-        .map(|(_, r)| *r)
-        .unwrap_or_else(|| panic!("topic {topic0} is not in the coverage table"))
+pub fn prices(eth_usd: u64) -> PriceVector {
+    let p = |asset, dollars: u64| Price {
+        asset,
+        price: Ray::from_raw(U256::from(dollars) * RAY),
+        source: SourceKind::Canonical,
+        block: BLOCK,
+        ts: T0,
+    };
+    PriceVector(vec![p(WETH_A, eth_usd), p(USDC_A, 1), p(USDT_A, 1)])
 }

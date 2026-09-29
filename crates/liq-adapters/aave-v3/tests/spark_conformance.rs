@@ -63,6 +63,7 @@ fn to_config(t: &AaveV3Toml) -> Config {
                 configurator: p.configurator,
                 sentinel: p.sentinel,
                 sequencer_oracle: p.sequencer_oracle,
+                tokens: p.tokens.clone(),
             })
             .collect(),
         assets: t
@@ -549,5 +550,51 @@ fn halt_logs_fold_before_the_pin_and_error_after() {
     assert_eq!(
         h.p.apply_log(&mut st, &after.view()),
         Err(ProtocolError::HaltSignal)
+    );
+}
+
+/// Where the rounding models disagree, Spark's config gives Spark's answer.
+/// At a DAI borrow index of `RAY + 1e5`, Alice's 1.5e21 scaled debt is
+/// `1.5e21 + 0.15` wei: SparkLend's `WadRayMath.rayMul` (half-up) says
+/// 1.5e21, Aave 3.5's `TokenMath` debt ceil says 1.5e21 + 1. The close factor
+/// (50 % at HF 0.99) then gives `max_repay` 7.5e20 against 7.5e20 + 1. The
+/// T0 test above cannot tell them apart: at index RAY every model agrees.
+#[test]
+fn accrued_index_quote_is_spark_half_up_not_token_math() {
+    let h = harness();
+    let mut logs = listing_logs(&h.d);
+    logs.extend(activity_logs(&h.d));
+    logs.push(log(
+        h.d.pool,
+        &pool::ReserveDataUpdated {
+            reserve: h.d.dai,
+            liquidityRate: U256::ZERO,
+            stableBorrowRate: U256::ZERO,
+            variableBorrowRate: U256::ZERO,
+            liquidityIndex: RAY,
+            variableBorrowIndex: RAY + uint!(100_000_U256),
+        },
+        DEPLOY_BLOCK + 2,
+        T0,
+    ));
+    let px = spark_prices(h.weth, h.dai, 1800_0000_0000, DAI_P8);
+    let max_repay = |p: &AaveV3| {
+        let st = store_after(p, &logs);
+        let q = p
+            .quote(st.view(ALICE_ID, T0).unwrap(), &px)
+            .unwrap()
+            .expect("HF 0.99: liquidatable");
+        q.repay_options[0].max_repay
+    };
+    let half = uint!(750_000_000_000_000_000_000_U256);
+    assert_eq!(max_repay(&h.p), half, "SparkLend half-up rayMul");
+
+    let mut token_math = to_config(&load_spark_toml());
+    token_math.liquidation.balance_model = BalanceModel::TokenMath35;
+    let tm = AaveV3::new(token_math).unwrap();
+    assert_eq!(
+        max_repay(&tm),
+        half + U256::ONE,
+        "TokenMath debt ceil differs"
     );
 }

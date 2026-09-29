@@ -21,6 +21,12 @@ runbook.
 
 ## Step 0 — The supervised live window
 
+> **Superseded (D64, 2026-09-29).** There is no shadow gate and no supervised
+> window before go-live. When the code is complete the bot goes live with
+> `submit_enabled = true` and the user monitors it manually. The checks below
+> are still what to watch for while monitoring; they no longer gate anything.
+> `submit_enabled` stays hot-reloadable so sending can be stopped at once.
+
 Between the shadow gate and unattended running sits one more stage: a period
 where the bot submits for real, but only while you are watching. It is a gate
 (`ORCHESTRATOR.md` §4), and it exists because the failures it catches are

@@ -1,40 +1,383 @@
-//! GUIDE 01 harness over the Fluid vault adapter.
+//! Fluid adapter: vaults read from chain at bind, and each vault's
+//! liquidation as the vault and its DEX report it every block.
 
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
-    clippy::inconsistent_digit_grouping,
+    clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation
 )]
 
 mod common;
 
-use alloy_primitives::{uint, Address, U256};
+use alloy_primitives::{Address, Bytes, U256};
 use alloy_sol_types::{SolCall, SolEvent};
 use common::*;
-use liq_adapters_fluid::config::FactoryRpc;
-use liq_adapters_fluid::events::{admin, factory, halt, vault};
-use liq_adapters_fluid::layout::VaultExtra;
-use liq_adapters_fluid::{
-    alloc_meter, col_per_unit_debt_1e18_from_quote, liquidate_selector, math, Config, ConfigError,
-    Fluid, VAULT_T1, VAULT_T2, VAULT_T3, VAULT_T4,
-};
-use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
+use liq_adapters_fluid::config::{ConfigError, FactoryRpc, MULTICALL3};
+use liq_adapters_fluid::events::{dex, erc20, factory, multicall, smart, t1, vault};
+use liq_adapters_fluid::health::FRESH_SECS;
+use liq_adapters_fluid::{Config, VaultExtra, NATIVE_TOKEN, VAULT_T1, VAULT_T4};
+use liq_protocol::conformance::{run, Fixtures, JournalStore, LogFixture, PositionFixture};
 use liq_protocol::{
-    CallbackShape, ExecutorAdapter, FlashRoute, HealthState, LegChoice, Protocol, ProtocolError,
+    CallbackShape, DirtySet, HealthState, Protocol, SlotRef, StateRead, StateWriter,
 };
-use liq_types::fixed::RAY;
-use liq_types::{LogSubscriber, Ray};
+use liq_types::{LogSubscriber, MarketId, PositionId};
 
-fn full_store(d: &Deploy, debt: U256) -> (Fluid, liq_protocol::conformance::JournalStore) {
+const DEAD: Address = alloy_primitives::address!("0x000000000000000000000000000000000000dEaD");
+
+/// `absorb_` of a simulation read (its last argument).
+fn absorb_of(r: &StateRead) -> bool {
+    r.calldata.last() == Some(&1)
+}
+
+/// A chain where each vault answers `(col, debt)` without / with absorb and
+/// the DEXes price shares at fixed one-token amounts.
+struct World {
+    v1: [(u128, u128); 2],
+    v3: [(u128, u128); 2],
+    v2: [(u128, u128); 2],
+    pay: [u128; 2],
+    out: [u128; 2],
+}
+
+impl World {
+    fn quiet() -> Self {
+        Self {
+            v1: [(0, 0); 2],
+            v3: [(0, 0); 2],
+            v2: [(0, 0); 2],
+            pay: [0; 2],
+            out: [0; 2],
+        }
+    }
+
+    fn answer(&self, d: &Deploy, r: &StateRead) -> Vec<u8> {
+        let a = usize::from(absorb_of(r));
+        if r.target == d.v1 {
+            let (c, dd) = self.v1[a];
+            return sim(c, dd);
+        }
+        if r.target == d.v3 {
+            let (c, dd) = self.v3[a];
+            return sim(c, dd);
+        }
+        if r.target == d.v2 {
+            let (c, dd) = self.v2[a];
+            return sim(c, dd);
+        }
+        if r.target == d.dex_debt {
+            let c = dex::paybackPerfectInOneTokenCall::abi_decode(&r.calldata).unwrap();
+            return payback(if c.maxToken0_.is_zero() {
+                self.pay[1]
+            } else {
+                self.pay[0]
+            });
+        }
+        if r.target == d.dex_col {
+            let c = dex::withdrawPerfectInOneTokenCall::abi_decode(&r.calldata).unwrap();
+            assert_eq!(c.to_, DEAD);
+            return withdraw(if c.minToken0_.is_zero() {
+                self.out[1]
+            } else {
+                self.out[0]
+            });
+        }
+        panic!("unexpected read to {}", r.target)
+    }
+}
+
+fn fold(
+    d: &Deploy,
+    p: &liq_adapters_fluid::Fluid,
+    st: &mut JournalStore,
+    w: &World,
+    ts: u64,
+) -> DirtySet {
+    read_block(p, st, &|r| w.answer(d, r), ts)
+}
+
+fn pos_of(st: &JournalStore, vault: Address) -> PositionId {
+    (0..st.positions_len())
+        .map(PositionId)
+        .find(|id| st.position_key(*id).is_ok_and(|k| k.user == vault))
+        .expect("vault position")
+}
+
+#[test]
+fn only_the_factory_is_subscribed() {
+    let d = Deploy::new();
+    let subs = d.adapter().subscriptions();
+    assert_eq!(subs.len(), 1);
+    assert_eq!(subs[0].address, d.factory);
+    assert_eq!(subs[0].topic0, factory::VaultDeployed::SIGNATURE_HASH);
+}
+
+/// Each vault with a mapped token on both sides is asked twice (with and
+/// without absorb) through its type's dead-address liquidation; a vault
+/// whose collateral the registry does not know is not asked.
+#[test]
+fn reads_simulate_each_quotable_vault_twice() {
+    let d = Deploy::new();
+    let reads = d.adapter().state_reads(&NoRows);
+    assert_eq!(reads.len(), 6);
+    assert!(reads.iter().all(|r| r.target != d.vx));
+    for absorb in [false, true] {
+        let t1 = reads
+            .iter()
+            .find(|r| r.target == d.v1 && absorb_of(r) == absorb)
+            .unwrap();
+        let c = vault::liquidateCall::abi_decode(&t1.calldata).unwrap();
+        assert_eq!(c.to_, DEAD);
+        assert_eq!(c.debtAmt_, U256::from(u128::MAX));
+        assert!(c.colPerUnitDebt_.is_zero());
+        for v in [d.v2, d.v3] {
+            let r = reads
+                .iter()
+                .find(|r| r.target == v && absorb_of(r) == absorb)
+                .unwrap();
+            let c = vault::simulateLiquidateCall::abi_decode(&r.calldata).unwrap();
+            assert!(c.debtAmt_.is_zero());
+            assert_eq!(c.absorb_, absorb);
+        }
+    }
+}
+
+/// T1 with native collateral: the vault's own answer, as WETH for USDC.
+/// Current for its block and the next; stale after that.
+#[test]
+fn t1_native_collateral_quotes_weth_for_usdc() {
+    let d = Deploy::new();
     let p = d.adapter();
-    let mut logs = listing_logs(d);
-    logs.extend(activity_logs(d, d.vault_t1, ALICE_COLL, debt));
-    let st = store_after(&p, &logs);
-    (p, st)
+    let mut st = JournalStore::default();
+    let mut w = World::quiet();
+    w.v1 = [
+        (1_000_000_000_000_000_000, 1_900_000_000),
+        (1_000_000_000_000_000_000, 1_900_000_000),
+    ];
+    let dirty = fold(&d, &p, &mut st, &w, T0);
+    let id = pos_of(&st, d.v1);
+    assert_eq!(dirty, DirtySet::Positions(smallvec_of(id)));
+    let px = prices(2000);
+    let h = p.health(st.view(id, T0).unwrap(), &px).unwrap();
+    assert_eq!(h.state, HealthState::Liquidatable);
+    assert!(
+        p.health(st.view(id, T0 + FRESH_SECS).unwrap(), &px)
+            .unwrap()
+            .state
+            == HealthState::Liquidatable
+    );
+    assert_eq!(
+        p.health(st.view(id, T0 + FRESH_SECS + 1).unwrap(), &px)
+            .unwrap()
+            .state,
+        HealthState::Healthy,
+        "a read one block old is not a quote"
+    );
+    let q = p.quote(st.view(id, T0).unwrap(), &px).unwrap().unwrap();
+    assert_eq!(q.repay_options.len(), 1);
+    assert_eq!(q.repay_options[0].asset, USDC_A);
+    assert_eq!(q.repay_options[0].max_repay, U256::from(1_900_000_000u64));
+    assert_eq!(q.repay_options[0].slot, SlotRef::Slot(1));
+    assert_eq!(q.seize_options.len(), 1);
+    assert_eq!(
+        q.seize_options[0].asset, WETH_A,
+        "native ETH is quoted as WETH"
+    );
+    assert_eq!(
+        q.seize_options[0].max_seize,
+        U256::from(1_000_000_000_000_000_000u128)
+    );
+    // $2,000 for $1,900: 100/1900.
+    let want = RAY * U256::from(100u8) / U256::from(1900u16);
+    assert_eq!(q.seize_options[0].bonus.raw(), want);
+    let x: VaultExtra = *st.extra(id).unwrap().view().unwrap();
+    assert_eq!(
+        (x.col_units, x.debt_units, x.read_ts),
+        (1_000_000_000_000_000_000, 1_900_000_000, T0)
+    );
+}
+
+fn smallvec_of(id: PositionId) -> liq_protocol::DirtyPositions {
+    let mut v = liq_protocol::DirtyPositions::new();
+    v.push(id);
+    v
+}
+
+/// T3: the debt shares priced in each debt token by the DEX; both are
+/// repay options, alternatives rather than a sum.
+#[test]
+fn t3_smart_debt_offers_each_debt_token() {
+    let d = Deploy::new();
+    let p = d.adapter();
+    let mut st = JournalStore::default();
+    let mut w = World::quiet();
+    w.v3 = [
+        (1_000_000_000_000_000_000, 800_000_000_000_000_000_000),
+        (0, 0),
+    ];
+    w.pay = [1_900_000_000, 1_901_000_000];
+    fold(&d, &p, &mut st, &w, T0);
+    let id = pos_of(&st, d.v3);
+    let q = p
+        .quote(st.view(id, T0).unwrap(), &prices(2000))
+        .unwrap()
+        .unwrap();
+    let got: Vec<_> = q
+        .repay_options
+        .iter()
+        .map(|o| (o.asset, o.max_repay, o.slot))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (USDT_A, U256::from(1_901_000_000u64), SlotRef::Slot(2)),
+            (USDC_A, U256::from(1_900_000_000u64), SlotRef::Slot(1)),
+        ],
+        "value descending"
+    );
+    let x: VaultExtra = *st.extra(id).unwrap().view().unwrap();
+    assert_eq!(
+        x.debt_units, 800_000_000_000_000_000_000,
+        "shares kept for the tail"
+    );
+    assert_eq!(x.flags & VaultExtra::ABSORB, 0);
+}
+
+/// T2: the collateral shares priced in each collateral token.
+#[test]
+fn t2_smart_collateral_offers_each_collateral_token() {
+    let d = Deploy::new();
+    let p = d.adapter();
+    let mut st = JournalStore::default();
+    let mut w = World::quiet();
+    w.v2 = [(3_000_000_000_000_000_000, 1_900_000_000), (0, 0)];
+    w.out = [2_050_000_000, 1_000_000_000_000_000_000];
+    fold(&d, &p, &mut st, &w, T0);
+    let id = pos_of(&st, d.v2);
+    let q = p
+        .quote(st.view(id, T0).unwrap(), &prices(2000))
+        .unwrap()
+        .unwrap();
+    assert_eq!(q.repay_options.len(), 1);
+    let got: Vec<_> = q
+        .seize_options
+        .iter()
+        .map(|o| (o.asset, o.max_seize, o.slot))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (USDT_A, U256::from(2_050_000_000u64), SlotRef::Slot(0)),
+            (
+                WETH_A,
+                U256::from(1_000_000_000_000_000_000u128),
+                SlotRef::Slot(1)
+            ),
+        ],
+        "bonus descending"
+    );
+}
+
+/// Fluid's resolver rule: absorb when the plain liquidation is empty, or
+/// when absorb adds size at no worse collateral per debt.
+#[test]
+fn absorb_is_chosen_like_the_resolver() {
+    let d = Deploy::new();
+    let p = d.adapter();
+    let case = |plain: (u128, u128), abs: (u128, u128)| {
+        let mut st = JournalStore::default();
+        let mut w = World::quiet();
+        w.v1 = [plain, abs];
+        fold(&d, &p, &mut st, &w, T0);
+        let id = pos_of(&st, d.v1);
+        let x: VaultExtra = *st.extra(id).unwrap().view().unwrap();
+        (x.flags & VaultExtra::ABSORB != 0, x.col_units, x.debt_units)
+    };
+    assert_eq!(case((100, 100), (150, 120)), (true, 150, 120));
+    assert_eq!(
+        case((100, 100), (110, 120)),
+        (false, 100, 100),
+        "worse ratio"
+    );
+    assert_eq!(
+        case((100, 100), (100, 100)),
+        (false, 100, 100),
+        "no extra size"
+    );
+    assert_eq!(case((0, 0), (90, 100)), (true, 90, 100), "absorb only");
+}
+
+/// A vault that stops being liquidatable is zeroed and reported.
+#[test]
+fn a_vault_going_quiet_is_zeroed_and_reported() {
+    let d = Deploy::new();
+    let p = d.adapter();
+    let mut st = JournalStore::default();
+    let mut w = World::quiet();
+    w.v1 = [(1_000, 1_000), (0, 0)];
+    fold(&d, &p, &mut st, &w, T0);
+    let id = pos_of(&st, d.v1);
+    let dirty = fold(&d, &p, &mut st, &World::quiet(), T0 + 12);
+    assert_eq!(dirty, DirtySet::Positions(smallvec_of(id)));
+    assert_eq!(
+        p.health(st.view(id, T0 + 12).unwrap(), &prices(2000))
+            .unwrap()
+            .state,
+        HealthState::Healthy
+    );
+    assert_eq!(
+        fold(&d, &p, &mut st, &World::quiet(), T0 + 24),
+        DirtySet::None,
+        "quiet stays quiet"
+    );
+}
+
+/// Quiet vaults intern nothing.
+#[test]
+fn quiet_vaults_create_no_positions() {
+    let d = Deploy::new();
+    let p = d.adapter();
+    let mut st = JournalStore::default();
+    assert_eq!(fold(&d, &p, &mut st, &World::quiet(), T0), DirtySet::None);
+    assert_eq!(st.positions_len(), 0);
+}
+
+/// A liquidatable vault re-read the next block is reported again, so the
+/// engine re-quotes it at the new block (the read is only current for two).
+#[test]
+fn a_liquidatable_vault_is_refreshed_each_block() {
+    let d = Deploy::new();
+    let p = d.adapter();
+    let mut st = JournalStore::default();
+    let mut w = World::quiet();
+    w.v1 = [(1_000, 1_000), (0, 0)];
+    fold(&d, &p, &mut st, &w, T0);
+    let id = pos_of(&st, d.v1);
+    assert_eq!(
+        fold(&d, &p, &mut st, &w, T0 + 12),
+        DirtySet::Positions(smallvec_of(id))
+    );
+    let x: VaultExtra = *st.extra(id).unwrap().view().unwrap();
+    assert_eq!(x.read_ts, T0 + 12);
+}
+
+#[test]
+fn a_vault_deployed_after_bind_is_not_tracked() {
+    let d = Deploy::new();
+    let p = d.adapter();
+    let mut st = JournalStore::default();
+    let l = deployed(&d, Address::repeat_byte(0x99), 7);
+    assert_eq!(p.apply_log(&mut st, &l.view()).unwrap(), DirtySet::None);
+    assert!(st.markets(MarketId(4007)).is_err());
+    let known = deployed(&d, d.v3, 2);
+    p.apply_log(&mut st, &known.view()).unwrap();
+    assert_eq!(
+        st.markets(MarketId(4002)).unwrap().len(),
+        3,
+        "WETH, USDC, USDT rows"
+    );
 }
 
 fn flash_sources() -> Vec<(CallbackShape, Address)> {
@@ -45,98 +388,39 @@ fn flash_sources() -> Vec<(CallbackShape, Address)> {
         .collect()
 }
 
-fn extra_logs(d: &Deploy) -> Vec<OwnedLog> {
-    let (b, t) = (DEPLOY_BLOCK + 2, T0);
-    vec![
-        log(
-            d.factory,
-            &factory::Transfer {
-                from: Address::ZERO,
-                to: Address::repeat_byte(0x11),
-                id: U256::from(1u8),
-            },
-            b,
-            t,
-        ),
-        log(
-            d.factory,
-            &factory::LogSetDeployer {
-                deployer: Address::repeat_byte(0x02),
-                allowed: true,
-            },
-            b,
-            t,
-        ),
-        log(
-            d.vault_t1,
-            &vault::LogRebalance {
-                colAmt_: alloy_primitives::I256::ZERO,
-                debtAmt_: alloy_primitives::I256::ZERO,
-            },
-            b,
-            t,
-        ),
-        log(
-            d.vault_t1,
-            &vault::LogAbsorb {
-                colAbsorbedRaw_: U256::ZERO,
-                debtAbsorbedRaw_: U256::ZERO,
-            },
-            b,
-            t,
-        ),
-        log(
-            d.vault_t1,
-            &admin::LogUpdateSupplyRateMagnifier {
-                supplyRateMagnifier_: U256::from(100u16),
-            },
-            b,
-            t,
-        ),
-        log(
-            d.vault_t1,
-            &halt::Upgraded {
-                implementation: Address::repeat_byte(0x77),
-            },
-            DEPLOY_BLOCK,
-            T0,
-        ),
-        log(
-            d.vault_t1,
-            &halt::AdminChanged {
-                previousAdmin: Address::ZERO,
-                newAdmin: Address::repeat_byte(0x02),
-            },
-            DEPLOY_BLOCK,
-            T0,
-        ),
-        log(
-            d.vault_t1,
-            &halt::Initialized { version: 1 },
-            DEPLOY_BLOCK,
-            T0,
-        ),
-    ]
-}
-
 #[test]
 fn ten_checks_pass_with_nonvacuous_assertions() {
     let d = Deploy::new();
-    let (p, st) = full_store(&d, ALICE_DEBT_OK);
-    let px = prices(ETH_USD, RAY_ONE);
-    let positions = [PositionFixture {
-        pos: st.view(T1_ID, T0).unwrap(),
-        px: &px,
-        post: None,
-    }];
-    let ranks = coverage_ranks();
-    let mut owned = activity_logs(&d, d.vault_t1, ALICE_COLL, ALICE_DEBT_OK);
-    owned.extend(extra_logs(&d));
+    let p = d.adapter();
+    let mut st = JournalStore::default();
+    let mut w = World::quiet();
+    w.v1 = [(1_000_000_000_000_000_000, 1_900_000_000), (0, 0)];
+    w.v3 = [
+        (1_000_000_000_000_000_000, 800_000_000_000_000_000_000),
+        (0, 0),
+    ];
+    w.pay = [1_900_000_000, 1_901_000_000];
+    fold(&d, &p, &mut st, &w, T0);
+    let px = prices(2000);
+    let (a, b) = (pos_of(&st, d.v1), pos_of(&st, d.v3));
+    let positions = [
+        PositionFixture {
+            pos: st.view(a, T0).unwrap(),
+            px: &px,
+            post: None,
+        },
+        PositionFixture {
+            pos: st.view(b, T0).unwrap(),
+            px: &px,
+            post: None,
+        },
+    ];
+    let owned = [deployed(&d, d.v1, 1), deployed(&d, d.v2, 3)];
     let logs: Vec<LogFixture<'_>> = owned
         .iter()
         .map(|l| LogFixture {
             log: l.view(),
-            max_dirty_rank: rank_of(&ranks, l.topics[0]),
+            max_dirty_rank: 0,
         })
         .collect();
     let sources = flash_sources();
@@ -144,456 +428,177 @@ fn ten_checks_pass_with_nonvacuous_assertions() {
         positions: &positions,
         logs: &logs,
         flash_sources: &sources,
-        recipient: Address::repeat_byte(0x99),
+        recipient: Address::repeat_byte(0x77),
     };
-    let mut log_store = store_after(&p, &listing_logs(&d));
-    let rep = run(
-        &p,
-        &mut log_store,
-        &fx,
-        alloc_meter().map(|m| m as &dyn Fn() -> u64),
-    )
-    .unwrap_or_else(|f| panic!("{f}"));
-    for (i, n) in rep.assertions.iter().enumerate() {
-        match i + 1 {
-            4 | 5 | 8 | 9 => {
-                assert_eq!(
-                    *n,
-                    0,
-                    "healthy-only report: check {} has no quote (4/8 need post or liq; 9 inapplicable)",
-                    i + 1
-                );
+    // A deploy log for a vault whose rows exist is a no-op; checks 6/7 then
+    // assert its apply/undo leaves the store byte-identical.
+    let mut log_store = JournalStore::default();
+    for l in &owned {
+        p.apply_log(&mut log_store, &l.view()).unwrap();
+    }
+    let rep = run(&p, &mut log_store, &fx, None).expect("conformance");
+    for check in [1usize, 5, 6, 8, 9, 10] {
+        assert!(
+            rep.assertions[check - 1] > 0,
+            "check {check} vacuous: {rep:?}"
+        );
+    }
+}
+
+/// Bind: every vault the factory lists, through Multicall3 — T1 (no
+/// `TYPE`, flat `constantsView`) and T4 (typed struct, decimals from the
+/// tokens); native ETH mapped as WETH; an unknown token left unmapped.
+#[test]
+fn bind_live_reads_every_vault_type() {
+    let d = Deploy::new();
+    let v4 = Address::repeat_byte(0xa4);
+    let (dex_c, dex_d) = (Address::repeat_byte(0xd5), Address::repeat_byte(0xd6));
+    struct Rpc {
+        d: Deploy,
+        v4: Address,
+        dex_c: Address,
+        dex_d: Address,
+    }
+    impl Rpc {
+        fn one(&self, to: Address, data: &[u8]) -> Option<Vec<u8>> {
+            let sel: [u8; 4] = data[..4].try_into().unwrap();
+            if to == self.d.factory && sel == factory::getVaultAddressCall::SELECTOR {
+                let id = factory::getVaultAddressCall::abi_decode(data)
+                    .unwrap()
+                    .vaultId;
+                let a = if id == U256::from(1u8) {
+                    self.d.v1
+                } else {
+                    self.v4
+                };
+                return Some(factory::getVaultAddressCall::abi_encode_returns(&a));
             }
-            _ => assert!(*n > 0, "check {} was vacuous", i + 1),
+            if sel == vault::TYPECall::SELECTOR {
+                return (to == self.v4)
+                    .then(|| vault::TYPECall::abi_encode_returns(&U256::from(VAULT_T4)));
+            }
+            if sel == t1::constantsViewCall::SELECTOR && to == self.d.v1 {
+                return Some(t1::constantsViewCall::abi_encode_returns(
+                    &t1::constantsViewReturn {
+                        liquidity: self.d.liquidity,
+                        factory: self.d.factory,
+                        adminImplementation: Address::ZERO,
+                        secondaryImplementation: Address::ZERO,
+                        supplyToken: NATIVE_TOKEN,
+                        borrowToken: self.d.usdc,
+                        supplyDecimals: 18,
+                        borrowDecimals: 6,
+                        vaultId: U256::from(1u8),
+                        liquiditySupplyExchangePriceSlot: Default::default(),
+                        liquidityBorrowExchangePriceSlot: Default::default(),
+                        liquidityUserSupplySlot: Default::default(),
+                        liquidityUserBorrowSlot: Default::default(),
+                    },
+                ));
+            }
+            if sel == smart::constantsViewCall::SELECTOR && to == self.v4 {
+                return Some(smart::constantsViewCall::abi_encode_returns(
+                    &smart::ConstantViews {
+                        liquidity: self.d.liquidity,
+                        factory: self.d.factory,
+                        operateImplementation: Address::ZERO,
+                        adminImplementation: Address::ZERO,
+                        secondaryImplementation: Address::ZERO,
+                        deployer: Address::ZERO,
+                        supply: self.dex_c,
+                        borrow: self.dex_d,
+                        supplyToken: smart::Tokens {
+                            token0: self.d.weth,
+                            token1: self.d.unknown,
+                        },
+                        borrowToken: smart::Tokens {
+                            token0: self.d.usdc,
+                            token1: self.d.usdt,
+                        },
+                        vaultId: U256::from(2u8),
+                        vaultType: U256::from(VAULT_T4),
+                        supplyExchangePriceSlot: Default::default(),
+                        borrowExchangePriceSlot: Default::default(),
+                        userSupplySlot: Default::default(),
+                        userBorrowSlot: Default::default(),
+                    },
+                ));
+            }
+            if sel == erc20::decimalsCall::SELECTOR {
+                let dd = if to == self.d.usdc || to == self.d.usdt {
+                    6u8
+                } else {
+                    18
+                };
+                return Some(erc20::decimalsCall::abi_encode_returns(&dd));
+            }
+            None
         }
     }
-    assert_eq!(rep.alloc_metered, alloc_meter().is_some());
-
-    let (p_u, st_u) = full_store(&d, ALICE_DEBT_LIQ);
-    let px_u = prices(ETH_USD, RAY_ONE);
-    let h_u = p_u.health(st_u.view(T1_ID, T0).unwrap(), &px_u).unwrap();
-    assert_eq!(h_u.state, HealthState::Liquidatable, "check 10 class");
-    let q_u = p_u
-        .quote(st_u.view(T1_ID, T0).unwrap(), &px_u)
-        .unwrap()
-        .expect("check 10: Liquidatable quotes");
-    let from_curve = q_u.seize_options[0].curve.bonus_at_hf(h_u.hf).unwrap();
-    assert_eq!(from_curve, Some(q_u.seize_options[0].bonus), "check 5");
-    let positions_u = [PositionFixture {
-        pos: st_u.view(T1_ID, T0).unwrap(),
-        px: &px_u,
-        post: None,
-    }];
-    let fx_u = Fixtures {
-        positions: &positions_u,
-        logs: &[],
-        flash_sources: &sources,
-        recipient: Address::repeat_byte(0x99),
-    };
-    let mut log_store_u = store_after(&p_u, &listing_logs(&d));
-    let rep = run(
-        &p_u,
-        &mut log_store_u,
-        &fx_u,
-        alloc_meter().map(|m| m as &dyn Fn() -> u64),
+    impl FactoryRpc for Rpc {
+        fn eth_call(&self, to: Address, data: &[u8], _block: u64) -> Result<Bytes, ConfigError> {
+            if to == self.d.factory && data[..4] == factory::totalVaultsCall::SELECTOR {
+                return Ok(factory::totalVaultsCall::abi_encode_returns(&U256::from(2u8)).into());
+            }
+            assert_eq!(to, MULTICALL3);
+            let calls = multicall::aggregate3Call::abi_decode(data).unwrap().calls;
+            let res: Vec<multicall::Result3> = calls
+                .iter()
+                .map(|c| match self.one(c.target, &c.callData) {
+                    Some(r) => multicall::Result3 {
+                        success: true,
+                        returnData: r.into(),
+                    },
+                    None => multicall::Result3 {
+                        success: false,
+                        returnData: Bytes::new(),
+                    },
+                })
+                .collect();
+            Ok(multicall::aggregate3Call::abi_encode_returns(&res).into())
+        }
+    }
+    let mut cfg = Config::from_toml(
+        "protocol = 10\nfactory = \"0xf1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1\"\ncatalog = 4000\nfirst_market = 4001\nweth = \"0xc0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0\"\n",
     )
-    .unwrap_or_else(|f| panic!("{f}"));
+    .unwrap();
     assert!(
-        rep.assertions[8] > 0,
-        "check 9 must fire after 10E T1 encode"
+        liq_adapters_fluid::Fluid::new(cfg.clone()).is_err(),
+        "unbound refuses"
     );
-}
-
-#[test]
-fn raw_invariant_survives_exchange_price_update() {
-    // Pin: operate converts token→raw at then-current ex and writes raw into
-    // vaultVariables bits 82/146. updateExchangePrices changes only
-    // supplyExPrice/borrowExPrice. Tick is a raw ratio and must not move.
-    let d = Deploy::new();
-    let (p, mut st) = full_store(&d, ALICE_DEBT_OK);
-    let px = prices(ETH_USD, RAY_ONE);
-    let pos0 = st.view(T1_ID, T0).unwrap();
-    let extra0: &VaultExtra = pos0.extra.view().unwrap();
-    let top0 = extra0.top_tick;
-    assert_eq!(
-        U256::from(pos0.supply[0]),
-        ALICE_COLL,
-        "operate at 1e12 stores raw == token"
-    );
-    assert_eq!(U256::from(pos0.debt[1]), ALICE_DEBT_OK);
-
-    let supply_ex = uint!(1_100_000_000_000_U256);
-    let borrow_ex = uint!(1_200_000_000_000_U256);
-    assert_ne!(supply_ex, EX_PRICE);
-    assert_ne!(borrow_ex, EX_PRICE);
-    let l = log(
-        d.vault_t1,
-        &vault::LogUpdateExchangePrice {
-            supplyExPrice_: supply_ex,
-            borrowExPrice_: borrow_ex,
-        },
-        DEPLOY_BLOCK + 2,
-        T0,
-    );
-    p.apply_log(&mut st, &l.view()).expect("second ex update");
-
-    let pos1 = st.view(T1_ID, T0).unwrap();
-    let extra1: &VaultExtra = pos1.extra.view().unwrap();
-    assert_eq!(
-        U256::from(pos1.supply[0]),
-        ALICE_COLL,
-        "ex update must not rewrite stored raw"
-    );
-    assert_eq!(U256::from(pos1.debt[1]), ALICE_DEBT_OK);
-    let pin_top = math::tick_from_raw(ALICE_COLL, ALICE_DEBT_OK).unwrap();
-    assert_eq!(extra1.top_tick, top0);
-    assert_eq!(extra1.top_tick, pin_top);
-
-    let inverted_col = math::to_raw(ALICE_COLL, supply_ex).unwrap();
-    let inverted_debt = math::to_raw(ALICE_DEBT_OK, borrow_ex).unwrap();
-    let inverted_tick = math::tick_from_raw(inverted_col, inverted_debt).unwrap();
-    assert_ne!(
-        inverted_tick, pin_top,
-        "fixture is not the identity path (ex == 1e12)"
-    );
-
-    let oracle = math::oracle_debt_per_col_1e27(ETH_USD, RAY_ONE, 18, 6).unwrap();
-    let raw_dpc = math::raw_debt_per_col(oracle, supply_ex, borrow_ex).unwrap();
-    let liq = math::liquidation_tick(raw_dpc, THRESHOLD).unwrap();
-    let pin_hf = math::hf_from_ticks(pin_top, liq).unwrap();
-    let h = p.health(pos1, &px).unwrap();
-    assert_eq!(h.hf, pin_hf);
-}
-
-#[test]
-fn t1_healthy_and_liquidatable_by_tick() {
-    let d = Deploy::new();
-    let (p, st) = full_store(&d, ALICE_DEBT_OK);
-    let px = prices(ETH_USD, RAY_ONE);
-    let h = p.health(st.view(T1_ID, T0).unwrap(), &px).unwrap();
-    assert_eq!(h.state, HealthState::Healthy);
-    assert!(h.hf >= Ray::ONE);
-    let (pl, stl) = full_store(&d, ALICE_DEBT_LIQ);
-    let hl = pl.health(stl.view(T1_ID, T0).unwrap(), &px).unwrap();
-    assert_eq!(hl.state, HealthState::Liquidatable);
-    assert!(hl.hf < Ray::ONE);
-}
-
-#[test]
-fn t3_is_not_t1_cloned_and_selector_collides() {
-    let d = Deploy::new();
-    let p = d.adapter();
-    let mut st = store_after(&p, &listing_logs(&d));
-    let px = prices(ETH_USD, RAY_ONE);
-    let pos = st.view(T3_ID, T0).unwrap();
-    assert_eq!(pos.key.market, MARKET_T3);
-    assert_eq!(pos.key.user, d.vault_t3);
-    // Pin T3 `_operate` takes DEX share debt; FluidOracle 1e27 is
-    // share-per-col. PriceVector cannot express that — fail closed, never
-    // T1 USDC token-pair Liquidatable.
-    assert_eq!(
-        p.health(pos, &px).unwrap_err(),
-        ProtocolError::OracleSourceMismatch
-    );
-    assert_eq!(
-        p.quote(pos, &px).unwrap_err(),
-        ProtocolError::OracleSourceMismatch
-    );
-
-    let activity = activity_logs(&d, d.vault_t3, ALICE_COLL, ALICE_DEBT_LIQ);
-    p.apply_log(&mut st, &activity[0].view())
-        .expect("T3 NewPositionMinted folds");
-    assert_eq!(
-        p.apply_log(&mut st, &activity[1].view()).unwrap_err(),
-        ProtocolError::OracleSourceMismatch
-    );
-
-    let t1 = liquidate_selector(VAULT_T1).unwrap();
-    let t2 = liquidate_selector(VAULT_T2).unwrap();
-    let t3 = liquidate_selector(VAULT_T3).unwrap();
-    let t4 = liquidate_selector(VAULT_T4).unwrap();
-    // Pin T2 and T3 `liquidate` share ABI types
-    // `(uint256,uint256,uint256,uint256,address,bool)` so the selector collides.
-    // Dispatch is vault `TYPE` (20000 vs 30000), not selector. T1 and T4 differ.
-    assert_ne!(t1, t2);
-    assert_eq!(t2, t3);
-    assert_ne!(t1, t4);
-    assert_ne!(t2, t4);
-    use liq_adapters_fluid::events::{t1, t2 as t2abi, t3 as t3abi, t4 as t4abi};
-    assert_eq!(t1, t1::liquidateCall::SELECTOR);
-    assert_eq!(t2, t2abi::liquidateCall::SELECTOR);
-    assert_eq!(t3, t3abi::liquidateCall::SELECTOR);
-    assert_eq!(t4, t4abi::liquidateCall::SELECTOR);
-}
-
-#[test]
-fn quote_static_bonus_and_encode_ok() {
-    let d = Deploy::new();
-    let (p, st) = full_store(&d, ALICE_DEBT_LIQ);
-    let px = prices(ETH_USD, RAY_ONE);
-    let q = p
-        .quote(st.view(T1_ID, T0).unwrap(), &px)
-        .unwrap()
-        .expect("liquidatable");
-    assert_eq!(q.repay_options[0].asset, DEBT);
-    assert_eq!(q.seize_options[0].asset, COLL);
-    assert!(matches!(
-        q.seize_options[0].curve,
-        liq_protocol::BonusCurve::Static { .. }
-    ));
-    assert_eq!(q.seize_options[0].bonus, math::bonus_ray(PENALTY).unwrap());
-    let rec = Address::repeat_byte(0x99);
-    let route = FlashRoute {
-        provider: CallbackShape::ALL[0].provider(),
-        source: Address::repeat_byte(0x50),
-        asset: DEBT,
-        amount: q.repay_options[0].max_repay,
-        fee_bps: 0,
-        callback: CallbackShape::ALL[0],
+    let known = [(d.weth, WETH_A), (d.usdc, USDC_A), (d.usdt, USDT_A)];
+    let rpc = Rpc {
+        d: Deploy::new(),
+        v4,
+        dex_c,
+        dex_d,
     };
-    let plan = p
-        .encode(&q, LegChoice::PREFERRED, &route, rec)
-        .expect("10E Fluid T1 encode");
-    let wire = col_per_unit_debt_1e18_from_quote(&q, LegChoice::PREFERRED).unwrap();
+    cfg.bind_live(&rpc, 1, &|a| {
+        known.iter().find(|(t, _)| *t == a).map(|(_, id)| *id)
+    })
+    .unwrap();
+    assert!(cfg.live_bound);
+    assert_eq!(cfg.vault_pins.len(), 2);
+    let p1 = cfg.pin_of(d.v1).unwrap();
     assert_eq!(
-        wire,
-        math::col_per_unit_debt_1e18(q.seize_options[0].max_seize, q.repay_options[0].max_repay)
-            .unwrap()
+        (p1.vault_type, p1.supply0, p1.borrow0),
+        (VAULT_T1, NATIVE_TOKEN, d.usdc)
     );
-    assert!(wire < RAY, "quote→tail is 1e18 slip, not oracle 1e27");
-    assert_eq!(plan.leg.adapter, ExecutorAdapter::Fluid);
-    assert_eq!(plan.leg.market, d.vault_t1);
-    assert_eq!(plan.leg.borrower, q.key.user);
-    let mut q2 = q.clone();
-    q2.key.protocol = liq_types::ProtocolId(99);
+    let p4 = cfg.pin_of(v4).unwrap();
     assert_eq!(
-        p.encode(&q2, LegChoice::PREFERRED, &route, rec),
-        Err(ProtocolError::ProtocolMismatch)
+        (p4.vault_type, p4.supply, p4.borrow),
+        (VAULT_T4, dex_c, dex_d)
     );
     assert_eq!(
-        p.encode(&q, LegChoice { repay: 9, seize: 0 }, &route, rec),
-        Err(ProtocolError::LegOutOfRange)
+        (
+            p4.supply_decimals0,
+            p4.supply_decimals1,
+            p4.borrow_decimals1
+        ),
+        (18, 18, 6)
     );
-    assert_eq!(
-        p.encode(&q, LegChoice { repay: 0, seize: 9 }, &route, rec),
-        Err(ProtocolError::LegOutOfRange)
-    );
-    let mut cb = route;
-    cb.callback = CallbackShape::MorphoFlashCallback;
-    assert_eq!(
-        p.encode(&q, LegChoice::PREFERRED, &cb, rec),
-        Err(ProtocolError::CallbackProviderMismatch)
-    );
-    assert_eq!(
-        p.encode(&q, LegChoice::PREFERRED, &route, Address::ZERO),
-        Err(ProtocolError::ZeroRecipient)
-    );
-    let mut mismatch = route;
-    mismatch.asset = COLL;
-    assert_eq!(
-        p.encode(&q, LegChoice::PREFERRED, &mismatch, rec),
-        Err(ProtocolError::FundingAssetMismatch)
-    );
-    let mut short = route;
-    short.amount = U256::ZERO;
-    assert_eq!(
-        p.encode(&q, LegChoice::PREFERRED, &short, rec),
-        Err(ProtocolError::FundingShort)
-    );
-    let mut huge = route;
-    huge.amount = U256::MAX;
-    assert_eq!(
-        p.encode(&q, LegChoice::PREFERRED, &huge, rec),
-        Err(ProtocolError::AmountTooLarge)
-    );
-    let mut t3 = q.clone();
-    t3.key.user = d.vault_t3;
-    assert_eq!(
-        p.encode(&t3, LegChoice::PREFERRED, &route, rec),
-        Err(ProtocolError::ExecutorUnwired)
-    );
-    let mut unknown = q.clone();
-    unknown.key.user = Address::repeat_byte(0xee);
-    assert_eq!(
-        p.encode(&unknown, LegChoice::PREFERRED, &route, rec),
-        Err(ProtocolError::ExecutorUnwired)
-    );
-}
-
-#[test]
-fn market_ids_stay_in_fluid_band() {
-    assert_eq!(math::market_from_vault_id(1).unwrap(), MARKET_T1);
-    assert_eq!(math::market_from_vault_id(2).unwrap(), MARKET_T3);
-    assert!(math::market_from_vault_id(0).is_err());
-    assert!(math::market_from_vault_id(200).is_err());
-}
-
-#[test]
-fn new_refuses_unasserted_config() {
-    let raw = include_str!("../../../../config/protocols/fluid.toml");
-    let cfg = Config::from_toml(raw).expect("fluid.toml");
-    assert!(!cfg.live_factory_asserted);
-    assert_eq!(
-        Fluid::new(cfg).unwrap_err(),
-        ConfigError::LiveFactoryUnasserted
-    );
-    let d = Deploy::new();
-    assert!(!d.config().live_factory_asserted);
-    assert_eq!(
-        Fluid::new(d.config()).unwrap_err(),
-        ConfigError::LiveFactoryUnasserted
-    );
-}
-
-#[test]
-fn assert_live_factory_matches_d15_count() {
-    let d = Deploy::new();
-    let mut cfg = d.config();
-    cfg.assert_live_factory(&d.rpc(), DEPLOY_BLOCK)
-        .expect("pin view");
-    assert!(cfg.live_factory_asserted);
-    Fluid::new(cfg).expect("asserted config boots");
-}
-
-#[test]
-fn assert_live_factory_refuses_count_mismatch() {
-    let d = Deploy::new();
-    let mut cfg = d.config();
-    cfg.d15_vaults = 182;
-    let err = cfg
-        .assert_live_factory(&d.rpc(), DEPLOY_BLOCK)
-        .expect_err("count mismatch");
-    match err {
-        ConfigError::VaultCountMismatch { expected, found } => {
-            assert_eq!(expected, 182);
-            assert_eq!(found, 2);
-        }
-        other => panic!("expected VaultCountMismatch, got {other:?}"),
-    }
-    assert!(!cfg.live_factory_asserted);
-}
-
-#[test]
-fn native_vault_is_unpriced() {
-    let d = Deploy::new();
-    let mut cfg = d.config();
-    cfg.vault_pins[0].supply0 = math::NATIVE_TOKEN;
-    cfg.assert_live_factory(&d.rpc(), DEPLOY_BLOCK).unwrap();
-    let p = Fluid::new(cfg).unwrap();
-    let logs = listing_logs(&d);
-    let st = store_after(&p, &logs);
-    let pos = st.view(T1_ID, T0);
-    // listing interned the vault; health without operate still needs VIEWED+PRICED.
-    // Native coll is not interned → UNPRICED.
-    if let Ok(pos) = pos {
-        let err = p.health(pos, &prices(ETH_USD, RAY_ONE)).unwrap_err();
-        assert_eq!(err, ProtocolError::OracleSourceMismatch);
-    }
-}
-
-#[test]
-fn halt_after_pin_is_halt_signal() {
-    let d = Deploy::new();
-    let p = d.adapter();
-    let mut st = store_after(&p, &listing_logs(&d));
-    let l = log(
-        d.vault_t1,
-        &halt::Upgraded {
-            implementation: Address::repeat_byte(0x88),
-        },
-        DEPLOY_BLOCK + 10,
-        T0,
-    );
-    assert_eq!(
-        p.apply_log(&mut st, &l.view()).unwrap_err(),
-        ProtocolError::HaltSignal
-    );
-}
-
-#[test]
-fn health_probe_unavailable() {
-    let d = Deploy::new();
-    let (p, st) = full_store(&d, ALICE_DEBT_OK);
-    assert_eq!(
-        p.health_probe(st.view(T1_ID, T0).unwrap()).unwrap_err(),
-        ProtocolError::ProbeUnavailable
-    );
-}
-
-#[test]
-fn subscriptions_cover_factory_and_pinned_vaults() {
-    let d = Deploy::new();
-    let p = d.adapter();
-    let subs = p.subscriptions();
-    assert!(subs
-        .iter()
-        .any(|f| f.address == d.factory && f.topic0 == factory::VaultDeployed::SIGNATURE_HASH));
-    assert!(subs
-        .iter()
-        .any(|f| f.address == d.vault_t1 && f.topic0 == vault::LogOperate::SIGNATURE_HASH));
-}
-
-#[test]
-fn coverage_topics_match_sol() {
-    use alloy_sol_types::SolEvent;
-    let ranks = coverage_ranks();
-    let want = [
-        factory::VaultDeployed::SIGNATURE_HASH,
-        factory::NewPositionMinted::SIGNATURE_HASH,
-        factory::Transfer::SIGNATURE_HASH,
-        vault::LogOperate::SIGNATURE_HASH,
-        vault::LogUpdateExchangePrice::SIGNATURE_HASH,
-        vault::LogLiquidate::SIGNATURE_HASH,
-        vault::LogAbsorb::SIGNATURE_HASH,
-    ];
-    for t in want {
-        assert!(ranks.iter().any(|(h, _)| *h == t), "coverage missing {t}");
-    }
-}
-
-#[test]
-#[ignore = "live VaultFactory totalVaults; set LIQ_RPC_URL"]
-fn live_factory_total_vaults_matches_toml() {
-    let url = std::env::var("LIQ_RPC_URL").expect("LIQ_RPC_URL required for live factory assert");
-    let raw = include_str!("../../../../config/protocols/fluid.toml");
-    let mut cfg = Config::from_toml(raw).expect("fluid.toml");
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio rt");
-    let provider = alloy_provider::ProviderBuilder::new()
-        .disable_recommended_fillers()
-        .connect_http(url.parse().expect("LIQ_RPC_URL parses"));
-    struct Live {
-        provider: alloy_provider::RootProvider,
-        rt: tokio::runtime::Runtime,
-    }
-    impl FactoryRpc for Live {
-        fn eth_call(
-            &self,
-            to: Address,
-            data: &[u8],
-            block: u64,
-        ) -> core::result::Result<alloy_primitives::Bytes, ConfigError> {
-            use alloy_provider::Provider;
-            use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
-            let tx = TransactionRequest {
-                to: Some(to.into()),
-                input: TransactionInput::new(alloy_primitives::Bytes::copy_from_slice(data)),
-                ..Default::default()
-            };
-            let out = self
-                .rt
-                .block_on(async { self.provider.call(tx).number(block).await })
-                .map_err(|_| ConfigError::FactoryCall(to))?;
-            if out.is_empty() {
-                return Err(ConfigError::FactoryCall(to));
-            }
-            Ok(out)
-        }
-    }
-    let rpc = Live { provider, rt };
-    cfg.assert_live_factory(&rpc, cfg.pinned_through)
-        .expect("live totalVaults must equal d15_vaults");
-    Fluid::new(cfg).expect("live-asserted config boots");
+    assert_eq!(cfg.asset_of_token(NATIVE_TOKEN).unwrap().asset, WETH_A);
+    assert!(cfg.asset_of_token(d.unknown).is_none());
+    assert_eq!(cfg.assets.len(), 3);
+    liq_adapters_fluid::Fluid::new(cfg).expect("bound config boots");
 }

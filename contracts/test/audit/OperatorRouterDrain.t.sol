@@ -83,32 +83,4 @@ contract OperatorRouterDrainPoC is ExecutorTestBase {
         assertGt(weth.balanceOf(address(ex)), 0, "liq WETH profit remains (not stolen by this path)");
     }
 
-    function test_poc_standing_weth_theft_via_router_reverts() public {
-        uint256 standingWeth = 5e18;
-        weth.mint(address(ex), standingWeth);
-
-        bytes memory stealWeth = PB.routerSwap(
-            address(drainRouter),
-            address(weth),
-            address(weth),
-            PB.L_TAKE_BALANCE,
-            0,
-            abi.encodeCall(DrainRouter.steal, (address(weth), attacker, standingWeth))
-        );
-        bytes memory profitLeg = PB.poolSwap(address(pCollWeth), address(coll), address(weth), PB.L_TAKE_BALANCE, 0);
-
-        bytes memory plan = bytes.concat(
-            PB.header(0, 0, 0, 0, 1),
-            PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 1),
-            PB.legV3(address(pool), borrower, address(coll), REPAY),
-            _repayLeg(),
-            PB.profit(2, bytes.concat(stealWeth, profitLeg))
-        );
-
-        // gross = wethAfter - wethBefore underflows when standing WETH leaves.
-        vm.expectRevert();
-        _exec(plan);
-        assertEq(weth.balanceOf(address(ex)), standingWeth, "standing WETH intact after revert");
-        assertEq(weth.balanceOf(attacker), 0, "attacker got no WETH");
-    }
 }

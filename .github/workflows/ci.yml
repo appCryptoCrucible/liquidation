@@ -11,19 +11,19 @@ jobs:
     container:
       image: ubuntu:26.04
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system packages
+      - name: Install system packages (git before checkout)
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
             ca-certificates curl git build-essential pkg-config libssl-dev
 
+      - uses: actions/checkout@v4
+
       - name: Install Rust 1.95.0
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          rustup component add rustfmt clippy
+          "$HOME/.cargo/bin/rustup" component add rustfmt clippy
 
       - name: reject panic=abort in release profiles
         run: |
@@ -68,15 +68,15 @@ jobs:
     container:
       image: ubuntu:26.04
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install system packages
+      - name: Install system packages (git before checkout)
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
             ca-certificates curl git build-essential pkg-config libssl-dev
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Rust 1.95.0
         run: |
@@ -109,15 +109,15 @@ jobs:
     container:
       image: ubuntu:26.04
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install system packages
+      - name: Install system packages (git before checkout)
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
             ca-certificates curl git build-essential pkg-config libssl-dev
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Rust 1.95.0
         run: |
@@ -159,3 +159,27 @@ jobs:
             exit 1
           fi
           echo "ok: no raw IERC20.transfer/approve in contracts/src"
+
+  reth:
+    # The `reth` binary (the ExEx) builds only on Unix: Reth's static-file
+    # storage is `cfg(unix)`. The workspace jobs do not enable `node`.
+    name: reth ExEx build (Linux)
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:26.04
+    steps:
+      - name: Install system packages (git before checkout)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends             ca-certificates curl git build-essential pkg-config libssl-dev clang libclang-dev
+
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.95.0
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" component add clippy
+
+      - name: cargo clippy -p liq-reth --features node
+        run: cargo clippy -p liq-reth --features node --all-targets -- -D warnings

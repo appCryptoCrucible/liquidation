@@ -24,7 +24,7 @@ use crate::health::Health;
 use crate::log::DecodedLog;
 use crate::plan::{LiquidationPlan, ProbeCall};
 use crate::posref::PositionRef;
-use crate::price_read::{MarketRows, PriceRead};
+use crate::price_read::{MarketRows, PriceRead, StateAnswer, StateRead};
 use crate::quote::{LegChoice, Quote};
 use crate::statewriter::StateWriter;
 use crate::{BlockNum, Timestamp};
@@ -134,5 +134,36 @@ pub trait Protocol: LogSubscriber + Send + Sync + 'static {
     ) -> Result<()> {
         let _ = (read, ret, out);
         Ok(())
+    }
+
+    // ---- protocol state read from chain -----------------------------------
+
+    /// First-stage reads of state this adapter cannot derive from logs
+    /// (see [`StateRead`]). Called off the hot path when the read set is
+    /// rebuilt. Empty for log-complete adapters.
+    fn state_reads(&self, rows: &dyn MarketRows) -> Vec<StateRead> {
+        let _ = rows;
+        Vec::new()
+    }
+
+    /// Second-stage reads at the same block, derived from one first-stage
+    /// answer (Fluid converts a simulated share amount into one token).
+    fn state_follow_ups(&self, answer: StateAnswer<'_>) -> Vec<StateRead> {
+        let _ = answer;
+        Vec::new()
+    }
+
+    /// Fold one block's answers — first stage then follow-ups, in the order
+    /// read — into the store. Runs on the ingest thread after the block's
+    /// logs, inside the same block (`timestamp` is its time). Returns the
+    /// positions whose state changed.
+    fn apply_state_reads(
+        &self,
+        st: &mut dyn StateWriter,
+        timestamp: Timestamp,
+        answers: &[StateAnswer<'_>],
+    ) -> Result<DirtySet> {
+        let _ = (st, timestamp, answers);
+        Ok(DirtySet::None)
     }
 }

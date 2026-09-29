@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::task::JoinSet;
 
-/// Hot-reloadable live-send flag (H4 flip; 17A owns SIGHUP later).
+/// Hot-reloadable live-send flag (`config/node.toml`, file watch + SIGHUP).
 #[derive(Debug)]
 pub struct SubmitEnabled {
     flag: AtomicBool,

@@ -1,8 +1,9 @@
 //! Submit lease: post-restart integrity gates live send (GUIDE 17 §2).
 //!
 //! Corrupt snapshot / WAL → lease refused. Never submit from a process that
-//! has not passed this check. Chain-nonce resync before first live POST is
-//! H4 — ABSENT here; [`SubmitLease::nonce_resync`] stays false.
+//! has not passed this check. The chain-nonce resync is
+//! `liq_exec::path::ExecPath::sync_nonce`, which stores
+//! [`SubmitLease::nonce_resync`] through the shared atomic.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,8 +24,8 @@ pub struct StatePaths {
 /// Lease state after the drift / integrity check.
 ///
 /// `held` / `nonce_resync` are `Arc` so [`crate::exec_bind::bind`] can attach
-/// the same atomics to [`liq_exec::path::ExecPath`]. 17A never stores
-/// `nonce_resync` true (`run` / `acquire` included).
+/// the same atomics to [`liq_exec::path::ExecPath`]. Startup never stores
+/// `nonce_resync` true; only a successful chain resync does.
 pub struct SubmitLease {
     held: Arc<AtomicBool>,
     nonce_resync: Arc<AtomicBool>,
@@ -43,9 +44,25 @@ impl SubmitLease {
     pub fn granted_shadow() -> Self {
         Self {
             held: Arc::new(AtomicBool::new(true)),
-            // H4: chain-nonce resync hook ABSENT. Live POST stays closed.
+            // False until the first chain-nonce resync succeeds.
             nonce_resync: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Recovered from disk and verified, but not yet caught up with the
+    /// chain: nothing is sent until [`Self::grant`].
+    #[must_use]
+    pub fn recovered() -> Self {
+        Self {
+            held: Arc::new(AtomicBool::new(false)),
+            nonce_resync: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// The store has caught up with the node's head: live send may start
+    /// (still gated on `submit_enabled` and the nonce resync).
+    pub fn grant(&self) {
+        self.held.store(true, Ordering::Release);
     }
 
     #[must_use]
@@ -53,7 +70,8 @@ impl SubmitLease {
         self.held.load(Ordering::Acquire)
     }
 
-    /// Always false until an H4 resync hook exists. Not a silent guess.
+    /// True after the last chain-nonce resync succeeded; false before the
+    /// first one and after a failed one. Not a silent guess.
     #[must_use]
     pub fn nonce_resync(&self) -> bool {
         self.nonce_resync.load(Ordering::Acquire)
@@ -65,13 +83,14 @@ impl SubmitLease {
         Arc::clone(&self.held)
     }
 
-    /// Same atomic [`crate::exec_bind::bind`] attaches. Default false; H4 stores.
+    /// Same atomic [`crate::exec_bind::bind`] attaches. Default false;
+    /// `ExecPath::sync_nonce` stores.
     #[must_use]
     pub fn nonce_resync_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.nonce_resync)
     }
 
-    /// Live HTTP = held ∧ `submit_enabled` ∧ nonce resync. Resync is ABSENT.
+    /// Live HTTP = held ∧ `submit_enabled` ∧ nonce resync.
     /// Process-log query only — the POST reads the atomics on `ExecPath`.
     #[must_use]
     pub fn live_send_permitted(&self, submit_enabled: bool) -> bool {
@@ -105,6 +124,24 @@ pub enum LeaseError {
 /// Optional post-recover probe. Missing + nonempty store → refuse.
 pub trait IntegrityProbe {
     fn check(&self, store: &StateStore) -> Result<(), LeaseError>;
+}
+
+/// The snapshot's own head record (`snapshot.head`, written with it) names
+/// the block the restored store is at: a store at any other block did not
+/// come from that write.
+pub struct HeadProbe {
+    pub number: u64,
+}
+
+impl IntegrityProbe for HeadProbe {
+    fn check(&self, store: &StateStore) -> Result<(), LeaseError> {
+        if store.tip() == self.number {
+            Ok(())
+        } else {
+            tracing::error!(tip = store.tip(), head = self.number, "restored store is not at its head record");
+            Err(LeaseError::ProbeRefused)
+        }
+    }
 }
 
 /// Default store sizing for recover. Capacity only; not invented chain data.
@@ -152,7 +189,7 @@ pub fn acquire(
             Some(p) => p.check(&store)?,
         }
     }
-    Ok((store, SubmitLease::granted_shadow()))
+    Ok((store, SubmitLease::recovered()))
 }
 
 fn map_snapshot(e: SnapshotError) -> LeaseError {
@@ -198,7 +235,7 @@ mod tests {
     fn submit_enabled_false_and_resync_absent_block_live() {
         let l = SubmitLease::granted_shadow();
         assert!(l.held());
-        assert!(!l.nonce_resync(), "chain-nonce resync ABSENT (H4)");
+        assert!(!l.nonce_resync(), "false until the first chain resync");
         assert!(!l.live_send_permitted(false));
         assert!(
             !l.live_send_permitted(true),
@@ -213,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_store_grants_shadow_lease() {
+    fn empty_store_recovers_and_is_granted_when_caught_up() {
         let d = dir();
         let snap = d.join("s.snap");
         let wal = d.join("w.log");
@@ -229,6 +266,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(store.len(), 0);
+        assert!(!lease.held(), "not held until caught up with the chain");
+        lease.grant();
         assert!(lease.held());
         assert!(!lease.nonce_resync());
     }

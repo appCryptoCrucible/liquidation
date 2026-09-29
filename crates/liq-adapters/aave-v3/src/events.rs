@@ -29,6 +29,7 @@ pub mod cfg {
     sol! {
         event ReserveInitialized(address indexed asset, address indexed aToken, address stableDebtToken, address variableDebtToken, address interestRateStrategyAddress);
         event ReserveBorrowing(address indexed asset, bool enabled);
+        event ReserveStableRateBorrowing(address indexed asset, bool enabled);
         event ReserveFlashLoaning(address indexed asset, bool enabled);
         event CollateralConfigurationChanged(address indexed asset, uint256 ltv, uint256 liquidationThreshold, uint256 liquidationBonus);
         event ReserveActive(address indexed asset, bool active);
@@ -86,6 +87,17 @@ pub mod token {
         event BalanceTransfer(address indexed from, address indexed to, uint256 value, uint256 index);
         event BorrowAllowanceDelegated(address indexed fromUser, address indexed toUser, address indexed asset, uint256 amount);
         event DelegateChanged(address indexed delegator, address indexed delegatee, uint8 delegationType);
+    }
+}
+
+/// `StableDebtToken` (aave-v3-core, the code SparkLend runs). Stable
+/// borrowing is disabled on every Spark reserve; these only raise the
+/// alarm and mark the account if it is ever re-enabled.
+pub mod stable {
+    use super::sol;
+    sol! {
+        event Mint(address indexed user, address indexed onBehalfOf, uint256 amount, uint256 currentBalance, uint256 balanceIncrease, uint256 newRate, uint256 avgStableRate, uint256 newTotalSupply);
+        event Burn(address indexed from, uint256 amount, uint256 currentBalance, uint256 balanceIncrease, uint256 avgStableRate, uint256 newTotalSupply);
     }
 }
 

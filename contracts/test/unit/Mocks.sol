@@ -692,6 +692,147 @@ contract MockFluidT1 {
     function _coll() internal view returns (address) { return collToken; }
 }
 
+/// One mock for the four Fluid vault ABIs (pin `9496626f`). Debt units are
+/// tokens on T1/T2 and debt shares on T3/T4; collateral units are tokens on
+/// T1/T3 and col shares on T2/T4. A smart side converts at a fixed `rate`
+/// (token per share, 1e18) in exactly one token, as
+/// `paybackPerfectInOneToken` / `withdrawPerfectInOneToken` do when the other
+/// token's per-share figure is zero. Native ETH is `NATIVE`; unused
+/// `msg.value` is refunded (`_validateEth`), and T1 native debt needs
+/// `msg.value == debtAmt_` exactly.
+contract MockFluidVault {
+    address constant NATIVE = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+    uint8 public vtype;
+    address public debt0; address public debt1; address public col0; address public col1;
+    uint256 public maxDebt; uint256 public colOut;
+    uint256 public debtRate0; uint256 public debtRate1; uint256 public colRate0; uint256 public colRate1;
+    bool public revertAll;
+
+    uint256 public lastDebtArg; uint256 public lastColPer; bool public lastAbsorb; address public lastTo;
+    uint256 public lastT0; uint256 public lastT1; uint256 public lastC0; uint256 public lastC1;
+    uint256 public lastValue; uint256 public lastPaid; uint256 public lastSharesMin;
+    uint256 private valueIn;
+
+    constructor(uint8 t) { vtype = t; }
+    receive() external payable {}
+
+    function setTokens(address d0, address d1, address c0, address c1) external { debt0 = d0; debt1 = d1; col0 = c0; col1 = c1; }
+    function setPosition(uint256 maxDebt_, uint256 colOut_) external { maxDebt = maxDebt_; colOut = colOut_; }
+    function setRates(uint256 d0, uint256 d1, uint256 c0, uint256 c1) external { debtRate0 = d0; debtRate1 = d1; colRate0 = c0; colRate1 = c1; }
+    function setRevert(bool v) external { revertAll = v; }
+
+    function liquidate(uint256 debtAmt_, uint256 colPerUnitDebt_, address to_, bool absorb_)
+        external payable returns (uint256, uint256)
+    {
+        require(vtype == 1, "fluid: not T1");
+        if (debt0 == NATIVE) require(msg.value == debtAmt_, "fluid: T1 msg.value");
+        else require(msg.value == 0, "fluid: T1 value");
+        (uint256 d, uint256 c) = _liquidate(debtAmt_, colPerUnitDebt_, to_, absorb_);
+        _payToken(debt0, d);
+        _send(col0, to_, c);
+        _refund();
+        return (d, c);
+    }
+
+    /// T2 `liquidate(debtAmt, colPerUnitDebt, token0ColPerShare, token1ColPerShare, to, absorb)`
+    /// and T3 `liquidate(token0DebtAmt, token1DebtAmt, debtSharesMin, colPerUnitDebt, to, absorb)`
+    /// share one selector; the vault's type decides, as on-chain.
+    function liquidate(uint256 a, uint256 b, uint256 c, uint256 d, address to_, bool absorb_)
+        external payable returns (uint256, uint256, uint256, uint256)
+    {
+        if (vtype == 2) {
+            (uint256 debtAmt, uint256 shares) = _liquidate(a, b, to_, absorb_);
+            _payToken(debt0, debtAmt);
+            (uint256 o0, uint256 o1) = _withdrawOne(shares, c, d, to_);
+            _refund();
+            return (debtAmt, shares, o0, o1);
+        }
+        require(vtype == 3, "fluid: not T2/T3");
+        uint256 sharesPaid = _paybackExact(a, b, c);
+        (uint256 dShares, uint256 col) = _liquidate(sharesPaid, d, to_, absorb_);
+        require(dShares >= sharesPaid, "fluid: shares above available");
+        _send(col0, to_, col);
+        _refund();
+        return (dShares, col, 0, 0);
+    }
+
+    function liquidate(
+        uint256 t0_, uint256 t1_, uint256 sharesMin_, uint256 colPerUnitDebt_, uint256 c0_, uint256 c1_, address to_, bool absorb_
+    ) external payable returns (uint256, uint256, uint256, uint256) {
+        require(vtype == 4, "fluid: not T4");
+        uint256 sharesPaid = _paybackExact(t0_, t1_, sharesMin_);
+        (uint256 dShares, uint256 colShares) = _liquidate(sharesPaid, colPerUnitDebt_, to_, absorb_);
+        require(dShares >= sharesPaid, "fluid: shares above available");
+        (uint256 o0, uint256 o1) = _withdrawOne(colShares, c0_, c1_, to_);
+        _refund();
+        return (dShares, colShares, o0, o1);
+    }
+
+    /// DEX `payback`: exactly the token amount given, in one token; the
+    /// shares that buys round down and must reach `sharesMin`.
+    function _paybackExact(uint256 t0_, uint256 t1_, uint256 sharesMin) internal returns (uint256 shares) {
+        require(!revertAll, "fluid: revert");
+        valueIn = msg.value;
+        lastT0 = t0_; lastT1 = t1_; lastSharesMin = sharesMin;
+        require((t0_ == 0) != (t1_ == 0), "fluid: one debt token");
+        bool one = t1_ != 0;
+        uint256 amt = one ? t1_ : t0_;
+        shares = amt * 1e18 / (one ? debtRate1 : debtRate0);
+        require(shares >= sharesMin, "fluid: shares below min");
+        _payToken(one ? debt1 : debt0, amt);
+    }
+
+    function _liquidate(uint256 debtArg, uint256 colPer, address to_, bool absorb_) internal returns (uint256 d, uint256 c) {
+        require(!revertAll, "fluid: revert");
+        require(maxDebt != 0, "fluid: healthy");
+        if (vtype == 1 || vtype == 2) valueIn = msg.value;
+        lastValue = msg.value;
+        lastDebtArg = debtArg; lastColPer = colPer; lastAbsorb = absorb_; lastTo = to_;
+        d = debtArg < maxDebt ? debtArg : maxDebt;
+        c = colOut * d / maxDebt;
+        require(c * 1e18 / d >= colPer, "fluid: slippage");
+        maxDebt -= d; colOut -= c;
+    }
+
+    function _payToken(address token, uint256 amt) internal {
+        lastPaid = amt;
+        if (token == NATIVE) {
+            require(valueIn >= amt, "fluid: value short");
+            valueIn -= amt;
+        } else {
+            Tok.pull(token, msg.sender, address(this), amt);
+        }
+    }
+
+    function _withdrawOne(uint256 shares, uint256 c0_, uint256 c1_, address to_) internal returns (uint256 o0, uint256 o1) {
+        lastC0 = c0_; lastC1 = c1_;
+        require((c0_ == 0) != (c1_ == 0), "fluid: one col token");
+        bool one = c1_ != 0;
+        uint256 out = shares * (one ? colRate1 : colRate0) / 1e18;
+        require(out >= shares * (one ? c1_ : c0_) / 1e18, "fluid: withdraw below min");
+        _send(one ? col1 : col0, to_, out);
+        if (one) o1 = out; else o0 = out;
+    }
+
+    function _send(address token, address to_, uint256 amt) internal {
+        if (token == NATIVE) {
+            (bool ok,) = to_.call{value: amt}("");
+            require(ok, "fluid: eth send");
+        } else {
+            Tok.push(token, to_, amt);
+        }
+    }
+
+    function _refund() internal {
+        if (valueIn != 0) {
+            uint256 v = valueIn;
+            valueIn = 0;
+            (bool ok,) = msg.sender.call{value: v}("");
+            require(ok, "fluid: refund");
+        }
+    }
+}
+
 /// The manager is the address that actually pulls. Gearbox's
 /// `CreditFacadeV3.addCollateral` forwards to `CreditManagerV3.addCollateral
 /// (payer, …)`, which runs `token.safeTransferFrom(payer, account, amount)`

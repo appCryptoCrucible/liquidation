@@ -147,6 +147,9 @@ where
         .ok_or(ProtocolError::UnknownMarket(pos.key.market))?
         .body()?;
     let extra: &UserExtra = pos.extra.view()?;
+    if extra.stable_slots != 0 {
+        return Err(ProtocolError::UntrackedDebt);
+    }
     for slot in pos.config.iter() {
         if slot == 0 {
             continue;

@@ -10,6 +10,9 @@ use crate::apply::{apply_block, ApplyCtx};
 use crate::source::{LogSource, OwnedBlock, Poll, RpcPoll, DEFAULT_PAGE_BLOCKS};
 use crate::{IngestError, Result};
 
+/// Blocks between replay progress lines.
+const REPORT_EVERY: BlockNum = 100_000;
+
 /// 02B implements this. 03A only invokes it after the pinned block is folded.
 pub trait SnapshotSink {
     fn persist(&mut self, store: &StateStore, at: BlockNum) -> Result<()>;
@@ -38,6 +41,7 @@ pub async fn backfill<P: Provider, S: SnapshotSink>(
     }
 
     let mut block = OwnedBlock::with_capacity(256);
+    let mut next_report = from.saturating_add(REPORT_EVERY);
     loop {
         match poll.fetch_page().await? {
             Poll::Exhausted => break,
@@ -54,6 +58,16 @@ pub async fn backfill<P: Provider, S: SnapshotSink>(
                     fold_replay_block(ctx, &block)?;
                 }
             }
+        }
+        let at = poll.cursor();
+        if at >= next_report {
+            tracing::info!(
+                block = at.min(to),
+                to,
+                positions = ctx.store.len(),
+                "state replay progress"
+            );
+            next_report = at.saturating_add(REPORT_EVERY);
         }
         if poll.cursor() > to {
             break;

@@ -1,6 +1,6 @@
 //! Bind 13A [`ExecPath`]: [`RiskGate`] as [`RiskAllow`], [`ShadowRecorder`]
-//! as the recorder. `submit_enabled` stays default false. Live HTTP also
-//! requires the lease atomics (resync ABSENT — 17A never stores true).
+//! as the recorder. Live HTTP needs `submit_enabled` and the lease atomics
+//! (held, and the chain-nonce resync `ExecPath::sync_nonce` stores).
 
 use std::path::Path;
 use std::str::FromStr;
@@ -498,6 +498,8 @@ mod tests {
             risk: liq_config::RiskConfig::default(),
             venues: liq_config::VenuesConfig::default(),
             submit_enabled: false,
+            backfill_from: 0,
+            snapshot_every_blocks: 100,
         }
     }
 

@@ -114,7 +114,9 @@ pub struct Reserve {
     pub emode_coll: EModeBits,
     pub emode_borrow: EModeBits,
     pub emode_ltv0: EModeBits,
-    pub _pad: [u8; 12],
+    /// `StableDebtToken` from `ReserveInitialized` (zero on 3.2+ pools).
+    pub s_token: [u8; 20],
+    pub _pad: [u8; 8],
 }
 
 impl Reserve {
@@ -132,7 +134,11 @@ impl Reserve {
 #[repr(C)]
 pub struct UserExtra {
     pub emode: u8,
-    pub _pad: [u8; 15],
+    pub _pad: [u8; 7],
+    /// Reserve slots on which the account holds stable debt, which this
+    /// adapter does not model (bit 63 also stands for every slot >= 63).
+    /// Nonzero: the account is not quoted.
+    pub stable_slots: u64,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Pod, Zeroable)]
@@ -156,7 +162,7 @@ pub const UNMAPPED_ASSET: AssetId = AssetId(u16::MAX);
 const _: () = {
     assert!(core::mem::size_of::<EModeCat>() == 8);
     assert!(core::mem::size_of::<PoolMeta>() <= 240);
-    assert!(core::mem::size_of::<Reserve>() == 176);
+    assert!(core::mem::size_of::<Reserve>() == 192);
     assert!(core::mem::size_of::<UserExtra>() == 16);
     assert!(core::mem::size_of::<UserReserve>() == 16);
     assert!(core::mem::align_of::<Reserve>() == 16);

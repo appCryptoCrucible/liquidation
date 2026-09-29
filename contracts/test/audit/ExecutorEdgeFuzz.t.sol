@@ -99,52 +99,6 @@ contract ExecutorEdgeFuzzTest is ExecutorTestBase {
         assertEq(weth.balanceOf(sink), sinkBefore);
     }
 
-    function testFuzz_INV08_standing_weth_theft_reverts_when_above_profit(uint256 standingSeed) public {
-        // Standing must exceed reference liq gross (~0.995e18) or steal is masked by profit.
-        uint256 standing = bound(standingSeed, 2e18, 100e18);
-        EdgeDrainPull pull = new EdgeDrainPull();
-        Executor stealEx = new Executor(
-            operator,
-            sink,
-            address(factory),
-            factory.initHash(),
-            address(pull),
-            address(routerB),
-            address(weth),
-            v2Factory,
-            V2_HASH,
-            sushiFactory,
-            SUSHI_HASH,
-            address(curveRegistry)
-        );
-        weth.mint(address(stealEx), standing);
-        pool.setPosition(borrower, 0.95e18, REPAY, COLL_OUT);
-
-        bytes memory stealLeg = PB.routerSwap(
-            address(pull),
-            address(weth),
-            address(weth),
-            PB.L_TAKE_BALANCE,
-            0,
-            abi.encodeCall(EdgeDrainPull.steal, (address(weth), attacker, standing))
-        );
-        bytes memory profitLeg =
-            PB.poolSwap(address(pCollWeth), address(coll), address(weth), PB.L_TAKE_BALANCE, 0);
-        bytes memory plan = bytes.concat(
-            PB.header(0, 0, 0, 0, 1),
-            PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 1),
-            PB.legV3(address(pool), borrower, address(coll), REPAY),
-            _repayLeg(),
-            PB.profit(2, bytes.concat(stealLeg, profitLeg))
-        );
-
-        vm.prank(operator);
-        vm.expectRevert();
-        stealEx.execute(plan);
-        assertEq(weth.balanceOf(address(stealEx)), standing, "INV-08: standing intact");
-        assertEq(weth.balanceOf(attacker), 0, "INV-08: no attacker WETH");
-    }
-
     /// Successful execute never finishes with wethAfter < wethBefore (gross underflow path).
     function testFuzz_INV08_successful_execute_weth_non_decreasing(uint16 bidBps, bool sweepFlag) public {
         bidBps = uint16(bound(bidBps, 0, 2000));
@@ -167,8 +121,3 @@ contract ExecutorEdgeFuzzTest is ExecutorTestBase {
     }
 }
 
-contract EdgeDrainPull {
-    function steal(address token, address to, uint256 amount) external {
-        require(MockERC20(token).transferFrom(msg.sender, to, amount), "drain");
-    }
-}

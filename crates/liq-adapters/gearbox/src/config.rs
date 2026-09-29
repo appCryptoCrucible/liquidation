@@ -815,6 +815,14 @@ fn pull_feeds_of<R: RegistryRpc>(
     (pull, leaves)
 }
 
+/// Deepest level the walk descends to (`tools/gearbox/pull_feeds.py`).
+const PULL_WALK_DEPTH: u8 = 5;
+
+/// Collect the pull leaves under `feed`. Every node is either descended into
+/// (it has children and is above the limit) or checked itself — the node at
+/// the limit included, as `pull_feeds.py::pull_leaves` does. A node at the
+/// limit that still has children is counted as pull: its tree was not seen,
+/// and an unseen leaf must refuse the token, not pass it as Chainlink.
 fn collect_pull<R: RegistryRpc>(
     provider: &R,
     feed: Address,
@@ -822,9 +830,6 @@ fn collect_pull<R: RegistryRpc>(
     block: BlockNum,
     out: &mut Vec<Address>,
 ) {
-    if depth >= 5 {
-        return;
-    }
     let mut kids = Vec::new();
     for data in [
         IUpdatablePriceFeed::priceFeed0Call {}.abi_encode(),
@@ -838,11 +843,16 @@ fn collect_pull<R: RegistryRpc>(
             }
         }
     }
-    if !kids.is_empty() && depth < 5 {
+    if !kids.is_empty() && depth < PULL_WALK_DEPTH {
         let next = depth.saturating_add(1);
         for child in kids {
             collect_pull(provider, child, next, block, out);
         }
+        return;
+    }
+    if !kids.is_empty() {
+        tracing::warn!(feed = %feed, "price-feed tree deeper than the walk — token treated as pull");
+        out.push(feed);
         return;
     }
     if is_pull_leaf(provider, feed, block) {
@@ -1053,6 +1063,57 @@ mod pull_walk {
         let (plain, none) = pull_feeds_of(&rpc, oracle, usdc, 1);
         assert!(!plain);
         assert!(none.is_empty());
+    }
+
+    /// A chain of `levels` composites (each `priceFeed0` is the next) ending
+    /// in a leaf of type `leaf_type`, as the oracle's feed for `token`.
+    fn chain(levels: u8, leaf_type: &str, token: Address, oracle: Address) -> (Answers, Address) {
+        let node = |i: u8| Address::repeat_byte(0xc0_u8.saturating_add(i));
+        let mut answers = HashMap::new();
+        answers.insert(
+            (
+                oracle,
+                IPriceOracleV3::priceFeedsCall { token }.abi_encode(),
+            ),
+            addr_word(node(0)),
+        );
+        for i in 0..levels {
+            answers.insert(
+                (node(i), IUpdatablePriceFeed::priceFeed0Call {}.abi_encode()),
+                addr_word(node(i.saturating_add(1))),
+            );
+        }
+        answers.insert(
+            (
+                node(levels),
+                IUpdatablePriceFeed::contractTypeCall {}.abi_encode(),
+            ),
+            type_word(leaf_type),
+        );
+        (Answers(answers), node(levels))
+    }
+
+    /// The leaf at the depth limit is checked (it was skipped before), a
+    /// Chainlink leaf there stays plain, and a tree deeper than the limit
+    /// fails closed as pull.
+    #[test]
+    fn leaf_at_the_depth_limit_is_checked_and_deeper_fails_closed() {
+        let (oracle, t) = (Address::repeat_byte(0xa1), Address::repeat_byte(0xb1));
+        let (rpc, leaf) = chain(5, "PRICE_FEED::REDSTONE", t, oracle);
+        let (pull, feeds) = pull_feeds_of(&rpc, oracle, t, 1);
+        assert!(pull, "Redstone at depth 5 is pull");
+        assert_eq!(feeds, vec![leaf]);
+
+        let (rpc, _) = chain(5, "PRICE_FEED::CHAINLINK", t, oracle);
+        assert!(
+            !pull_feeds_of(&rpc, oracle, t, 1).0,
+            "Chainlink at depth 5 is plain"
+        );
+
+        let (rpc, _) = chain(6, "PRICE_FEED::CHAINLINK", t, oracle);
+        let (pull, feeds) = pull_feeds_of(&rpc, oracle, t, 1);
+        assert!(pull, "an unseen deeper tree is not passed as Chainlink");
+        assert_eq!(feeds, vec![Address::repeat_byte(0xc5)]);
     }
 
     #[test]

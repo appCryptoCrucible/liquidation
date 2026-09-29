@@ -11,8 +11,9 @@ use liq_bot::shared::PROD_ALLOW_UNPINNED;
 use liq_bot::startup;
 use liq_node::{ExExForwarder, FinishedUpTo, HotHandle, Notification};
 use liq_reth::convert::{committed_tip, owned_chain, reverted_span};
+use alloy_eips::BlockNumHash;
 use reth_ethereum::{
-    exex::{ExExContext, ExExEvent, ExExNotification},
+    exex::{ExExContext, ExExEvent, ExExHead, ExExNotification},
     node::api::{FullNodeComponents, NodeTypes},
     EthPrimitives,
 };
@@ -29,13 +30,34 @@ where
     let config_dir = root.join("config");
     let url = rpc_url(&config_dir)?;
     wait_for_rpc(&url).await?;
+    let state = state_paths(&root)?;
+    // First start: build the state from the node's receipts before anything
+    // folds, plans or sends. Nothing else of the bot runs meanwhile.
+    if !liq_bot::state_build::head_path(&state).exists() {
+        tracing::info!("no state snapshot — building it from the node's receipts first");
+        liq_bot::state_build::build_first_snapshot(&config_dir, &state)
+            .await
+            .map_err(|e| eyre!("state build: {e}"))?;
+    }
     let started = startup::run(
         &config_dir,
         &config_dir.join("cores.toml"),
-        &state_paths(&root)?,
+        &state,
         PROD_ALLOW_UNPINNED,
     )
     .await?;
+    // Resume from the snapshot: Reth re-executes every block after it and
+    // delivers those before live ones (`ExExNotificationsWithHead`).
+    ctx.catch_up_notifications_with_head(ExExHead::new(BlockNumHash::new(
+        started.head.number,
+        started.head.hash,
+    )))?;
+    tracing::info!(
+        block = started.head.number,
+        "ExEx resumes after the snapshot block; sending waits until the store reaches the node's head"
+    );
+    let head_rpc = liq_config::rpc::HttpRpc::connect(&url)?;
+    let mut caught_up = false;
     let flag_file = config_dir.join("node.toml");
     // Detaching would keep the threads, but holding the handles ties them to
     // this future: they die with the ExEx instead of outliving a failed start.
@@ -105,6 +127,20 @@ where
             {
                 tracing::error!("ExEx event channel closed");
                 break;
+            }
+            if !caught_up {
+                match liq_config::rpc::ChainRpc::block_number(&head_rpc).await {
+                    Ok(node_head) if reth_tip.number >= node_head => {
+                        caught_up = true;
+                        started.shared.lease.grant();
+                        tracing::info!(
+                            block = reth_tip.number,
+                            "store caught up with the node's head — lease granted"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "node head unavailable — lease stays off"),
+                }
             }
         }
     }

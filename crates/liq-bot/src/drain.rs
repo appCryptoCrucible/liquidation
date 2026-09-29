@@ -135,6 +135,16 @@ pub struct DrainJoin {
     price_reader: Option<Arc<crate::protocol_prices::ReaderShared>>,
     /// Block the read set was last rebuilt (`0` = never).
     reads_at: u64,
+    /// Protocol state read from chain each block (Fluid vaults). `None`
+    /// when the reader was not started.
+    state_reader: Option<Arc<crate::state_reads::StateReaderShared>>,
+    /// Block the state read set was last rebuilt (`0` = never).
+    state_reads_at: u64,
+    /// Block of the last state batch folded into the store.
+    state_applied: u64,
+    /// Periodic snapshots of the store (the restart point). `None` in tests
+    /// and when the writer could not start.
+    snapshots: Option<crate::state_build::SnapshotWriter>,
     /// MEV-Share hints. Popped on the hot thread. `None` when the reader
     /// was not started.
     svr_rx: Option<rtrb::Consumer<liq_types::MevShareHint>>,
@@ -477,6 +487,10 @@ impl DrainJoin {
             protocol_moves: Vec::new(),
             price_reader: None,
             reads_at: 0,
+            state_reader: None,
+            state_reads_at: 0,
+            state_applied: 0,
+            snapshots: None,
             svr_rx: None,
             svr_targets: Vec::new(),
             gov_rx: None,
@@ -522,6 +536,118 @@ impl DrainJoin {
         self
     }
 
+    /// Protocol state read from chain each block (the thread behind
+    /// `shared`), folded into the store by [`AfterBlock::amend`].
+    #[must_use]
+    pub fn with_state_reader(mut self, shared: Arc<crate::state_reads::StateReaderShared>) -> Self {
+        self.state_reader = Some(shared);
+        self
+    }
+
+    /// Persist the store every so many blocks (see [`crate::state_build`]).
+    #[must_use]
+    pub fn with_snapshots(mut self, writer: crate::state_build::SnapshotWriter) -> Self {
+        self.snapshots = Some(writer);
+        self
+    }
+
+    /// Rebuild the state reader's read set when due.
+    fn refresh_state_reads(&mut self, block: u64, view: StateView<'_>) {
+        let Some(shared) = self.state_reader.as_ref() else {
+            return;
+        };
+        if self.state_reads_at == 0
+            || block.saturating_sub(self.state_reads_at)
+                >= crate::protocol_prices::READS_REFRESH_BLOCKS
+        {
+            let reads = crate::state_reads::collect_state_reads(self.protocols, view);
+            tracing::info!(reads = reads.len(), block, "protocol state reads rebuilt");
+            shared.reads.store(Arc::new(reads));
+            self.state_reads_at = block.max(1);
+        }
+    }
+
+    /// Fold the newest state batch into the store while its block is still
+    /// the tip (the writes join that block's undo record), then refold what
+    /// it changed and plan what became liquidatable.
+    fn fold_state(
+        &mut self,
+        store: &mut liq_state::StateStore,
+        dirty: &mut liq_node::DirtyAccumulator,
+    ) {
+        let Some(shared) = self.state_reader.as_ref() else {
+            return;
+        };
+        let latest = shared.latest.load_full();
+        let Some(batch) = latest.as_ref().as_ref() else {
+            return;
+        };
+        if batch.block <= self.state_applied
+            || !self.block_seen
+            || batch.block != self.last_block
+            || batch.block != store.tip()
+        {
+            return;
+        }
+        self.state_applied = batch.block;
+        let ts = self.last_ts;
+        dirty.clear();
+        for (i, p) in self.protocols.iter().enumerate() {
+            let answers = batch.answers_for(i);
+            if answers.is_empty() {
+                continue;
+            }
+            match p.as_dyn().apply_state_reads(store, ts, &answers) {
+                Ok(set) => dirty.merge(set),
+                Err(e) => {
+                    tracing::error!(error = %e, protocol = p.id().0, block = batch.block, "state reads refused")
+                }
+            }
+        }
+        let collapsed = match dirty.collapse(store, ts) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = %e, "state-read dirty collapse failed");
+                return;
+            }
+        };
+        let sets: Vec<DirtySet> = as_dirty_sets(collapsed).collect();
+        if sets.iter().all(|s| matches!(s, DirtySet::None)) {
+            return;
+        }
+        let tip = store.tip();
+        let store: &liq_state::StateStore = store;
+        {
+            let proto_refs: Vec<&dyn Protocol> =
+                self.protocols.iter().map(|p| p.as_dyn()).collect();
+            let flash = self.flash.load();
+            let world = World {
+                view: store.view(ts),
+                protocols: &proto_refs,
+                flash: flash.as_ref(),
+                routes: &self.routes,
+                haircut: self.world_haircut(),
+                overlay: Some(&self.protocol_prices),
+            };
+            for set in &sets {
+                let Some(cause) = cause_for(set) else {
+                    continue;
+                };
+                for p in &proto_refs {
+                    if let Err(e) = self.engine.on_dirty(&world, p.id(), set, &cause) {
+                        tracing::error!(error = %e, protocol = p.id().0, "on_dirty (state reads) failed");
+                    }
+                }
+            }
+        }
+        let cands: Vec<Candidate> = self.engine.candidates().collect();
+        if cands.is_empty() {
+            return;
+        }
+        let view = store.view(ts);
+        let _ = self.enqueue_candidates(&cands, tip, ts, Some(&view));
+    }
+
     /// Protocol prices currently applied (tests / diagnostics).
     #[must_use]
     pub fn protocol_price_book(&self) -> &crate::protocol_prices::ProtocolPriceBook {
@@ -547,7 +673,26 @@ impl DrainJoin {
         let Some(batch) = latest.as_ref().as_ref() else {
             return false;
         };
-        self.protocol_prices.apply(batch, &mut self.protocol_moves)
+        if batch.block <= self.protocol_prices.applied() {
+            return false;
+        }
+        // Ratio reads (Morpho) restated in USD by the numeraire's own
+        // price, as sizing prices it: canonical first, then a USD getter.
+        let entries = {
+            let canon = self.engine.prices();
+            let book = &self.protocol_prices;
+            crate::protocol_prices::to_usd(&batch.entries, |a| {
+                let c = canon.0.get(usize::from(a.0))?;
+                sizing_ray(c, book.usd(a))
+            })
+        };
+        let restated = crate::protocol_prices::PriceBatch {
+            block: batch.block,
+            entries,
+            failed: batch.failed,
+        };
+        self.protocol_prices
+            .apply(&restated, &mut self.protocol_moves)
     }
 
     /// Size the engine's per-position tables for the real universe so the
@@ -804,6 +949,7 @@ impl DrainJoin {
     }
 
     fn feed_engine(&mut self, ctx: AfterBlockCtx<'_>) {
+        self.refresh_state_reads(ctx.block, ctx.store.view(ctx.timestamp));
         let first_protocol_prices =
             self.take_protocol_prices(ctx.block, ctx.store.view(ctx.timestamp));
         // The overlay needs a vector to lay onto even before any canonical
@@ -1619,6 +1765,15 @@ impl AfterBlock for DrainJoin {
         let tip = ctx.store.tip();
         let ts = ctx.timestamp;
         let store = ctx.store;
+        if let Some(w) = self.snapshots.as_mut() {
+            w.after_block(
+                store,
+                crate::state_build::SnapshotHead {
+                    number: ctx.block,
+                    hash: ctx.hash,
+                },
+            );
+        }
         self.feed_engine(ctx);
         let cands: Vec<Candidate> = self.engine.candidates().collect();
         if cands.is_empty() {
@@ -1631,6 +1786,10 @@ impl AfterBlock for DrainJoin {
     fn poll(&mut self, store: &liq_state::StateStore) {
         self.poll_svr(store);
         self.poll_gov(store);
+    }
+
+    fn amend(&mut self, store: &mut liq_state::StateStore, dirty: &mut liq_node::DirtyAccumulator) {
+        self.fold_state(store, dirty);
     }
 }
 
@@ -2214,8 +2373,8 @@ mod tests {
             euler_min_yield: None,
             euler_collateral_vault: None,
             liquity_trove_id: None,
-            fluid_t1: None,
-            fluid_col_per_unit_debt: None,
+            fluid: None,
+            fluid_tail: None,
             gearbox_min_seized: None,
             gearbox_full: false,
             compound_ctoken_collateral: None,
@@ -2853,6 +3012,7 @@ mod tests {
             store,
             dirty,
             block: 1,
+            hash: alloy_primitives::B256::ZERO,
             timestamp: 1,
             gas_limit,
             gas_used,
@@ -3025,6 +3185,7 @@ mod tests {
             &PriceBatch {
                 block: 1,
                 entries: vec![QuotedPrice {
+                    scale: None,
                     protocol: liq_types::ProtocolId(1),
                     market: liq_types::MarketId(1),
                     asset: AssetId(1),

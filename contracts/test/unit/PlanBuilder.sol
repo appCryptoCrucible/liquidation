@@ -71,10 +71,21 @@ library PlanBuilder {
         return abi.encodePacked(A_LIQUITY, tm, borrower, coll, repay, troveId);
     }
 
+    uint8 internal constant FL_DEBT1 = 1; uint8 internal constant FL_COL1 = 2; uint8 internal constant FL_ABSORB = 4;
+    uint8 internal constant FL_NATIVE_DEBT = 8; uint8 internal constant FL_NATIVE_COL = 16;
+
     function legFluid(address vault, address borrower, address coll, uint128 repay, uint256 colPer)
         internal pure returns (bytes memory)
     {
-        return abi.encodePacked(A_FLUID, vault, borrower, coll, repay, colPer);
+        return legFluidT(vault, borrower, coll, repay, 1, FL_ABSORB, colPer, 0, 0);
+    }
+
+    /// Tail: u8 type | u8 flags | colPerUnitDebt | debtPerShareMax | colPerShareMin.
+    function legFluidT(
+        address vault, address borrower, address coll, uint128 repay,
+        uint8 vtype, uint8 flags, uint256 colPer, uint256 debtPerShare, uint256 colPerShare
+    ) internal pure returns (bytes memory) {
+        return abi.encodePacked(A_FLUID, vault, borrower, coll, repay, vtype, flags, colPer, debtPerShare, colPerShare);
     }
 
     uint8 internal constant GB_PARTIAL = 0; uint8 internal constant GB_FULL = 1;

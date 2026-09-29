@@ -2,11 +2,11 @@
 pragma solidity 0.8.28;
 
 import {SafeTransfer} from "./lib/SafeTransfer.sol";
-import {Plan, FlashGroup, LiqLeg, SwapLeg, PlanDecoder} from "./lib/PlanDecoder.sol";
+import {Plan, FlashGroup, LiqLeg, SwapLeg, FluidTail, PlanDecoder} from "./lib/PlanDecoder.sol";
 import {
     IERC20, IWETH, IAavePool, IAaveV4Spoke, IMorpho, MarketParams,
     IUniV3Pool, IUniV2Pair, ICurvePool, ICurveMetaRegistry, IPoolManager, IDssFlash,
-    IEVault, IEVC, ISiloHook, ITroveManager, IFluidT1, ICreditFacadeV3, ICreditFacadeV3Multicall, MultiCall, PriceUpdate,
+    IEVault, IEVC, ISiloHook, ITroveManager, IFluidT1, IFluidT2, IFluidT3, IFluidT4, ICreditFacadeV3, ICreditFacadeV3Multicall, MultiCall, PriceUpdate,
     ICToken, IComptroller, ICErc20, ICEther, IPayloadsController, IDssSpell, IDSPause
 } from "./lib/Interfaces.sol";
 import {MainnetVenues} from "./lib/MainnetVenues.sol";
@@ -894,24 +894,107 @@ contract Executor {
         }
     }
 
-    /// Fluid T1 `liquidate(debtAmt_, colPerUnitDebt_, to_, absorb_)` pin
-    /// `9496626f`. Tail is **1e18** min coll/debt (slip check); passed
-    /// through with no conversion. `to_` = this Executor. `absorb_ = true`
-    /// (quote includes absorbed). T2/T3/T4 must not reach this path. No HF
-    /// view — the call is the guard (Morpho-style).
+    /// Fluid vault liquidation, pin `9496626f`. `market` = the vault;
+    /// `repayAmount` = the debt token we pay, exactly (WETH when the vault's
+    /// debt is native ETH); `collateralAsset` = the one collateral token we
+    /// take (WETH when native). The tail names the vault type — four ABIs —
+    /// and the one-token choice on each smart side. No HF view: the call is
+    /// the guard. Its floors: `colPerUnitDebt` (collateral per unit of debt,
+    /// the vault's own check), and on smart sides `debtSharesMin` (shares the
+    /// repay must burn) and the per-share withdraw minimum.
+    /// Native ETH: WETH is unwrapped for `msg.value`; every wei that comes
+    /// back — the vault's refund and native collateral — is wrapped again.
     function _liquidateFluid(address debtAsset, LiqLeg memory l, bytes calldata plan)
         internal returns (bool ok)
     {
-        uint256 colPer = plan.tailU256(l.tailOffset);
-        debtAsset.safeApprove(l.market, l.repayAmount);
-        try IFluidT1(l.market).liquidate(l.repayAmount, colPer, address(this), true)
-            returns (uint256, uint256)
-        {
-            ok = true;
-        } catch (bytes memory r) {
-            emit LegFailed(PlanDecoder.A_FLUID, l.market, l.borrower, ST_LIQUIDATE, _clip(r));
+        FluidTail memory t = plan.tailFluid(l.tailOffset);
+        if (t.vaultType < 1 || t.vaultType > 4) {
+            emit LegFailed(PlanDecoder.A_FLUID, l.market, l.borrower, ST_SIZING, "");
+            return false;
         }
-        debtAsset.safeApprove(l.market, 0);
+        uint256 pay = l.repayAmount;
+        uint256 ethBefore = address(this).balance;
+        uint256 value;
+        if (t.flags & PlanDecoder.FLUID_NATIVE_DEBT != 0) {
+            try IWETH(WETH).withdraw(pay) {} catch (bytes memory r) {
+                emit LegFailed(PlanDecoder.A_FLUID, l.market, l.borrower, ST_SIZING, _clip(r));
+                return false;
+            }
+            value = pay;
+        } else {
+            debtAsset.safeApprove(l.market, pay);
+        }
+
+        ok = _callFluid(t, l, pay, value);
+
+        if (value == 0) debtAsset.safeApprove(l.market, 0);
+        uint256 ethNow = address(this).balance;
+        if (ethNow > ethBefore) IWETH(WETH).deposit{value: ethNow - ethBefore}();
+    }
+
+    /// One typed call per vault type (typed so a codeless `market` reverts
+    /// instead of "succeeding"). A smart side uses one token: the other
+    /// token's amount or per-share figure is zero.
+    function _callFluid(FluidTail memory t, LiqLeg memory l, uint256 pay, uint256 value)
+        internal returns (bool)
+    {
+        bool absorb = t.flags & PlanDecoder.FLUID_ABSORB != 0;
+        bool debt1 = t.flags & PlanDecoder.FLUID_DEBT_TOKEN1 != 0;
+        bool col1 = t.flags & PlanDecoder.FLUID_COL_TOKEN1 != 0;
+        uint256 sharesMin = (pay * t.debtSharesMinPerToken) / 1e18;
+        bytes memory r;
+        if (t.vaultType == 1) {
+            try IFluidT1(l.market).liquidate{value: value}(pay, t.colPerUnitDebt, address(this), absorb)
+                returns (uint256, uint256)
+            {
+                return true;
+            } catch (bytes memory e) {
+                r = e;
+            }
+        } else if (t.vaultType == 2) {
+            try IFluidT2(l.market).liquidate{value: value}(
+                pay,
+                t.colPerUnitDebt,
+                col1 ? 0 : t.colPerShareMin,
+                col1 ? t.colPerShareMin : 0,
+                address(this),
+                absorb
+            ) returns (uint256, uint256, uint256, uint256) {
+                return true;
+            } catch (bytes memory e) {
+                r = e;
+            }
+        } else if (t.vaultType == 3) {
+            try IFluidT3(l.market).liquidate{value: value}(
+                debt1 ? 0 : pay,
+                debt1 ? pay : 0,
+                sharesMin,
+                t.colPerUnitDebt,
+                address(this),
+                absorb
+            ) returns (uint256, uint256) {
+                return true;
+            } catch (bytes memory e) {
+                r = e;
+            }
+        } else {
+            try IFluidT4(l.market).liquidate{value: value}(
+                debt1 ? 0 : pay,
+                debt1 ? pay : 0,
+                sharesMin,
+                t.colPerUnitDebt,
+                col1 ? 0 : t.colPerShareMin,
+                col1 ? t.colPerShareMin : 0,
+                address(this),
+                absorb
+            ) returns (uint256, uint256, uint256, uint256) {
+                return true;
+            } catch (bytes memory e) {
+                r = e;
+            }
+        }
+        emit LegFailed(PlanDecoder.A_FLUID, l.market, l.borrower, ST_LIQUIDATE, _clip(r));
+        return false;
     }
 
     /// Gearbox V3 (`market` = facade, `borrower` = credit account,

@@ -114,7 +114,7 @@ impl BoundProtocol {
             Self::EulerV2(p) => pins_euler(p.config(), c),
             Self::SiloV2(p) => pins_silo(p.config(), c),
             Self::LiquityV2(p) => pins_liquity(p.config(), c, view),
-            Self::Fluid(p) => pins_fluid(p.config(), c),
+            Self::Fluid(p) => pins_fluid(p.config(), c, view),
             Self::Gearbox(p) => pins_gearbox(p.config(), c),
             Self::CompoundV2(p) => pins_compound(p.config(), c),
         }
@@ -372,7 +372,7 @@ pub fn load_protocols(
     push_euler(&proto_dir, intern, &mut out);
     push_silo(&proto_dir, &mut out);
     push_liquity(&proto_dir, live, &mut out);
-    push_fluid(&proto_dir, live, &mut out);
+    push_fluid(&proto_dir, intern, live, &mut out);
     push_gearbox(&proto_dir, intern, live, &mut out);
     push_compound(&proto_dir, intern, live, &mut out);
     if out.protocols.is_empty() {
@@ -621,6 +621,7 @@ fn spark_to_config(t: &AaveV3Toml) -> Result<liq_adapters_aave_v3::Config, Strin
                 configurator: p.configurator,
                 sentinel: p.sentinel,
                 sequencer_oracle: p.sequencer_oracle,
+                tokens: p.tokens.clone(),
             })
             .collect(),
         assets: t
@@ -786,7 +787,7 @@ struct SiloAssetToml {
     decimals: u8,
 }
 
-fn push_liquity(dir: &Path, live: Option<(&LiveRpc, BlockNum)>, out: &mut ProtocolLoad) {
+pub(crate) fn push_liquity(dir: &Path, live: Option<(&LiveRpc, BlockNum)>, out: &mut ProtocolLoad) {
     let Some(raw) = read_toml(dir, "liquity-v2.toml") else {
         omit(out, "liquity-v2", "toml absent");
         return;
@@ -818,7 +819,12 @@ fn push_liquity(dir: &Path, live: Option<(&LiveRpc, BlockNum)>, out: &mut Protoc
     }
 }
 
-fn push_fluid(dir: &Path, live: Option<(&LiveRpc, BlockNum)>, out: &mut ProtocolLoad) {
+pub(crate) fn push_fluid(
+    dir: &Path,
+    intern: &Intern,
+    live: Option<(&LiveRpc, BlockNum)>,
+    out: &mut ProtocolLoad,
+) {
     let Some(raw) = read_toml(dir, "fluid.toml") else {
         omit(out, "fluid", "toml absent");
         return;
@@ -834,7 +840,7 @@ fn push_fluid(dir: &Path, live: Option<(&LiveRpc, BlockNum)>, out: &mut Protocol
         omit(out, "fluid", "no live RPC at bind time");
         return;
     };
-    if let Err(e) = cfg.assert_live_factory(rpc, block) {
+    if let Err(e) = cfg.bind_live(rpc, block, &|a| intern.asset(a)) {
         omit(out, "fluid", e);
         return;
     }
@@ -844,7 +850,7 @@ fn push_fluid(dir: &Path, live: Option<(&LiveRpc, BlockNum)>, out: &mut Protocol
     }
 }
 
-fn push_gearbox(
+pub(crate) fn push_gearbox(
     dir: &Path,
     intern: &Intern,
     live: Option<(&LiveRpc, BlockNum)>,
@@ -1281,22 +1287,81 @@ fn pins_liquity(
     pins
 }
 
-fn pins_fluid(cfg: &liq_adapters_fluid::Config, c: &Candidate) -> Option<TailPins> {
-    let vault = cfg.vault_pins.iter().find(|p| {
-        liq_adapters_fluid::CATALOG_MARKET
-            .0
-            .saturating_add(p.vault_id)
-            == c.quote.key.market.0
-    })?;
-    let fluid_t1 = Some(vault.vault_type == liq_adapters_fluid::VAULT_T1);
-    let pins = pins_fluid_required(vault.vault, c.quote.key.user, fluid_t1);
-    if pins.is_none() {
-        tracing::error!(
-            pos = c.position.0,
-            "fluid vault/borrower refused or T2-T4 unwired — skip (no zero tail)"
-        );
+/// Fluid pins from the vault's row and position in `view`: the vault type,
+/// the one-token choice each quoted leg names (its store slot), native
+/// sides, the absorb choice, and the quoted liquidation in the vault's own
+/// units (shares on a smart side) — what the tail's floors are computed from.
+fn pins_fluid(
+    cfg: &liq_adapters_fluid::Config,
+    c: &Candidate,
+    view: Option<&StateView<'_>>,
+) -> Option<TailPins> {
+    use liq_adapters_fluid::{VaultExtra, VaultRow, NATIVE_TOKEN, VAULT_T1, VAULT_T2, VAULT_T3};
+    use liq_plan::{
+        FLUID_ABSORB, FLUID_COL_TOKEN1, FLUID_DEBT_TOKEN1, FLUID_NATIVE_COL, FLUID_NATIVE_DEBT,
+        FLUID_T1, FLUID_T2, FLUID_T3, FLUID_T4,
+    };
+    let pin = cfg.pin_by_market(c.quote.key.market)?;
+    if pin.vault != c.quote.key.user {
+        tracing::error!(pos = c.position.0, "fluid quote names another vault — skip");
+        return None;
     }
-    pins
+    let view = view?;
+    let rows = view.markets(c.quote.key.market).ok()?;
+    let body: &VaultRow = rows.first()?.body().ok()?;
+    let extra: VaultExtra = *view.position(c.position).ok()?.extra.view().ok()?;
+    let repay = c.quote.repay_options.get(usize::from(c.legs.repay))?;
+    let seize = c.quote.seize_options.get(usize::from(c.legs.seize))?;
+    let debt_slot = repay.slot.slot()?;
+    let col_slot = seize.slot.slot()?;
+    let n_col = u16::from(body.n_col);
+    let debt_i = debt_slot.checked_sub(n_col)?;
+    if col_slot >= n_col || debt_i >= u16::from(body.n_debt) {
+        return None;
+    }
+    let debt_token = if debt_i == 0 {
+        pin.borrow0
+    } else {
+        pin.borrow1
+    };
+    let col_token = if col_slot == 0 {
+        pin.supply0
+    } else {
+        pin.supply1
+    };
+    let kind = match pin.vault_type {
+        VAULT_T1 => FLUID_T1,
+        VAULT_T2 => FLUID_T2,
+        VAULT_T3 => FLUID_T3,
+        _ => FLUID_T4,
+    };
+    let mut flags = 0u8;
+    if debt_i == 1 {
+        flags |= FLUID_DEBT_TOKEN1;
+    }
+    if col_slot == 1 {
+        flags |= FLUID_COL_TOKEN1;
+    }
+    if extra.flags & VaultExtra::ABSORB != 0 {
+        flags |= FLUID_ABSORB;
+    }
+    if debt_token == NATIVE_TOKEN {
+        flags |= FLUID_NATIVE_DEBT;
+    }
+    if col_token == NATIVE_TOKEN {
+        flags |= FLUID_NATIVE_COL;
+    }
+    if extra.debt_units == 0 || extra.col_units == 0 {
+        return None;
+    }
+    let mut p = base_pins(ExecutorAdapter::Fluid, pin.vault, pin.vault);
+    p.fluid = Some(liq_router::FluidPins {
+        kind,
+        flags,
+        debt_units: U256::from(extra.debt_units),
+        col_units: U256::from(extra.col_units),
+    });
+    Some(p)
 }
 
 fn pins_gearbox(cfg: &liq_adapters_gearbox::Config, c: &Candidate) -> Option<TailPins> {
@@ -1345,8 +1410,8 @@ fn base_pins(adapter: ExecutorAdapter, market: Address, borrower: Address) -> Ta
         euler_min_yield: None,
         euler_collateral_vault: None,
         liquity_trove_id: None,
-        fluid_t1: None,
-        fluid_col_per_unit_debt: None,
+        fluid: None,
+        fluid_tail: None,
         gearbox_min_seized: None,
         gearbox_full: false,
         compound_ctoken_collateral: None,
@@ -1392,27 +1457,6 @@ pub fn pins_liquity_required(
     Some(p)
 }
 
-/// Fluid pin: missing `fluid_t1` → None. T2–T4 stay unpinned (`Some(false)`
-/// is not invented here).
-#[must_use]
-pub fn pins_fluid_required(
-    market: Address,
-    borrower: Address,
-    fluid_t1: Option<bool>,
-) -> Option<TailPins> {
-    let fluid_t1 = fluid_t1?;
-    if !fluid_t1 {
-        tracing::error!("fluid T2–T4 unwired — skip (no invented MultiCall/T2)");
-        return None;
-    }
-    if market.is_zero() || borrower.is_zero() {
-        return None;
-    }
-    let mut p = base_pins(ExecutorAdapter::Fluid, market, borrower);
-    p.fluid_t1 = Some(true);
-    Some(p)
-}
-
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -1436,6 +1480,62 @@ mod tests {
 
     /// The committed protocol tomls bind the adapters that need no live
     /// RPC. Before aave-v3/aave-v4/morpho-blue.toml existed, production
+    /// What production wires, read through the real loader from the
+    /// committed TOMLs: Spark runs SparkLend's half-up `rayMul` and its
+    /// per-reserve close factor and watches its stable debt tokens; Aave V3
+    /// runs 3.5 `TokenMath` and the position-wide cap. Both subscribe to
+    /// their aTokens' `BalanceTransfer`.
+    #[test]
+    fn spark_and_aave_v3_are_bound_with_their_own_models_and_tokens() {
+        use liq_adapters_aave_v3::{BalanceModel, CloseFactorScope};
+        let intern = Intern::from_registry(
+            &Registry::from_path(&root().join("registry/registry.json")).unwrap(),
+        )
+        .unwrap();
+        let out = load_protocols(&root().join("config"), &intern, None);
+        let spark_pool: alloy_primitives::Address = "0xc13e21b648a5ee794902342038ff3adab66be987"
+            .parse()
+            .unwrap();
+        let spark_dai_stable: alloy_primitives::Address =
+            "0xfe2b7a7f4cc0fb76f7fc1c6518d586f1e4559176"
+                .parse()
+                .unwrap();
+        let mut seen = (0, 0);
+        for p in &out.protocols {
+            let BoundProtocol::AaveV3(a) = p else {
+                continue;
+            };
+            let cfg = a.config();
+            if cfg.pools.iter().any(|pl| pl.address == spark_pool) {
+                seen.0 += 1;
+                assert_eq!(cfg.liquidation.balance_model, BalanceModel::WadRayHalfUp);
+                assert_eq!(
+                    cfg.liquidation.close_factor_scope,
+                    CloseFactorScope::ReserveDebt
+                );
+                assert!(cfg.pools[0].tokens.contains(&spark_dai_stable));
+                assert_eq!(cfg.pools[0].tokens.len(), 60);
+            } else {
+                seen.1 += 1;
+                assert_eq!(cfg.liquidation.balance_model, BalanceModel::TokenMath35);
+                assert_eq!(
+                    cfg.liquidation.close_factor_scope,
+                    CloseFactorScope::PositionBase
+                );
+                assert!(cfg.pools.iter().all(|pl| !pl.tokens.is_empty()));
+            }
+            use alloy_sol_types::SolEvent;
+            let transfer = liq_adapters_aave_v3::events::token::BalanceTransfer::SIGNATURE_HASH;
+            let subs = liq_types::LogSubscriber::subscriptions(a);
+            for pl in &cfg.pools {
+                for t in &pl.tokens {
+                    assert!(subs.iter().any(|f| f.address == *t && f.topic0 == transfer));
+                }
+            }
+        }
+        assert_eq!(seen, (1, 1), "one Spark instance, one Aave V3 instance");
+    }
+
     /// omitted all three ("toml absent").
     #[test]
     fn committed_tomls_bind_aave_and_morpho() {
@@ -1554,12 +1654,6 @@ mod tests {
         assert!(pins_compound_required(m, b, Some(Address::ZERO), Some(true)).is_none());
         assert!(pins_liquity_required(m, b, None).is_none());
         assert!(pins_liquity_required(m, b, Some(U256::ZERO)).is_none());
-        assert!(pins_fluid_required(m, b, None).is_none());
-        assert!(
-            pins_fluid_required(m, b, Some(false)).is_none(),
-            "T2–T4 must not assemble"
-        );
-        assert!(pins_fluid_required(m, b, Some(true)).is_some());
     }
 
     /// `pins_liquity` decodes `trove_id` with `U256::from_be_bytes`, matching
@@ -1759,5 +1853,85 @@ mod tests {
         assert!(!prod.contains("BidConfig::new"));
         assert!(!prod.contains("30_000_000") && !prod.contains("30000000"));
         assert!(!prod.contains("gas_failed: 50_000"));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod prune_filter {
+    use super::*;
+    use liq_config::{Intern, Registry};
+
+    /// Every address a bound adapter folds logs from must keep its receipts
+    /// on the pruned node, or the first-start state replay cannot see its
+    /// history. Binds everything as production does (live RPC for the
+    /// adapters that read chain at bind) and writes, under `tools/d15/`:
+    ///
+    /// * `subscribed_addresses.txt` — every subscribed address and its protocol;
+    /// * `receipts_log_filter.bot.toml` — the committed filter
+    ///   (`d15_receipts_log_filter.complete.toml`) plus each subscribed address
+    ///   it lacks, kept from genesis (`before = 0`).
+    ///
+    /// Run it right before provisioning the node: the reth `[prune]` config
+    /// takes the generated file.
+    #[test]
+    #[ignore = "needs MAINNET_RPC_URL; writes tools/d15"]
+    fn live_generate_the_prune_filter_from_the_adapters() {
+        let url = std::env::var("MAINNET_RPC_URL").unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let http = liq_config::rpc::HttpRpc::connect(&url).unwrap();
+        let block = rt
+            .block_on(liq_config::rpc::ChainRpc::block_number(&http))
+            .unwrap();
+        drop(rt);
+        let rpc = LiveRpc::new(http);
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let intern =
+            Intern::from_registry(&Registry::from_path(&root.join("registry/registry.json")).unwrap())
+                .unwrap();
+        let load = load_protocols(&root.join("config"), &intern, Some((&rpc, block)));
+        assert!(load.omitted.is_empty(), "omitted: {:?}", load.omitted);
+        let base = std::fs::read_to_string(root.join("tools/d15/d15_receipts_log_filter.complete.toml"))
+            .unwrap();
+        let lower = base.to_lowercase();
+        let mut subscribed: Vec<(Address, ProtocolId)> = Vec::new();
+        for p in &load.protocols {
+            for f in p.subscriptions() {
+                if !subscribed.iter().any(|(a, _)| *a == f.address) {
+                    subscribed.push((f.address, p.id()));
+                }
+            }
+        }
+        let missing: Vec<&(Address, ProtocolId)> = subscribed
+            .iter()
+            .filter(|(a, _)| !lower.contains(&format!("\"{a:#x}\"")))
+            .collect();
+        let list: String = subscribed
+            .iter()
+            .map(|(a, p)| format!("{a:#x} {}\n", p.0))
+            .collect();
+        std::fs::write(root.join("tools/d15/subscribed_addresses.txt"), list).unwrap();
+        let mut merged = format!(
+            "# receipts_log_filter for the pruned node, generated by\n\
+             # liq-bot bind::prune_filter::live_generate_the_prune_filter_from_the_adapters\n\
+             # at block {block}: the committed D15 filter plus every address a bound\n\
+             # adapter subscribes to ({} total, {} added), all kept from genesis.\n\n",
+            subscribed.len(),
+            missing.len()
+        );
+        merged.push_str(&base);
+        if !merged.ends_with('\n') {
+            merged.push('\n');
+        }
+        merged.push_str("\n# Added from the live adapter subscriptions.\n");
+        for (a, p) in &missing {
+            merged.push_str(&format!("\"{a:#x}\" = {{ before = 0 }}  # protocol {}\n", p.0));
+        }
+        std::fs::write(root.join("tools/d15/receipts_log_filter.bot.toml"), merged).unwrap();
+        eprintln!(
+            "block {block}: {} subscribed addresses, {} added to the filter",
+            subscribed.len(),
+            missing.len()
+        );
     }
 }

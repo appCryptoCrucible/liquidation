@@ -12,6 +12,11 @@ pub mod validate;
 
 pub use encode::{decode_batch, ensure_surplus_borrow_profit_legs};
 pub use error::{EncodeError, Result};
+/// Fluid tail kinds and flag bits (`PlanDecoder.sol` `FLUID_*`).
+pub use liq_wire::wire::{
+    FLUID_ABSORB, FLUID_COL_TOKEN1, FLUID_DEBT_TOKEN1, FLUID_FLAGS, FLUID_NATIVE_COL,
+    FLUID_NATIVE_DEBT, FLUID_T1, FLUID_T2, FLUID_T3, FLUID_T4,
+};
 pub use types::EncodedPlan;
 pub use types::{
     BatchPlan, CompoundMarketPin, FlashGroup, LiqLeg, LiquityTrovePin, MorphoMarketPin, SwapLeg,

@@ -26,6 +26,10 @@ pub struct AaveV3PoolToml {
     pub configurator: Address,
     pub sentinel: Address,
     pub sequencer_oracle: Address,
+    /// aTokens and, where the pool has them, stable debt tokens: the
+    /// token contracts whose logs the adapter reads.
+    #[serde(default)]
+    pub tokens: Vec<Address>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]

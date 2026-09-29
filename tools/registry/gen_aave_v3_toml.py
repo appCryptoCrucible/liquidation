@@ -117,6 +117,9 @@ def main() -> int:
         pools.append({
             "address": pool, "market": markets[key], "oracle": oracle, "provider": provider,
             "configurator": configurator, "sentinel": sentinel, "sequencer_oracle": sequencer,
+            # aTokens + variable debt tokens: the adapter reads aToken
+            # BalanceTransfer (collateral transfers and the liquidation fee).
+            "tokens": sorted(t.lower() for t in entry.get("receipt_tokens", [])),
         })
 
         raw = chain.multicall([(pool, sel("getReservesList()"))])[0]
@@ -162,7 +165,12 @@ def main() -> int:
     lines += ["", f"protocol = {protocols['aave-v3']}", f"pinned_through = {chain.block}", ""]
     for p in pools:
         lines += ["[[pools]]"] + [
-            f'{k} = "{v}"' if isinstance(v, str) else f"{k} = {v}" for k, v in p.items()
+            f'{k} = "{v}"' if isinstance(v, str)
+            else "tokens = [
+" + "".join(f'    "{t}",
+' for t in v) + "]" if k == "tokens"
+            else f"{k} = {v}"
+            for k, v in p.items()
         ] + [""]
     lines += [
         "[liquidation]",

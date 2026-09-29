@@ -75,7 +75,8 @@ pub fn oracle_price(
 /// `10^9` (`floor(p_coll · 10^36 / 10^27) = p_coll · 10^9`). The loan price
 /// is `ORACLE_PRICE_SCALE` (lifted when the loan has more decimals), so the
 /// reconstruction matches `IOracle.price()` to the wei. These are ratio
-/// prices, not USD: the book must not size from them.
+/// prices, not USD; the hot thread restates both in USD from the loan
+/// token's USD price (`protocol_prices::to_usd`) before the book sees them.
 pub fn prices_matching_oracle(
     price: U256,
     loan_decimals: u8,

@@ -30,6 +30,8 @@ pub struct AfterBlockCtx<'a> {
     pub store: &'a StateStore,
     pub dirty: &'a CollapsedDirty,
     pub block: BlockNum,
+    /// Hash of that block (the consistent tip Reth confirmed).
+    pub hash: alloy_primitives::B256,
     pub timestamp: Timestamp,
     /// Header `gasLimit` of the committed tip. `0` = absent.
     pub gas_limit: u64,
@@ -47,6 +49,15 @@ pub trait AfterBlock: Send {
     /// Non-blocking. Called every hot-thread spin, including when the ExEx
     /// ring is empty, so a private hint is applied before the next commit.
     fn poll(&mut self, _store: &StateStore) {}
+
+    /// Non-blocking. Called every spin before [`Self::poll`], with the store
+    /// writable: fold chain-read state for the tip block (the protocols'
+    /// [`liq_protocol::Protocol::apply_state_reads`]) into the store. The
+    /// tip block's undo record is still open — every write until the next
+    /// `begin_block` journals into it — so a reorg of the tip unwinds these
+    /// writes with its logs. `dirty` is this crate's buffer, free between
+    /// blocks.
+    fn amend(&mut self, _store: &mut StateStore, _dirty: &mut DirtyAccumulator) {}
 }
 
 /// One drain of the ExEx ring. Arena and dirty buffers are reused.
@@ -92,6 +103,7 @@ pub fn drain(
                         store: ctx.store,
                         dirty: ctx.dirty.collapsed(),
                         block: done.num_hash.number,
+                        hash: done.num_hash.hash,
                         timestamp: ts,
                         gas_limit,
                         gas_used,
@@ -231,6 +243,7 @@ pub fn spawn(cfg: HotSpawn) -> Result<HotHandle> {
                     )?;
                 }
                 if let Some(hook) = after_block.as_mut() {
+                    hook.amend(&mut store, &mut dirty);
                     hook.poll(&store);
                 }
                 std::hint::spin_loop();

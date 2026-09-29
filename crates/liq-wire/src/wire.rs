@@ -115,6 +115,28 @@ pub struct GroupHead {
     pub next: usize,
 }
 
+/// Fluid tail `kind`: normal collateral and debt.
+pub const FLUID_T1: u8 = 1;
+/// Fluid tail `kind`: smart collateral (DEX col shares), normal debt.
+pub const FLUID_T2: u8 = 2;
+/// Fluid tail `kind`: normal collateral, smart debt (DEX debt shares).
+pub const FLUID_T3: u8 = 3;
+/// Fluid tail `kind`: smart collateral and smart debt.
+pub const FLUID_T4: u8 = 4;
+/// Fluid tail flag: smart debt is repaid in token1 (else token0).
+pub const FLUID_DEBT_TOKEN1: u8 = 1 << 0;
+/// Fluid tail flag: smart collateral is withdrawn in token1 (else token0).
+pub const FLUID_COL_TOKEN1: u8 = 1 << 1;
+/// Fluid tail flag: `absorb_` — liquidate absorbed positions first.
+pub const FLUID_ABSORB: u8 = 1 << 2;
+/// Fluid tail flag: the repaid token is native ETH, paid from WETH.
+pub const FLUID_NATIVE_DEBT: u8 = 1 << 3;
+/// Fluid tail flag: the collateral token is native ETH, wrapped to WETH.
+pub const FLUID_NATIVE_COL: u8 = 1 << 4;
+/// Every defined Fluid flag bit.
+pub const FLUID_FLAGS: u8 =
+    FLUID_DEBT_TOKEN1 | FLUID_COL_TOKEN1 | FLUID_ABSORB | FLUID_NATIVE_DEBT | FLUID_NATIVE_COL;
+
 /// Adapter-specific bytes after the 77 fixed leg bytes.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum LegTail {
@@ -133,10 +155,22 @@ pub enum LegTail {
     Euler { min_yield: U256, vault: Address },
     /// Liquity V2 `batchLiquidateTroves` — full uint256 trove id.
     Liquity { trove_id: U256 },
-    /// Fluid T1 `liquidate(…, colPerUnitDebt_, …)` — quoted **1e18** min
-    /// collateral per debt (pin `9496626f` slip). Not internal `colPerDebt` (1e27).
-    /// `absorb_` is hardcoded `true` on-chain (matches the absorb-inclusive quote).
-    Fluid { col_per_unit_debt: U256 },
+    /// Fluid vault liquidation (pin `9496626f`), every type: one debt token
+    /// in, one collateral token out. `kind` is [`FLUID_T1`]..[`FLUID_T4`];
+    /// `flags` are the `FLUID_*` bits. `col_per_unit_debt` is the vault's own
+    /// `colPerUnitDebt_` (**1e18**, raw collateral units — tokens, or col
+    /// shares on T2/T4 — per raw debt unit — tokens, or debt shares on
+    /// T3/T4). `debt_shares_min_per_token`: T3/T4 min debt shares the exact
+    /// token repay must burn, per debt token (1e18), zero otherwise.
+    /// `col_per_share_min`: T2/T4 min collateral token per col share (1e18),
+    /// zero otherwise.
+    Fluid {
+        kind: u8,
+        flags: u8,
+        col_per_unit_debt: U256,
+        debt_shares_min_per_token: U256,
+        col_per_share_min: U256,
+    },
     /// Gearbox V3: minimum collateral received, then the path — `false`
     /// `partiallyLiquidateCreditAccount` (v3.1), `true` full
     /// `liquidateCreditAccount` with add/withdraw multicall. Wire byte 0 / 1.
@@ -304,7 +338,11 @@ pub fn decode_liq_leg(b: &[u8], o: usize) -> Result<(LiqLeg, usize)> {
             trove_id: u256_at(b, tail_offset)?,
         },
         ExecutorAdapter::Fluid => LegTail::Fluid {
-            col_per_unit_debt: u256_at(b, tail_offset)?,
+            kind: u8_at(b, tail_offset)?,
+            flags: u8_at(b, add(tail_offset, 1)?)?,
+            col_per_unit_debt: u256_at(b, add(tail_offset, 2)?)?,
+            debt_shares_min_per_token: u256_at(b, add(tail_offset, 34)?)?,
+            col_per_share_min: u256_at(b, add(tail_offset, 66)?)?,
         },
         ExecutorAdapter::Gearbox => LegTail::Gearbox {
             min_seized: u256_at(b, tail_offset)?,
@@ -630,10 +668,45 @@ mod tests {
         assert_eq!(tail_len(3).unwrap(), 52);
         assert_eq!(tail_len(4).unwrap(), 0);
         assert_eq!(tail_len(5).unwrap(), 32);
-        assert_eq!(tail_len(6).unwrap(), 32);
+        assert_eq!(tail_len(6).unwrap(), 98);
         assert_eq!(tail_len(7).unwrap(), 33);
         assert_eq!(tail_len(8).unwrap(), 21);
         assert_eq!(tail_len(9), Err(WireError::UnknownAdapter(9)));
+    }
+
+    /// Oracle: `PlanDecoder.sol` `TAIL_FLUID` layout and `FLUID_*` bits.
+    #[test]
+    fn fluid_tail_matches_plan_decoder_sol() {
+        assert_eq!(
+            (
+                FLUID_DEBT_TOKEN1,
+                FLUID_COL_TOKEN1,
+                FLUID_ABSORB,
+                FLUID_NATIVE_DEBT,
+                FLUID_NATIVE_COL
+            ),
+            (1, 2, 4, 8, 16)
+        );
+        assert_eq!((FLUID_T1, FLUID_T2, FLUID_T3, FLUID_T4), (1, 2, 3, 4));
+        let mut b = vec![0u8; LIQ_LEG_LEN + 98];
+        b[0] = 6; // Fluid
+        b[LIQ_LEG_LEN] = FLUID_T4;
+        b[LIQ_LEG_LEN + 1] = FLUID_DEBT_TOKEN1 | FLUID_ABSORB;
+        b[LIQ_LEG_LEN + 33] = 3;
+        b[LIQ_LEG_LEN + 65] = 5;
+        b[LIQ_LEG_LEN + 97] = 7;
+        let (leg, next) = decode_liq_leg(&b, 0).unwrap();
+        assert_eq!(
+            leg.tail,
+            LegTail::Fluid {
+                kind: FLUID_T4,
+                flags: FLUID_DEBT_TOKEN1 | FLUID_ABSORB,
+                col_per_unit_debt: U256::from(3u8),
+                debt_shares_min_per_token: U256::from(5u8),
+                col_per_share_min: U256::from(7u8),
+            }
+        );
+        assert_eq!(next, LIQ_LEG_LEN + 98);
     }
 
     #[test]

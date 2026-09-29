@@ -18,7 +18,7 @@ use liq_plan::{
     VENUE_UNIV2_POOL, VENUE_UNIV3_POOL,
 };
 use liq_protocol::{ExecutorAdapter, FlashRoute, Quote};
-use liq_types::fixed::{mul_div, Rounding, RAY};
+use liq_types::fixed::{mul_div, Rounding};
 use liq_types::{AssetId, PositionId};
 use liq_wire::wire::LegTail;
 use smallvec::SmallVec;
@@ -51,8 +51,9 @@ pub trait AssembleView {
 
 /// Pins the 10E tails (ids 3–8). Missing required fields → do not assemble.
 ///
-/// Fluid T1 is `fluid_t1 == Some(true)` plus `col_per_unit_debt`. T2–T4
-/// (`Some(false)`) stay Unwired. Gearbox `gearbox_full` picks the full
+/// Fluid is `fluid` (the vault's type, the leg's one-token choices, and the
+/// quoted liquidation in the vault's own units) plus the tail figures
+/// [`fluid_tail_from_quote`] derives from them. Gearbox `gearbox_full` picks the full
 /// add/withdraw liquidation over the partial one (no `PriceUpdate` either
 /// way). Compound `is_cether` is a config pin
 /// (`underlying == 0`), never a `decimals()` guess.
@@ -66,9 +67,10 @@ pub struct TailPins {
     /// Collateral vault `liquidate` names. Required for Euler. Zero refuses.
     pub euler_collateral_vault: Option<Address>,
     pub liquity_trove_id: Option<U256>,
-    /// `None` missing; `Some(true)` T1; `Some(false)` T2–T4 Unwired.
-    pub fluid_t1: Option<bool>,
-    pub fluid_col_per_unit_debt: Option<U256>,
+    /// Fluid leg facts from the adapter's state. `None`: not pinned.
+    pub fluid: Option<FluidPins>,
+    /// Fluid tail figures from [`fluid_tail_from_quote`].
+    pub fluid_tail: Option<FluidTailFigures>,
     pub gearbox_min_seized: Option<U256>,
     /// Full liquidation (the quote's all-or-nothing repay option), not partial.
     pub gearbox_full: bool,
@@ -83,6 +85,30 @@ pub struct TailPins {
     /// from `MarketId` alone (Morpho assigns `Id`s on-chain at
     /// `CreateMarket`, not from a static config pin).
     pub morpho_market_id: Option<B256>,
+}
+
+/// One Fluid leg as the adapter quoted it: which ABI, which one-token
+/// choices, and how much of the vault's own units the quoted repay and
+/// seize are — debt shares on a smart-debt vault (T3/T4), col shares on a
+/// smart-collateral vault (T2/T4), else the token amounts themselves.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct FluidPins {
+    /// `liq_wire::wire::FLUID_T1`..`FLUID_T4`.
+    pub kind: u8,
+    /// `liq_wire::wire::FLUID_*` bits: token choices, absorb, native sides.
+    pub flags: u8,
+    /// Vault debt units the quoted repay covers.
+    pub debt_units: U256,
+    /// Vault collateral units the quoted seize is.
+    pub col_units: U256,
+}
+
+/// The three Fluid tail figures (see `LegTail::Fluid`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct FluidTailFigures {
+    pub col_per_unit_debt: U256,
+    pub debt_shares_min_per_token: U256,
+    pub col_per_share_min: U256,
 }
 
 /// Lower a quoted seize to the minimum we will accept on the wire.
@@ -121,23 +147,64 @@ pub fn euler_min_yield_from_quote(
     Ok(out)
 }
 
-/// Fluid T1 wire `colPerUnitDebt_` from quote seize/repay.
-/// Pin 1e18 slip — not FluidOracle 1e27, not internal `colPerDebt`.
-pub fn fluid_col_per_unit_debt_from_quote(
+/// Fluid tail figures for the quoted `(repay, seize)` pair, each a floor the
+/// vault checks, lowered by `tol_bps`
+/// ([`crate::select::SelectCfg::min_out_tolerance_bps`]) so drift between
+/// quote and inclusion does not revert:
+///
+/// * `colPerUnitDebt` — collateral units per debt unit (`(actualCol ·
+///   1e18) / actualDebt`, the vault's own check, pin `9496626f`).
+/// * T3/T4 `debt_shares_min_per_token` — debt shares the exact token repay
+///   must burn, per token (1e18). The Executor scales it by the sized repay.
+/// * T2/T4 `col_per_share_min` — collateral token per col share (1e18) the
+///   one-token withdraw must pay.
+pub fn fluid_tail_from_quote(
+    f: &FluidPins,
     q: &Quote,
     repay: usize,
     seize: usize,
-) -> Result<U256, AssembleError> {
+    tol_bps: u16,
+) -> Result<FluidTailFigures, AssembleError> {
+    use liq_wire::wire::{FLUID_T2, FLUID_T3, FLUID_T4};
     let r = q
         .repay_options
         .get(repay)
-        .ok_or(AssembleError::Missing("fluid repay"))?;
+        .ok_or(AssembleError::Missing("fluid repay"))?
+        .max_repay;
     let s = q
         .seize_options
         .get(seize)
-        .ok_or(AssembleError::Missing("fluid seize"))?;
-    col_per_unit_debt_1e18(s.max_seize, r.max_repay)
-        .map_err(|_| AssembleError::Missing("fluid col_per_unit_debt"))
+        .ok_or(AssembleError::Missing("fluid seize"))?
+        .max_seize;
+    if r.is_zero() || s.is_zero() || f.debt_units.is_zero() || f.col_units.is_zero() {
+        return Err(AssembleError::Missing("fluid quoted units"));
+    }
+    let ratio = |num: U256, den: U256| {
+        col_per_unit_debt_1e18(num, den).map_err(|_| AssembleError::Missing("fluid ratio"))
+    };
+    let floor = |v: U256| -> Result<U256, AssembleError> {
+        let out = with_min_out_tolerance(v, tol_bps)?;
+        if out.is_zero() {
+            return Err(AssembleError::Missing("fluid floor"));
+        }
+        Ok(out)
+    };
+    let col_per_unit_debt = floor(ratio(f.col_units, f.debt_units)?)?;
+    let debt_shares_min_per_token = if f.kind == FLUID_T3 || f.kind == FLUID_T4 {
+        floor(ratio(f.debt_units, r)?)?
+    } else {
+        U256::ZERO
+    };
+    let col_per_share_min = if f.kind == FLUID_T2 || f.kind == FLUID_T4 {
+        floor(ratio(s, f.col_units)?)?
+    } else {
+        U256::ZERO
+    };
+    Ok(FluidTailFigures {
+        col_per_unit_debt,
+        debt_shares_min_per_token,
+        col_per_share_min,
+    })
 }
 
 /// Gearbox `min_seized` (partial: the facade's check; full: the
@@ -196,20 +263,22 @@ pub fn leg_meta_from_pins(p: &TailPins) -> Result<LegMeta, AssembleError> {
             }
             LegTail::Liquity { trove_id }
         }
-        ExecutorAdapter::Fluid => match p.fluid_t1 {
-            None => return Err(AssembleError::Missing("fluid vault_type")),
-            Some(false) => return Err(AssembleError::Missing("fluid T2-T4 unwired")),
-            Some(true) => {
-                let col_per_unit_debt = p
-                    .fluid_col_per_unit_debt
-                    .ok_or(AssembleError::Missing("fluid col_per_unit_debt"))?;
-                // Pin slip is 1e18. A 1e27-scale tail ExcessSlippage's every T1 leg.
-                if col_per_unit_debt.is_zero() || col_per_unit_debt >= RAY {
-                    return Err(AssembleError::Missing("fluid col_per_unit_debt"));
-                }
-                LegTail::Fluid { col_per_unit_debt }
+        ExecutorAdapter::Fluid => {
+            let f = p.fluid.ok_or(AssembleError::Missing("fluid vault_type"))?;
+            let t = p
+                .fluid_tail
+                .ok_or(AssembleError::Missing("fluid col_per_unit_debt"))?;
+            if t.col_per_unit_debt.is_zero() {
+                return Err(AssembleError::Missing("fluid col_per_unit_debt"));
             }
-        },
+            LegTail::Fluid {
+                kind: f.kind,
+                flags: f.flags,
+                col_per_unit_debt: t.col_per_unit_debt,
+                debt_shares_min_per_token: t.debt_shares_min_per_token,
+                col_per_share_min: t.col_per_share_min,
+            }
+        }
         ExecutorAdapter::Gearbox => {
             let min_seized = p
                 .gearbox_min_seized
@@ -2021,8 +2090,8 @@ mod tests {
             euler_min_yield: None,
             euler_collateral_vault: None,
             liquity_trove_id: None,
-            fluid_t1: None,
-            fluid_col_per_unit_debt: None,
+            fluid: None,
+            fluid_tail: None,
             gearbox_min_seized: None,
             gearbox_full: false,
             compound_ctoken_collateral: None,
@@ -2052,11 +2121,15 @@ mod tests {
             Err(AssembleError::Missing("fluid vault_type"))
         ));
         let mut t2 = pins_base(ExecutorAdapter::Fluid);
-        t2.fluid_t1 = Some(false);
-        t2.fluid_col_per_unit_debt = Some(U256::from(1u64));
+        t2.fluid = Some(FluidPins {
+            kind: liq_wire::wire::FLUID_T2,
+            flags: 0,
+            debt_units: U256::from(1u64),
+            col_units: U256::from(1u64),
+        });
         assert!(matches!(
             leg_meta_from_pins(&t2),
-            Err(AssembleError::Missing("fluid T2-T4 unwired"))
+            Err(AssembleError::Missing("fluid col_per_unit_debt"))
         ));
         assert!(matches!(
             leg_meta_from_pins(&pins_base(ExecutorAdapter::Gearbox)),
@@ -2129,21 +2202,27 @@ mod tests {
             }
         );
         let mut f = pins_base(ExecutorAdapter::Fluid);
-        f.fluid_t1 = Some(true);
-        f.fluid_col_per_unit_debt = Some(liq_types::fixed::WAD);
+        f.fluid = Some(FluidPins {
+            kind: liq_wire::wire::FLUID_T1,
+            flags: liq_wire::wire::FLUID_ABSORB,
+            debt_units: U256::from(1u64),
+            col_units: U256::from(1u64),
+        });
+        f.fluid_tail = Some(FluidTailFigures {
+            col_per_unit_debt: liq_types::fixed::WAD,
+            debt_shares_min_per_token: U256::ZERO,
+            col_per_share_min: U256::ZERO,
+        });
         assert_eq!(
             leg_meta_from_pins(&f).unwrap().tail,
             LegTail::Fluid {
-                col_per_unit_debt: liq_types::fixed::WAD
+                kind: liq_wire::wire::FLUID_T1,
+                flags: liq_wire::wire::FLUID_ABSORB,
+                col_per_unit_debt: liq_types::fixed::WAD,
+                debt_shares_min_per_token: U256::ZERO,
+                col_per_share_min: U256::ZERO,
             }
         );
-        let mut f27 = pins_base(ExecutorAdapter::Fluid);
-        f27.fluid_t1 = Some(true);
-        f27.fluid_col_per_unit_debt = Some(RAY);
-        assert!(matches!(
-            leg_meta_from_pins(&f27),
-            Err(AssembleError::Missing("fluid col_per_unit_debt"))
-        ));
         let mut g = pins_base(ExecutorAdapter::Gearbox);
         g.gearbox_min_seized = Some(U256::from(9u64));
         assert_eq!(

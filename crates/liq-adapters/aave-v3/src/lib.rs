@@ -26,7 +26,7 @@ pub use config::{
     PoolConfig, SourcePin,
 };
 
-use crate::events::{cfg as ccfg, halt, oracle, pool, provider, sentinel, token};
+use crate::events::{cfg as ccfg, halt, oracle, pool, provider, sentinel, stable, token};
 use crate::math::hf_wad_to_ray;
 
 sol! {
@@ -103,6 +103,7 @@ impl LogSubscriber for AaveV3 {
             for t0 in [
                 ccfg::ReserveInitialized::SIGNATURE_HASH,
                 ccfg::ReserveBorrowing::SIGNATURE_HASH,
+                ccfg::ReserveStableRateBorrowing::SIGNATURE_HASH,
                 ccfg::ReserveFlashLoaning::SIGNATURE_HASH,
                 ccfg::CollateralConfigurationChanged::SIGNATURE_HASH,
                 ccfg::ReserveActive::SIGNATURE_HASH,
@@ -177,6 +178,18 @@ impl LogSubscriber for AaveV3 {
                     address: p.sequencer_oracle,
                     topic0: sentinel::AnswerUpdated::SIGNATURE_HASH,
                 });
+            }
+            for &t in &p.tokens {
+                for t0 in [
+                    token::BalanceTransfer::SIGNATURE_HASH,
+                    stable::Mint::SIGNATURE_HASH,
+                    stable::Burn::SIGNATURE_HASH,
+                ] {
+                    out.push(LogFilter {
+                        address: t,
+                        topic0: t0,
+                    });
+                }
             }
         }
         let _ = token::BorrowAllowanceDelegated::SIGNATURE_HASH;

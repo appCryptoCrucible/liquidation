@@ -13,7 +13,7 @@ use liq_types::{MarketId, PositionId, PositionKey};
 use smallvec::SmallVec;
 
 use crate::config::{Config, Emitter};
-use crate::events::{cfg as ccfg, halt, oracle, pool, provider, sentinel, token};
+use crate::events::{cfg as ccfg, halt, oracle, pool, provider, sentinel, stable, token};
 use crate::layout::{EModeCat, PoolMeta, Reserve, UserExtra, UserReserve, META_ASSET};
 use crate::math::{debt_burn_scaled, debt_mint_scaled, supply_burn_scaled, supply_mint_scaled};
 
@@ -98,6 +98,9 @@ fn emitter(cfg: &Config, st: &dyn StateWriter, address: Address) -> Result<Optio
                 }
                 if Address::from(r.v_token) == address {
                     return Ok(Some(Emitter::VToken { pool: i, slot }));
+                }
+                if r.s_token != [0u8; 20] && Address::from(r.s_token) == address {
+                    return Ok(Some(Emitter::SToken { pool: i, slot }));
                 }
             }
         }
@@ -246,6 +249,7 @@ pub(crate) fn apply_log(
         Emitter::Sequencer(i) => apply_sequencer(cfg, st, i, topic0, log),
         Emitter::AToken { pool, slot } => apply_atoken(cfg, st, pool, slot, topic0, log),
         Emitter::VToken { pool, slot } => apply_vtoken(cfg, st, pool, slot, topic0, log),
+        Emitter::SToken { pool, slot } => apply_stoken(cfg, st, pool, slot, topic0, log),
     }
 }
 
@@ -350,17 +354,25 @@ fn apply_pool(
             let li = U256::from(crow.body::<Reserve>()?.liquidity_index);
             let di = U256::from(drow.body::<Reserve>()?.variable_borrow_index);
             let id = intern(cfg, st, market, ev.user)?;
-            add_supply(
-                st,
-                id,
-                cslot,
-                supply_burn_scaled(
-                    cfg.liquidation.balance_model,
-                    ev.liquidatedCollateralAmount,
-                    li,
-                )?,
-                false,
-            )?;
+            // With `receiveAToken` the collateral moves by
+            // `transferOnLiquidation`, whose `BalanceTransfer` carries the
+            // exact scaled amount; debiting it here too would count it twice.
+            // Without it the collateral is burned, and only this event says so.
+            // The protocol fee always moves by `BalanceTransfer` to the
+            // treasury and is not in `liquidatedCollateralAmount`.
+            if !ev.receiveAToken {
+                add_supply(
+                    st,
+                    id,
+                    cslot,
+                    supply_burn_scaled(
+                        cfg.liquidation.balance_model,
+                        ev.liquidatedCollateralAmount,
+                        li,
+                    )?,
+                    false,
+                )?;
+            }
             add_debt(
                 st,
                 id,
@@ -491,6 +503,7 @@ fn apply_cfg(
             body.variable_borrow_index = body.liquidity_index;
             body.a_token = ev.aToken.into();
             body.v_token = ev.variableDebtToken.into();
+            body.s_token = ev.stableDebtToken.into();
             body.flags = Reserve::ACTIVE | Reserve::FLASH;
             if let Some(a) = ac {
                 body.debt_ceiling = a.debt_ceiling;
@@ -545,6 +558,18 @@ fn apply_cfg(
             }
             Ok(())
         }),
+        ccfg::ReserveStableRateBorrowing::SIGNATURE_HASH => {
+            let ev: ccfg::ReserveStableRateBorrowing = decode(log)?;
+            if ev.enabled {
+                tracing::warn!(
+                    target: "coverage",
+                    pool = %p.address,
+                    asset = %ev.asset,
+                    "stable-rate borrowing enabled — accounts that take stable debt will not be quoted"
+                );
+            }
+            Ok(DirtySet::None)
+        }
         ccfg::ReserveBorrowing::SIGNATURE_HASH => flag(cfg, st, market, log, topic0, |r, on| {
             if on {
                 r.flags |= Reserve::BORROWING;
@@ -855,6 +880,53 @@ fn apply_atoken(
         ids.push(id);
     }
     Ok(positions(&ids))
+}
+
+/// Stable debt is not modelled (disabled on every Spark reserve). A mint
+/// marks the account's slot, which makes the account unquotable; a burn that
+/// leaves no stable debt on that reserve clears it. Every mark is an alarm.
+fn apply_stoken(
+    cfg: &Config,
+    st: &mut dyn StateWriter,
+    pool_i: usize,
+    slot: u16,
+    topic0: alloy_primitives::B256,
+    log: &DecodedLog<'_>,
+) -> Result<DirtySet> {
+    let p = cfg.pools.get(pool_i).ok_or(ProtocolError::UnexpectedLog)?;
+    let (user, holds) = if topic0 == stable::Mint::SIGNATURE_HASH {
+        let ev: stable::Mint = decode(log)?;
+        (ev.onBehalfOf, true)
+    } else if topic0 == stable::Burn::SIGNATURE_HASH {
+        let ev: stable::Burn = decode(log)?;
+        // `StableDebtToken.burn`: the event's amount is `amount -
+        // balanceIncrease`; what is left is `currentBalance - amount`.
+        let left = ev
+            .currentBalance
+            .checked_sub(ev.amount)
+            .and_then(|x| x.checked_sub(ev.balanceIncrease));
+        (ev.from, left != Some(U256::ZERO))
+    } else {
+        return Ok(DirtySet::None);
+    };
+    let id = intern(cfg, st, p.market, user)?;
+    let bit = 1u64.checked_shl(u32::from(slot.min(63))).unwrap_or(1 << 63);
+    let mut extra = *st.extra(id)?;
+    let e = extra.view_mut::<UserExtra>()?;
+    if holds {
+        e.stable_slots |= bit;
+        tracing::warn!(
+            target: "coverage",
+            pool = %p.address,
+            account = %user,
+            slot,
+            "account holds stable debt — not quoted (stable debt is not modelled)"
+        );
+    } else if slot < 63 {
+        e.stable_slots &= !bit;
+    }
+    st.set_extra(id, extra)?;
+    Ok(positions(&[id]))
 }
 
 fn apply_vtoken(

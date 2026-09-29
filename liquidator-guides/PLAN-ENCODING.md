@@ -144,7 +144,7 @@ then: adapter tail (`PlanDecoder.tailLen` / `ExecutorAdapter::tail_len`)
 | 3 | EulerV2 | debt EVault | 32 | `uint256` minYieldBalance (quoted yield shares) |
 | 4 | SiloV2 | hook receiver | 0 | `receiveSToken = false` hardcoded; never the Silo ERC-4626 |
 | 5 | LiquityV2 | TroveManager | 32 | `uint256` troveId (full id; `PositionKey.user` is low 160 bits) |
-| 6 | Fluid | T1 vault | 32 | `uint256` colPerUnitDebt (quoted **1e18** min coll/debt; pin slip). Not internal `colPerDebt` 1e27. `absorb_ = true` hardcoded. T2/T3/T4 are not this ABI |
+| 6 | Fluid | vault (T1–T4) | 98 | `u8` type (1 T1, 2 T2 smart col, 3 T3 smart debt, 4 T4 both) ‖ `u8` flags (bit0 repay debt token1, bit1 take collateral token1, bit2 `absorb_`, bit3 debt is native ETH — paid from WETH, bit4 collateral is native ETH — wrapped) ‖ `uint256` colPerUnitDebt (the vault's own **1e18** floor, raw collateral units per raw debt unit — shares on a smart side) ‖ `uint256` debtSharesMinPerToken (T3/T4: min debt shares the exact token repay burns, per token, 1e18; else 0) ‖ `uint256` colPerShareMin (T2/T4: min collateral token per col share, 1e18; else 0). T1/T2 `liquidate`; T3/T4 `liquidate` paying exactly `repayAmount` in one token; one-token withdraw on smart collateral |
 | 7 | Gearbox | CreditFacadeV3 | 32 | `uint256` minSeizedAmount (partial only; full MultiCall is unwired) |
 | 8 | CompoundV2 | debt cToken | 21 | `address` cTokenCollateral ‖ `uint8` isCEther (from config, not `underlying()`) |
 
@@ -165,11 +165,14 @@ from adapter config + `TroveExtra`, never guessed.
 `(debt cToken, cTokenCollateral, isCEther)` and Liquity
 `(TroveManager, troveId, borrower)` are pinned the same way — a random
 cToken, flipped CEther bit, or a trove id that is not the quoted position
-is `EncodeError`. Euler `minYield` / Gearbox `minSeized` / Fluid 1e18
-`colPerUnitDebt` stay shape + nonzero (cannot re-derive without the quote).
-Fluid rejects a 1e27-scale tail (`>= 10^27`): that is the internal
-`colPerDebt` unit, not the wire argument. 17A must use
-`col_per_unit_debt_1e18` from the quote seize/repay pair.
+is `EncodeError`. Euler `minYield` / Gearbox `minSeized` stay shape + nonzero (cannot
+re-derive without the quote). The Fluid tail is checked against its type: a
+known type, a nonzero `colPerUnitDebt`, the per-share floor present on each
+smart side and only there, a token1 choice only on a smart side, no undefined
+flag bit. `colPerUnitDebt` is a raw-unit ratio and may exceed `10^27` (col
+shares per 6-decimal debt token), so there is no scale bound. The floors come
+from the vault's own quoted liquidation (`liq_router::fluid_tail_from_quote`),
+lowered by `min_out_tolerance_bps`.
 
 `adapter` is per-leg, so one group may span protocols — Alice on Aave V3 and Bob
 on Aave V4, both owing USDC, is one group.

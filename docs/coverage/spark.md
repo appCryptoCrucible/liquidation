@@ -42,6 +42,9 @@ Spark is **not** TokenMath 3.5. Deployed aToken impl `0x6175ddec3b9b38c88157c10a
 | atoken.mint | ScaledBalanceTokenBase._mintScaled → Mint | 0x458f5fa412d0f69b08dd84872b0215675cc67bc1d5b6fd93300a1c3878b86196 | Positions |  |
 | atoken.burn | ScaledBalanceTokenBase._burnScaled → Burn | 0x4cf25bc1d991c17529c25213d3cc0cda295eeaad5f13f361969b12ea48015f90 | Positions |  |
 | atoken.balanceTransfer | AToken._transfer → BalanceTransfer | 0x4beccb90f994c31aced7a23b5611020728a23d8ec5cddd1a3e9d97b96fda8666 | Positions |  |
+| stoken.mint | StableDebtToken.mint / burn (repay under accrued interest) → Mint | 0xc16f4e4ca34d790de4c656c72fd015c667d688f20be64eea360618545c4c530f | Positions | pre-3.2 pools only (SparkLend): stable debt is not modelled; the account is marked and not quoted |
+| stoken.burn | StableDebtToken.burn → Burn | 0x44bd20a79e993bdcc7cbedf54a3b4d19fb78490124b6b90d04fe3242eea579e8 | Positions | amount = repaid − accrued; left = currentBalance − amount − balanceIncrease; 0 clears the mark |
+| cfg.reserveStableRateBorrowing | PoolConfigurator.setReserveStableRateBorrowing → ReserveStableRateBorrowing | 0x0b64d0941719acd363f1a6be3d8525d8ec9d71738f7445aabcd88d7939b472e7 | None | pre-3.2 pools only; enabling logs a coverage alarm |
 | vtoken.mintburn.transfer | VariableDebtToken mint/burn → Transfer | 0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef | Positions |  |
 | stoken.mintburn.transfer | StableDebtToken mint/burn → Transfer | 0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef | Positions | Spark still has StableDebtToken |
 | cfg.reserveInitialized | ConfiguratorLogic.executeInitReserve → ReserveInitialized | 0x3a0ca721fc364424566385a1aa271ed508cc2c0949c2272575fb3013a163a45f | MarketReprice | stableDebtToken arg used |

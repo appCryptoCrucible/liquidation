@@ -71,6 +71,7 @@ fn adapter(d: &Deploy) -> AaveV3 {
             configurator: d.configurator,
             sentinel: Address::ZERO,
             sequencer_oracle: Address::ZERO,
+            tokens: Vec::new(),
         }],
         assets: vec![asset(d.weth, WETH, 1), asset(d.dai, DAI, 2)],
         price_sources: vec![

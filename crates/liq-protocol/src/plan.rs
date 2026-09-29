@@ -61,7 +61,7 @@ impl ExecutorAdapter {
             Self::EulerV2 => 52,
             Self::SiloV2 => 0,
             Self::LiquityV2 => 32,
-            Self::Fluid => 32,
+            Self::Fluid => 98,
             Self::Gearbox => 33,
             Self::CompoundV2 => 21,
         }
@@ -160,7 +160,7 @@ mod tests {
         assert_eq!(ExecutorAdapter::EulerV2.tail_len(), 52);
         assert_eq!(ExecutorAdapter::SiloV2.tail_len(), 0);
         assert_eq!(ExecutorAdapter::LiquityV2.tail_len(), 32);
-        assert_eq!(ExecutorAdapter::Fluid.tail_len(), 32);
+        assert_eq!(ExecutorAdapter::Fluid.tail_len(), 98);
         assert_eq!(ExecutorAdapter::Gearbox.tail_len(), 33);
         assert_eq!(ExecutorAdapter::CompoundV2.tail_len(), 21);
     }

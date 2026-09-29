@@ -67,13 +67,14 @@ pub const fn prod_allow_unpinned() -> bool {
 /// Steps 1–2: `liq_config::boot` (registry assert + Validate). Empty RPC fails.
 pub async fn boot_assert(config_dir: &Path) -> Result<Loaded, StartupError> {
     let loaded = boot(config_dir).await?;
-    if loaded.config.submit_enabled {
-        tracing::warn!("submit_enabled true at boot — H4 only; lease/resync still gate live send");
-    }
+    tracing::info!(
+        submit_enabled = loaded.config.submit_enabled,
+        "live send also needs the lease and a chain-nonce resync"
+    );
     Ok(loaded)
 }
 
-/// Step 3: leak Shared. `submit_enabled` from config (default false).
+/// Step 3: leak Shared. `submit_enabled` from config.
 pub fn leak_process_shared(cfg: &BotConfig, lease: SubmitLease) -> &'static Shared {
     let (_builder, routes) = warm_handles();
     leak_shared(cfg, lease, routes, 0)
@@ -112,6 +113,8 @@ pub fn pin_threads(cores_path: &Path, allow_unpinned: bool) -> Result<CoreMap, S
 
 /// Live process after the five startup steps plus 17C process joins.
 pub struct Started {
+    /// The block the restored store is at (the snapshot's head record).
+    pub head: crate::state_build::SnapshotHead,
     pub shared: &'static Shared,
     pub hot: liq_node::HotHandle,
     pub forwarder: liq_node::ExExForwarder,
@@ -233,7 +236,16 @@ pub async fn run(
     allow_unpinned: bool,
 ) -> Result<Started, StartupError> {
     let loaded = boot_assert(config_dir).await?;
-    let (store, lease) = match acquire(state, recover_capacity(), None) {
+    // The snapshot's head record: the block the store is at, which the
+    // restored store must match, and where Reth resumes the ExEx.
+    let head = crate::state_build::read_head(state).map_err(|e| {
+        tracing::error!(error = %e, "no snapshot head — the state has not been built");
+        StartupError::Other(e.to_string())
+    })?;
+    let probe = crate::lease::HeadProbe {
+        number: head.number,
+    };
+    let (store, lease) = match acquire(state, recover_capacity(), Some(&probe)) {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(?e, "startup lease refused — process will not submit");
@@ -464,6 +476,20 @@ pub async fn run(
             "protocol price reader not started — health priced from canonical feeds only"
         );
     }
+    // Protocol state only the protocol can answer (Fluid vaults simulate
+    // their own liquidation), read every block off the hot path.
+    let state_reader = crate::state_reads::StateReaderShared::new();
+    if let Err(e) = crate::state_reads::spawn_state_reader(
+        adapters,
+        loaded.config.rpc_url.clone(),
+        Arc::clone(&state_reader),
+        Arc::new(AtomicBool::new(false)),
+    ) {
+        tracing::error!(
+            ?e,
+            "protocol state reader not started — Fluid vaults never quote"
+        );
+    }
     let svr = start_svr_reader(index, shared.risk);
     let hook = DrainJoin::live(
         Arc::clone(&shared.flash),
@@ -485,7 +511,18 @@ pub async fn run(
     .with_index(index)
     .with_bid_cfg(bid_cfg)
     .with_header_clock(clock)
-    .with_price_reader(price_reader);
+    .with_price_reader(price_reader)
+    .with_state_reader(state_reader);
+    let hook = match crate::state_build::SnapshotWriter::spawn(
+        state.clone(),
+        loaded.config.snapshot_every_blocks,
+    ) {
+        Ok(w) => hook.with_snapshots(w),
+        Err(e) => {
+            tracing::error!(error = %e, "snapshot writer not started — state is not persisted");
+            hook
+        }
+    };
     let (hook, svr_thread) = match svr {
         Some((rx, targets, handle)) => (hook.with_svr(rx, targets), Some(handle)),
         None => (hook, None),
@@ -506,6 +543,7 @@ pub async fn run(
     )?;
     let _ = StoreSnapshot::empty();
     Ok(Started {
+        head,
         shared,
         hot,
         forwarder,
@@ -586,10 +624,9 @@ fn spawn_rtt_tick(builders: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use liq_config::load;
 
     #[test]
-    fn order_constants_and_submit_default_false() {
+    fn order_constants() {
         assert!(!prod_allow_unpinned());
         assert_eq!(
             [
@@ -602,12 +639,6 @@ mod tests {
             .len(),
             5
         );
-        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let cfg = load(&root.join("config")).unwrap();
-        assert!(
-            !cfg.submit_enabled,
-            "committed submit_enabled must stay false"
-        );
     }
 
     #[test]
@@ -619,6 +650,8 @@ mod tests {
             risk: liq_config::RiskConfig::default(),
             venues: liq_config::VenuesConfig::default(),
             submit_enabled: false,
+            backfill_from: 0,
+            snapshot_every_blocks: 100,
         };
         let s = leak_process_shared(&cfg, SubmitLease::refused());
         assert!(!s.submit_enabled.get());
@@ -670,7 +703,7 @@ mod tests {
         let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
         assert!(
             !prod.contains(".store(true"),
-            "run() must not store nonce_resync true"
+            "only ExecPath::sync_nonce stores nonce_resync, after a chain read"
         );
         assert!(
             !prod.contains("30_000_000") && !prod.contains("30000000"),

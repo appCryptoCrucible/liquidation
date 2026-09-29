@@ -54,7 +54,7 @@ pub use market::{FeedId, MarketFlags, MarketRow, MarketSlot};
 pub use mask::{AssetMask, SetSlots};
 pub use plan::{ExecutorAdapter, LiquidationLeg, LiquidationPlan, ProbeCall};
 pub use posref::PositionRef;
-pub use price_read::{MarketRows, PriceRead};
+pub use price_read::{MarketRows, PriceRead, StateAnswer, StateRead};
 pub use protocol::Protocol;
 pub use quote::{LegChoice, Quote, RepayOption, SeizeOption, SlotRef};
 pub use routecache::RouteCache;

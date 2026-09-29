@@ -53,6 +53,16 @@ struct LiqLeg {
     uint256 tailOffset;
 }
 
+/// Fluid leg tail (PLAN-ENCODING §1b, `A_FLUID`). One debt token in, one
+/// collateral token out, on every vault type.
+struct FluidTail {
+    uint8   vaultType;        // 1 T1 · 2 T2 smart col · 3 T3 smart debt · 4 T4 both
+    uint8   flags;            // PlanDecoder.FLUID_* bits
+    uint256 colPerUnitDebt;   // the vault's own `colPerUnitDebt_` (1e18)
+    uint256 debtSharesMinPerToken; // T3/T4: min debt shares burned per debt token (1e18); else 0
+    uint256 colPerShareMin;   // T2/T4: min collateral token per col share (1e18); else 0
+}
+
 /// One swap leg (PLAN-ENCODING §1c). `data` is referenced, not copied.
 struct SwapLeg {
     uint8   venue;
@@ -102,9 +112,16 @@ library PlanDecoder {
     uint256 internal constant TAIL_EULER    = 52;  // uint256 minYieldBalance | address collateralVault
     uint256 internal constant TAIL_SILO     = 0;   // receiveSToken=false hardcoded
     uint256 internal constant TAIL_LIQUITY  = 32;  // uint256 troveId
-    uint256 internal constant TAIL_FLUID    = 32;  // uint256 colPerUnitDebt 1e18 (absorb_=true)
+    uint256 internal constant TAIL_FLUID    = 98;  // u8 type | u8 flags | colPerUnitDebt | debtSharesMinPerToken | colPerShareMin
     uint256 internal constant TAIL_GEARBOX  = 33;  // uint256 minSeizedAmount | uint8 mode (0 partial, 1 full)
     uint256 internal constant TAIL_COMPOUND = 21;  // address cTokenCollateral | uint8 isCEther
+
+    /// Fluid tail flags.
+    uint8 internal constant FLUID_DEBT_TOKEN1 = 1 << 0; // smart debt: repay in token1
+    uint8 internal constant FLUID_COL_TOKEN1  = 1 << 1; // smart col: withdraw token1
+    uint8 internal constant FLUID_ABSORB      = 1 << 2; // liquidate absorbed first
+    uint8 internal constant FLUID_NATIVE_DEBT = 1 << 3; // debt token is native ETH: pay from WETH
+    uint8 internal constant FLUID_NATIVE_COL  = 1 << 4; // collateral is native ETH: wrap it
 
     error UnknownAdapter(uint8 a);
     error NoGroups();
@@ -219,6 +236,14 @@ library PlanDecoder {
 
     function tailMorpho(bytes calldata plan, uint256 o) internal pure returns (bytes32 id) {
         id = bytes32(plan[o : o + 32]);
+    }
+
+    function tailFluid(bytes calldata plan, uint256 o) internal pure returns (FluidTail memory t) {
+        t.vaultType       = uint8(plan[o]);
+        t.flags           = uint8(plan[o + 1]);
+        t.colPerUnitDebt  = uint256(bytes32(plan[o + 2  : o + 34]));
+        t.debtSharesMinPerToken = uint256(bytes32(plan[o + 34 : o + 66]));
+        t.colPerShareMin  = uint256(bytes32(plan[o + 66 : o + 98]));
     }
 
     function tailU256(bytes calldata plan, uint256 o) internal pure returns (uint256) {

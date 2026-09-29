@@ -1,11 +1,20 @@
 //! Store layout for Fluid vaults
 //! (`Instadapp/fluid-contracts-public` @ `9496626f71a761fc296dc3b2efbfd54c504e18f0`).
 //!
-//! Quote unit is **(vault, currently liquidatable debt)** — `liquidate` does
-//! not take an NFT id. Catalog market [`CATALOG_MARKET`] maps vault →
-//! [`liq_types::MarketId`]. Slot 0 of a vault market is [`VaultRow`] (also
-//! copied onto later slots so each reserve header has the same body).
+//! Fluid liquidates a vault's whole underwater tick range at once:
+//! `liquidate` takes no position id. The adapter keeps **one position per
+//! vault** (`PositionKey.user` = the vault) holding what the vault would
+//! liquidate right now, as the vault itself reports it each block.
+//!
+//! Market `4000 + vaultId`: collateral token rows first (`supply0`, then
+//! `supply1` on smart-collateral vaults), then debt token rows (`borrow0`,
+//! then `borrow1` on smart-debt vaults). Slot 0's body is [`VaultRow`].
+//! The position's supply cell on a collateral row is the collateral a full
+//! liquidation pays **in that one token**; its debt cell on a debt row is
+//! what the liquidation costs **in that one token**. On a smart side the
+//! two tokens are alternatives, not a sum.
 
+use alloy_primitives::{address, Address};
 use bytemuck::{Pod, Zeroable};
 use liq_types::{AssetId, MarketId};
 
@@ -25,58 +34,56 @@ pub const VAULT_T3: u32 = 30_000;
 /// `VAULT_T4_SMART_COL_SMART_DEBT_TYPE`.
 pub const VAULT_T4: u32 = 40_000;
 
+/// Fluid's native-ETH placeholder. The Executor pays and receives it as
+/// WETH, so it is priced and routed as WETH.
+pub const NATIVE_TOKEN: Address = address!("0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE");
+
 pub const UNMAPPED_ASSET: AssetId = AssetId(u16::MAX);
 pub const SLOT0: u16 = 0;
 pub const CATALOG_ASSET: AssetId = AssetId(u16::MAX);
 
-/// Slot 0 of a vault market: liquidation params + tokens + exchange prices.
+/// Slot 0 body of a vault market.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
 pub struct VaultRow {
-    pub supply_ex_price: u128,
-    pub borrow_ex_price: u128,
     pub vault: [u8; 20],
-    pub oracle: [u8; 20],
+    /// Collateral side: the DEX on T2/T4, else Liquidity.
+    pub supply: [u8; 20],
+    /// Debt side: the DEX on T3/T4, else Liquidity.
+    pub borrow: [u8; 20],
     pub supply0: [u8; 20],
     pub supply1: [u8; 20],
     pub borrow0: [u8; 20],
     pub borrow1: [u8; 20],
     pub vault_id: u32,
     pub vault_type: u32,
-    pub n_nfts: u32,
-    /// Packed 3-decimal threshold (`900` = 90%). Event is 1e2; stored `/ 10`.
-    pub liq_threshold: u16,
-    /// Packed 3-decimal max limit.
-    pub liq_max_limit: u16,
-    /// Packed 4-decimal penalty (`100` = 1%). Event is 1e2; stored as-is.
-    pub liq_penalty: u16,
-    pub flags: u8,
+    /// The vault's position id + 1 (0 = never interned).
+    pub position_plus1: u32,
     /// Collateral slots occupy `0 .. n_col`.
     pub n_col: u8,
     /// Debt slots occupy `n_col .. n_col + n_debt`.
     pub n_debt: u8,
-    pub _pad: [u8; 19],
+    pub _pad: [u8; 2],
 }
 
 impl VaultRow {
-    /// Tokens + type + threshold/penalty written (pin or admin events).
-    pub const VIEWED: u8 = 1 << 0;
-    /// Primary coll and debt tokens are interned. Missing → UNPRICED.
-    pub const PRICED: u8 = 1 << 1;
-    /// Exchange prices written (`LogUpdateExchangePrice`).
-    pub const EX_KNOWN: u8 = 1 << 2;
-
     #[inline]
-    pub fn debt_slot(self) -> u16 {
-        u16::from(self.n_col)
+    #[must_use]
+    pub const fn smart_col(&self) -> bool {
+        self.vault_type == VAULT_T2 || self.vault_type == VAULT_T4
     }
 
-    /// T1 single-token pair only. T2/T3/T4 tick-math is in the vault's
-    /// share unit; FluidOracle `getExchangeRateLiquidate` is 1e27
-    /// share-per-col, which `PriceVector` token USD cannot express.
     #[inline]
-    pub fn is_t1_token_pair(self) -> bool {
-        self.vault_type == VAULT_T1 && self.n_col == 1 && self.n_debt == 1
+    #[must_use]
+    pub const fn smart_debt(&self) -> bool {
+        self.vault_type == VAULT_T3 || self.vault_type == VAULT_T4
+    }
+
+    /// Slot of debt token `i` (0 or 1).
+    #[inline]
+    #[must_use]
+    pub fn debt_slot(&self, i: u8) -> u16 {
+        u16::from(self.n_col).saturating_add(u16::from(i))
     }
 }
 
@@ -90,27 +97,30 @@ pub struct CatalogEntry {
     pub _pad: [u8; 4],
 }
 
-/// Vault-level position extra: absorbed liquidity + proven top tick.
+/// The vault position's extra: the liquidation the cells describe, in the
+/// vault's own units (what `FluidLiquidateResult` reports: tokens, or DEX
+/// shares on a smart side), and the block time it was read at.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
 pub struct VaultExtra {
-    pub absorbed_col_raw: u128,
-    pub absorbed_debt_raw: u128,
-    pub top_tick: i32,
-    /// `1` perfect tick, `2` already liquidated (pin `tickStatus`).
-    pub tick_status: u8,
+    /// Debt units the full liquidation repays.
+    pub debt_units: u128,
+    /// Collateral units it pays out.
+    pub col_units: u128,
+    /// Timestamp of the block the vault was asked at (0 = never).
+    pub read_ts: u64,
     pub flags: u8,
-    pub _pad: [u8; 10],
+    pub _pad: [u8; 7],
 }
 
 impl VaultExtra {
-    /// `top_tick` is proven (single-NFT vault from `LogOperate`).
-    pub const TOP_KNOWN: u8 = 1 << 0;
+    /// The amounts are the `absorb_ = true` liquidation.
+    pub const ABSORB: u8 = 1 << 0;
 }
 
 const _: () = {
-    assert!(core::mem::size_of::<VaultRow>() == 192);
-    assert!(core::mem::align_of::<VaultRow>() == 16);
+    assert!(core::mem::size_of::<VaultRow>() == 156);
+    assert!(core::mem::size_of::<VaultRow>() <= 240);
     assert!(core::mem::size_of::<CatalogEntry>() == 32);
     assert!(core::mem::size_of::<VaultExtra>() == 48);
     assert!(core::mem::size_of::<VaultExtra>() <= liq_protocol::PositionExtraRepr::SIZE);

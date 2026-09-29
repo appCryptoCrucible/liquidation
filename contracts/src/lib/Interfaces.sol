@@ -226,13 +226,61 @@ interface ITroveManager {
     function batchLiquidateTroves(uint256[] calldata troveArray) external;
 }
 
-// ───────────────────────────── Fluid T1 ─────────────────────────────────
-/// T1 `liquidate` pin `9496626f`. T2/T3/T4 are different ABIs — do not call this
-/// on a non-T1 vault. `colPerUnitDebt_` is **1e18** min coll per debt (slip
-/// `(actualCol * 1e18) / actualDebt`). Not internal `colPerDebt` (1e27).
+// ───────────────────────────── Fluid vaults ──────────────────────────────
+/// `Instadapp/fluid-contracts-public` at `9496626f`. Four types, four ABIs —
+/// dispatch on the vault's type, never the selector (T2 `liquidate` and T3
+/// `liquidate` share one signature). `colPerUnitDebt_` is **1e18** min
+/// collateral (token, or col shares on T2/T4) per unit of debt (token, or
+/// debt shares on T3/T4): `(actualCol * 1e18) / actualDebt`. Not 1e27.
+///
+/// T1: normal collateral, normal debt. Native debt needs `msg.value ==
+/// debtAmt_`; the surplus over what was repaid is refunded.
 interface IFluidT1 {
     function liquidate(uint256 debtAmt_, uint256 colPerUnitDebt_, address to_, bool absorb_)
         external payable returns (uint256 actualDebtAmt_, uint256 actualColAmt_);
+}
+
+/// T2: smart collateral (DEX col shares), normal debt. The col shares come
+/// out in one token when one of the two per-share minimums is zero
+/// (`withdrawPerfectInOneToken`). Excess ETH is refunded (`_validateEth`).
+interface IFluidT2 {
+    function liquidate(
+        uint256 debtAmt_,
+        uint256 colPerUnitDebt_,
+        uint256 token0ColAmtPerUnitShares_,
+        uint256 token1ColAmtPerUnitShares_,
+        address to_,
+        bool absorb_
+    ) external payable returns (uint256 actualDebt_, uint256 actualColShares_, uint256 token0Col_, uint256 token1Col_);
+}
+
+/// T3: normal collateral, smart debt (DEX debt shares). `liquidate` pays
+/// exactly the token amounts given (one of them zero pays in one token),
+/// burns the debt shares that buys, and reverts below `debtSharesMin_`.
+/// Excess ETH is refunded (`_validateEth`).
+interface IFluidT3 {
+    function liquidate(
+        uint256 token0DebtAmt_,
+        uint256 token1DebtAmt_,
+        uint256 debtSharesMin_,
+        uint256 colPerUnitDebt_,
+        address to_,
+        bool absorb_
+    ) external payable returns (uint256 actualDebtShares_, uint256 actualCol_);
+}
+
+/// T4: smart collateral and smart debt. T3's payback and T2's withdraw.
+interface IFluidT4 {
+    function liquidate(
+        uint256 token0DebtAmt_,
+        uint256 token1DebtAmt_,
+        uint256 debtSharesMin_,
+        uint256 colPerUnitDebt_,
+        uint256 token0ColAmtPerUnitShares_,
+        uint256 token1ColAmtPerUnitShares_,
+        address to_,
+        bool absorb_
+    ) external payable returns (uint256 actualDebtShares_, uint256 actualColShares_, uint256 token0Col_, uint256 token1Col_);
 }
 
 // ───────────────────────────── Gearbox V3 ───────────────────────────────

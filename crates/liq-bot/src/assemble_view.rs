@@ -10,7 +10,7 @@ use std::sync::Arc;
 use alloy_primitives::{Address, U256};
 use liq_protocol::{ExecutorAdapter, Quote};
 use liq_router::{
-    euler_min_yield_from_quote, fluid_col_per_unit_debt_from_quote, gearbox_min_seized_from_quote,
+    euler_min_yield_from_quote, fluid_tail_from_quote, gearbox_min_seized_from_quote,
     leg_meta_from_pins, AssembleError, AssembleView, LegMeta, MarketView, PairTerms, TailPins,
     ViabilityBand,
 };
@@ -139,7 +139,7 @@ impl ProcessAssembleView {
         Self::apply_quote_derived(pins, quote, repay, seize, tol_bps)
     }
 
-    /// Fill quote-derived tail fields only. Does not invent `fluid_t1`,
+    /// Fill quote-derived tail fields only. Does not invent a Fluid vault type,
     /// Compound `is_cether`, or Gearbox full MultiCall.
     /// `tol_bps` is [`liq_router::select::SelectCfg::min_out_tolerance_bps`]:
     /// the slack between the quoted seize and the minimum handed to the
@@ -165,8 +165,10 @@ impl ProcessAssembleView {
                 pins.euler_collateral_vault = Some(target);
             }
             ExecutorAdapter::Fluid => {
-                pins.fluid_col_per_unit_debt =
-                    Some(fluid_col_per_unit_debt_from_quote(quote, repay, seize)?);
+                let f = pins
+                    .fluid
+                    .ok_or(AssembleError::Missing("fluid vault_type"))?;
+                pins.fluid_tail = Some(fluid_tail_from_quote(&f, quote, repay, seize, tol_bps)?);
             }
             ExecutorAdapter::Gearbox => {
                 pins.gearbox_min_seized =
@@ -260,8 +262,8 @@ mod tests {
             euler_min_yield: None,
             euler_collateral_vault: None,
             liquity_trove_id: None,
-            fluid_t1: None,
-            fluid_col_per_unit_debt: None,
+            fluid: None,
+            fluid_tail: None,
             gearbox_min_seized: None,
             gearbox_full: false,
             compound_ctoken_collateral: None,
@@ -308,14 +310,18 @@ mod tests {
         );
 
         let mut fluid = empty_pins(ExecutorAdapter::Fluid);
-        fluid.fluid_t1 = Some(true);
-        fluid.fluid_col_per_unit_debt = Some(RAY);
+        fluid.fluid = Some(liq_router::FluidPins {
+            kind: liq_plan::FLUID_T1,
+            flags: 0,
+            debt_units: U256::from(1u8),
+            col_units: U256::from(1u8),
+        });
         assert!(
             matches!(
                 leg_meta_from_pins(&fluid),
                 Err(AssembleError::Missing("fluid col_per_unit_debt"))
             ),
-            "1e27-scale Fluid pin must refuse, not assemble"
+            "a Fluid pin without its quote-derived floors must refuse"
         );
     }
 

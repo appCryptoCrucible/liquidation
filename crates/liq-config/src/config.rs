@@ -30,10 +30,26 @@ pub struct BotConfig {
     /// Executor / builder surface. Executor address filled at H3.
     #[serde(default)]
     pub venues: VenuesConfig,
-    /// Live HTTP send (H4 flip). Hot-reloadable. Default **false**.
-    /// Not a compiled constant. Must never default true.
+    /// Live HTTP send. Hot-reloadable; setting it false stops sending
+    /// without a restart. Not a compiled constant. A file that omits it reads
+    /// false; the committed `node.toml` sets it (D64).
     #[serde(default)]
     pub submit_enabled: bool,
+    /// First block the first-start state replay reads protocol logs from:
+    /// the earliest deployment among every address a bound adapter
+    /// subscribes to. The node's receipts must reach back this far
+    /// (`reth download --with-receipts-since` at or below it).
+    #[serde(default)]
+    pub backfill_from: u64,
+    /// Blocks between state snapshots while running. The last snapshot is
+    /// where a restart resumes (Reth re-executes the blocks after it), so it
+    /// must stay well inside the node's state history (10,064 blocks).
+    #[serde(default = "default_snapshot_every_blocks")]
+    pub snapshot_every_blocks: u64,
+}
+
+const fn default_snapshot_every_blocks() -> u64 {
+    100
 }
 
 const fn mainnet() -> u64 {

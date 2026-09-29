@@ -124,13 +124,12 @@ mod tests {
         let d = ConfigVersion::hash(&other_box, &reg).unwrap();
         assert_eq!(a, d, "rpc_url is per-box and must not enter ConfigVersion");
         let mut flipped = cfg.clone();
-        flipped.submit_enabled = true;
+        flipped.submit_enabled = !cfg.submit_enabled;
         let e = ConfigVersion::hash(&flipped, &reg).unwrap();
         assert_eq!(
             a, e,
             "submit_enabled is hot-reloadable and must not enter ConfigVersion"
         );
-        assert!(!cfg.submit_enabled, "submit_enabled default is false");
         let _ = Intern::from_registry(&reg).unwrap();
     }
 

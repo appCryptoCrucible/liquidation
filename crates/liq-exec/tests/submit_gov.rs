@@ -384,3 +384,39 @@ async fn ordinary_and_governance_share_the_resynced_nonces() {
     p.submit_path(&ordinary(102)).await.unwrap();
     assert_eq!(sent_nonces(&builder), vec![42, 43, 44, 43]);
 }
+
+/// The live-send resync bit follows the chain resync: on after a successful
+/// read, off when the node cannot answer, and POSTs follow it.
+#[tokio::test(flavor = "current_thread")]
+async fn nonce_resync_bit_follows_the_chain_read() {
+    let good = spawn_rpc(node_nonces(vec![], vec![(100, 42)])).await;
+    let builder = spawn_mock(Duration::ZERO).await;
+    let p = path(true, leak_str(builder.url.clone()), AllowAll);
+    p.nonce_resync.store(false, Ordering::Release);
+
+    p.sync_nonce(&ChainClient::new(&good.url).unwrap(), 101)
+        .await
+        .unwrap();
+    assert!(
+        p.nonce_resync.load(Ordering::Acquire),
+        "on after a chain read"
+    );
+
+    let down: Responder = Arc::new(|_req: &Value| Value::Null);
+    let bad = spawn_rpc(down).await;
+    assert!(p
+        .sync_nonce(&ChainClient::new(&bad.url).unwrap(), 102)
+        .await
+        .is_err());
+    assert!(
+        !p.nonce_resync.load(Ordering::Acquire),
+        "off when the read fails"
+    );
+    let r = p.submit_path(&ordinary(102)).await.unwrap();
+    assert_eq!(
+        r,
+        liq_types::SubmitReceipt::Recorded,
+        "no POST without a resync"
+    );
+    assert_eq!(builder.hits.load(Ordering::Relaxed), 0);
+}

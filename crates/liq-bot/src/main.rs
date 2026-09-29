@@ -1,5 +1,6 @@
-//! Process entry. Startup order is fail-closed (GUIDE 00 / 17). `submit_enabled`
-//! defaults false. Does not flip H4, start shadow clocks, or invent keys.
+//! Process entry. Startup order is fail-closed (GUIDE 00 / 17). Live send is
+//! `submit_enabled` (from `config/node.toml`, hot-reloaded) ∧ lease ∧ nonce
+//! resync. Does not invent keys.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -38,7 +39,14 @@ async fn entry() -> Result<(), startup::StartupError> {
         snapshot: data.join("snapshot.bin"),
         wal: data.join("wal.log"),
     };
+    if !liq_bot::state_build::head_path(&state).exists() {
+        liq_bot::state_build::build_first_snapshot(&config_dir, &state)
+            .await
+            .map_err(|e| startup::StartupError::Other(e.to_string()))?;
+    }
     let started = startup::run(&config_dir, &cores, &state, PROD_ALLOW_UNPINNED).await?;
+    // No ExEx here: nothing further to catch up on.
+    started.shared.lease.grant();
     let flag_file = config_dir.join("node.toml");
     if let Err(e) = reload::spawn_file_watch(
         flag_file.clone(),
@@ -61,7 +69,7 @@ async fn entry() -> Result<(), startup::StartupError> {
             .lease
             .live_send_permitted(started.shared.submit_enabled.get()),
         cold_restart_p99 = ?liq_bot::shared::COLD_RESTART_P99,
-        "liq-bot running without Reth (production entry is `reth node`; H4 not flipped; nonce resync ABSENT)"
+        "liq-bot running without Reth (production entry is `reth node`)"
     );
     let _ = started.forwarder;
     started

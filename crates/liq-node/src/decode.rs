@@ -165,12 +165,17 @@ sol! {
         event BalanceTransfer(address indexed from, address indexed to, uint256 value, uint256 index);
         event Initialized(address indexed underlyingAsset, address indexed pool, address treasury, address incentivesController, uint8 aTokenDecimals, string aTokenName, string aTokenSymbol, bytes params);
     }
+    interface IStableDebtToken {
+        event Mint(address indexed user, address indexed onBehalfOf, uint256 amount, uint256 currentBalance, uint256 balanceIncrease, uint256 newRate, uint256 avgStableRate, uint256 newTotalSupply);
+        event Burn(address indexed from, uint256 amount, uint256 currentBalance, uint256 balanceIncrease, uint256 avgStableRate, uint256 newTotalSupply);
+    }
     interface IVariableDebtToken {
         event Initialized(address indexed underlyingAsset, address indexed pool, address incentivesController, uint8 debtTokenDecimals, string debtTokenName, string debtTokenSymbol, bytes params);
     }
     interface IPoolConfigurator {
         event ReserveInitialized(address indexed asset, address indexed aToken, address stableDebtToken, address variableDebtToken, address interestRateStrategyAddress);
         event ReserveBorrowing(address indexed asset, bool enabled);
+        event ReserveStableRateBorrowing(address indexed asset, bool enabled);
         event ReserveFlashLoaning(address indexed asset, bool enabled);
         event PendingLtvChanged(address indexed asset, uint256 ltv);
         event CollateralConfigurationChanged(address indexed asset, uint256 ltv, uint256 liquidationThreshold, uint256 liquidationBonus);
@@ -298,6 +303,9 @@ pub enum EventKind {
     V3BalanceTransfer,
     V3ReserveInitialized,
     V3ReserveBorrowing,
+    V3ReserveStableRateBorrowing,
+    V3StableMint,
+    V3StableBurn,
     V3ReserveFlashLoaning,
     V3PendingLtvChanged,
     V3CollateralConfigurationChanged,
@@ -626,6 +634,18 @@ pub(crate) fn fill_topic0(out: &mut std::collections::HashMap<B256, EventKind>) 
         EventKind::V3ReserveBorrowing,
     );
     out.insert(
+        IPoolConfigurator::ReserveStableRateBorrowing::SIGNATURE_HASH,
+        EventKind::V3ReserveStableRateBorrowing,
+    );
+    out.insert(
+        IStableDebtToken::Mint::SIGNATURE_HASH,
+        EventKind::V3StableMint,
+    );
+    out.insert(
+        IStableDebtToken::Burn::SIGNATURE_HASH,
+        EventKind::V3StableBurn,
+    );
+    out.insert(
         IPoolConfigurator::ReserveFlashLoaning::SIGNATURE_HASH,
         EventKind::V3ReserveFlashLoaning,
     );
@@ -899,6 +919,11 @@ pub fn decode_typed(kind: EventKind, topics: &[B256], data: &[u8]) -> Result<()>
             chk::<IPoolConfigurator::ReserveInitialized>(topics, data)
         }
         EventKind::V3ReserveBorrowing => chk::<IPoolConfigurator::ReserveBorrowing>(topics, data),
+        EventKind::V3ReserveStableRateBorrowing => {
+            chk::<IPoolConfigurator::ReserveStableRateBorrowing>(topics, data)
+        }
+        EventKind::V3StableMint => chk::<IStableDebtToken::Mint>(topics, data),
+        EventKind::V3StableBurn => chk::<IStableDebtToken::Burn>(topics, data),
         EventKind::V3ReserveFlashLoaning => {
             chk::<IPoolConfigurator::ReserveFlashLoaning>(topics, data)
         }
@@ -1072,11 +1097,12 @@ mod tests {
     }
 
     /// Number of unique topic0s across both 03C coverage files: 59 V4 rows +
-    /// 61 V3 rows, less the 5 hashes shared between them (`Transfer`,
+    /// 64 V3 rows (stable-debt `Mint`/`Burn` and `ReserveStableRateBorrowing`
+    /// added 2026-09-29), less the 5 hashes shared between them (`Transfer`,
     /// `Upgraded`, ... ). Pinned so a parser that silently matched nothing
     /// could not make this test vacuous, and so a coverage row added by a
     /// later 03C pass fails here until it has a decoder.
-    const COVERAGE_TOPIC0S: usize = 115;
+    const COVERAGE_TOPIC0S: usize = 118;
 
     /// Oracle: committed 03C coverage files. Every unique topic0 must be in
     /// the sol! jump table, and the table must hold nothing else — the two
