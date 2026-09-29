@@ -159,11 +159,13 @@ impl ExExForwarder {
         self.to_hot.slots() > 0
     }
 
-    /// Permit registered by [`Notify::notified`]. Create this *before* checking
-    /// the rings so a wake between the check and the await is not lost.
-    /// The returned permit is itself `must_use`.
-    pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
-        self.wake.notified()
+    /// The hot thread's wake handle. Call `notified()` on it *before* checking
+    /// the rings so a wake between the check and the await is not lost. It
+    /// is a separate handle so the wait does not borrow the forwarder, which
+    /// the caller mutates between waits.
+    #[must_use]
+    pub fn waker(&self) -> Arc<Notify> {
+        Arc::clone(&self.wake)
     }
 
     /// Non-blocking. The ExEx future sends `FinishedHeight` for each.

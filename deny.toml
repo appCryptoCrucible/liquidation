@@ -13,6 +13,10 @@ ignore = [
   # rationale as RUSTSEC-2024-0436 — compile-time only, no safe upgrade
   # without an alloy version bump.
   "RUSTSEC-2026-0173", # proc-macro-error2 — unmaintained
+  # Transitive via reth-nippy-jar (Reth's static-file format, pinned by the
+  # reth v2.6.0 tag). Unmaintained, not vulnerable: the maintainers call
+  # 1.3.3 complete. Leaves with a Reth bump that drops it.
+  "RUSTSEC-2025-0141", # bincode — unmaintained
 ]
 
 [licenses]
@@ -35,6 +39,11 @@ allow = [
   # License Agreement — Permissive. A data license for a public root store,
   # not a code license; no copyleft/attribution obligation on this codebase.
   "CDLA-Permissive-2.0",
+  # Public-domain-equivalent, no conditions at all. Unlicense: pharos,
+  # async_io_stream, ws_stream_wasm (alloy-transport-ws). 0BSD: recvmsg,
+  # doctest-file (interprocess, Reth's IPC transport).
+  "Unlicense",
+  "0BSD",
 ]
 confidence-threshold = 0.8
 
@@ -45,3 +54,5 @@ wildcards = "allow"
 [sources]
 unknown-registry = "deny"
 unknown-git = "warn"
+# Reth is taken from its git tag (crates.io has no Reth 2.6 node crates).
+allow-git = ["https://github.com/paradigmxyz/reth"]

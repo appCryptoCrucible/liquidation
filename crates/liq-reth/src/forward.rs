@@ -211,8 +211,9 @@ async fn wait_for_rpc(url: &str) -> eyre::Result<()> {
 
 async fn push_owned(fwd: &mut ExExForwarder, hot: &HotHandle, n: Notification) -> eyre::Result<()> {
     let mut pending = Some(n);
+    let wake = fwd.waker();
     loop {
-        let notified = fwd.notified();
+        let notified = wake.notified();
         if fwd.has_capacity() {
             let n = pending
                 .take()
@@ -228,8 +229,9 @@ async fn push_owned(fwd: &mut ExExForwarder, hot: &HotHandle, n: Notification) -
 }
 
 async fn wait_consistent(fwd: &mut ExExForwarder, hot: &HotHandle) -> eyre::Result<FinishedUpTo> {
+    let wake = fwd.waker();
     loop {
-        let notified = fwd.notified();
+        let notified = wake.notified();
         if let Some(done) = fwd.take_finished() {
             return Ok(done);
         }
