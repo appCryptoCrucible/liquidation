@@ -1345,3 +1345,35 @@ fn gov_spell_appends_the_address_and_excludes_a_payload() {
     );
     let _ = FLAG_GOV_EXEC;
 }
+
+/// A Curve crypto leg (venue 4) is exact-in like a plain Curve leg: the same
+/// 22-byte data, the same surplus-sweep rule, exact-out refused.
+#[test]
+fn curve_crypto_leg_validates_like_curve() {
+    let c = ctx();
+    let mut p = plan_v3();
+    let owed = p.groups[0].repay_swaps[0].amount;
+    p.groups[0].repay_swaps[0] = SwapLeg {
+        venue: liq_plan::VENUE_CURVE_CRYPTO_POOL,
+        token_in: WETH,
+        token_out: DAI,
+        flags: 0,
+        amount: owed,
+        data: curve_data(2, 0),
+    };
+    p.profit_swaps.push(profit_tb(DAI));
+    let bytes = EncodedPlan::encode(&p, &c).expect("validate").into_bytes();
+    let back = decode_batch(&bytes).unwrap();
+    assert!(wire_eq(&p, &back));
+    p.groups[0].repay_swaps[0].flags = LEG_EXACT_OUT;
+    assert!(matches!(
+        EncodedPlan::encode(&p, &c),
+        Err(EncodeError::CurveExactOut)
+    ));
+    p.groups[0].repay_swaps[0].flags = 0;
+    p.groups[0].repay_swaps[0].data = curve_data(2, 0)[..21].to_vec();
+    assert!(matches!(
+        EncodedPlan::encode(&p, &c),
+        Err(EncodeError::BadCurveDataLen(21))
+    ));
+}

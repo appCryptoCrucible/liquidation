@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {Executor} from "../../src/Executor.sol";
 import {ExecutorTestBase} from "./Base.sol";
 import {PlanBuilder as PB} from "./PlanBuilder.sol";
-import {MockV2Pair, MockCurvePool} from "./Mocks.sol";
+import {MockV2Pair, MockCurvePool, MockCurveCryptoPool} from "./Mocks.sol";
 
 /// Pool-direct UniswapV2 / SushiSwap and Curve legs. The success paths run
 /// the reference liquidation with the repay swap on the new venue; the
@@ -31,6 +31,16 @@ contract ExecutorVenuesTest is ExecutorTestBase {
         coins[1] = address(debt);
         c = new MockCurvePool(coins);
         c.setRate(600, 1); // 1 raw COLL → 600 raw DEBT = 60_000 DEBT / COLL
+        debt.mint(address(c), 1e15);
+        if (register) curveRegistry.register(address(c));
+    }
+
+    function _crypto(bool register) internal returns (MockCurveCryptoPool c) {
+        address[] memory coins = new address[](2);
+        coins[0] = address(coll);
+        coins[1] = address(debt);
+        c = new MockCurveCryptoPool(coins);
+        c.setRate(600, 1);
         debt.mint(address(c), 1e15);
         if (register) curveRegistry.register(address(c));
     }
@@ -146,6 +156,65 @@ contract ExecutorVenuesTest is ExecutorTestBase {
         vm.expectRevert(abi.encodeWithSelector(Executor.ExactOutUnsupported.selector, uint8(3)));
         _exec(_planWith(
             PB.curveSwap(address(c), 0, 1, address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            1, _collProfit()
+        ));
+    }
+
+    // ── Curve crypto ──────────────────────────────────────────────────────
+
+    /// A crypto pool repays exact-in through `exchange(uint256,uint256,…)`,
+    /// with the same surplus sweep and allowance reset as a plain pool.
+    function test_curve_crypto_exact_in_repay_with_surplus_debt_swept() public {
+        MockCurveCryptoPool c = _crypto(true);
+        uint256 sinkBefore = weth.balanceOf(sink);
+        _exec(_planWith(
+            PB.curveCryptoSwap(address(c), 0, 1, address(coll), address(debt), 0, 0.51e8),
+            2,
+            bytes.concat(
+                _collProfit(),
+                PB.poolSwap(address(pDebtWeth), address(debt), address(weth), PB.L_TAKE_BALANCE, 0)
+            )
+        ));
+        assertGt(weth.balanceOf(sink), sinkBefore, "no profit");
+        assertEq(debt.balanceOf(address(ex)), 0, "surplus debt swept");
+        assertEq(coll.allowance(address(ex), address(c)), 0, "crypto allowance zeroed");
+        _assertClean();
+    }
+
+    function test_curve_crypto_unregistered_pool_is_refused() public {
+        MockCurveCryptoPool c = _crypto(false);
+        vm.expectRevert(bytes("no registry"));
+        _exec(_planWith(
+            PB.curveCryptoSwap(address(c), 0, 1, address(coll), address(debt), 0, 0.51e8),
+            1, _collProfit()
+        ));
+    }
+
+    function test_curve_crypto_wrong_coin_index_is_refused() public {
+        MockCurveCryptoPool c = _crypto(true);
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(4), address(c)));
+        _exec(_planWith(
+            PB.curveCryptoSwap(address(c), 1, 0, address(coll), address(debt), 0, 0.51e8),
+            1, _collProfit()
+        ));
+    }
+
+    function test_curve_crypto_exact_out_is_refused() public {
+        MockCurveCryptoPool c = _crypto(true);
+        vm.expectRevert(abi.encodeWithSelector(Executor.ExactOutUnsupported.selector, uint8(4)));
+        _exec(_planWith(
+            PB.curveCryptoSwap(address(c), 0, 1, address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            1, _collProfit()
+        ));
+    }
+
+    /// A plain Curve leg against a crypto pool (or the reverse) fails: the
+    /// signed and unsigned `exchange` selectors differ.
+    function test_curve_plain_venue_on_a_crypto_pool_reverts() public {
+        MockCurveCryptoPool c = _crypto(true);
+        vm.expectRevert();
+        _exec(_planWith(
+            PB.curveSwap(address(c), 0, 1, address(coll), address(debt), 0, 0.51e8),
             1, _collProfit()
         ));
     }

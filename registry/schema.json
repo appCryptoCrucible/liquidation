@@ -151,7 +151,7 @@
       "type": "object",
       "required": ["venue", "token0", "token1", "fee", "factory", "deployed_block"],
       "properties": {
-        "venue": { "type": "string", "enum": ["univ3", "univ2", "curve", "curve_ng"] },
+        "venue": { "type": "string", "enum": ["univ3", "univ2", "curve", "curve_ng", "curve_crypto"] },
         "token0": { "$ref": "#/$defs/address" },
         "token1": { "$ref": "#/$defs/address" },
         "fee": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
@@ -164,6 +164,11 @@
           "minItems": 2,
           "maxItems": 4
         },
+        "crypto_kind": {
+          "description": "curve_crypto only: the deployed math the pool runs.",
+          "type": "string",
+          "enum": ["two_v1", "two_v200", "two_v210", "tri"]
+        },
         "asset_types": {
           "description": "curve_ng only: each coin's NG asset_type (0 standard, 1 rate oracle, 3 ERC-4626). Rebasing (2) is not admitted.",
           "type": "array",
@@ -174,7 +179,7 @@
       },
       "allOf": [
         {
-          "if": { "properties": { "venue": { "enum": ["curve", "curve_ng"] } } },
+          "if": { "properties": { "venue": { "enum": ["curve", "curve_ng", "curve_crypto"] } } },
           "then": { "required": ["coins"] },
           "else": { "not": { "required": ["coins"] } }
         },
@@ -182,6 +187,11 @@
           "if": { "properties": { "venue": { "const": "curve_ng" } } },
           "then": { "required": ["asset_types"] },
           "else": { "not": { "required": ["asset_types"] } }
+        },
+        {
+          "if": { "properties": { "venue": { "const": "curve_crypto" } } },
+          "then": { "required": ["crypto_kind"] },
+          "else": { "not": { "required": ["crypto_kind"] } }
         }
       ],
       "additionalProperties": false

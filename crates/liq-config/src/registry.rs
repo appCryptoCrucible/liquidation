@@ -131,6 +131,23 @@ pub struct PoolEntry {
     /// a pool log. Empty otherwise.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub asset_types: Vec<u8>,
+    /// Curve crypto only: which deployed math the pool runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crypto_kind: Option<CryptoKind>,
+}
+
+/// Curve crypto pool math (see `liq_router::crypto`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CryptoKind {
+    /// Original `CurveCryptoSwap2` (`newton_y` in the pool).
+    TwoV1,
+    /// twocrypto-ng, `CurveTwocryptoMathOptimized` v2.0.0.
+    TwoV200,
+    /// twocrypto-ng, `CurveTwocryptoMathOptimized` v2.1.0.
+    TwoV210,
+    /// tricrypto-ng, `CurveTricryptoMathOptimized` v2.0.0.
+    Tri,
 }
 
 /// Pool family. Unknown venues fail serde — we must not call `token0`/`fee`
@@ -147,6 +164,10 @@ pub enum PoolVenue {
     /// at discovery (1e10). Same `exchange(int128,int128,…)` as plain.
     #[serde(rename = "curve_ng")]
     CurveNg,
+    /// Curve crypto pool (twocrypto-ng, tricrypto-ng, `CurveCryptoSwap2`):
+    /// `exchange(uint256,uint256,uint256,uint256)`; `fee` is 0 (dynamic).
+    #[serde(rename = "curve_crypto")]
+    CurveCrypto,
 }
 
 impl PoolVenue {
@@ -154,7 +175,7 @@ impl PoolVenue {
     #[inline]
     #[must_use]
     pub const fn is_curve(self) -> bool {
-        matches!(self, Self::Curve | Self::CurveNg)
+        matches!(self, Self::Curve | Self::CurveNg | Self::CurveCrypto)
     }
 }
 

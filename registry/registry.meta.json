@@ -89,7 +89,7 @@
     }
   },
   "token_count": 1073,
-  "pool_count": 1297,
+  "pool_count": 1355,
   "oracle_proxy_count": 15,
   "failures": {
     "admission:unpriced:0x0000206329b97db379d5e1bf586bbdb969c63274": "no USD source (USDA): feed registry + aave/spark oracles",
@@ -812,6 +812,6 @@
     "WP C2 triage @ block 26015175: aave-v4 re-enumerated via getSpokeCount/getSpokeAddress (+31 spokes, +4 hubs; C1's log sweep from 25.5M found 22 of 53)",
     "WP C2 triage: morpho debt switched to accrued expectedTotalBorrowAssets, silo to getDebtAssets(); Family B repriced at one block (admitted 190 -> 192)",
     "WP C2 triage: \u00a74b flagged 9 symbol-colliding tokens on 25 market entries",
-    "exits: univ2/curve/curve_ng discovered by tools/registry/discover_exits.py at block 26084031"
+    "exits: univ2/curve/curve_ng/curve_crypto discovered by tools/registry/discover_exits.py at block 26084994"
   ]
 }

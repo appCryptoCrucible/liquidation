@@ -40,6 +40,7 @@ use liq_types::AssetId;
 use smallvec::SmallVec;
 use uniswap_v3_math::{liquidity_math, sqrt_price_math, tick_math};
 
+use crate::crypto::CryptoState;
 use crate::solver::{
     curve_rho, mul_div_512, narrow, next_tick_within_word, CurveState, Leg, Pool, PoolBook, PoolId,
     PoolState, RouteError, V3State, PIPS, Q192, Q96,
@@ -171,6 +172,13 @@ enum Shape<'a> {
     },
     Curve {
         st: &'a CurveState,
+        i: u8,
+        j: u8,
+    },
+    /// Curve crypto pool: `ρ(x)` from a forward difference of the exact
+    /// output ([`CryptoState::rho`]), inverted like `Curve`.
+    Crypto {
+        st: &'a CryptoState,
         i: u8,
         j: u8,
     },
@@ -425,7 +433,42 @@ fn build_model<'a>(leg: Leg, pool: &'a Pool, total: U256) -> Result<Model<'a>, R
             build_v2(leg, pool, rin, rout, total)
         }
         PoolState::Curve(s) => build_curve(leg, pool, s, total),
+        PoolState::Crypto(s) => build_crypto(leg, pool, s, total),
     }
+}
+
+fn build_crypto<'a>(
+    leg: Leg,
+    pool: &'a Pool,
+    st: &'a CryptoState,
+    total: U256,
+) -> Result<Model<'a>, RouteError> {
+    let rho0 = st.rho(leg.i, leg.j, U256::ZERO)?;
+    let cap = if pool.quote_exact_in(leg.i, leg.j, total).is_ok() {
+        total
+    } else {
+        let (mut lo, mut hi) = (U256::ZERO, total);
+        while hi.checked_sub(lo).ok_or(RouteError::Math)? > rel_tol(total) {
+            let mid = midpoint(lo, hi)?;
+            if pool.quote_exact_in(leg.i, leg.j, mid).is_ok() {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    };
+    Ok(Model {
+        leg,
+        pool,
+        rho0,
+        cap,
+        shape: Shape::Crypto {
+            st,
+            i: leg.i,
+            j: leg.j,
+        },
+    })
 }
 
 #[inline]
@@ -471,6 +514,24 @@ impl Model<'_> {
                 // Smooth, monotone: invert ρ(x) on [0, cap].
                 let f =
                     |x: U256| -> Result<I512, RouteError> { diff(curve_rho(st, *i, *j, x)?, rho) };
+                let f_cap = f(self.cap)?;
+                if !f_cap.is_negative() {
+                    return Ok(self.cap);
+                }
+                let f0 = diff(self.rho0, rho)?;
+                illinois(
+                    f,
+                    U256::ZERO,
+                    self.cap,
+                    f0,
+                    f_cap,
+                    rel_tol(self.cap),
+                    budget.max_iters,
+                )?
+            }
+            Shape::Crypto { st, i, j } => {
+                // Same inversion, ρ from the exact output.
+                let f = |x: U256| -> Result<I512, RouteError> { diff(st.rho(*i, *j, x)?, rho) };
                 let f_cap = f(self.cap)?;
                 if !f_cap.is_negative() {
                     return Ok(self.cap);
@@ -539,7 +600,7 @@ impl Model<'_> {
                 Ok(Some((a, diff(b_raw, seg.cum)?)))
             }
             Shape::V2 { a, b } => Ok(Some((*a, i512(*b)))),
-            Shape::Curve { .. } => Ok(None),
+            Shape::Curve { .. } | Shape::Crypto { .. } => Ok(None),
         }
     }
 }
@@ -671,7 +732,7 @@ fn water_fill(
                     bps.push(last.rho_lo);
                 }
             }
-            Shape::V2 { .. } | Shape::Curve { .. } => bps.push(m.rho0),
+            Shape::V2 { .. } | Shape::Curve { .. } | Shape::Crypto { .. } => bps.push(m.rho0),
         }
     }
     bps.sort_unstable_by(|x, y| y.cmp(x));

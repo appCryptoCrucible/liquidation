@@ -33,6 +33,8 @@ use liq_types::{AssetId, LogFilter, LogSubscriber};
 use smallvec::SmallVec;
 use uniswap_v3_math::{liquidity_math, swap_math, tick_math};
 
+use crate::crypto::CryptoState;
+
 /// Why a quote or solve refused. Every variant is a *refusal*, never a
 /// guess: the caller logs and skips.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -154,12 +156,71 @@ impl CurveState {
     }
 }
 
+/// Curve crypto-pool events. `sol!` gives the 8-field v1 event an 8-argument
+/// constructor, hence the module-level allow.
+#[allow(clippy::too_many_arguments)]
+mod crypto_events {
+    alloy_sol_types::sol! {
+        // Curve crypto pools. The names are the Vyper ones; one interface per
+        // shape, because the array width and field count are in the signature.
+        interface ICryptoNg {
+            event TokenExchange(address indexed buyer, uint256 sold_id, uint256 tokens_sold, uint256 bought_id, uint256 tokens_bought, uint256 fee, uint256 packed_price_scale);
+            event RemoveLiquidityOne(address indexed provider, uint256 token_amount, uint256 coin_index, uint256 coin_amount, uint256 approx_fee, uint256 packed_price_scale);
+            event NewParameters(uint256 mid_fee, uint256 out_fee, uint256 fee_gamma, uint256 allowed_extra_profit, uint256 adjustment_step, uint256 ma_time);
+            event RampAgamma(uint256 initial_A, uint256 future_A, uint256 initial_gamma, uint256 future_gamma, uint256 initial_time, uint256 future_time);
+            event StopRampA(uint256 current_A, uint256 current_gamma, uint256 time);
+            event ClaimAdminFee(address indexed admin, uint256 tokens);
+            event CommitNewParameters(uint256 indexed deadline, uint256 mid_fee, uint256 out_fee, uint256 fee_gamma, uint256 allowed_extra_profit, uint256 adjustment_step, uint256 ma_time);
+        }
+        interface ICryptoTwo {
+            event AddLiquidity(address indexed provider, uint256[2] token_amounts, uint256 fee, uint256 token_supply, uint256 packed_price_scale);
+            event RemoveLiquidity(address indexed provider, uint256[2] token_amounts, uint256 token_supply);
+            event ClaimAdminFee(address indexed admin, uint256[2] tokens);
+            event NewParameters(uint256 mid_fee, uint256 out_fee, uint256 fee_gamma, uint256 allowed_extra_profit, uint256 adjustment_step, uint256 ma_time, uint256 xcp_ma_time);
+        }
+        interface ICryptoTri {
+            event AddLiquidity(address indexed provider, uint256[3] token_amounts, uint256 fee, uint256 token_supply, uint256 packed_price_scale);
+            event RemoveLiquidity(address indexed provider, uint256[3] token_amounts, uint256 token_supply);
+        }
+        interface ICryptoV1 {
+            event TokenExchange(address indexed buyer, uint256 sold_id, uint256 tokens_sold, uint256 bought_id, uint256 tokens_bought);
+            event AddLiquidity(address indexed provider, uint256[2] token_amounts, uint256 fee, uint256 token_supply);
+            event RemoveLiquidityOne(address indexed provider, uint256 token_amount, uint256 coin_index, uint256 coin_amount);
+            event CommitNewParameters(uint256 indexed deadline, uint256 admin_fee, uint256 mid_fee, uint256 out_fee, uint256 fee_gamma, uint256 allowed_extra_profit, uint256 adjustment_step, uint256 ma_half_time);
+        }
+    }
+}
+use crypto_events::{ICryptoNg, ICryptoTri, ICryptoTwo, ICryptoV1};
+
+/// Crypto-pool topic0s that change the cached state (every variant: the
+/// original `CurveCryptoSwap2`, twocrypto-ng, tricrypto-ng). The state is
+/// also re-read every block, so a missed topic costs at most that block.
+const CRYPTO_STALE_TOPICS: [B256; 16] = [
+    ICryptoNg::TokenExchange::SIGNATURE_HASH,
+    ICryptoNg::RemoveLiquidityOne::SIGNATURE_HASH,
+    ICryptoNg::NewParameters::SIGNATURE_HASH,
+    ICryptoNg::RampAgamma::SIGNATURE_HASH,
+    ICryptoNg::StopRampA::SIGNATURE_HASH,
+    ICryptoNg::ClaimAdminFee::SIGNATURE_HASH,
+    ICryptoNg::CommitNewParameters::SIGNATURE_HASH,
+    ICryptoTwo::AddLiquidity::SIGNATURE_HASH,
+    ICryptoTwo::RemoveLiquidity::SIGNATURE_HASH,
+    ICryptoTwo::ClaimAdminFee::SIGNATURE_HASH,
+    ICryptoTwo::NewParameters::SIGNATURE_HASH,
+    ICryptoTri::AddLiquidity::SIGNATURE_HASH,
+    ICryptoTri::RemoveLiquidity::SIGNATURE_HASH,
+    ICryptoV1::TokenExchange::SIGNATURE_HASH,
+    ICryptoV1::AddLiquidity::SIGNATURE_HASH,
+    ICryptoV1::RemoveLiquidityOne::SIGNATURE_HASH,
+];
+
 /// Swap venue family. **No `UniV4`, no `Balancer`** — by construction.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Venue {
     UniV2,
     UniV3,
     CurveStable,
+    CurveCrypto,
 }
 
 /// Dense pool index into a [`PoolBook`].
@@ -329,6 +390,7 @@ pub enum PoolState {
     V2(V2State),
     V3(V3State),
     Curve(CurveState),
+    Crypto(CryptoState),
 }
 
 /// One routable pool.
@@ -353,6 +415,7 @@ impl Pool {
             PoolState::V2(_) => Venue::UniV2,
             PoolState::V3(_) => Venue::UniV3,
             PoolState::Curve(_) => Venue::CurveStable,
+            PoolState::Crypto(_) => Venue::CurveCrypto,
         }
     }
 
@@ -374,6 +437,7 @@ impl Pool {
             PoolState::V2(s) => !s.reserve0.is_zero() && !s.reserve1.is_zero(),
             PoolState::V3(s) => !s.sqrt_price_x96.is_zero(),
             PoolState::Curve(s) => !s.stale && s.balances.iter().all(|b| !b.is_zero()),
+            PoolState::Crypto(s) => s.is_live(),
         }
     }
 
@@ -420,6 +484,7 @@ impl Pool {
                 narrow(q.root(2))
             }
             PoolState::Curve(s) => curve_rho(s, i, j, U256::ZERO),
+            PoolState::Crypto(s) => s.rho(i, j, U256::ZERO),
         }
     }
 }
@@ -433,6 +498,7 @@ impl PoolState {
             PoolState::V3(s) => v3_swap(s, zero_for_one(i, j)?, amount_in).map(|r| r.out),
             PoolState::V2(s) => v2_swap(s, zero_for_one(i, j)?, amount_in).map(|r| r.0),
             PoolState::Curve(s) => curve_exchange(s, i, j, amount_in).map(|r| r.0),
+            PoolState::Crypto(s) => s.dy(i, j, amount_in),
         }
     }
 
@@ -461,6 +527,14 @@ impl PoolState {
                 *s.balances
                     .get_mut(usize::from(j))
                     .ok_or(RouteError::BadLeg)? = bj;
+                Ok(out)
+            }
+            PoolState::Crypto(s) => {
+                // The pool's `tweak_price` moves `D` and `price_scale` after
+                // the swap, which this model does not follow: a later leg of
+                // the same plan must not quote this pool again.
+                let out = s.dy(i, j, amount_in)?;
+                s.stale = true;
                 Ok(out)
             }
         }
@@ -1052,6 +1126,9 @@ impl PoolBook {
             PoolState::Curve(c) if c.balances.len() != n || c.rates.len() != n => {
                 return Err(RouteError::BadLeg)
             }
+            PoolState::Crypto(c) if c.balances.len() != n || c.precisions.len() != n => {
+                return Err(RouteError::BadLeg)
+            }
             _ => {}
         }
         let id = PoolId(u32::try_from(self.pools.len()).map_err(|_| RouteError::Math)?);
@@ -1158,6 +1235,42 @@ impl PoolBook {
         Ok(true)
     }
 
+    /// Replace a crypto pool's state from a read pinned at `block`. Refused
+    /// (`Ok(false)`) when a pool log newer than `block` made it stale, or the
+    /// pool is not a crypto pool.
+    pub fn reseed_crypto(
+        &mut self,
+        id: PoolId,
+        read: &crate::crypto::CryptoRead,
+        block: u64,
+    ) -> Result<bool, RouteError> {
+        let Some(PoolState::Crypto(c)) = self.get_mut(id).map(|p| &mut p.state) else {
+            return Ok(false);
+        };
+        if c.stale && c.stale_block > block {
+            return Ok(false);
+        }
+        if read.balances.len() != c.balances.len()
+            || read.price_scale.len() != c.price_scale.len()
+            || read.balances.iter().any(|b| b.is_zero())
+        {
+            return Err(RouteError::BadLeg);
+        }
+        c.balances = read.balances.iter().copied().collect();
+        c.price_scale = read.price_scale.iter().copied().collect();
+        c.d = read.d;
+        c.ann = read.ann;
+        c.gamma = read.gamma;
+        c.mid_fee = read.mid_fee;
+        c.out_fee = read.out_fee;
+        c.fee_gamma = read.fee_gamma;
+        // A ramping pool recomputes D inside `exchange`: not modelled.
+        c.stale = read.ramping;
+        c.read_block = block;
+        self.generation = self.generation.wrapping_add(1);
+        Ok(true)
+    }
+
     /// Pools added by `PoolCreated` since start (each needs a filter
     /// re-subscribe at the 03A router).
     #[inline]
@@ -1193,6 +1306,15 @@ impl PoolBook {
             PoolState::V2(s) => fold_v2(s, t0, log),
             PoolState::Curve(s) => {
                 if s.stale_topics().contains(&t0) {
+                    s.stale = true;
+                    s.stale_block = s.stale_block.max(log.block);
+                    true
+                } else {
+                    false
+                }
+            }
+            PoolState::Crypto(s) => {
+                if CRYPTO_STALE_TOPICS.contains(&t0) {
                     s.stale = true;
                     s.stale_block = s.stale_block.max(log.block);
                     true
@@ -1396,6 +1518,7 @@ impl LogSubscriber for PoolBook {
                 ],
                 PoolState::V2(_) => &[IUniswapV2Pair::Sync::SIGNATURE_HASH],
                 PoolState::Curve(ref c) => c.stale_topics(),
+                PoolState::Crypto(_) => &CRYPTO_STALE_TOPICS,
             };
             out.extend(topics.iter().map(|&topic0| LogFilter {
                 address: p.address,
@@ -1429,18 +1552,23 @@ mod tests {
     /// V4 or Balancer pool has no representation and cannot be added.
     #[test]
     fn v4_balancer_never_venues() {
-        const ALL: [Venue; 3] = [Venue::UniV2, Venue::UniV3, Venue::CurveStable];
+        const ALL: [Venue; 4] = [
+            Venue::UniV2,
+            Venue::UniV3,
+            Venue::CurveStable,
+            Venue::CurveCrypto,
+        ];
         for v in ALL {
             // Exhaustive match: adding a variant is a compile error here.
             match v {
-                Venue::UniV2 | Venue::UniV3 | Venue::CurveStable => (),
+                Venue::UniV2 | Venue::UniV3 | Venue::CurveStable | Venue::CurveCrypto => (),
             }
         }
         let src = include_str!("solver.rs");
         let start = src.find("pub enum Venue {").unwrap();
         let body = &src[start..src[start..].find('}').unwrap() + start];
         assert!(!body.contains("V4") && !body.contains("Balancer"), "{body}");
-        assert_eq!(body.matches(',').count(), 3);
+        assert_eq!(body.matches(',').count(), 4);
     }
 
     /// Oracle: independent implementation. A full-range V3 position at

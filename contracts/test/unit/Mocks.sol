@@ -1119,6 +1119,28 @@ contract MockCurvePool {
     }
 }
 
+/// Curve crypto pool double: unsigned indices, a fixed rate, and a
+/// `uint256` return (twocrypto-ng returns `dy`).
+contract MockCurveCryptoPool {
+    address[] public coinList;
+    uint256 public num = 1;
+    uint256 public den = 1;
+
+    constructor(address[] memory c) { coinList = c; }
+
+    function setRate(uint256 n, uint256 d) external { num = n; den = d; }
+
+    function coins(uint256 i) external view returns (address) { return coinList[i]; }
+
+    function exchange(uint256 i, uint256 j, uint256 dx, uint256 minDy) external returns (uint256) {
+        Tok.pull(coinList[i], msg.sender, address(this), dx);
+        uint256 dy = dx * num / den;
+        require(dy >= minDy, "crypto: min_dy");
+        Tok.push(coinList[j], msg.sender, dy);
+        return dy;
+    }
+}
+
 /// MetaRegistry double: an unregistered pool reverts, as the real one does.
 contract MockCurveRegistry {
     mapping(address => bool) internal registered;

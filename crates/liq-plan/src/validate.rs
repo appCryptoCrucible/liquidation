@@ -6,8 +6,8 @@ use liq_flash::fee_amount;
 use liq_protocol::ExecutorAdapter;
 use liq_types::fixed::{mul_div, Rounding, WAD};
 use liq_wire::wire::{
-    LegTail, LEG_EXACT_OUT, LEG_TAKE_BALANCE, V2_FACTORY_SUSHI, VENUE_CURVE_POOL, VENUE_ROUTER,
-    VENUE_UNIV2_POOL, VENUE_UNIV3_POOL,
+    LegTail, LEG_EXACT_OUT, LEG_TAKE_BALANCE, V2_FACTORY_SUSHI, VENUE_CURVE_CRYPTO_POOL,
+    VENUE_CURVE_POOL, VENUE_ROUTER, VENUE_UNIV2_POOL, VENUE_UNIV3_POOL,
 };
 
 use crate::error::{EncodeError, Result};
@@ -357,7 +357,7 @@ fn check_swap(s: &SwapLeg) -> Result<()> {
                 }
             }
         }
-        VENUE_CURVE_POOL => {
+        VENUE_CURVE_POOL | VENUE_CURVE_CRYPTO_POOL => {
             if s.data.len() != 22 {
                 return Err(EncodeError::BadCurveDataLen(s.data.len()));
             }

@@ -5,7 +5,7 @@ import {SafeTransfer} from "./lib/SafeTransfer.sol";
 import {Plan, FlashGroup, LiqLeg, SwapLeg, FluidTail, PlanDecoder} from "./lib/PlanDecoder.sol";
 import {
     IERC20, IWETH, IAavePool, IAaveV4Spoke, IMorpho, MarketParams,
-    IUniV3Pool, IUniV2Pair, ICurvePool, ICurveMetaRegistry, IPoolManager, IDssFlash,
+    IUniV3Pool, IUniV2Pair, ICurvePool, ICurveCryptoPool, ICurveMetaRegistry, IPoolManager, IDssFlash,
     IEVault, IEVC, ISiloHook, ITroveManager, IFluidT1, IFluidT2, IFluidT3, IFluidT4, ICreditFacadeV3, ICreditFacadeV3Multicall, MultiCall, PriceUpdate,
     ICToken, IComptroller, ICErc20, ICEther, IPayloadsController, IDssSpell, IDSPause
 } from "./lib/Interfaces.sol";
@@ -92,6 +92,9 @@ contract Executor {
     /// data = pool (20) ‖ i (1) ‖ j (1). Exact-input only — Curve has no
     /// exact-output swap.
     uint8 private constant S_CURVE_POOL = 3;
+    // Curve crypto pool, pool-direct, exact input: MetaRegistry-verified like
+    // S_CURVE_POOL, `exchange(uint256,uint256,uint256,uint256)`.
+    uint8 private constant S_CURVE_CRYPTO_POOL = 4;
     /// Uniswap V2 / SushiSwap swap fee, 0.30 %.
     uint256 private constant V2_FEE_KEEP = 997;
 
@@ -1268,6 +1271,8 @@ contract Executor {
             _swapV2(s, amount, data);
         } else if (s.venue == S_CURVE_POOL) {
             _swapCurve(s, amount, data);
+        } else if (s.venue == S_CURVE_CRYPTO_POOL) {
+            _swapCurveCrypto(s, amount, data);
         } else {
             revert UnknownVenue(s.venue);
         }
@@ -1330,6 +1335,24 @@ contract Executor {
         // i, j are uint8: widening to uint128 then int128 is lossless.
         // forge-lint: disable-next-line(unsafe-typecast)
         ICurvePool(pool).exchange(int128(uint128(i)), int128(uint128(j)), amount, 0);
+        s.tokenIn.safeApprove(pool, 0);
+    }
+
+    /// Pool-direct Curve crypto pool, exact input. Same checks as
+    /// `_swapCurve` (MetaRegistry, coin indices), unsigned indices.
+    function _swapCurveCrypto(SwapLeg memory s, uint256 amount, bytes calldata data) internal {
+        if (s.flags & L_EXACT_OUT != 0) revert ExactOutUnsupported(S_CURVE_CRYPTO_POOL);
+        if (data.length != 22) revert BadPool(S_CURVE_CRYPTO_POOL, address(0));
+        address pool = address(bytes20(data[0:20]));
+        uint256 i = uint8(data[20]);
+        uint256 j = uint8(data[21]);
+        if (!ICurveMetaRegistry(CURVE_REGISTRY).is_registered(pool)
+            || ICurveCryptoPool(pool).coins(i) != s.tokenIn
+            || ICurveCryptoPool(pool).coins(j) != s.tokenOut) {
+            revert BadPool(S_CURVE_CRYPTO_POOL, pool);
+        }
+        s.tokenIn.safeApprove(pool, amount);
+        ICurveCryptoPool(pool).exchange(i, j, amount, 0);
         s.tokenIn.safeApprove(pool, 0);
     }
 

@@ -19,6 +19,7 @@ library PlanBuilder {
     uint8 internal constant A_FLUID = 6; uint8 internal constant A_GEARBOX = 7; uint8 internal constant A_COMPOUND = 8;
     uint8 internal constant S_POOL = 0; uint8 internal constant S_ROUTER = 1;
     uint8 internal constant S_V2 = 2; uint8 internal constant S_CURVE = 3;
+    uint8 internal constant S_CURVE_CRYPTO = 4;
 
     function header(uint8 flags, uint16 bidBps, uint128 gasCostWei, uint128 minProfit, uint8 groups)
         internal pure returns (bytes memory)
@@ -124,6 +125,12 @@ library PlanBuilder {
         internal pure returns (bytes memory)
     {
         return swap(S_CURVE, tIn, tOut, flags, amount, abi.encodePacked(pool, i, j));
+    }
+
+    function curveCryptoSwap(address pool, uint8 i, uint8 j, address tIn, address tOut, uint8 flags, uint128 amount)
+        internal pure returns (bytes memory)
+    {
+        return swap(S_CURVE_CRYPTO, tIn, tOut, flags, amount, abi.encodePacked(pool, i, j));
     }
 
     function routerSwap(address router, address tIn, address tOut, uint8 flags, uint128 amount, bytes memory call)

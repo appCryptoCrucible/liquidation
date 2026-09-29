@@ -64,6 +64,10 @@ interface ICurve3View {
     function get_dy(int128 i, int128 j, uint256 dx) external view returns (uint256);
 }
 
+interface ICurveCryptoView {
+    function get_dy(uint256 i, uint256 j, uint256 dx) external view returns (uint256);
+}
+
 interface ICurveCoins {
     function coins(uint256 i) external view returns (address);
 }
@@ -114,6 +118,12 @@ contract ForkLiveLiquidationsTest is Test {
     /// StableSwap-NG USDC/DAI with rate-oracle coins (asset types [1, 1]):
     /// `exchange` static-calls each coin's rate oracle.
     address constant CURVE_NG_USDC_DAI = 0x18042f2FaB99af6E374e4f5F3c2218102993cc23;
+    /// tricrypto-ng USDT/WBTC/WETH (CurveTricryptoMathOptimized v2.0.0).
+    address constant CURVE_TRICRYPTO_USDT = 0xf5f5B97624542D72A9E06f04804Bf81baA15e2B4;
+    /// Original CurveCryptoSwap2 WETH/cbETH (`newton_y` in the pool).
+    address constant CURVE_V1_WETH_CBETH = 0x5FAE7E604FC3e24fd43A72867ceBaC94c65b404A;
+    address constant CBETH = 0xBe9895146f7AF43049ca1c1AE358B0541Ea49704;
+    address constant CBETH_WETH_005 = 0x840DEEef2f115Cf50DA625F7368C24af6fE74410;
     address curvePool;
     /// Whole collateral units for `collOverride` (default 50_000).
     uint256 collUnits = 50_000;
@@ -275,6 +285,24 @@ contract ForkLiveLiquidationsTest is Test {
         _runOne(PB.A_V3, PB.P_MORPHO, DAI, false);
     }
 
+    /// Repay through a Curve crypto pool (venue 4): WETH collateral sold
+    /// for USDT debt on tricrypto-ng, `exchange(uint256,uint256,…)`.
+    function test_fork_v3_weth_coll_usdt_repay_via_tricrypto() public onFork {
+        (repayVenue, curvePool, curveI, curveJ) = (5, CURVE_TRICRYPTO_USDT, 2, 0);
+        _runOne(PB.A_V3, PB.P_MORPHO, USDT, false);
+    }
+
+    /// The original CurveCryptoSwap2: cbETH collateral sold for WETH debt.
+    function test_fork_v3_cbeth_coll_weth_repay_via_crypto_v1() public onFork {
+        address cfg = IPoolAddressesProviderCfg(IPoolEx(AAVE_V3_POOL).ADDRESSES_PROVIDER()).getPoolConfigurator();
+        vm.prank(0x5300A1a15135EA4dc7aD5a167152C01EFc9b192A);
+        IPoolConfigurator(cfg).setSupplyCap(CBETH, 0);
+        (repayVenue, curvePool, curveI, curveJ) = (5, CURVE_V1_WETH_CBETH, 1, 0);
+        collOverride = CBETH;
+        collUnits = 10;
+        _runOne(PB.A_V3, PB.P_MORPHO, WETH, false);
+    }
+
     function test_gas_morpho_weth_morpho() public onFork {
         _runOne(PB.A_MORPHO, PB.P_MORPHO, WETH, false);
     }
@@ -341,6 +369,16 @@ contract ForkLiveLiquidationsTest is Test {
         } else if (repayVenue == 3) {
             require(coll == USDC && debt == DAI, "curve venue fixture is USDC/DAI");
             repay = PB.curveSwap(CURVE_3POOL, 1, 0, coll, debt, 0, _curveDxFor(CURVE_3POOL, 1, 0, buyDebt));
+        } else if (repayVenue == 5) {
+            repay = PB.curveCryptoSwap(
+                curvePool,
+                uint8(uint128(curveI)),
+                uint8(uint128(curveJ)),
+                coll,
+                debt,
+                0,
+                _cryptoDxFor(curvePool, uint256(uint128(curveI)), uint256(uint128(curveJ)), buyDebt)
+            );
         } else if (repayVenue == 4) {
             repay = PB.curveSwap(
                 curvePool,
@@ -422,11 +460,29 @@ contract ForkLiveLiquidationsTest is Test {
         return uint128(hi);
     }
 
+    /// Smallest input of coin `i` that buys `want` of coin `j` on a crypto pool.
+    function _cryptoDxFor(address pool, uint256 i, uint256 j, uint256 want) internal view returns (uint128) {
+        // Start at 0.001 of coin i: a pool refuses a wei-sized quote.
+        uint256 hi = 10 ** (uint256(IERC20B(ICurveCoins(pool).coins(i)).decimals()) - 3);
+        for (uint256 k; ICurveCryptoView(pool).get_dy(i, j, hi) < want; ++k) {
+            require(k < 200, "crypto dx");
+            hi *= 2;
+        }
+        uint256 lo = hi / 2;
+        while (lo + 1 < hi) {
+            uint256 mid = (lo + hi) / 2;
+            if (ICurveCryptoView(pool).get_dy(i, j, mid) >= want) hi = mid;
+            else lo = mid;
+        }
+        return uint128(hi);
+    }
+
     function _swapPool(address a, address b) internal pure returns (address) {
         if ((a == WSTETH && b == WETH) || (a == WETH && b == WSTETH)) return WSTETH_WETH_001;
         if ((a == DAI && b == WETH) || (a == WETH && b == DAI)) return DAI_WETH_005;
         if ((a == USDT && b == WETH) || (a == WETH && b == USDT)) return USDT_WETH_005;
         if ((a == USDC && b == WETH) || (a == WETH && b == USDC)) return USDC_WETH_005;
+        if ((a == CBETH && b == WETH) || (a == WETH && b == CBETH)) return CBETH_WETH_005;
         revert("no pool");
     }
 

@@ -155,6 +155,13 @@ interface ICurvePool {
     function exchange(int128 i, int128 j, uint256 dx, uint256 min_dy) external;
 }
 
+/// Curve crypto pool (twocrypto-ng, tricrypto-ng, the original
+/// `CurveCryptoSwap2`): unsigned coin indices. The return value is not read.
+interface ICurveCryptoPool {
+    function coins(uint256 i) external view returns (address);
+    function exchange(uint256 i, uint256 j, uint256 dx, uint256 min_dy) external;
+}
+
 /// Curve MetaRegistry. `is_registered` reverts ("no registry") for an
 /// unknown pool, so an unregistered pool fails closed either way.
 interface ICurveMetaRegistry {

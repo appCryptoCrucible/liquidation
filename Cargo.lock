@@ -5998,6 +5998,7 @@ dependencies = [
  "liq-types",
  "liq-wire",
  "proptest",
+ "serde_json",
  "smallvec",
  "thiserror 2.0.20",
  "tracing",

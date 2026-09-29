@@ -23,6 +23,13 @@ Curve: every MetaRegistry pool. Kept only when
       the dynamic fee) reproduces the pool's own get_dy exactly for every
       ordered coin pair at two sizes. Anything else is left out, not guessed.
 
+Curve crypto ("curve_crypto"): pools whose gamma() answers, 2 or 3 coins, not
+    ramping, of a kind `crypto_math.py` ports (twocrypto-ng on
+    CurveTwocryptoMathOptimized v2.0.0 / v2.1.0, tricrypto-ng on
+    CurveTricryptoMathOptimized v2.0.0, the original CurveCryptoSwap2), and
+    whose own get_dy(uint256,uint256,uint256) the port reproduces exactly for
+    every ordered pair at two sizes.
+
 Usage: MAINNET_RPC_URL=... python tools/registry/discover_exits.py [--dry-run]
 """
 from __future__ import annotations
@@ -36,6 +43,9 @@ from pathlib import Path
 
 from eth_abi import decode, encode
 from web3 import Web3
+
+sys.path.insert(0, str(Path(__file__).parent))
+import crypto_math as cm  # noqa: E402
 
 REG = Path("registry/registry.json")
 META = Path("registry/registry.meta.json")
@@ -432,6 +442,147 @@ def discover_curve(chain: Chain, tracked: set[str], tokens: dict) -> dict[str, d
     return found
 
 
+# ── Curve crypto ────────────────────────────────────────────────────────────
+
+
+def crypto_kind(n: int, version, has_math: bool):
+    if n == 2 and not has_math and version is None:
+        return "two_v1"
+    if n == 2 and has_math and version == "v2.0.0":
+        return "two_v200"
+    if n == 2 and has_math and version == "v2.1.0":
+        return "two_v210"
+    if n == 3 and has_math and version == "v2.0.0":
+        return "tri"
+    return None
+
+
+def crypto_dy(kind, i, j, dx, bal, prec, ps, D, A, G, mid, out, fg):
+    if kind == "tri":
+        return cm.tri_get_dy(i, j, dx, bal, prec, ps, D, A, G, mid, out, fg)
+    if kind == "two_v1":
+        return cm.two_v1_get_dy(i, j, dx, bal, prec, ps[0], D, A, G, mid, out, fg)
+    return cm.two_get_dy(i, j, dx, bal, prec, ps[0], D, A, G, mid, out, fg, kind == "two_v210")
+
+
+def discover_crypto(chain: Chain, tracked: set[str], tokens: dict) -> dict[str, dict]:
+    reg = CURVE_META_REGISTRY
+    count = word(chain.multicall([(reg, sel("pool_count()"))])[0])
+    pools = [
+        word(r, "address").lower()
+        for r in chain.multicall(
+            [(reg, sel("pool_list(uint256)") + encode(["uint256"], [i])) for i in range(count)]
+        )
+        if word(r, "address") is not None
+    ]
+    enc = lambda p: encode(["address"], [p])  # noqa: E731
+    meta = chain.multicall(
+        [c for p in pools for c in (
+            (reg, sel("get_n_coins(address)") + enc(p)),
+            (reg, sel("get_coins(address)") + enc(p)),
+        )]
+    )
+    stage1 = []
+    for k, p in enumerate(pools):
+        n = word(meta[2 * k])
+        coins_r = meta[2 * k + 1]
+        if n is None or not coins_r[0] or not 2 <= n <= 3:
+            continue
+        coins = [c.lower() for c in decode(["address[8]"], coins_r[1])[0][:n]]
+        if any(c in (NATIVE_ETH, ZERO) or c not in tracked
+               or EXCLUDED_QUIRKS & set(tokens[c]["quirks"]) for c in coins):
+            continue
+        stage1.append((p, coins))
+    probes = []
+    for p, coins in stage1:
+        n = len(coins)
+        probes += [(p, sel("coins(uint256)") + encode(["uint256"], [i])) for i in range(n)]
+        probes += [(p, sel("balances(uint256)") + encode(["uint256"], [i])) for i in range(n)]
+        probes += [(p, sel(x)) for x in ("gamma()", "version()", "MATH()", "D()", "A()", "mid_fee()",
+                                          "out_fee()", "fee_gamma()", "future_A_gamma_time()",
+                                          "price_scale()")]
+        probes += [(p, sel("price_scale(uint256)") + encode(["uint256"], [k])) for k in (0, 1)]
+    res = chain.multicall(probes)
+    stage2 = []
+    at = 0
+    for p, coins in stage1:
+        n = len(coins)
+        width = 2 * n + 12
+        r = res[at: at + width]
+        at += width
+        onchain = [word(x, "address") for x in r[:n]]
+        bal = [word(x) for x in r[n:2 * n]]
+        (gamma_r, ver_r, math_r, d_r, a_r, mid_r, out_r, fg_r, fut_r, ps_r, ps0_r, ps1_r) = r[2 * n:]
+        if word(gamma_r) is None:
+            continue
+        if any(c is None or c.lower() != coins[i] for i, c in enumerate(onchain)):
+            continue
+        version = None
+        if ver_r[0] and len(ver_r[1]) >= 64:
+            try:
+                version = decode(["string"], ver_r[1])[0]
+            except Exception:  # noqa: BLE001
+                version = None
+        kind = crypto_kind(n, version, math_r[0] and len(math_r[1]) >= 32)
+        if kind is None:
+            continue
+        D, A, G, mid, out, fg, fut = (word(x) for x in (d_r, a_r, gamma_r, mid_r, out_r, fg_r, fut_r))
+        ps = [word(ps_r)] if n == 2 else [word(ps0_r), word(ps1_r)]
+        if None in (D, A, G, mid, out, fg) or None in ps or any(b is None or b == 0 for b in bal):
+            continue
+        if fut is not None and fut > chain.timestamp:
+            print(f"  skip {p}: A/gamma ramping")
+            continue
+        prec = [10 ** (18 - tokens[c]["decimals"]) for c in coins]
+        stage2.append((p, coins, bal, prec, ps, D, A, G, mid, out, fg, kind))
+    print(f"crypto: {len(stage2)} ported kinds pass the structural probe")
+    checks = []
+    for p, coins, bal, *_ in stage2:
+        n = len(coins)
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    for div in (1_000, 20):
+                        checks.append((p, sel("get_dy(uint256,uint256,uint256)")
+                                       + encode(["uint256"] * 3, [i, j, max(bal[i] // div, 1)])))
+    res = iter(chain.multicall(checks))
+    found: dict[str, dict] = {}
+    for p, coins, bal, prec, ps, D, A, G, mid, out, fg, kind in stage2:
+        n = len(coins)
+        exact = True
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    continue
+                for div in (1_000, 20):
+                    dx = max(bal[i] // div, 1)
+                    want = word(next(res))
+                    try:
+                        got = crypto_dy(kind, i, j, dx, bal, prec, ps, D, A, G, mid, out, fg)
+                    except cm.Revert:
+                        got = None
+                    # A size the pool's own safety bounds refuse must be
+                    # refused by the port too; the small size must answer.
+                    if got != want or (div == 1_000 and want is None):
+                        exact = False
+        if not exact:
+            print(f"  skip {p}: {kind} math does not reproduce get_dy")
+            continue
+        found[p] = {
+            "venue": "curve_crypto",
+            "token0": coins[0],
+            "token1": coins[1],
+            "fee": 0,
+            "factory": reg,
+            "deployed_block": 0,
+            "derived_via": "metaregistry.pool_list+get_dy",
+            "coins": coins,
+            "crypto_kind": kind,
+        }
+    print(f"crypto: {len(found)} kept (exact get_dy match)")
+    return found
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
@@ -449,24 +600,28 @@ def main() -> int:
     }
     v2 = discover_v2(chain, tracked)
     curve = discover_curve(chain, tracked, tokens)
+    crypto = discover_crypto(chain, tracked, tokens)
     pools = {
-        a: p for a, p in reg["pools"].items() if p["venue"] not in ("univ2", "curve", "curve_ng")
+        a: p for a, p in reg["pools"].items()
+        if p["venue"] not in ("univ2", "curve", "curve_ng", "curve_crypto")
     }
-    overlap = (set(v2) | set(curve)) & set(pools)
+    overlap = (set(v2) | set(curve) | set(crypto)) & set(pools)
     if overlap:
         print(f"address collision with existing pools: {sorted(overlap)}", file=sys.stderr)
         return 1
     pools.update(v2)
     pools.update(curve)
+    pools.update(crypto)
     reg["pools"] = pools
-    print(f"pools: {len(pools)} total ({len(v2)} univ2, {len(curve)} curve incl. NG)")
+    print(f"pools: {len(pools)} total ({len(v2)} univ2, {len(curve)} curve incl. NG, "
+          f"{len(crypto)} crypto)")
     if args.dry_run:
         return 0
     REG.write_text(json.dumps(reg, indent=1) + "\n", encoding="utf-8")
     meta = json.loads(META.read_text(encoding="utf-8"))
     meta["pool_count"] = len(pools)
     note = (
-        f"exits: univ2/curve/curve_ng discovered by tools/registry/discover_exits.py "
+        f"exits: univ2/curve/curve_ng/curve_crypto discovered by tools/registry/discover_exits.py "
         f"at block {chain.block}"
     )
     meta["notes"] = [n for n in meta.get("notes", []) if not n.startswith("exits: ")] + [note]

@@ -63,6 +63,7 @@ pub mod assemble;
 pub mod band;
 pub mod bid;
 pub mod cache;
+pub mod crypto;
 pub mod exact;
 pub mod gas;
 pub mod profit;
@@ -86,6 +87,7 @@ pub use bid::{
     beta_of, bid, debt_notional_eth_wei, searcher_net, Bid, BidConfig, BidError, BidSchedule,
 };
 pub use cache::WarmRouteCache;
+pub use crypto::{CryptoKind, CryptoRead, CryptoState};
 pub use exact::{
     solve_batch, solve_on, solve_pair, Allocation, BatchQuote, ExitQuote, GasTerms, SolveBudget,
     OUT_PER_ETH_WETH,

@@ -203,7 +203,8 @@ collaterals**, since paths out of different collaterals share output pools.
 ```
 1 byte    legCount
 per leg, head = 60 bytes:
-  1 byte    venue      0 = UniV3 pool-direct · 1 = allowlisted router
+  1 byte    venue      0 = UniV3 pool-direct · 1 = allowlisted router ·
+                       2 = UniV2/Sushi pair · 3 = Curve StableSwap · 4 = Curve crypto
   20 bytes  tokenIn    which collateral this leg spends
   20 bytes  tokenOut   where it goes
   1 byte    legFlags   bit0 TAKE_BALANCE · bit1 EXACT_OUT
@@ -253,6 +254,9 @@ Venue data:
 |---|---|
 | `0` UniV3 pool-direct | 20 bytes: pool address. Settled in `uniswapV3SwapCallback` — no approval on this path. |
 | `1` Allowlisted router | 20 bytes target (must equal `ROUTER_A` or `ROUTER_B`) + the router's own calldata. Exact approval, zeroed after. |
+| `2` UniV2 / Sushi pair | 21 bytes: pair ‖ factory id (0 Uniswap V2, 1 SushiSwap). The pair is re-derived by CREATE2 against that factory before any token moves. |
+| `3` Curve StableSwap (plain and NG) | 22 bytes: pool ‖ i ‖ j. Exact input only. The pool must be in Curve's MetaRegistry and hold `tokenIn`/`tokenOut` at `i`/`j`; `exchange(int128,int128,uint256,uint256)`. Exact approval, zeroed after. |
+| `4` Curve crypto (twocrypto-ng, tricrypto-ng, original CurveCryptoSwap2) | 22 bytes: pool ‖ i ‖ j. Same checks as `3`; `exchange(uint256,uint256,uint256,uint256)`. |
 
 **Uniswap V4 is not a swap venue.** Hooks make swap behaviour pool-specific, so
 there is no generic quote (GUIDE 12 Step 3). V4 remains the preferred *flashloan

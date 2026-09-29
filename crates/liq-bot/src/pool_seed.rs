@@ -43,6 +43,15 @@ sol! {
     function A_precise() returns (uint256);
     function fee() returns (uint256);
     function stored_rates() returns (uint256[]);
+    function D() returns (uint256);
+    function getCurrentBlockTimestamp() returns (uint256 timestamp);
+    function gamma() returns (uint256);
+    function mid_fee() returns (uint256);
+    function out_fee() returns (uint256);
+    function fee_gamma() returns (uint256);
+    function future_A_gamma_time() returns (uint256);
+    function price_scale() returns (uint256);
+    function price_scale(uint256 k) returns (uint256);
     function offpeg_fee_multiplier() returns (uint256);
 }
 
@@ -461,6 +470,14 @@ pub async fn seed_curve(book: &mut PoolBook, rpc: &HttpRpc) -> SeedStats {
         PoolBook::new(std::collections::HashMap::new(), None, 0),
     ));
     let (read, applied) = refresh_curve(&lock, rpc, &targets, block).await;
+    let crypto = crypto_targets(&lock.read(), block);
+    let (c_read, c_applied) = refresh_crypto(&lock, rpc, &crypto, block).await;
+    tracing::info!(
+        pools = crypto.len(),
+        read = c_read,
+        seeded = c_applied,
+        "Curve crypto pool state seeded"
+    );
     *book = lock.into_inner();
     let stats = SeedStats {
         pools: targets.len(),
@@ -474,6 +491,148 @@ pub async fn seed_curve(book: &mut PoolBook, rpc: &HttpRpc) -> SeedStats {
         "Curve pool state seeded"
     );
     stats
+}
+
+/// Read crypto pools at `block` (`(address, n_coins)`). `None` for a pool
+/// whose read failed — it stays stale. `ts` is the block's timestamp, for
+/// the ramp check.
+async fn read_crypto(
+    rpc: &HttpRpc,
+    pools: &[(Address, usize)],
+    block: u64,
+    ts: u64,
+) -> Vec<Option<liq_router::CryptoRead>> {
+    let mut out = Vec::with_capacity(pools.len());
+    // n balances + 7 views + 1 or 2 price scales: at most 12 calls each.
+    for chunk in pools.chunks(BATCH / 12) {
+        let mut calls = Vec::new();
+        for &(addr, n) in chunk {
+            for i in 0..n {
+                calls.push(call(addr, balancesCall { i: U256::from(i) }.abi_encode()));
+            }
+            calls.push(call(addr, DCall {}.abi_encode()));
+            calls.push(call(addr, ACall {}.abi_encode()));
+            calls.push(call(addr, gammaCall {}.abi_encode()));
+            calls.push(call(addr, mid_feeCall {}.abi_encode()));
+            calls.push(call(addr, out_feeCall {}.abi_encode()));
+            calls.push(call(addr, fee_gammaCall {}.abi_encode()));
+            calls.push(call(addr, future_A_gamma_timeCall {}.abi_encode()));
+            if n == 2 {
+                calls.push(call(addr, price_scale_0Call {}.abi_encode()));
+            } else {
+                for k in 0..n.saturating_sub(1) {
+                    calls.push(call(
+                        addr,
+                        price_scale_1Call { k: U256::from(k) }.abi_encode(),
+                    ));
+                }
+            }
+        }
+        let res = aggregate(rpc, calls, block).await;
+        let row = |k: usize| {
+            res.as_ref()
+                .and_then(|r| r.get(k))
+                .filter(|r| r.success)
+                .and_then(|r| balancesCall::abi_decode_returns(&r.returnData).ok())
+        };
+        let mut at = 0usize;
+        for &(_, n) in chunk {
+            let balances: Option<Vec<U256>> = (0..n).map(|i| row(at.saturating_add(i))).collect();
+            let v = |k: usize| row(at.saturating_add(n).saturating_add(k));
+            let (d, a, g, mid, outf, fg, fut) = (v(0), v(1), v(2), v(3), v(4), v(5), v(6));
+            let n_ps = if n == 2 { 1 } else { n.saturating_sub(1) };
+            let ps: Option<Vec<U256>> = (0..n_ps).map(|k| v(7usize.saturating_add(k))).collect();
+            at = at.saturating_add(n).saturating_add(7).saturating_add(n_ps);
+            out.push(match (balances, d, a, g, mid, outf, fg, fut, ps) {
+                (
+                    Some(balances),
+                    Some(d),
+                    Some(ann),
+                    Some(gamma),
+                    Some(mid_fee),
+                    Some(out_fee),
+                    Some(fee_gamma),
+                    Some(fut),
+                    Some(price_scale),
+                ) => Some(liq_router::CryptoRead {
+                    balances,
+                    price_scale,
+                    d,
+                    ann,
+                    gamma,
+                    mid_fee,
+                    out_fee,
+                    fee_gamma,
+                    ramping: fut > U256::from(ts),
+                }),
+                _ => None,
+            });
+        }
+    }
+    out
+}
+
+/// Every crypto pool: `D` and `price_scale` move with each trade and the
+/// pool's own `tweak_price`, so each is re-read once per block (and
+/// whenever a log marks it stale). `(book index, address, n_coins)`.
+fn crypto_targets(book: &PoolBook, head: u64) -> Vec<(usize, Address, usize)> {
+    book.pools()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| match &p.state {
+            PoolState::Crypto(c) if c.stale || c.read_block < head => {
+                Some((i, p.address, c.balances.len()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Read and apply the crypto targets at `block`. Returns `(read, applied)`.
+async fn refresh_crypto(
+    book: &RwLock<PoolBook>,
+    rpc: &HttpRpc,
+    targets: &[(usize, Address, usize)],
+    block: u64,
+) -> (usize, usize) {
+    if targets.is_empty() {
+        return (0, 0);
+    }
+    // The block's timestamp, from Multicall3 at the same pinned block.
+    let ts_call = vec![call(
+        MULTICALL3,
+        getCurrentBlockTimestampCall {}.abi_encode(),
+    )];
+    let ts = aggregate(rpc, ts_call, block)
+        .await
+        .and_then(|r| r.into_iter().next())
+        .filter(|r| r.success)
+        .and_then(|r| getCurrentBlockTimestampCall::abi_decode_returns(&r.returnData).ok())
+        .and_then(|t| u64::try_from(t).ok());
+    let Some(ts) = ts else {
+        tracing::warn!(block, "crypto reseed: block timestamp unavailable");
+        return (0, 0);
+    };
+    let query: Vec<(Address, usize)> = targets.iter().map(|&(_, a, n)| (a, n)).collect();
+    let reads = read_crypto(rpc, &query, block, ts).await;
+    let read = reads.iter().filter(|r| r.is_some()).count();
+    let mut applied = 0usize;
+    let mut w = book.write();
+    for (&(i, addr, _), r) in targets.iter().zip(reads) {
+        let Some(r) = r else {
+            tracing::debug!(pool = %addr, block, "crypto read failed — stays stale");
+            continue;
+        };
+        let Ok(id) = u32::try_from(i).map(PoolId) else {
+            continue;
+        };
+        match w.reseed_crypto(id, &r, block) {
+            Ok(true) => applied = applied.saturating_add(1),
+            Ok(false) => {}
+            Err(e) => tracing::error!(pool = %addr, error = ?e, "crypto reseed refused"),
+        }
+    }
+    (read, applied)
 }
 
 /// How often the Curve reseed thread looks for stale pools.
@@ -516,6 +675,11 @@ pub fn spawn_curve_reseed(
                         continue;
                     }
                 };
+                let crypto = crypto_targets(&book.read(), head);
+                if !crypto.is_empty() {
+                    let (read, applied) = rt.block_on(refresh_crypto(&book, &rpc, &crypto, head));
+                    tracing::debug!(pools = crypto.len(), read, applied, "crypto reseed");
+                }
                 let targets = curve_targets(&book.read(), true, head);
                 if targets.is_empty() {
                     continue;
@@ -735,6 +899,73 @@ mod tests {
             targets.len()
         );
         assert!(wrong.is_empty(), "solver != get_dy:\n{}", wrong.join("\n"));
+
+        // Crypto pools: seeded by the same reseed code, quoted by the exact
+        // port, against the pool's `get_dy(uint256,uint256,uint256)` at the
+        // same block.
+        mod crypto_view {
+            alloy_sol_types::sol! {
+                function get_dy(uint256 i, uint256 j, uint256 dx) returns (uint256);
+            }
+        }
+        let lock = RwLock::new(book);
+        let crypto = crypto_targets(&lock.read(), block);
+        let (c_read, c_applied) = refresh_crypto(&lock, &rpc, &crypto, block).await;
+        assert_eq!(c_read, crypto.len(), "every crypto pool reads");
+        let mut book = lock.into_inner();
+        let mut c_checked = 0usize;
+        let mut c_wrong = Vec::new();
+        for &(i, addr, n) in &crypto {
+            let pool = book.get(PoolId(u32::try_from(i).unwrap())).unwrap();
+            if !pool.is_live() {
+                continue; // ramping at this block
+            }
+            let PoolState::Crypto(st) = &pool.state else {
+                unreachable!()
+            };
+            for ci in 0..n {
+                for cj in 0..n {
+                    if ci == cj {
+                        continue;
+                    }
+                    let dx = (st.balances[ci] / U256::from(1000u64)).max(U256::ONE);
+                    let data: alloy_primitives::Bytes = crypto_view::get_dyCall {
+                        i: U256::from(ci),
+                        j: U256::from(cj),
+                        dx,
+                    }
+                    .abi_encode()
+                    .into();
+                    let mut raw = rpc.call_at(addr, data.clone(), block).await;
+                    for _ in 0..5 {
+                        if raw.is_ok() {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                        raw = rpc.call_at(addr, data.clone(), block).await;
+                    }
+                    let want = raw
+                        .ok()
+                        .and_then(|r| crypto_view::get_dyCall::abi_decode_returns(&r).ok());
+                    let got = pool
+                        .quote_exact_in(u8::try_from(ci).unwrap(), u8::try_from(cj).unwrap(), dx)
+                        .ok();
+                    c_checked += 1;
+                    if got != want {
+                        c_wrong.push(format!("{addr} {ci}->{cj}: solver {got:?} chain {want:?}"));
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "{} crypto pools ({c_applied} seeded), {c_checked} quotes checked",
+            crypto.len()
+        );
+        assert!(
+            c_wrong.is_empty(),
+            "crypto solver != get_dy:\n{}",
+            c_wrong.join("\n")
+        );
         let v2 = seed_v2(&mut book, &rpc).await;
         eprintln!("v2: {v2:?}");
         assert_eq!(v2.failed, 0);

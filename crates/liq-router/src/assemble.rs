@@ -14,8 +14,8 @@ use liq_flash::fallback_chain;
 use liq_flash::{fee_amount, FlashIndex, Haircut};
 use liq_plan::{
     col_per_unit_debt_1e18, ensure_surplus_borrow_profit_legs, validate, BatchPlan, FlashGroup,
-    LiqLeg, SwapLeg, ValidateCtx, LEG_EXACT_OUT, LEG_TAKE_BALANCE, VENUE_CURVE_POOL,
-    VENUE_UNIV2_POOL, VENUE_UNIV3_POOL,
+    LiqLeg, SwapLeg, ValidateCtx, LEG_EXACT_OUT, LEG_TAKE_BALANCE, VENUE_CURVE_CRYPTO_POOL,
+    VENUE_CURVE_POOL, VENUE_UNIV2_POOL, VENUE_UNIV3_POOL,
 };
 use liq_protocol::{ExecutorAdapter, FlashRoute, Quote};
 use liq_types::fixed::{mul_div, Rounding};
@@ -465,6 +465,10 @@ fn venue_bytes(
             d.extend_from_slice(&[i, j]);
             Ok((VENUE_CURVE_POOL, d))
         }
+        PoolState::Crypto(_) => {
+            d.extend_from_slice(&[i, j]);
+            Ok((VENUE_CURVE_CRYPTO_POOL, d))
+        }
     }
 }
 
@@ -547,7 +551,7 @@ fn swaps_for_leg(
     let mut last: Option<(u8, Vec<u8>)> = None;
     for (a, amount) in &shares {
         let (venue, data) = venue_bytes(book, a.leg.pool, a.leg.i, a.leg.j)?;
-        let (flags, amount) = if venue == VENUE_CURVE_POOL {
+        let (flags, amount) = if venue == VENUE_CURVE_POOL || venue == VENUE_CURVE_CRYPTO_POOL {
             (0, curve_exact_in(a, *amount, overshoot_bps)?)
         } else {
             (LEG_EXACT_OUT, *amount)
@@ -604,7 +608,12 @@ fn closer_pair(
     token_in: Address,
     token_out: Address,
 ) -> Result<(u8, Vec<u8>), AssembleError> {
-    for want in [Venue::UniV3, Venue::UniV2, Venue::CurveStable] {
+    for want in [
+        Venue::UniV3,
+        Venue::UniV2,
+        Venue::CurveStable,
+        Venue::CurveCrypto,
+    ] {
         for p in book.pools() {
             if p.venue() != want || !p.is_live() {
                 continue;

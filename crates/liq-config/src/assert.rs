@@ -606,6 +606,7 @@ mod tests {
                 derived_via: "factory.getPool".into(),
                 coins: Vec::new(),
                 asset_types: Vec::new(),
+                crypto_kind: None,
             },
         );
         Registry {

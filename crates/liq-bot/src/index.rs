@@ -15,7 +15,9 @@ use liq_flash::{
 use liq_node::LogHandler;
 use liq_oracle::{CanonicalBook, DerivedBook, FeedSet, FeedsConfig};
 use liq_protocol::{DecodedLog, DirtySet, ProtocolError};
-use liq_router::{CurveState, Pool, PoolBook, PoolState, V2State, V3State};
+use liq_router::{
+    CryptoKind, CryptoState, CurveState, Pool, PoolBook, PoolState, V2State, V3State,
+};
 use liq_types::{FlashProvider, HaltSink, LogFilter, LogSubscriber};
 use parking_lot::{Mutex, RwLock};
 use smallvec::SmallVec;
@@ -637,7 +639,12 @@ fn load_book(
     hops: crate::gas_model::HopGas,
     omitted: &mut Vec<(&'static str, String)>,
 ) -> PoolBook {
-    if hops.univ3 == 0 || hops.univ2 == 0 || hops.curve == 0 || hops.curve_ng == 0 {
+    if hops.univ3 == 0
+        || hops.univ2 == 0
+        || hops.curve == 0
+        || hops.curve_ng == 0
+        || hops.curve_crypto == 0
+    {
         tracing::error!(
             ?hops,
             "swap hop gas unmeasured for a venue — priced at 0 until liq-gas.toml loads"
@@ -658,7 +665,9 @@ fn load_book(
     let mut book = PoolBook::new(assets, factory, hops.univ3);
     for (addr, entry) in &registry.pools {
         let tokens: SmallVec<[Address; liq_router::MAX_COINS]> = match entry.venue {
-            PoolVenue::Curve | PoolVenue::CurveNg => entry.coins.iter().copied().collect(),
+            PoolVenue::Curve | PoolVenue::CurveNg | PoolVenue::CurveCrypto => {
+                entry.coins.iter().copied().collect()
+            }
             PoolVenue::Univ3 | PoolVenue::Univ2 => {
                 SmallVec::from_slice(&[entry.token0, entry.token1])
             }
@@ -754,6 +763,49 @@ fn load_book(
                     read_block: 0,
                 }),
             ),
+            PoolVenue::CurveCrypto => {
+                let kind = match entry.crypto_kind {
+                    Some(liq_config::CryptoKind::TwoV1) => CryptoKind::TwoV1,
+                    Some(liq_config::CryptoKind::TwoV200) => CryptoKind::TwoV200,
+                    Some(liq_config::CryptoKind::TwoV210) => CryptoKind::TwoV210,
+                    Some(liq_config::CryptoKind::Tri) => CryptoKind::Tri,
+                    None => {
+                        omit(
+                            omitted,
+                            "book",
+                            format!("curve crypto {addr:#x}: no crypto_kind"),
+                        );
+                        continue;
+                    }
+                };
+                // `10^(18 − decimals)`; `rates` holds `10^(36 − decimals)`.
+                let precisions = rates
+                    .iter()
+                    .map(|r| r.checked_div(U256::from(10u64).pow(U256::from(18u64))))
+                    .collect::<Option<SmallVec<[U256; liq_router::MAX_COINS]>>>();
+                let Some(precisions) = precisions else {
+                    omit(omitted, "book", format!("curve crypto {addr:#x}: decimals"));
+                    continue;
+                };
+                (
+                    hops.curve_crypto,
+                    PoolState::Crypto(CryptoState {
+                        kind,
+                        balances: tokens.iter().map(|_| U256::ZERO).collect(),
+                        precisions,
+                        price_scale: tokens.iter().skip(1).map(|_| U256::ZERO).collect(),
+                        d: U256::ZERO,
+                        ann: U256::ZERO,
+                        gamma: U256::ZERO,
+                        mid_fee: U256::ZERO,
+                        out_fee: U256::ZERO,
+                        fee_gamma: U256::ZERO,
+                        stale: true,
+                        stale_block: 0,
+                        read_block: 0,
+                    }),
+                )
+            }
             PoolVenue::CurveNg => {
                 // Rebasing coins (type 2) change balances without a pool
                 // log; the reseed would quote a stale balance. Left out.
@@ -1089,7 +1141,7 @@ mod tests {
     fn empty_book_still_empty_until_logs() {
         let (intern, reg) = committed();
         let load = load_index(&root().join("config"), &intern, &reg);
-        let mut venues = [0usize; 3];
+        let mut venues = [0usize; 4];
         for p in load.book.pools() {
             assert!(!p.is_live(), "{:#x} live before seed/logs", p.address);
             match &p.state {
@@ -1107,6 +1159,11 @@ mod tests {
                     venues[2] += 1;
                     assert!(s.stale, "curve starts stale until read");
                     assert_eq!(s.rates.len(), p.tokens.len());
+                }
+                PoolState::Crypto(s) => {
+                    venues[3] += 1;
+                    assert!(s.stale, "crypto starts stale until read");
+                    assert_eq!(s.precisions.len(), p.tokens.len());
                 }
             }
         }

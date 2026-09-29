@@ -50,6 +50,11 @@ pub const VENUE_UNIV2_POOL: u8 = 2;
 /// pool ‖ 1-byte i ‖ 1-byte j). Exact input only; the Executor verifies the
 /// pool in Curve's MetaRegistry and the coin indices.
 pub const VENUE_CURVE_POOL: u8 = 3;
+/// Swap venue 4 — pool-direct Curve crypto pool (twocrypto-ng, tricrypto-ng,
+/// the original `CurveCryptoSwap2`) (`data` = 20-byte pool ‖ 1-byte i ‖
+/// 1-byte j), `exchange(uint256,uint256,uint256,uint256)`. Exact input only;
+/// verified like venue 3.
+pub const VENUE_CURVE_CRYPTO_POOL: u8 = 4;
 /// UniV2 factory ids in venue-2 data.
 pub const V2_FACTORY_UNISWAP: u8 = 0;
 pub const V2_FACTORY_SUSHI: u8 = 1;

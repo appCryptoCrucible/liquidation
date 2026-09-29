@@ -100,3 +100,9 @@ curve = 104_986
 # coins 117_442 (0x1804…cc23, two oracle calls). Same fork's 3pool frame:
 # 102_732. Priced at the rate-oracle case.
 curve_ng = 117_442
+# Curve crypto `exchange(uint256,uint256,uint256,uint256)` frames incl.
+# transfers, fork at 26_019_284 (ForkLiveLiquidations): tricrypto-ng
+# 144_756 (0xf5f5…e2b4, gamma-curve solve + tweak_price), the original
+# CurveCryptoSwap2 170_472 (0x5fae…404a, behind its proxy). Priced at the
+# higher.
+curve_crypto = 170_472

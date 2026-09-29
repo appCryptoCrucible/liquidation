@@ -68729,19 +68729,6 @@
     "0x028171bca77440897b824ca71d1c56cac55b68a3"
    ]
   },
-  "0xba3436fd341f2c8a928452db3c5a3670d1d5cc73": {
-   "venue": "curve",
-   "token0": "0x1a7e4e63778b4f12a199c062f3efdd288afcbce8",
-   "token1": "0x1abaea1f7c830bd89acc67ec4af516284b1bc33c",
-   "fee": 4000000,
-   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
-   "deployed_block": 0,
-   "derived_via": "metaregistry.pool_list+get_dy",
-   "coins": [
-    "0x1a7e4e63778b4f12a199c062f3efdd288afcbce8",
-    "0x1abaea1f7c830bd89acc67ec4af516284b1bc33c"
-   ]
-  },
   "0x413928a25d6ea1a26f2625d633207755f67bf97c": {
    "venue": "curve",
    "token0": "0x1a7e4e63778b4f12a199c062f3efdd288afcbce8",
@@ -68818,6 +68805,19 @@
    "coins": [
     "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
     "0x6c3ea9036406852006290770bedfcaba0e23a0e8"
+   ]
+  },
+  "0x4dece678ceceb27446b35c672dc7d61f30bad69e": {
+   "venue": "curve",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
    ]
   },
   "0xca978a0528116dda3cba9acd3e68bc6191ca53d0": {
@@ -68909,6 +68909,19 @@
    "coins": [
     "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
     "0x5e8422345238f34275888049021821e8e08caa1f"
+   ]
+  },
+  "0xb7ecb2aa52aa64a717180e030241bc75cd946726": {
+   "venue": "curve",
+   "token0": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+   "token1": "0x18084fba666a33d37592fa2633fd49a74dd93a88",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+    "0x18084fba666a33d37592fa2633fd49a74dd93a88"
    ]
   },
   "0xf55b0f6f2da5ffddb104b58a60f2862745960442": {
@@ -72046,6 +72059,817 @@
     1,
     0
    ]
+  },
+  "0x941eb6f616114e4ecaa85377945ea306002612fe": {
+   "venue": "curve_crypto",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0x3432b6a60d23ca0dfca7761b7ab56459d9c964d0",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0x3432b6a60d23ca0dfca7761b7ab56459d9c964d0"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0xc26b89a667578ec7b3f11b2f98d6fd15c07c54ba": {
+   "venue": "curve_crypto",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0x0bc529c00c6401aef6d220be8c6ea1667f6ad93e",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0x0bc529c00c6401aef6d220be8c6ea1667f6ad93e"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x8b0afa4b63a3581b731da9d79774a3eae63b5abd": {
+   "venue": "curve_crypto",
+   "token0": "0x92d6c1e31e14520e676a687f0a93788b716beff5",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x92d6c1e31e14520e676a687f0a93788b716beff5",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x3211c6cbef1429da3d0d58494938299c92ad5860": {
+   "venue": "curve_crypto",
+   "token0": "0xaf5191b0de278c7286d6c7cc6ab6bb8a73ba2cd6",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xaf5191b0de278c7286d6c7cc6ab6bb8a73ba2cd6",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x75a6787c7ee60424358b449b539a8b774c9b4862": {
+   "venue": "curve_crypto",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xab846fb6c81370327e784ae7cbb6d6a6af6ff4bf",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0xab846fb6c81370327e784ae7cbb6d6a6af6ff4bf"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x95f3672a418230c5664b7154dfce0acfa7eed68d": {
+   "venue": "curve_crypto",
+   "token0": "0x2b95a1dcc3d405535f9ed33c219ab38e8d7e0884",
+   "token1": "0xd533a949740bb3306d119cc777fa900ba034cd52",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x2b95a1dcc3d405535f9ed33c219ab38e8d7e0884",
+    "0xd533a949740bb3306d119cc777fa900ba034cd52"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x5fae7e604fc3e24fd43a72867cebac94c65b404a": {
+   "venue": "curve_crypto",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xbe9895146f7af43049ca1c1ae358b0541ea49704",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0xbe9895146f7af43049ca1c1ae358b0541ea49704"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x9730e45ca84076c0a9df80a4f2058c8379ea3ece": {
+   "venue": "curve_crypto",
+   "token0": "0xd533a949740bb3306d119cc777fa900ba034cd52",
+   "token1": "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xd533a949740bb3306d119cc777fa900ba034cd52",
+    "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x49eaf5e4ac618c968ddcf588c000302f9bc3312d": {
+   "venue": "curve_crypto",
+   "token0": "0xd533a949740bb3306d119cc777fa900ba034cd52",
+   "token1": "0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xd533a949740bb3306d119cc777fa900ba034cd52",
+    "0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x72d6658e562739267994bb16b952e543f0f92281": {
+   "venue": "curve_crypto",
+   "token0": "0xd533a949740bb3306d119cc777fa900ba034cd52",
+   "token1": "0xc011a73ee8576fb46f5e1c5751ca3b9fe0af2a6f",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xd533a949740bb3306d119cc777fa900ba034cd52",
+    "0xc011a73ee8576fb46f5e1c5751ca3b9fe0af2a6f"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x9409280dc1e6d33ab7a8c6ec03e5763fb61772b5": {
+   "venue": "curve_crypto",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0x5a98fcbea516cf06857215779fd812ca3bef1b32",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0x5a98fcbea516cf06857215779fd812ca3bef1b32"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x0f3159811670c117c372428d4e69ac32325e4d0f": {
+   "venue": "curve_crypto",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xae78736cd615f374d3085123a210448e74fc6393",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0xae78736cd615f374d3085123a210448e74fc6393"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x5133da6ba0474368ad0398d953c8d31c1b75b82b": {
+   "venue": "curve_crypto",
+   "token0": "0x3432b6a60d23ca0dfca7761b7ab56459d9c964d0",
+   "token1": "0x5e8422345238f34275888049021821e8e08caa1f",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x3432b6a60d23ca0dfca7761b7ab56459d9c964d0",
+    "0x5e8422345238f34275888049021821e8e08caa1f"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x442f37cfd85d3f35e576ad7d63bba7bb36fcfe4a": {
+   "venue": "curve_crypto",
+   "token0": "0xd533a949740bb3306d119cc777fa900ba034cd52",
+   "token1": "0x5e8422345238f34275888049021821e8e08caa1f",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xd533a949740bb3306d119cc777fa900ba034cd52",
+    "0x5e8422345238f34275888049021821e8e08caa1f"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0xe7c6e0a739021cdba7aac21b4b728779eef974d9": {
+   "venue": "curve_crypto",
+   "token0": "0xae78736cd615f374d3085123a210448e74fc6393",
+   "token1": "0x5e8422345238f34275888049021821e8e08caa1f",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xae78736cd615f374d3085123a210448e74fc6393",
+    "0x5e8422345238f34275888049021821e8e08caa1f"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x73069892f6750ccaaababadc54b6b6b36b3a057d": {
+   "venue": "curve_crypto",
+   "token0": "0xbe9895146f7af43049ca1c1ae358b0541ea49704",
+   "token1": "0x5e8422345238f34275888049021821e8e08caa1f",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xbe9895146f7af43049ca1c1ae358b0541ea49704",
+    "0x5e8422345238f34275888049021821e8e08caa1f"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x880f2fb3704f1875361de6ee59629c6c6497a5e3": {
+   "venue": "curve_crypto",
+   "token0": "0x97de57ec338ab5d51557da3434828c5dbfada371",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x97de57ec338ab5d51557da3434828c5dbfada371",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x7fb53345f1b21ab5d9510adb38f7d3590be6364b": {
+   "venue": "curve_crypto",
+   "token0": "0xe72b141df173b999ae7c1adcbf60cc9833ce56a8",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xe72b141df173b999ae7c1adcbf60cc9833ce56a8",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0xe7e86c6055b964c7894d33e037ead34f2b62795d": {
+   "venue": "curve_crypto",
+   "token0": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "token1": "0x53805a76e1f5ebbfe7115f16f9c87c2f7e633726",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+    "0x53805a76e1f5ebbfe7115f16f9c87c2f7e633726"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x053d5be7c653325b58d88b942fb2454f8ffd8673": {
+   "venue": "curve_crypto",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xe063f04f280c60aeca68b38341c2eecbec703ae2",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0xe063f04f280c60aeca68b38341c2eecbec703ae2"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0xc15f285679a1ef2d25f53d4cbd0265e1d02f2a92": {
+   "venue": "curve_crypto",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0x365accfca291e7d3914637abf1f7635db165bb09",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0x365accfca291e7d3914637abf1f7635db165bb09"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x429ccfcca8ee06d2b41daa6ee0e4f0edbb77dfad": {
+   "venue": "curve_crypto",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0x24ae2da0f361aa4be46b48eb19c91e02c5e4f27e",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0x24ae2da0f361aa4be46b48eb19c91e02c5e4f27e"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0xf1b0382a141040601bd4c98ee1a05b44a7392a80": {
+   "venue": "curve_crypto",
+   "token0": "0x5e8422345238f34275888049021821e8e08caa1f",
+   "token1": "0x24ae2da0f361aa4be46b48eb19c91e02c5e4f27e",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x5e8422345238f34275888049021821e8e08caa1f",
+    "0x24ae2da0f361aa4be46b48eb19c91e02c5e4f27e"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x14756a5ed229265f86990e749285bdd39fe0334f": {
+   "venue": "curve_crypto",
+   "token0": "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0",
+   "token1": "0xa35b1b31ce002fbf2058d22f30f95d405200a15b",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0",
+    "0xa35b1b31ce002fbf2058d22f30f95d405200a15b"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x0d89f4583a6b5eceb76551d573ad49cd435f6064": {
+   "venue": "curve_crypto",
+   "token0": "0x1202f5c7b4b9e47a1a484e8b270be34dbbc75055",
+   "token1": "0xd0097149aa4cc0d0e1fc99b8bd73fc17dc32c1e9",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x1202f5c7b4b9e47a1a484e8b270be34dbbc75055",
+    "0xd0097149aa4cc0d0e1fc99b8bd73fc17dc32c1e9"
+   ],
+   "crypto_kind": "two_v1"
+  },
+  "0x7f86bf177dd4f3494b841a37e810a34dd56c829b": {
+   "venue": "curve_crypto",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   ],
+   "crypto_kind": "tri"
+  },
+  "0xf5f5b97624542d72a9e06f04804bf81baa15e2b4": {
+   "venue": "curve_crypto",
+   "token0": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "token1": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   ],
+   "crypto_kind": "tri"
+  },
+  "0x2889302a794da87fbf1d6db415c1492194663d13": {
+   "venue": "curve_crypto",
+   "token0": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "token1": "0x18084fba666a33d37592fa2633fd49a74dd93a88",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+    "0x18084fba666a33d37592fa2633fd49a74dd93a88",
+    "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
+   ],
+   "crypto_kind": "tri"
+  },
+  "0x4ebdf703948ddcea3b11f675b4d1fba9d2414a14": {
+   "venue": "curve_crypto",
+   "token0": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0xd533a949740bb3306d119cc777fa900ba034cd52"
+   ],
+   "crypto_kind": "tri"
+  },
+  "0x5b3ba844b3859f56524e99ae54857b36c8ae3efe": {
+   "venue": "curve_crypto",
+   "token0": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0x5a98fcbea516cf06857215779fd812ca3bef1b32"
+   ],
+   "crypto_kind": "tri"
+  },
+  "0x4d1941a887ec788f059b3bfcc8ee1e97b968825b": {
+   "venue": "curve_crypto",
+   "token0": "0x853d955acef822db058eb8505911ed77f175b99e",
+   "token1": "0x18084fba666a33d37592fa2633fd49a74dd93a88",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x853d955acef822db058eb8505911ed77f175b99e",
+    "0x18084fba666a33d37592fa2633fd49a74dd93a88",
+    "0x5e8422345238f34275888049021821e8e08caa1f"
+   ],
+   "crypto_kind": "tri"
+  },
+  "0x8cd52ee292313c4d851e71a7064f096504ab3ee9": {
+   "venue": "curve_crypto",
+   "token0": "0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f",
+   "token1": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f",
+    "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+    "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
+   ],
+   "crypto_kind": "tri"
+  },
+  "0x8a4f252812dff2a8636e4f7eb249d8fc2e3bd77f": {
+   "venue": "curve_crypto",
+   "token0": "0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f",
+   "token1": "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f",
+    "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   ],
+   "crypto_kind": "tri"
+  },
+  "0xc2fcdd48209dd383b1f2ac120b84b2a75ee18bd3": {
+   "venue": "curve_crypto",
+   "token0": "0xb4444468e444f89e1c2cac2f1d3ee7e336cbd1f5",
+   "token1": "0x5e8422345238f34275888049021821e8e08caa1f",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xb4444468e444f89e1c2cac2f1d3ee7e336cbd1f5",
+    "0x5e8422345238f34275888049021821e8e08caa1f",
+    "0x0655977feb2f289a4ab78af67bab0d17aab84367"
+   ],
+   "crypto_kind": "tri"
+  },
+  "0xe1c121be7303f4760410b0c42c2141653bb57244": {
+   "venue": "curve_crypto",
+   "token0": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0x514910771af9ca656af840dff83e8264ecf986ca"
+   ],
+   "crypto_kind": "tri"
+  },
+  "0x054d3af2825a5cd8e4ef5dc28bc368efd396c216": {
+   "venue": "curve_crypto",
+   "token0": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9"
+   ],
+   "crypto_kind": "tri"
+  },
+  "0x087a96c2961dbe228dd1dca45fa7c6e8738f3fa7": {
+   "venue": "curve_crypto",
+   "token0": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599"
+   ],
+   "crypto_kind": "tri"
+  },
+  "0xa4d7f7d37f806c73f40ef2340f371072eabd3ab6": {
+   "venue": "curve_crypto",
+   "token0": "0x68749665ff8d2d112fa859aa293f07a622782f38",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x68749665ff8d2d112fa859aa293f07a622782f38",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599"
+   ],
+   "crypto_kind": "tri"
+  },
+  "0xfb8b95fb2296a0ad4b6b1419fdaa5aa5f13e4009": {
+   "venue": "curve_crypto",
+   "token0": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "token1": "0x3432b6a60d23ca0dfca7761b7ab56459d9c964d0",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+    "0x3432b6a60d23ca0dfca7761b7ab56459d9c964d0"
+   ],
+   "crypto_kind": "two_v200"
+  },
+  "0x85847ef522d78efdbec8afb0045dc7d6982837c3": {
+   "venue": "curve_crypto",
+   "token0": "0xab846fb6c81370327e784ae7cbb6d6a6af6ff4bf",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xab846fb6c81370327e784ae7cbb6d6a6af6ff4bf",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   ],
+   "crypto_kind": "two_v200"
+  },
+  "0x8e001d4bac0eae1eea348dfc22f9b8bda67dd211": {
+   "venue": "curve_crypto",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0x4956b52ae2ff65d74ca2d61207523288e4528f96",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0x4956b52ae2ff65d74ca2d61207523288e4528f96"
+   ],
+   "crypto_kind": "two_v210"
+  },
+  "0x19b8524665abac613d82ece5d8347ba44c714bdd": {
+   "venue": "curve_crypto",
+   "token0": "0x09db87a538bd693e9d08544577d5ccfaa6373a48",
+   "token1": "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x09db87a538bd693e9d08544577d5ccfaa6373a48",
+    "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
+   ],
+   "crypto_kind": "two_v210"
+  },
+  "0x8c65cec3847ad99bdc02621bdbc89f2ace56934b": {
+   "venue": "curve_crypto",
+   "token0": "0xbf5495efe5db9ce00f80364c8b423567e58d2110",
+   "token1": "0x8c9532a60e0e7c6bbd2b2c1303f63ace1c3e9811",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xbf5495efe5db9ce00f80364c8b423567e58d2110",
+    "0x8c9532a60e0e7c6bbd2b2c1303f63ace1c3e9811"
+   ],
+   "crypto_kind": "two_v210"
+  },
+  "0xc907ba505c2e1cbc4658c395d4a2c7e6d2c32656": {
+   "venue": "curve_crypto",
+   "token0": "0x66a1e37c9b0eaddca17d3662d6c05f4decf3e110",
+   "token1": "0x4956b52ae2ff65d74ca2d61207523288e4528f96",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x66a1e37c9b0eaddca17d3662d6c05f4decf3e110",
+    "0x4956b52ae2ff65d74ca2d61207523288e4528f96"
+   ],
+   "crypto_kind": "two_v210"
+  },
+  "0x6031bdd613e6a2f587b244e078053fe7bbabe3b5": {
+   "venue": "curve_crypto",
+   "token0": "0xb58e61c3098d85632df34eecfb899a1ed80921cb",
+   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xb58e61c3098d85632df34eecfb899a1ed80921cb",
+    "0xdac17f958d2ee523a2206206994597c13d831ec7"
+   ],
+   "crypto_kind": "two_v210"
+  },
+  "0xf244324fbb57f09f0606ff088bc894b051d632eb": {
+   "venue": "curve_crypto",
+   "token0": "0x7c1156e515aa1a2e851674120074968c905aaf37",
+   "token1": "0x4737d9b4592b40d51e110b94c9c043c6654067ae",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x7c1156e515aa1a2e851674120074968c905aaf37",
+    "0x4737d9b4592b40d51e110b94c9c043c6654067ae"
+   ],
+   "crypto_kind": "two_v210"
+  },
+  "0x660a554fc97fabecff47d200367ca1a8bf49c82b": {
+   "venue": "curve_crypto",
+   "token0": "0xae78736cd615f374d3085123a210448e74fc6393",
+   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xae78736cd615f374d3085123a210448e74fc6393",
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
+   ],
+   "crypto_kind": "two_v210"
+  },
+  "0x7a4adfbc173e2d4f224f11496b0d0ef86f336091": {
+   "venue": "curve_crypto",
+   "token0": "0xb90b2a35c65dbc466b04240097ca756ad2005295",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xb90b2a35c65dbc466b04240097ca756ad2005295",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   ],
+   "crypto_kind": "two_v210"
+  },
+  "0x43b98eea5c689f0036918f590a4b55f22d853734": {
+   "venue": "curve_crypto",
+   "token0": "0xddc0f880ff6e4e22e4b74632fbb43ce4df6ccc5a",
+   "token1": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xddc0f880ff6e4e22e4b74632fbb43ce4df6ccc5a",
+    "0x9d39a5de30e57443bff2a8307a4256c8797a3497"
+   ],
+   "crypto_kind": "two_v210"
+  },
+  "0x6dc8de7343d2e3b4e5ef9a196e946ae4d460e2d0": {
+   "venue": "curve_crypto",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0x86ed939b500e121c0c5f493f399084db596dad20",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0x86ed939b500e121c0c5f493f399084db596dad20"
+   ],
+   "crypto_kind": "two_v210"
+  },
+  "0xd1419e4d76e74d3b4d8a224f3a34118622fb4df4": {
+   "venue": "curve_crypto",
+   "token0": "0xec53bf9167f50cdeb3ae105f56099aaab9061f83",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xec53bf9167f50cdeb3ae105f56099aaab9061f83",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   ],
+   "crypto_kind": "two_v210"
+  },
+  "0xc26d714c76e98ec65d26a9cdc749734ba6ca03d2": {
+   "venue": "curve_crypto",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0x11113ff3a60c2450f4b22515cb760417259ee94b",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0x11113ff3a60c2450f4b22515cb760417259ee94b"
+   ],
+   "crypto_kind": "two_v210"
+  },
+  "0xb2ee8f9622c5a480928836c0575df7d150f72d98": {
+   "venue": "curve_crypto",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0x085780639cc2cacd35e474e71f4d000e2405d8f6",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0x085780639cc2cacd35e474e71f4d000e2405d8f6"
+   ],
+   "crypto_kind": "two_v210"
+  },
+  "0xd221b4c109841a97f241d8bfd45ad8f2b99cf22d": {
+   "venue": "curve_crypto",
+   "token0": "0x2ebd53d035150f328bd754d6dc66b99b0edb89aa",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x2ebd53d035150f328bd754d6dc66b99b0edb89aa",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   ],
+   "crypto_kind": "two_v210"
+  },
+  "0x8018853bfb18a5f391c55709b8d892ee35b4846c": {
+   "venue": "curve_crypto",
+   "token0": "0xab5eb14c09d416f0ac63661e57edb7aecdb9befa",
+   "token1": "0x64351fc9810adad17a690e4e1717df5e7e085160",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xab5eb14c09d416f0ac63661e57edb7aecdb9befa",
+    "0x64351fc9810adad17a690e4e1717df5e7e085160"
+   ],
+   "crypto_kind": "two_v210"
+  },
+  "0xc4ff0e84ec219581092e5660c74a2da8de6aee4f": {
+   "venue": "curve_crypto",
+   "token0": "0xca83dde9c22254f58e771be5e157773212acbac3",
+   "token1": "0x06ea695b91700071b161a434fed42d1dcbad9f00",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xca83dde9c22254f58e771be5e157773212acbac3",
+    "0x06ea695b91700071b161a434fed42d1dcbad9f00"
+   ],
+   "crypto_kind": "two_v210"
+  },
+  "0x95f07dcd938148ef3035134fc8aba146faa0961d": {
+   "venue": "curve_crypto",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599"
+   ],
+   "crypto_kind": "two_v210"
   }
  },
  "flash_sources": {},
