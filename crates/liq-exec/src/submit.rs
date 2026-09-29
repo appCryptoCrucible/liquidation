@@ -7,7 +7,7 @@
 
 use crate::builders::BuilderSet;
 use crate::error::{ExecError, Result};
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_primitives::{Address, Bytes, B256, U256};
 use liq_oracle::mevshare::{
     post_signed, sign_body, MevShareSubmitter, SearcherKey, SendBundle, SignedRelayRequest,
 };
@@ -153,6 +153,29 @@ impl BuilderBundle {
         txs: &[Bytes],
     ) -> Result<FanoutReport> {
         let body = rpc_eth_send_bundle(block, txs)?;
+        self.send_body(client, identity, body).await
+    }
+
+    /// Same fan-out, with `reverting` listed in `revertingTxHashes`: the
+    /// bundle still lands when those transactions revert.
+    pub async fn send_reverting(
+        &self,
+        client: &reqwest::Client,
+        identity: &SearcherKey,
+        block: u64,
+        txs: &[Bytes],
+        reverting: &[B256],
+    ) -> Result<FanoutReport> {
+        let body = rpc_eth_send_bundle_reverting(block, txs, reverting)?;
+        self.send_body(client, identity, body).await
+    }
+
+    async fn send_body(
+        &self,
+        client: &reqwest::Client,
+        identity: &SearcherKey,
+        body: Vec<u8>,
+    ) -> Result<FanoutReport> {
         let header = sign_body(identity, &body).map_err(|e| ExecError::Identity(e.to_string()))?;
         let mut set = JoinSet::new();
         for b in &self.set.builders {
@@ -228,6 +251,31 @@ pub fn rpc_eth_send_bundle(block: u64, txs: &[Bytes]) -> Result<Vec<u8>> {
         "params": [{
             "txs": hex_txs,
             "blockNumber": format!("0x{block:x}"),
+        }],
+    });
+    serde_json::to_vec(&payload).map_err(|e| ExecError::Serde(e.to_string()))
+}
+
+/// `eth_sendBundle` body whose `revertingTxHashes` lists `reverting`. Every
+/// listed hash must be one of `txs`.
+pub fn rpc_eth_send_bundle_reverting(
+    block: u64,
+    txs: &[Bytes],
+    reverting: &[B256],
+) -> Result<Vec<u8>> {
+    if txs.is_empty() {
+        return Err(ExecError::EmptyBundle);
+    }
+    let hex_txs: Vec<String> = txs.iter().map(|t| format!("{t:#x}")).collect();
+    let hex_rev: Vec<String> = reverting.iter().map(|h| format!("{h:#x}")).collect();
+    let payload = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_sendBundle",
+        "params": [{
+            "txs": hex_txs,
+            "blockNumber": format!("0x{block:x}"),
+            "revertingTxHashes": hex_rev,
         }],
     });
     serde_json::to_vec(&payload).map_err(|e| ExecError::Serde(e.to_string()))
@@ -464,6 +512,21 @@ mod tests {
         let c = LiveSendBits::closed();
         assert!(!c.held.load(Ordering::Acquire));
         assert!(!c.nonce_resync.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn eth_send_bundle_reverting_lists_the_hashes() {
+        let txs = [Bytes::from(vec![0x02, 0x01]), Bytes::from(vec![0x02, 0x02])];
+        let h = [B256::repeat_byte(0xAA), B256::repeat_byte(0xBB)];
+        let body = rpc_eth_send_bundle_reverting(26_019_518, &txs, &h).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let p = &v["params"][0];
+        assert_eq!(p["blockNumber"], format!("0x{:x}", 26_019_518u64));
+        assert_eq!(p["txs"].as_array().unwrap().len(), 2);
+        let rev = p["revertingTxHashes"].as_array().unwrap();
+        assert_eq!(rev.len(), 2);
+        assert_eq!(rev[0], format!("{:#x}", h[0]));
+        assert!(rpc_eth_send_bundle_reverting(1, &[], &[]).is_err());
     }
 
     #[test]

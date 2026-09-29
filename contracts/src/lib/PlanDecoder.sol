@@ -25,6 +25,8 @@ struct Plan {
     uint128 minProfit;        // in wei, what we keep AFTER the bid
     uint8   groupCount;
     uint256 profitSwapOffset; // offset of the profit-swap count byte
+    uint40  payloadId;        // set only when flags has FLAG_GOV_EXEC
+    address spell;            // set only when flags has FLAG_GOV_SPELL
 }
 
 /// One flashloan and everything it funds (PLAN-ENCODING §1b).
@@ -67,6 +69,18 @@ library PlanDecoder {
     uint256 internal constant GROUP_HEAD_LEN    = 59;
     uint256 internal constant LIQ_LEG_LEN       = 77;   // fixed part; + tailLen(adapter)
     uint256 internal constant SWAP_LEG_HEAD_LEN = 60;
+
+    /// Header flag bit 1: a 5-byte Aave governance payload id follows the
+    /// profit swaps, and `execute` tries `executePayload` before borrowing.
+    uint8 internal constant FLAG_GOV_EXEC = 1 << 1;
+    uint256 internal constant PAYLOAD_ID_LEN = 5;
+    /// Header flag bit 2: a 20-byte Sky spell address follows the profit
+    /// swaps, and `execute` casts it (if DSPause holds its plan) first.
+    uint8 internal constant FLAG_GOV_SPELL = 1 << 2;
+    uint256 internal constant SPELL_LEN = 20;
+
+    /// Both governance flags on one plan.
+    error TwoGovActions();
 
     // Adapter ids — `liq_protocol::plan::ExecutorAdapter` discriminants (10E / D63).
     // Do not reorder. After H3, a new ABI is 10R-n + D55-A.
@@ -115,6 +129,14 @@ library PlanDecoder {
         }
         p.profitSwapOffset = cur;
         cur = skipSwapLegs(plan, cur + 1, uint8(plan[cur]));
+        if (p.flags & FLAG_GOV_EXEC != 0) {
+            if (p.flags & FLAG_GOV_SPELL != 0) revert TwoGovActions();
+            p.payloadId = uint40(bytes5(plan[cur : cur + PAYLOAD_ID_LEN]));
+            cur += PAYLOAD_ID_LEN;
+        } else if (p.flags & FLAG_GOV_SPELL != 0) {
+            p.spell = address(bytes20(plan[cur : cur + SPELL_LEN]));
+            cur += SPELL_LEN;
+        }
         if (cur != plan.length) revert BadPlanLength(cur, plan.length);
     }
 

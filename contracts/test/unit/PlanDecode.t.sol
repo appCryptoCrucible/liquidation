@@ -233,6 +233,34 @@ contract PlanDecodeTest is Test {
         for (uint256 i = at + 1; i < b.length; i++) out[i - 1] = b[i];
     }
 
+    /// `plan_v1_gov` is `plan_v1_min` with FLAG_GOV_EXEC and payload id 469
+    /// (0x00000001d5) after the profit swaps. The Rust decoder reads the
+    /// same file (`gov_fixture_decodes_payload_id`).
+    function test_gov_fixture_payload_id() public view {
+        Plan memory g = h.debugHeader(_fixture("plan_v1_gov"));
+        assertEq(g.flags, PlanDecoder.FLAG_GOV_EXEC);
+        assertEq(g.payloadId, 469);
+        Plan memory m = h.debugHeader(_fixture("plan_v1_min"));
+        assertEq(g.profitSwapOffset, m.profitSwapOffset, "id does not move the walk");
+        assertEq(m.payloadId, 0, "no flag, no id");
+    }
+
+    /// `plan_v1_spell` is `plan_v1_min` with FLAG_GOV_SPELL and the Sky
+    /// spell address after the profit swaps; the Rust decoder reads it too.
+    function test_spell_fixture_address() public view {
+        Plan memory g = h.debugHeader(_fixture("plan_v1_spell"));
+        assertEq(g.flags, PlanDecoder.FLAG_GOV_SPELL);
+        assertEq(g.spell, 0xF01b594aF26fC8A8ae1e24DCaF904ECB6Fd1BaDC);
+        assertEq(g.payloadId, 0);
+    }
+
+    function test_gov_fixture_truncated_id_reverts() public {
+        bytes memory g = _fixture("plan_v1_gov");
+        bytes memory short = _without(g, g.length - 1);
+        vm.expectRevert();
+        h.debugHeader(short);
+    }
+
     function test_tail_len_10e_and_unknown_9() public {
         // Existing fixtures still decode (V3/V4/Morpho).
         h.debugHeader(_fixture("plan_v1_full"));

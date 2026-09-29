@@ -271,6 +271,7 @@ mod tests {
             gas_limit: 200_000,
             chain_id: 1,
             slot: 0,
+            rpc_verify: false,
         }
     }
 

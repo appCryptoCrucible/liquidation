@@ -149,6 +149,16 @@ pub enum EncodeError {
         flash: u128,
         pull: u128,
     },
+    #[error(
+        "governance flags are set by with_gov_payload / with_gov_spell, not in BatchPlan.flags"
+    )]
+    GovFlagWithoutPayload,
+    #[error("plan already carries a governance action")]
+    GovPayloadTwice,
+    #[error("spell address is zero")]
+    ZeroSpell,
+    #[error("governance payload id {0} exceeds uint40")]
+    PayloadIdRange(u64),
     #[error("liq-exec wire: {0}")]
     Wire(#[from] liq_wire::wire::WireError),
 }

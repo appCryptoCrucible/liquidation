@@ -58,6 +58,24 @@ pub fn execute_calldata(plan: &[u8]) -> Vec<u8> {
     .abi_encode()
 }
 
+sol! {
+    /// Aave governance v3 `PayloadsController`. No access check.
+    interface IPayloadsController {
+        function executePayload(uint40 payloadId) external payable;
+    }
+}
+
+/// `executePayload(uint40)` calldata. `id` above `uint40` is truncated by
+/// the type; callers take ids from `getPayloadsCount`, which is a `uint40`.
+#[must_use]
+pub fn execute_payload_calldata(id: u64) -> alloy_primitives::Bytes {
+    IPayloadsController::executePayloadCall {
+        payloadId: alloy_primitives::aliases::U40::saturating_from(id),
+    }
+    .abi_encode()
+    .into()
+}
+
 /// `sweep(address[])` calldata.
 #[must_use]
 pub fn sweep_calldata(assets: &[Address]) -> Vec<u8> {
@@ -101,6 +119,10 @@ pub mod mainnet {
     pub const UNIV4_POOL_MANAGER: Address = address!("000000000004444c5dc75cB358380D2e3dE08A90");
     /// Sky DSS Flash (MCD_FLASH), ERC-3156 DAI mint.
     pub const SKY_DSS_FLASH: Address = address!("60744434d6339a6B27d73d9Eda62b6F66a0a04FA");
+    /// Aave governance v3 PayloadsController (proxy). Same address as
+    /// `MainnetVenues.AAVE_PAYLOADS_CONTROLLER`, which the Executor calls.
+    pub const AAVE_PAYLOADS_CONTROLLER: Address =
+        address!("dAbad81aF85554E9ae636395611C58F7eC1aAEc5");
 }
 
 #[cfg(test)]

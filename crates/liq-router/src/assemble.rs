@@ -1572,7 +1572,9 @@ mod tests {
         assert_eq!(plan.groups[0].liqs[0].collateral_asset, weth);
         let repay = &plan.groups[0].repay_swaps;
         assert!(!repay.is_empty(), "debt token is still bought");
-        assert!(repay.iter().all(|s| s.token_in == weth && s.token_out != weth));
+        assert!(repay
+            .iter()
+            .all(|s| s.token_in == weth && s.token_out != weth));
         assert!(
             plan.profit_swaps.iter().all(|s| s.token_in != s.token_out),
             "no WETH to WETH leg"

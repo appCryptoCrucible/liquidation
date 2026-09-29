@@ -71,6 +71,7 @@ fn job(kind: TriggerKind, hint: Option<B256>, backrun: Option<Bytes>) -> liq_exe
         gas_limit: 200_000,
         chain_id: 1,
         slot: 0,
+        rpc_verify: false,
     }
 }
 

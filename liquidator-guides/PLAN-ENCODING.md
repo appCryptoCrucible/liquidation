@@ -20,6 +20,8 @@ last, once, globally.
   ├─ group 1: [ head 59 ][ liq legs 77+tail × N ][ repay swap legs ]
   └─ …
 [ profitSwapCount 1 ][ profit swap legs ]
+[ payloadId 5 ]            ← only when flags bit1 GOV_EXEC is set
+[ spell 20 ]               ← only when flags bit2 GOV_SPELL is set (never both)
 ```
 
 No offset is ever encoded. Swap legs are variable length, so the decoder walks
@@ -30,7 +32,7 @@ data, and the two drift.
 
 | Offset | Size | Field | Type | Notes |
 |---:|---:|---|---|---|
-| 0 | 1 | `flags` | u8 | bit0 `SWEEP` |
+| 0 | 1 | `flags` | u8 | bit0 `SWEEP`, bit1 `GOV_EXEC`, bit2 `GOV_SPELL` (§3) |
 | 1 | 2 | `bidBps` | u16 | fraction of realized net paid to `block.coinbase` |
 | 3 | 16 | `gasCostWei` | u128 | predicted total gas cost; base fee is known exactly a block ahead |
 | 19 | 16 | `minProfit` | u128 | **in wei**, what we keep *after* the bid |
@@ -432,7 +434,9 @@ fn assert_multi_source_cascade_ok(groups: &[FlashGroup]) -> Result<(), EncodeErr
 ```rust
 bitflags::bitflags! {
     pub struct PlanFlags: u8 {
-        const SWEEP = 0b0000_0001;
+        const SWEEP     = 0b0000_0001;
+        const GOV_EXEC  = 0b0000_0010;
+        const GOV_SPELL = 0b0000_0100;
     }
 }
 
@@ -452,6 +456,29 @@ token cannot.
 WETH balance (it sees every fill) and sets the flag when it crosses the threshold,
 so the contract does no storage read for the decision. With ETH-only profit that
 threshold is arithmetic rather than a risk budget — GUIDE 14 §5.
+
+**`GOV_EXEC` makes the plan a governance plan.** A big-endian `uint40` Aave
+governance payload id follows the profit swaps, and the walk ends after it. Before
+borrowing, `execute` calls `executePayload(id)` on the PayloadsController fixed in
+`MainnetVenues`, inside a try/catch: the first transaction in a bundle applies the
+parameter change, later ones emit `GovExecSkipped` and liquidate against the
+changed state. The flag without the id, or the id without the flag, fails the
+length check. The Rust encoder sets both only through
+`EncodedPlan::with_gov_payload`; `BatchPlan.flags` may not carry the bit.
+Fixture: `contracts/test/fixtures/plan_v1_gov.hex` (`plan_v1_min` + id 469).
+
+**`GOV_SPELL` is the Sky counterpart** (Spark's parameters change through Sky
+executive spells). A 20-byte spell address follows the profit swaps. `execute`
+reads the spell's `action/tag/sig/eta` with staticcalls and casts it only if
+Sky's `DSPause` (fixed in `MainnetVenues`) holds the plan those fields hash to —
+only an authorized `plot` sets one — otherwise it emits `GovSpellSkipped`. Both
+flags on one plan revert `TwoGovActions`. Encoder: `EncodedPlan::with_gov_spell`.
+Fixture: `plan_v1_spell.hex` (`plan_v1_min` + spell `0xF01b…BaDC`).
+
+**Governance gas is charged at runtime.** When the governance call runs in this
+transaction, `execute` subtracts its gas × `tx.gasprice` from net before the bid
+and the `minProfit` check; when it is skipped, nothing. `gasCostWei` never
+includes it, so only the transaction that applied the change pays for it.
 
 ## 4. The round-trip test — mandatory
 

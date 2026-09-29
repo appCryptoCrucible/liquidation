@@ -7,8 +7,9 @@ import {
     IERC20, IWETH, IAavePool, IAaveV4Spoke, IMorpho, MarketParams,
     IUniV3Pool, IUniV2Pair, ICurvePool, ICurveMetaRegistry, IPoolManager, IDssFlash,
     IEVault, IEVC, ISiloHook, ITroveManager, IFluidT1, ICreditFacadeV3, ICreditFacadeV3Multicall, MultiCall, PriceUpdate,
-    ICToken, IComptroller, ICErc20, ICEther
+    ICToken, IComptroller, ICErc20, ICEther, IPayloadsController, IDssSpell, IDSPause
 } from "./lib/Interfaces.sol";
+import {MainnetVenues} from "./lib/MainnetVenues.sol";
 
 /*
  * Executor.sol — flashloan-funded liquidation executor (GUIDE 10, WP 10A).
@@ -170,6 +171,15 @@ contract Executor {
         bytes reason
     );
 
+    /// `executePayload` reverted inside a governance plan: already executed
+    /// (a keeper or an earlier transaction in the bundle), cancelled, or not
+    /// yet due. The liquidation legs still run against the resulting state.
+    event GovExecSkipped(uint40 indexed payloadId, bytes reason);
+    /// A spell plan's `cast()` was not run: DSPause does not hold its plan
+    /// (already cast, dropped, or not a scheduled spell; empty reason), or
+    /// `cast()` reverted (office hours, not yet due).
+    event GovSpellSkipped(address indexed spell, bytes reason);
+
     // `stage` values for `LegFailed`. Guard stages are pre-call views; the
     // LIQUIDATE stage is the protocol call itself.
     uint8 private constant ST_GUARD      = 1; // health / max-liquidation view reverted
@@ -222,6 +232,12 @@ contract Executor {
         // external call (unknown adapter, truncated blob → revert here).
         Plan memory p = plan.header();
 
+        // Governance plan: apply the change that makes the legs liquidatable.
+        // Several transactions in one bundle each carry it; only the first to
+        // run applies it, so only that one is charged its gas (below). It runs
+        // before the WETH snapshot so nothing it moves can count as profit.
+        uint256 govCost = _govExec(p);
+
         // Profit is denominated in ETH, always, whatever was borrowed or seized.
         // Snapshot WETH before any borrowing, and measure after every group has
         // repaid. Anything left is ours — including the case where some group's
@@ -262,7 +278,9 @@ contract Executor {
 
         // Underflow here is the correct failure: gross ETH did not cover gas, so
         // the liquidation was never worth doing and the bundle should drop.
-        uint256 net = gross - p.gasCostWei;
+        // `govCost` is nonzero only in the transaction that applied a
+        // governance change; `gasCostWei` never includes it.
+        uint256 net = gross - p.gasCostWei - govCost;
 
         // The bid is a fraction of REALIZED net, not of what we predicted. That
         // is the whole reason to pay via coinbase rather than priority fee: if
@@ -516,6 +534,47 @@ contract Executor {
     // ──────────────────────────────────────────────────────────────────────
     /// Cap revert data so a protocol returning a huge blob cannot make the
     /// log dominate the gas cost of the leg it describes.
+    /// Apply the plan's governance change, if it carries one, and return what
+    /// it cost this transaction: its gas times `tx.gasprice` when it ran, zero
+    /// when it was skipped (already applied, not due, or not a genuine plan).
+    ///  - Aave payload: `executePayload(id)` on the fixed PayloadsController.
+    ///  - Sky spell: `cast()` only when DSPause holds the plan the spell's own
+    ///    fields hash to, i.e. governance scheduled it. The fields are read
+    ///    with staticcalls; a contract that only imitates a spell cannot pass.
+    function _govExec(Plan memory p) internal returns (uint256 cost) {
+        uint256 start = gasleft();
+        bool ran;
+        if (p.flags & PlanDecoder.FLAG_GOV_EXEC != 0) {
+            try IPayloadsController(MainnetVenues.AAVE_PAYLOADS_CONTROLLER).executePayload(p.payloadId) {
+                ran = true;
+            } catch (bytes memory r) {
+                emit GovExecSkipped(p.payloadId, _clip(r));
+            }
+        } else if (p.flags & PlanDecoder.FLAG_GOV_SPELL != 0) {
+            if (_spellPlotted(p.spell)) {
+                try IDssSpell(p.spell).cast() {
+                    ran = true;
+                } catch (bytes memory r) {
+                    emit GovSpellSkipped(p.spell, _clip(r));
+                }
+            } else {
+                emit GovSpellSkipped(p.spell, "");
+            }
+        }
+        if (ran) cost = (start - gasleft()) * tx.gasprice;
+    }
+
+    function _spellPlotted(address spell) internal view returns (bool) {
+        try IDssSpell(spell).action() returns (address usr) {
+            bytes32 tag = IDssSpell(spell).tag();
+            bytes memory fax = IDssSpell(spell).sig();
+            uint256 eta = IDssSpell(spell).eta();
+            return IDSPause(MainnetVenues.SKY_PAUSE).plans(keccak256(abi.encode(usr, tag, fax, eta)));
+        } catch {
+            return false;
+        }
+    }
+
     function _clip(bytes memory r) internal pure returns (bytes memory) {
         if (r.length <= 256) return r;
         bytes memory out = new bytes(256);

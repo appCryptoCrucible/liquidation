@@ -22,6 +22,18 @@ pub const SWAP_LEG_HEAD_LEN: usize = 60;
 
 /// Header flag bit 0 — sweep WETH to `PROFIT_SINK` after this plan.
 pub const FLAG_SWEEP: u8 = 1 << 0;
+/// Header flag bit 1 — `PlanDecoder.FLAG_GOV_EXEC`: a [`PAYLOAD_ID_LEN`]-byte
+/// Aave governance payload id follows the profit swaps, and `execute`
+/// tries `executePayload(id)` before borrowing.
+pub const FLAG_GOV_EXEC: u8 = 1 << 1;
+pub const PAYLOAD_ID_LEN: usize = 5;
+/// Largest id a `uint40` payload id holds.
+pub const PAYLOAD_ID_MAX: u64 = (1 << 40) - 1;
+/// Header flag bit 2 — `PlanDecoder.FLAG_GOV_SPELL`: a 20-byte Sky spell
+/// address follows the profit swaps, and `execute` casts it first when
+/// DSPause holds its plan.
+pub const FLAG_GOV_SPELL: u8 = 1 << 2;
+pub const SPELL_LEN: usize = 20;
 /// Swap-leg flag bit 0 — spend the whole `tokenIn` balance.
 pub const LEG_TAKE_BALANCE: u8 = 1 << 0;
 /// Swap-leg flag bit 1 — `amount` is an exact output.
@@ -65,6 +77,9 @@ pub enum WireError {
     /// Executor skips such a leg (`ST_TAIL`).
     #[error("gearbox tail mode {0} is not 0 or 1")]
     BadGearboxMode(u8),
+    /// `PlanDecoder.TwoGovActions`: both governance flags on one plan.
+    #[error("plan carries both a payload id and a spell")]
+    TwoGovActions,
 }
 
 pub type Result<T> = core::result::Result<T, WireError>;
@@ -79,6 +94,10 @@ pub struct Header {
     pub group_count: u8,
     /// Offset of the profit-swap count byte.
     pub profit_swap_offset: usize,
+    /// Present iff `flags` has [`FLAG_GOV_EXEC`].
+    pub payload_id: Option<u64>,
+    /// Present iff `flags` has [`FLAG_GOV_SPELL`].
+    pub spell: Option<Address>,
 }
 
 /// PLAN-ENCODING §1b group head plus walked offsets.
@@ -197,6 +216,17 @@ fn b256_at(b: &[u8], o: usize) -> Result<B256> {
 #[inline]
 fn u256_at(b: &[u8], o: usize) -> Result<U256> {
     Ok(U256::from_be_slice(take(b, o, 32)?))
+}
+
+/// Big-endian `uint40`, as `uint40(bytes5(plan[o:o+5]))`.
+#[inline]
+fn payload_id_at(b: &[u8], o: usize) -> Result<u64> {
+    let s = take(b, o, PAYLOAD_ID_LEN)?;
+    let mut w = [0u8; 8];
+    w.get_mut(8 - PAYLOAD_ID_LEN..)
+        .ok_or(WireError::Overflow)?
+        .copy_from_slice(s);
+    Ok(u64::from_be_bytes(w))
 }
 
 #[inline]
@@ -375,6 +405,18 @@ impl<'a> Plan<'a> {
         let profit_swap_offset = cur;
         let profit_count = u8_at(bytes, cur)?;
         cur = skip_swap_legs(bytes, add(cur, 1)?, profit_count)?;
+        let flags = u8_at(bytes, 0)?;
+        let (mut payload_id, mut spell) = (None, None);
+        if flags & FLAG_GOV_EXEC != 0 {
+            if flags & FLAG_GOV_SPELL != 0 {
+                return Err(WireError::TwoGovActions);
+            }
+            payload_id = Some(payload_id_at(bytes, cur)?);
+            cur = add(cur, PAYLOAD_ID_LEN)?;
+        } else if flags & FLAG_GOV_SPELL != 0 {
+            spell = Some(addr_at(bytes, cur)?);
+            cur = add(cur, SPELL_LEN)?;
+        }
         if cur != bytes.len() {
             return Err(WireError::BadPlanLength {
                 walked: cur,
@@ -384,12 +426,14 @@ impl<'a> Plan<'a> {
         Ok(Self {
             bytes,
             header: Header {
-                flags: u8_at(bytes, 0)?,
+                flags,
                 bid_bps: u16_at(bytes, 1)?,
                 gas_cost_wei: u128_at(bytes, 3)?,
                 min_profit: u128_at(bytes, 19)?,
                 group_count,
                 profit_swap_offset,
+                payload_id,
+                spell,
             },
         })
     }

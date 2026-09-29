@@ -4,8 +4,9 @@ use alloy_primitives::Address;
 use liq_protocol::ExecutorAdapter;
 use liq_wire::wire::LegTail;
 use liq_wire::wire::{
-    decode_group, decode_liq_leg, decode_swap_leg, Plan, GROUP_HEAD_LEN, HEADER_LEN,
-    LEG_TAKE_BALANCE, SWAP_LEG_HEAD_LEN, VENUE_UNIV3_POOL,
+    decode_group, decode_liq_leg, decode_swap_leg, Plan, FLAG_GOV_EXEC, FLAG_GOV_SPELL,
+    GROUP_HEAD_LEN, HEADER_LEN, LEG_TAKE_BALANCE, PAYLOAD_ID_LEN, PAYLOAD_ID_MAX,
+    SWAP_LEG_HEAD_LEN, VENUE_UNIV3_POOL,
 };
 
 use crate::error::{EncodeError, Result};
@@ -18,6 +19,45 @@ impl EncodedPlan {
         validate::validate(p, ctx)?;
         encode_unchecked(p)
     }
+
+    /// Mark this plan as a governance plan: set `FLAG_GOV_EXEC` and append
+    /// the `uint40` payload id after the profit swaps, where
+    /// `PlanDecoder.header` reads it. The Executor then tries
+    /// `executePayload(id)` before borrowing.
+    pub fn with_gov_payload(mut self, payload_id: u64) -> Result<Self> {
+        if payload_id > PAYLOAD_ID_MAX {
+            return Err(EncodeError::PayloadIdRange(payload_id));
+        }
+        let flags = self.0.first_mut().ok_or(EncodeError::NoGroups)?;
+        if *flags & (FLAG_GOV_EXEC | FLAG_GOV_SPELL) != 0 {
+            return Err(EncodeError::GovPayloadTwice);
+        }
+        *flags |= FLAG_GOV_EXEC;
+        let be = payload_id.to_be_bytes();
+        let tail = be
+            .get(be.len().saturating_sub(PAYLOAD_ID_LEN)..)
+            .ok_or(EncodeError::PayloadIdRange(payload_id))?;
+        self.0.extend_from_slice(tail);
+        Plan::parse(&self.0)?;
+        Ok(self)
+    }
+
+    /// Mark this plan as a Sky spell plan: set `FLAG_GOV_SPELL` and append
+    /// the spell address after the profit swaps. The Executor casts it first
+    /// when DSPause holds its plan.
+    pub fn with_gov_spell(mut self, spell: Address) -> Result<Self> {
+        if spell.is_zero() {
+            return Err(EncodeError::ZeroSpell);
+        }
+        let flags = self.0.first_mut().ok_or(EncodeError::NoGroups)?;
+        if *flags & (FLAG_GOV_EXEC | FLAG_GOV_SPELL) != 0 {
+            return Err(EncodeError::GovPayloadTwice);
+        }
+        *flags |= FLAG_GOV_SPELL;
+        self.0.extend_from_slice(spell.as_slice());
+        Plan::parse(&self.0)?;
+        Ok(self)
+    }
 }
 
 /// Pack without validate — tests that assert encode shape of invalid plans
@@ -25,6 +65,11 @@ impl EncodedPlan {
 pub(crate) fn encode_unchecked(p: &BatchPlan) -> Result<EncodedPlan> {
     if p.groups.is_empty() {
         return Err(EncodeError::NoGroups);
+    }
+    // The payload id is appended by `with_gov_payload`; a flag without it
+    // would make the Executor read past the end of the plan.
+    if p.flags & (FLAG_GOV_EXEC | FLAG_GOV_SPELL) != 0 {
+        return Err(EncodeError::GovFlagWithoutPayload);
     }
     let mut b = Vec::with_capacity(size_hint(p)?);
     b.push(p.flags);

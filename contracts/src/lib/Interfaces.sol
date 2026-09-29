@@ -39,6 +39,32 @@ interface IAavePool {
     );
 }
 
+// ─────────────────────── Aave governance v3 payloads ────────────────────
+/// `PayloadsControllerCore.executePayload`, deployed implementation
+/// 0x7222182cb9c5320587b5148bf03eee107ad64578 (Sourcify). No access check;
+/// reverts unless the payload is Queued and `block.timestamp > queuedAt + delay`.
+interface IPayloadsController {
+    function executePayload(uint40 payloadId) external payable;
+}
+
+/// Sky executive spell (`DssExec`, dss-exec-lib). `cast()` has no access
+/// check; it calls `pause.exec(action, tag, sig, eta)`, which requires the
+/// plan to be plotted and `now >= eta`. Office hours are enforced by the
+/// action.
+interface IDssSpell {
+    function action() external view returns (address);
+    function tag() external view returns (bytes32);
+    function sig() external view returns (bytes memory);
+    function eta() external view returns (uint256);
+    function cast() external;
+}
+
+/// Sky `DSPause`: `plans[keccak256(abi.encode(usr, tag, fax, eta))]` is set
+/// only by an authorized `plot` (the Chief's hat) and cleared on `exec`.
+interface IDSPause {
+    function plans(bytes32) external view returns (bool);
+}
+
 // ───────────────────────────── Aave V4 Spoke ────────────────────────────
 /// `ISpoke` pin 40232a0a. Reserves are addressed by `reserveId`, not by
 /// underlying — the plan leg carries both ids in its adapter tail.

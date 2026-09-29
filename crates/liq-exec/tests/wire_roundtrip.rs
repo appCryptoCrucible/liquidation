@@ -450,6 +450,61 @@ fn min_fixture_decodes_and_hits_every_minimum() {
     assert_eq!(plan.group(1), Err(WireError::NoGroups));
 }
 
+/// `plan_v1_gov` = `plan_v1_min` with `FLAG_GOV_EXEC` and payload id 469
+/// after the profit swaps. `PlanDecode.t.sol::test_gov_fixture_payload_id`
+/// reads the same file.
+#[test]
+fn gov_fixture_decodes_payload_id() {
+    let min = fixture_bytes("plan_v1_min");
+    let gov = fixture_bytes("plan_v1_gov");
+    assert_eq!(gov.len(), min.len() + liq_wire::wire::PAYLOAD_ID_LEN);
+    let plan = Plan::parse(&gov).unwrap();
+    let h = plan.header();
+    assert_eq!(h.flags, liq_wire::wire::FLAG_GOV_EXEC);
+    assert_eq!(h.payload_id, Some(469));
+    assert_eq!(h.profit_swap_offset, 176, "the id does not move the walk");
+    assert_eq!(Plan::parse(&min).unwrap().header().payload_id, None);
+
+    // Flag without the id, or the id without the flag, is refused.
+    let mut short = gov.clone();
+    short.pop();
+    assert!(Plan::parse(&short).is_err());
+    let mut unflagged = gov.clone();
+    unflagged[0] = 0;
+    assert_eq!(
+        Plan::parse(&unflagged),
+        Err(WireError::BadPlanLength {
+            walked: min.len(),
+            actual: gov.len()
+        })
+    );
+}
+
+/// `plan_v1_spell` = `plan_v1_min` with `FLAG_GOV_SPELL` and Sky spell
+/// 0xF01b…BaDC after the profit swaps. `PlanDecode.t.sol` reads it too.
+#[test]
+fn spell_fixture_decodes_spell_address() {
+    use liq_wire::wire::{FLAG_GOV_EXEC, FLAG_GOV_SPELL, SPELL_LEN};
+    let min = fixture_bytes("plan_v1_min");
+    let spell = fixture_bytes("plan_v1_spell");
+    assert_eq!(spell.len(), min.len() + SPELL_LEN);
+    let h = *Plan::parse(&spell).unwrap().header();
+    assert_eq!(h.flags, FLAG_GOV_SPELL);
+    assert_eq!(
+        h.spell,
+        Some(alloy_primitives::address!(
+            "F01b594aF26fC8A8ae1e24DCaF904ECB6Fd1BaDC"
+        ))
+    );
+    assert_eq!(h.payload_id, None);
+    let mut both = spell.clone();
+    both[0] |= FLAG_GOV_EXEC;
+    assert_eq!(Plan::parse(&both), Err(WireError::TwoGovActions));
+    let mut short = spell;
+    short.pop();
+    assert!(Plan::parse(&short).is_err());
+}
+
 /// Mutation #2 (TESTING.md §4): an off-by-one in the leg stride. Dropping or
 /// adding a byte anywhere inside a leg shifts every later field and the
 /// walked length no longer matches — the decoder must reject, not misread.

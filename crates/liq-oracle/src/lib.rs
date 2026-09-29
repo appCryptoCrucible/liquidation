@@ -50,8 +50,8 @@ pub use feeds::{
 };
 pub use fusion::{split_fusion, venues_to_spawn, Fusion, FUSION_CHANNEL_CAP};
 pub use governance::{
-    classify_action, decode_payload_actions, execution_due, ClassifiedAction, GovernanceConfig,
-    GovernancePoller, PayloadAction, PayloadView, Timelock, TimelockKind, PIN_BLOCK,
+    executable_at, GovernanceConfig, GovernancePoller, PayloadView, QueuedPayload, Timelock,
+    TimelockKind, PAYLOAD_STATE_QUEUED, PIN_BLOCK,
 };
 pub use mempool_oracle::{MempoolOracle, PendingTx, RING_CAP, TRANSMIT_SELECTOR};
 pub use publish::{split, PricePublish, PriceRead};

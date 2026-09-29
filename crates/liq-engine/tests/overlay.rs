@@ -16,10 +16,11 @@
 mod common;
 
 use common::*;
-use liq_engine::{ProtocolPriceMove, ProtocolPrices, World};
+use liq_engine::{ProtocolPriceMove, ProtocolPrices, TriggerCause, World};
 use liq_flash::{DepthOnlyRouteCache, Haircut};
-use liq_protocol::Protocol;
+use liq_protocol::{DirtySet, MarketSlot, Protocol};
 use liq_types::{AssetId, Band, MarketId, PositionId, ProtocolId, Ray, SourceKind};
+use smallvec::smallvec;
 
 /// One market's protocol prices.
 struct Overlay {
@@ -141,6 +142,46 @@ fn cold_position_is_caught_by_a_protocol_price_move() {
     );
     assert!(!got.contains(&pid(6)), "700 DAI at hf 1.41 did not cross");
     assert_eq!(rig.engine.band(pid(4)), Some(Band::Hot));
+}
+
+/// A `MarketReprice` (LT/LTV change) on the WETH row refolds the Cold WETH
+/// holders (#4, #6) even though their WETH threshold is in the overlay index.
+#[test]
+fn reprice_refolds_cold_positions_priced_by_the_overlay() {
+    let mut rig = Rig::new(&bands_universe(), pinned_flash(), 64);
+    let at_par = spoke_overlay(ETH_USD_P8);
+    run(&mut rig, &at_par, |e, w| e.resync(w).unwrap());
+    rig.engine.candidates().count();
+    assert_eq!(rig.engine.band(pid(4)), Some(Band::Cold));
+    assert_eq!(rig.engine.band(pid(6)), Some(Band::Cold));
+    let in_overlay: Vec<_> = rig.engine.overlay_index().registered(WETH).collect();
+    assert!(in_overlay.contains(&pid(4)) && in_overlay.contains(&pid(6)));
+
+    let walked = [Band::Hot, Band::Warm, Band::Cool]
+        .iter()
+        .map(|b| rig.engine.bands().members(*b).len())
+        .sum::<usize>() as u64;
+    let weth_row = MarketSlot {
+        market: SPOKE_MARKET,
+        slot: v4::WETH_SLOT,
+    };
+    let f = rig.engine.stats().folds;
+    run(&mut rig, &at_par, |e, w| {
+        e.on_dirty(
+            w,
+            PROTOCOL,
+            &DirtySet::MarketReprice(smallvec![weth_row]),
+            &TriggerCause::ParamChange {
+                market: SPOKE_MARKET,
+            },
+        )
+        .unwrap()
+    });
+    assert_eq!(
+        rig.engine.stats().folds - f,
+        walked + 2,
+        "walked bands plus Cold #4 and #6"
+    );
 }
 
 /// An overlay on another market leaves these positions on canonical prices.

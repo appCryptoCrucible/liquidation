@@ -273,9 +273,11 @@ mod tests {
         assert!(match_hint(&hint(Some(AGG), None, None), &t)
             .unwrap()
             .is_none());
-        assert!(match_hint(&hint(Some(FWD), Some([0x11, 0x22, 0x33, 0x44]), None), &t)
-            .unwrap()
-            .is_none());
+        assert!(
+            match_hint(&hint(Some(FWD), Some([0x11, 0x22, 0x33, 0x44]), None), &t)
+                .unwrap()
+                .is_none()
+        );
 
         let other = Bytes::from(
             forwardCall {

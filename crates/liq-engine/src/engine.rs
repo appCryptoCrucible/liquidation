@@ -531,7 +531,13 @@ impl Engine {
                     .get(usize::from(r.slot))
                     .ok_or(ProtocolError::SlotOutOfRange(*r))?
                     .asset;
-                for id in t.index.registered(asset) {
+                // A slot priced by the protocol overlay keeps its threshold in
+                // `overlay_index`, so a reprice must walk both.
+                for id in t
+                    .index
+                    .registered(asset)
+                    .chain(t.overlay_index.registered(asset))
+                {
                     if touches(id)? {
                         batch.push(id);
                     }
@@ -596,6 +602,54 @@ impl Engine {
         self.batch.clear();
         self.batch.extend((0..n).map(PositionId));
         self.run(w, true, Cause::Landed, None)
+    }
+
+    /// Evaluate `ids` on `w` and return the liquidatable, fundable ones as
+    /// candidates with `cause`. Mutates nothing a fold maintains (bands,
+    /// threshold indexes, heap, candidate queue): `w` may be a hypothetical
+    /// view, such as committed state with a pending governance change laid
+    /// over it, and must not leave thresholds behind. Uses the canonical
+    /// prices with `w.overlay` laid over each position, as a fold does. A
+    /// position that fails to evaluate is logged and is not a candidate.
+    pub fn probe(
+        &mut self,
+        w: &World<'_>,
+        ids: &[PositionId],
+        cause: &TriggerCause,
+    ) -> Vec<Candidate> {
+        let mut out = Vec::new();
+        for &id in ids {
+            let r = overlay_on(&mut self.px, w, id, &mut self.saved).and_then(|()| {
+                let pos = w.view.position(id)?;
+                let p = w.protocol(pos.key.protocol)?;
+                let (h, q) = evaluate(p, pos, &self.px)?;
+                let Some(q) = q else {
+                    return Ok(None);
+                };
+                let Some((legs, route)) = is_eligible(&q, w.flash, w.routes, w.haircut) else {
+                    return Ok(None);
+                };
+                candidate(
+                    &mut self.t,
+                    id,
+                    pos.key.protocol,
+                    h,
+                    q,
+                    legs,
+                    route,
+                    cause.clone(),
+                    None,
+                )
+                .map(Some)
+            });
+            overlay_off(&mut self.px, &mut self.saved);
+            match r {
+                Ok(Some(c)) => out.push(c),
+                Ok(None) => {}
+                Err(e) => tracing::error!(position = id.0, error = %e, "probe failed"),
+            }
+        }
+        out
     }
 
     // ---- the fold --------------------------------------------------------------
@@ -914,6 +968,27 @@ fn emit(
     cause: TriggerCause,
     deadline: Option<Instant>,
 ) -> Result<(), EngineError> {
+    let c = candidate(
+        t, id, protocol, health, quote, legs, funding, cause, deadline,
+    )?;
+    t.queue.push(c);
+    t.stats.emitted = t.stats.emitted.saturating_add(1);
+    Ok(())
+}
+
+/// The candidate [`emit`] queues, with the next trace id.
+#[allow(clippy::too_many_arguments)]
+fn candidate(
+    t: &mut Tables,
+    id: PositionId,
+    protocol: ProtocolId,
+    health: Health,
+    quote: Quote,
+    legs: LegChoice,
+    funding: FlashRoute,
+    cause: TriggerCause,
+    deadline: Option<Instant>,
+) -> Result<Candidate, EngineError> {
     let bonus = quote
         .seize_options
         .get(usize::from(legs.seize))
@@ -927,7 +1002,7 @@ fn emit(
         TriggerCause::SvrAuction { deadline, .. } => Some(deadline),
         _ => None,
     });
-    t.queue.push(Candidate {
+    Ok(Candidate {
         position: id,
         protocol,
         health,
@@ -938,9 +1013,7 @@ fn emit(
         est_value,
         deadline,
         trace,
-    });
-    t.stats.emitted = t.stats.emitted.saturating_add(1);
-    Ok(())
+    })
 }
 
 #[cfg(test)]

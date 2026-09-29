@@ -139,6 +139,14 @@ pub struct DrainJoin {
     /// was not started.
     svr_rx: Option<rtrb::Consumer<liq_types::MevShareHint>>,
     svr_targets: Vec<liq_oracle::mevshare::SvrTarget>,
+    /// Governance payload simulations from the `liq-bot-gov` worker.
+    gov_rx: Option<rtrb::Consumer<crate::governance::GovSim>>,
+    gov_inbox: Option<liq_exec::gov::GovInbox>,
+    /// Built on the first simulation; the adapters' log routes.
+    gov_routes: Option<crate::governance::GovRoutes>,
+    /// Simulations whose base block the store has not reached yet. The node
+    /// can report a head before its ExEx notification is folded here.
+    gov_pending: Vec<crate::governance::GovSim>,
     /// Header `gasLimit` of the last observed parent. `0` = not yet seen.
     parent_gas_limit: u64,
     last_block: u64,
@@ -471,11 +479,27 @@ impl DrainJoin {
             reads_at: 0,
             svr_rx: None,
             svr_targets: Vec::new(),
+            gov_rx: None,
+            gov_inbox: None,
+            gov_routes: None,
+            gov_pending: Vec::new(),
             parent_gas_limit: 0,
             last_block: 0,
             last_ts: 0,
             block_seen: false,
         }
+    }
+
+    /// Governance payload simulations in, governance bundles out.
+    #[must_use]
+    pub fn with_gov(
+        mut self,
+        rx: rtrb::Consumer<crate::governance::GovSim>,
+        inbox: liq_exec::gov::GovInbox,
+    ) -> Self {
+        self.gov_rx = Some(rx);
+        self.gov_inbox = Some(inbox);
+        self
     }
 
     /// SVR aggregators and the hint ring. Empty targets do not start a reader.
@@ -885,17 +909,49 @@ impl DrainJoin {
                 .saturating_add(u64::try_from(cands.len()).unwrap_or(u64::MAX));
             return stats;
         }
+        let mode = if svr { Mode::Svr } else { Mode::Ordinary };
+        for b in self.build(cands, tip, view, mode, &mut stats) {
+            match self.finish_job(
+                b.lead,
+                &b.assembled,
+                b.hop_and_wrap_gas,
+                tip,
+                timestamp,
+                &b.bid,
+            ) {
+                Finish::Sent => stats.jobs_sent = stats.jobs_sent.saturating_add(1),
+                Finish::Sim => stats.skipped_sim = stats.skipped_sim.saturating_add(1),
+                Finish::Job => stats.skipped_job = stats.skipped_job.saturating_add(1),
+                Finish::Full => stats.inbox_full = stats.inbox_full.saturating_add(1),
+                Finish::Exec => stats.skipped_exec = stats.skipped_exec.saturating_add(1),
+            }
+        }
+        stats
+    }
+
+    /// Pins, select and assemble for `cands` under `mode`'s select
+    /// configuration. Every plan that assembles, with the candidate it
+    /// submits under. Nothing is sent here.
+    fn build<'c>(
+        &mut self,
+        cands: &'c [Candidate],
+        tip: u64,
+        view: Option<&StateView<'_>>,
+        mode: Mode,
+        stats: &mut DrainStats,
+    ) -> Vec<Built<'c>> {
+        let mut out = Vec::new();
         let gas_failed = match self.select.as_ref() {
             None => {
                 tracing::error!(
                     "select inputs absent — skip (no invented header gas / wrap / failed gas)"
                 );
                 stats.skipped_select = stats.skipped_select.saturating_add(1);
-                return stats;
+                return out;
             }
             Some(ready) => ready.gas_failed,
         };
-        let mut kept: Vec<&Candidate> = Vec::new();
+        let mut kept: Vec<&'c Candidate> = Vec::new();
         for c in cands {
             if !c.fireable() || c.cause.kind() == TriggerKind::OraclePredicted {
                 tracing::error!(
@@ -933,12 +989,12 @@ impl DrainJoin {
             kept.push(c);
         }
         if kept.is_empty() {
-            return stats;
+            return out;
         }
         let Some(ready) = self.select.as_ref() else {
             tracing::error!("select inputs dropped — skip");
             stats.skipped_select = stats.skipped_select.saturating_add(1);
-            return stats;
+            return out;
         };
         publish_pair_terms(
             &self.prices,
@@ -979,7 +1035,11 @@ impl DrainJoin {
             Some(warm.as_ref())
         };
         let book = self.book.read();
-        let cfg = if svr { svr_select_cfg(ready.cfg) } else { ready.cfg };
+        let cfg = match mode {
+            Mode::Ordinary => ready.cfg,
+            Mode::Svr => svr_select_cfg(ready.cfg),
+            Mode::Gov => gov_select_cfg(ready.cfg, kept.len()),
+        };
         let plans = match select(
             &inputs,
             &cfg,
@@ -994,20 +1054,20 @@ impl DrainJoin {
             Err(e) => {
                 tracing::error!(error = %e, "select refused");
                 stats.skipped_select = stats.skipped_select.saturating_add(1);
-                return stats;
+                return out;
             }
         };
         if plans.is_empty() {
             tracing::error!("select emitted no plans");
             stats.skipped_select = stats.skipped_select.saturating_add(1);
-            return stats;
+            return out;
         }
         let price = match liq_router::profit::gas_price_in_debt(&ready.gas) {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!(error = %e, "gas_price_in_debt refused");
                 stats.skipped_select = stats.skipped_select.saturating_add(1);
-                return stats;
+                return out;
             }
         };
         for plan in &plans {
@@ -1040,16 +1100,15 @@ impl DrainJoin {
                     stats.skipped_job = stats.skipped_job.saturating_add(1);
                     continue;
                 };
-                match self.finish_job(lead, &a, plan.hop_and_wrap_gas, tip, timestamp, &bid) {
-                    Finish::Sent => stats.jobs_sent = stats.jobs_sent.saturating_add(1),
-                    Finish::Sim => stats.skipped_sim = stats.skipped_sim.saturating_add(1),
-                    Finish::Job => stats.skipped_job = stats.skipped_job.saturating_add(1),
-                    Finish::Full => stats.inbox_full = stats.inbox_full.saturating_add(1),
-                    Finish::Exec => stats.skipped_exec = stats.skipped_exec.saturating_add(1),
-                }
+                out.push(Built {
+                    lead,
+                    assembled: a,
+                    bid,
+                    hop_and_wrap_gas: plan.hop_and_wrap_gas,
+                });
             }
         }
-        stats
+        out
     }
 
     fn ensure_pins(&mut self, c: &Candidate, view: Option<&StateView<'_>>) -> bool {
@@ -1113,10 +1172,6 @@ impl DrainJoin {
         };
         let plan_bytes = Bytes::from(encoded.into_bytes());
         let calldata = execute_calldata(plan_bytes.as_ref());
-        let Some(sim) = self.sim.as_ref() else {
-            tracing::error!("no StateProvider — sim fail-closed, skip send");
-            return Finish::Sim;
-        };
         let Some(trigger) = sim_trigger(cand, self.parent_gas_limit) else {
             return Finish::Sim;
         };
@@ -1147,6 +1202,7 @@ impl DrainJoin {
                 self.chain_id,
                 tip,
                 bid,
+                false,
             ) else {
                 return Finish::Job;
             };
@@ -1157,6 +1213,36 @@ impl DrainJoin {
                 Finish::Full
             };
         }
+        let Some(sim) = self.sim.as_ref() else {
+            // No in-process simulator: a trigger already in committed state
+            // is verified by the exec worker against the node before it is
+            // signed. A parent transaction cannot be replayed there.
+            if !matches!(trigger, Trigger::InterestDrift) {
+                tracing::error!("no StateProvider and a parent tx to replay — skip send");
+                return Finish::Sim;
+            }
+            let Some(job) = exec_job(
+                cand,
+                assembled,
+                &plan_bytes,
+                &calldata,
+                hop_and_wrap_gas,
+                self.fee,
+                operator,
+                self.chain_id,
+                tip,
+                bid,
+                true,
+            ) else {
+                return Finish::Job;
+            };
+            return if inbox.try_send(job) {
+                Finish::Sent
+            } else {
+                tracing::error!("ExecInbox full — counted, not blocked");
+                Finish::Full
+            };
+        };
         let bundle = Bundle {
             trigger,
             calls: vec![SimTx {
@@ -1195,6 +1281,7 @@ impl DrainJoin {
             self.chain_id,
             tip,
             bid,
+            false,
         ) else {
             return Finish::Job;
         };
@@ -1287,6 +1374,182 @@ impl DrainJoin {
     }
 }
 
+impl DrainJoin {
+    /// Governance simulations from the worker, each handled on the tip it
+    /// was built on.
+    fn poll_gov(&mut self, store: &liq_state::StateStore) {
+        if let Some(rx) = self.gov_rx.as_mut() {
+            while let Ok(s) = rx.pop() {
+                self.gov_pending.push(s);
+            }
+        }
+        if self.gov_pending.is_empty() {
+            return;
+        }
+        let (ready, wait) = split_gov_pending(std::mem::take(&mut self.gov_pending), store.tip());
+        self.gov_pending = wait;
+        for sim in &ready {
+            let _ = self.handle_gov(store, sim);
+        }
+    }
+
+    /// Lay `sim`'s logs over committed state, find the positions the payload
+    /// makes liquidatable that are not liquidatable without it, and send one
+    /// transaction per account for the target block. Returns the number of
+    /// transactions handed to the exec worker.
+    pub fn handle_gov(
+        &mut self,
+        store: &liq_state::StateStore,
+        sim: &crate::governance::GovSim,
+    ) -> usize {
+        if store.tip() != sim.base_block {
+            tracing::debug!(
+                action = ?sim.action,
+                base = sim.base_block,
+                tip = store.tip(),
+                "governance simulation built on another head — dropped"
+            );
+            return 0;
+        }
+        if self.gov_inbox.is_none() {
+            tracing::error!("governance inbox unbound — payload not planned");
+            return 0;
+        }
+        let protocols = self.protocols;
+        let flash = self.flash.load();
+        let haircut = self.world_haircut();
+        let routes = self
+            .gov_routes
+            .get_or_insert_with(|| crate::governance::GovRoutes::new(protocols));
+        let (ov, after) = match crate::governance::newly_liquidatable(
+            &mut self.engine,
+            protocols,
+            routes,
+            store,
+            sim,
+            flash.as_ref(),
+            &self.routes,
+            haircut,
+            Some(&self.protocol_prices),
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(error = %e, action = ?sim.action, "governance logs refused by an adapter");
+                return 0;
+            }
+        };
+        if after.is_empty() {
+            return 0;
+        }
+        let pins_view = match store.view_with(&ov, sim.target_ts) {
+            Ok(v) => v,
+            Err(_) => return 0,
+        };
+        let mut stats = DrainStats::default();
+        let built = self.build(
+            &after,
+            sim.base_block,
+            Some(&pins_view),
+            Mode::Gov,
+            &mut stats,
+        );
+        let Some(ready) = self.select.as_ref() else {
+            return 0;
+        };
+        let Some(fee) = self.fee.filter(|f| f.parent_block == sim.base_block) else {
+            tracing::error!(
+                action = ?sim.action,
+                "fee quote is not for this head — not sent"
+            );
+            return 0;
+        };
+        let mut txs = Vec::with_capacity(built.len());
+        for b in &built {
+            let encoded = match EncodedPlan::encode(&b.assembled.plan, &ready.validate) {
+                Ok(e) => match sim.action {
+                    liq_exec::gov::GovAction::Payload { id, .. } => e.with_gov_payload(id),
+                    liq_exec::gov::GovAction::Spell(spell) => e.with_gov_spell(spell),
+                },
+                Err(e) => Err(e),
+            };
+            let encoded = match encoded {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::error!(error = %e, pos = b.lead.position.0, "governance plan encode refused");
+                    continue;
+                }
+            };
+            let (Some((collateral, debt)), Some(g0)) =
+                (assets_of(b.lead), b.assembled.plan.groups.first())
+            else {
+                continue;
+            };
+            let plan = Bytes::from(encoded.into_bytes());
+            txs.push(liq_exec::gov::GovTx {
+                trace: b.lead.trace,
+                calldata: execute_calldata(plan.as_ref()),
+                plan,
+                protocol: b.lead.protocol,
+                market: b.lead.quote.key.market,
+                collateral,
+                debt,
+                flash: g0.provider,
+                position: b.lead.quote.key,
+                auction_bps: b.bid.refund_bps,
+            });
+        }
+        let n = txs.len();
+        if n == 0 {
+            tracing::info!(action = ?sim.action, "no governance plan assembled");
+            return 0;
+        }
+        let job = liq_exec::gov::GovJob {
+            action: sim.action,
+            base_block: sim.base_block,
+            target_block: sim.target_block,
+            target_ts: sim.target_ts,
+            exec_gas: sim.exec_gas,
+            fee,
+            chain_id: self.chain_id,
+            txs,
+        };
+        match self.gov_inbox.as_ref() {
+            Some(inbox) if inbox.try_send(job) => n,
+            _ => {
+                tracing::error!(action = ?sim.action, "governance inbox full — not sent");
+                0
+            }
+        }
+    }
+}
+
+/// Simulations built on `tip` (handle now) and on a later block (wait for
+/// the store to reach it). One built on an earlier block is dropped: the
+/// worker sends a fresh one for the current head.
+fn split_gov_pending(
+    sims: Vec<crate::governance::GovSim>,
+    tip: u64,
+) -> (
+    Vec<crate::governance::GovSim>,
+    Vec<crate::governance::GovSim>,
+) {
+    let mut ready = Vec::new();
+    let mut wait = Vec::new();
+    for s in sims {
+        match s.base_block.cmp(&tip) {
+            std::cmp::Ordering::Equal => ready.push(s),
+            std::cmp::Ordering::Greater => wait.push(s),
+            std::cmp::Ordering::Less => tracing::debug!(
+                action = ?s.action,
+                base = s.base_block,
+                tip,
+                "governance simulation for a passed block — dropped"
+            ),
+        }
+    }
+    (ready, wait)
+}
+
 /// One bundle per oracle hint. Anything else stays on the ordinary drain.
 fn partition_by_hint(cands: Vec<Candidate>) -> (Vec<Vec<Candidate>>, Vec<Candidate>) {
     let mut groups: Vec<(B256, Vec<Candidate>)> = Vec::new();
@@ -1304,6 +1567,34 @@ fn partition_by_hint(cands: Vec<Candidate>) -> (Vec<Vec<Candidate>>, Vec<Candida
         }
     }
     (groups.into_iter().map(|(_, group)| group).collect(), other)
+}
+
+/// Which select configuration a batch is built under.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Mode {
+    Ordinary,
+    Svr,
+    /// A governance action's liquidations. Its gas is charged by the
+    /// Executor, at `tx.gasprice`, to whichever transaction applies it.
+    Gov,
+}
+
+/// One assembled plan and the candidate it submits under.
+struct Built<'c> {
+    lead: &'c Candidate,
+    assembled: liq_router::Assembled,
+    bid: Bid,
+    hop_and_wrap_gas: u64,
+}
+
+/// One account per plan, so one account per transaction: an owner who
+/// changes their position in the block before reverts only their own.
+fn gov_select_cfg(mut cfg: SelectCfg, accounts: usize) -> SelectCfg {
+    let n = u8::try_from(accounts).unwrap_or(u8::MAX).max(1);
+    cfg.legs_per_plan = 1;
+    cfg.exact_k = n;
+    cfg.nonce_slots = n.min(NONCE_SLOTS);
+    cfg
 }
 
 fn svr_select_cfg(mut cfg: SelectCfg) -> SelectCfg {
@@ -1339,6 +1630,7 @@ impl AfterBlock for DrainJoin {
 
     fn poll(&mut self, store: &liq_state::StateStore) {
         self.poll_svr(store);
+        self.poll_gov(store);
     }
 }
 
@@ -1629,6 +1921,7 @@ fn exec_job(
     chain_id: u64,
     tip: u64,
     bid: &Bid,
+    rpc_verify: bool,
 ) -> Option<ExecJob> {
     let kind = cand.cause.kind();
     if !cand.fireable() || kind == TriggerKind::OraclePredicted {
@@ -1708,6 +2001,7 @@ fn exec_job(
         gas_limit,
         chain_id,
         slot: 0,
+        rpc_verify,
     })
 }
 
@@ -2321,15 +2615,34 @@ mod tests {
     }
 
     #[test]
-    fn no_state_provider_zero_jobs() {
+    /// No in-process simulator: a trigger already in committed state goes to
+    /// the exec worker marked for RPC verification, sized from the plan's gas
+    /// until that simulation replaces it; nothing is marked verified.
+    fn no_state_provider_hands_committed_triggers_to_rpc_verification() {
         let (inbox, rx) = ExecInbox::pair(4);
         let mut j = join_base(Some(inbox), false);
         let st = j.enqueue_candidates(&[fireable(1)], 0, 1, None);
-        assert_eq!(st.jobs_sent, 0);
-        assert!(
-            st.skipped_sim >= 1 || st.skipped_select >= 1 || st.skipped_pins >= 1,
-            "no provider must not invent a receipt: {st:?}"
+        assert_eq!(st.jobs_sent, 1, "{st:?}");
+        let job = rx.try_recv().unwrap();
+        assert!(job.rpc_verify);
+        assert!(job.gas_limit > 0);
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// A trigger whose parent transaction would have to be replayed cannot
+    /// be verified over RPC, so without a simulator it is still not sent.
+    #[test]
+    fn no_state_provider_sends_nothing_needing_a_parent_tx() {
+        let (inbox, rx) = ExecInbox::pair(4);
+        let mut j = join_base(Some(inbox), false);
+        let c = candidate(
+            1,
+            TriggerCause::OraclePublic {
+                tx: B256::repeat_byte(3),
+            },
         );
+        let st = j.enqueue_candidates(&[c], 0, 1, None);
+        assert_eq!(st.jobs_sent, 0);
         assert!(rx.try_recv().is_err());
     }
 
@@ -2769,6 +3082,36 @@ mod tests {
         let mut unpriced = price(2, 1);
         unpriced.ts = 0;
         assert!(coll_per_debt_from_prices(&unpriced, &price(1, 1), 18, 6).is_none());
+    }
+
+    /// The node can report head N before the hot thread folds N: a
+    /// simulation for N waits, one for the tip runs, one for a passed block
+    /// is dropped.
+    #[test]
+    fn gov_pending_waits_for_its_block() {
+        let sim = |base: u64| crate::governance::GovSim {
+            action: liq_exec::gov::GovAction::Payload {
+                controller: Address::ZERO,
+                id: base,
+            },
+            base_block: base,
+            target_block: base + 1,
+            target_ts: 0,
+            exec_gas: 0,
+            logs: Vec::new(),
+        };
+        let (ready, wait) = split_gov_pending(vec![sim(9), sim(10), sim(11), sim(12)], 10);
+        assert_eq!(
+            ready.iter().map(|s| s.base_block).collect::<Vec<_>>(),
+            vec![10]
+        );
+        assert_eq!(
+            wait.iter().map(|s| s.base_block).collect::<Vec<_>>(),
+            vec![11, 12]
+        );
+        let (ready, wait) = split_gov_pending(wait, 11);
+        assert_eq!(ready.len(), 1);
+        assert_eq!(wait.len(), 1);
     }
 
     #[test]

@@ -17,6 +17,7 @@ use tokio::net::TcpListener;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Captured {
+    #[allow(dead_code)] // read by submit_path, not every test binary
     pub(crate) header: Option<String>,
     pub(crate) body: Vec<u8>,
 }
@@ -27,7 +28,20 @@ pub(crate) struct MockRelay {
     pub(crate) captured: Arc<Mutex<Vec<Captured>>>,
 }
 
+/// JSON-RPC answer for a request body.
+pub(crate) type Responder = Arc<dyn Fn(&serde_json::Value) -> serde_json::Value + Send + Sync>;
+
 pub(crate) async fn spawn_mock(delay: Duration) -> MockRelay {
+    spawn_with(delay, None).await
+}
+
+/// A node stand-in: `answer` maps each request to its `result`.
+#[allow(dead_code)]
+pub(crate) async fn spawn_rpc(answer: Responder) -> MockRelay {
+    spawn_with(Duration::ZERO, Some(answer)).await
+}
+
+async fn spawn_with(delay: Duration, answer: Option<Responder>) -> MockRelay {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let hits = Arc::new(AtomicU64::new(0));
@@ -41,8 +55,9 @@ pub(crate) async fn spawn_mock(delay: Duration) -> MockRelay {
             };
             let hits_t = Arc::clone(&hits_t);
             let cap_t = Arc::clone(&cap_t);
+            let answer = answer.clone();
             tokio::spawn(async move {
-                handle(sock, hits_t, cap_t, delay).await;
+                handle(sock, hits_t, cap_t, delay, answer).await;
             });
         }
     });
@@ -58,6 +73,7 @@ async fn handle(
     hits: Arc<AtomicU64>,
     captured: Arc<Mutex<Vec<Captured>>>,
     delay: Duration,
+    answer: Option<Responder>,
 ) {
     if !delay.is_zero() {
         tokio::time::sleep(delay).await;
@@ -79,8 +95,13 @@ async fn handle(
     hits.fetch_add(1, Ordering::Relaxed);
     let header = flashbots_header(&got);
     let body = body_of(&got);
+    let reply = answer.and_then(|f| {
+        let req: serde_json::Value = serde_json::from_slice(&body).ok()?;
+        serde_json::to_vec(&serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": f(&req)})).ok()
+    });
     captured.lock().push(Captured { header, body });
-    let payload = br#"{"jsonrpc":"2.0","id":1,"result":{"bundleHash":"0x00"}}"#;
+    let fixed = br#"{"jsonrpc":"2.0","id":1,"result":{"bundleHash":"0x00"}}"#;
+    let payload: &[u8] = reply.as_deref().unwrap_or(fixed);
     let resp = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         payload.len()

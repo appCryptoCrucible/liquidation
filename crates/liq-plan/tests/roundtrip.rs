@@ -1221,3 +1221,84 @@ fn exact_out_short_without_exact_in_leg_is_refused() {
         Err(EncodeError::RepayNotSizedToPull { .. })
     ));
 }
+
+/// A governance plan is the ordinary plan plus the flag and a 5-byte id:
+/// every byte before the id is unchanged, and the wire decoder reads it back.
+#[test]
+fn gov_payload_appends_the_id_and_sets_the_flag() {
+    use liq_plan::FLAG_GOV_EXEC;
+    let plain = EncodedPlan::encode(&plan_v3(), &ctx()).unwrap();
+    let gov = plain.clone().with_gov_payload(469).unwrap();
+    let (p, g) = (plain.as_bytes(), gov.as_bytes());
+    assert_eq!(g.len(), p.len() + 5);
+    assert_eq!(g[0], p[0] | FLAG_GOV_EXEC);
+    assert_eq!(&g[1..p.len()], &p[1..]);
+    assert_eq!(&g[p.len()..], &[0x00, 0x00, 0x00, 0x01, 0xd5]);
+    let h = *liq_wire::wire::Plan::parse(g).unwrap().header();
+    assert_eq!(h.payload_id, Some(469));
+    assert_eq!(h.flags & FLAG_SWEEP, FLAG_SWEEP, "other flags kept");
+
+    let top = liq_wire::wire::PAYLOAD_ID_MAX;
+    let g = plain.clone().with_gov_payload(top).unwrap();
+    assert_eq!(
+        liq_wire::wire::Plan::parse(g.as_bytes())
+            .unwrap()
+            .header()
+            .payload_id,
+        Some(top)
+    );
+}
+
+#[test]
+fn gov_payload_refuses_range_repeat_and_bare_flag() {
+    use liq_plan::FLAG_GOV_EXEC;
+    let plain = EncodedPlan::encode(&plan_v3(), &ctx()).unwrap();
+    let over = liq_wire::wire::PAYLOAD_ID_MAX + 1;
+    assert_eq!(
+        plain.clone().with_gov_payload(over),
+        Err(EncodeError::PayloadIdRange(over))
+    );
+    let once = plain.with_gov_payload(1).unwrap();
+    assert_eq!(once.with_gov_payload(2), Err(EncodeError::GovPayloadTwice));
+    let mut p = plan_v3();
+    p.flags |= FLAG_GOV_EXEC;
+    assert_eq!(
+        EncodedPlan::encode(&p, &ctx()),
+        Err(EncodeError::GovFlagWithoutPayload)
+    );
+}
+
+#[test]
+fn gov_spell_appends_the_address_and_excludes_a_payload() {
+    use liq_plan::{FLAG_GOV_EXEC, FLAG_GOV_SPELL};
+    let spell = address!("F01b594aF26fC8A8ae1e24DCaF904ECB6Fd1BaDC");
+    let plain = EncodedPlan::encode(&plan_v3(), &ctx()).unwrap();
+    let g = plain.clone().with_gov_spell(spell).unwrap();
+    assert_eq!(g.as_bytes()[0], plain.as_bytes()[0] | FLAG_GOV_SPELL);
+    assert_eq!(&g.as_bytes()[plain.as_bytes().len()..], spell.as_slice());
+    let h = *liq_wire::wire::Plan::parse(g.as_bytes()).unwrap().header();
+    assert_eq!(h.spell, Some(spell));
+    assert_eq!(
+        g.clone().with_gov_payload(1),
+        Err(EncodeError::GovPayloadTwice)
+    );
+    assert_eq!(
+        plain
+            .clone()
+            .with_gov_payload(1)
+            .unwrap()
+            .with_gov_spell(spell),
+        Err(EncodeError::GovPayloadTwice)
+    );
+    assert_eq!(
+        plain.with_gov_spell(Address::ZERO),
+        Err(EncodeError::ZeroSpell)
+    );
+    let mut p = plan_v3();
+    p.flags |= FLAG_GOV_SPELL;
+    assert_eq!(
+        EncodedPlan::encode(&p, &ctx()),
+        Err(EncodeError::GovFlagWithoutPayload)
+    );
+    let _ = FLAG_GOV_EXEC;
+}

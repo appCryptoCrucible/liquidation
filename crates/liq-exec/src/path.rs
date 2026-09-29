@@ -9,9 +9,7 @@ use crate::error::{ExecError, Result};
 use crate::fee::FeeQuote;
 use crate::inclusion::{spawn_watch, Tracked, WatchCmd};
 use crate::nonce::{AllocatedNonce, NonceAllocator, NonceMode};
-use crate::submit::{
-    bid_policy, route, BuilderBundle, LiveSendBits, MevShare, SubmitEnabled,
-};
+use crate::submit::{bid_policy, route, BuilderBundle, LiveSendBits, MevShare, SubmitEnabled};
 use crate::template::{sign_call, CallSpec, PrecomputedSigner, SignedTx};
 use alloy_primitives::{Address, Bytes, B256, U256};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
@@ -58,6 +56,10 @@ pub struct ExecJob {
     pub gas_limit: u64,
     pub chain_id: u64,
     pub slot: usize,
+    /// Simulate against the node before signing (the exec worker does it);
+    /// `gas_limit` is then the simulated gas plus a margin. Set when the
+    /// drain had no in-process simulator.
+    pub rpc_verify: bool,
 }
 
 /// Hot → exec inbox. Bounded; full is counted.
@@ -115,6 +117,11 @@ pub struct ExecPath<R, G> {
     pub http: reqwest::Client,
     pub denied: AtomicU64,
     pub watch_tx: Option<Sender<WatchCmd>>,
+    /// Target block the nonces were last resynced for (`0` = never).
+    pub nonce_synced_for: parking_lot::Mutex<u64>,
+    /// Where `execute` is sent: the deployed Executor, or the placeholder
+    /// [`PLANNED_EXECUTOR`] until it is deployed.
+    pub executor: Address,
 }
 
 impl<R, G> ExecPath<R, G>
@@ -169,7 +176,33 @@ where
             http,
             denied: AtomicU64::new(0),
             watch_tx: None,
+            nonce_synced_for: parking_lot::Mutex::new(0),
+            executor: PLANNED_EXECUTOR,
         })
+    }
+
+    /// Send to the deployed Executor at `executor`.
+    #[must_use]
+    pub fn with_executor(mut self, executor: Address) -> Self {
+        self.executor = executor;
+        self
+    }
+
+    /// Resync slot 0 to the operator's confirmed nonce after `target - 1`,
+    /// once per target block. Every job and bundle for `target` then
+    /// allocates from it, so they never reuse a nonce, and a bundle that did
+    /// not land leaves no gap for the next block.
+    pub async fn sync_nonce(&self, chain: &crate::chain::ChainClient, target: u64) -> Result<()> {
+        if *self.nonce_synced_for.lock() == target {
+            return Ok(());
+        }
+        let base = target.checked_sub(1).ok_or(ExecError::FeeOverflow)?;
+        let addr = self.nonces.address(0)?;
+        let n = chain.nonce_at(addr, base).await?;
+        self.nonces.set_next(0, n)?;
+        *self.nonce_synced_for.lock() = target;
+        tracing::debug!(target, nonce = n, "operator nonce resynced from chain");
+        Ok(())
     }
 
     /// Attach an inclusion-watch command sender (try_send, counted).
@@ -232,7 +265,7 @@ where
             CallSpec {
                 chain_id: job.chain_id,
                 nonce: allocated.nonce,
-                to: PLANNED_EXECUTOR,
+                to: self.executor,
                 input: job.calldata.clone(),
                 gas_limit: job.gas_limit,
                 fees: &bound,
@@ -298,10 +331,7 @@ where
             return Ok(SubmitReceipt::Recorded);
         }
 
-        if let Err(e) = self
-            .send_signed(job, &routed.venue, &signed)
-            .await
-        {
+        if let Err(e) = self.send_signed(job, &routed.venue, &signed).await {
             self.mark_nonce_dropped(&allocated);
             return Err(e);
         }
@@ -352,12 +382,7 @@ where
         }
     }
 
-    async fn send_signed(
-        &self,
-        job: &ExecJob,
-        venue: &Venue,
-        signed: &SignedTx,
-    ) -> Result<()> {
+    async fn send_signed(&self, job: &ExecJob, venue: &Venue, signed: &SignedTx) -> Result<()> {
         match venue {
             Venue::MevShare { .. } => {
                 let hint = job.hint_hash.ok_or(ExecError::MissingHintHash)?;
@@ -755,6 +780,7 @@ mod tests {
             gas_limit: 200_000,
             chain_id: 1,
             slot: 0,
+            rpc_verify: false,
         }
     }
 }

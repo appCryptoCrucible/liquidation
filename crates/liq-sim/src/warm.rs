@@ -49,6 +49,29 @@ impl ExecutorSpec {
         alloy_primitives::b256!("e18a34eb0e04b04f7a0ac29a6e80748dca96319b42c54d679cb821dca90c6303");
     pub const CURVE_META_REGISTRY: Address =
         alloy_primitives::address!("F98B45FA17DE75FB1aD0e7aFD971b0ca00e379fC");
+    /// Uniswap SwapRouter02, both router slots in `DeployExecutor.s.sol`.
+    pub const SWAP_ROUTER02: Address =
+        alloy_primitives::address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45");
+
+    /// The mainnet constructor arguments `DeployExecutor.s.sol` uses, for
+    /// `operator` and `profit_sink`.
+    #[must_use]
+    pub fn mainnet(operator: Address, profit_sink: Address) -> Self {
+        Self {
+            operator,
+            profit_sink,
+            univ3_factory: UNIV3_FACTORY,
+            univ3_init_hash: UNIV3_POOL_INIT_HASH,
+            router_a: Self::SWAP_ROUTER02,
+            router_b: Self::SWAP_ROUTER02,
+            weth: WETH,
+            univ2_factory: Self::UNIV2_FACTORY,
+            univ2_init_hash: Self::UNIV2_INIT_HASH,
+            sushi_factory: Self::SUSHI_FACTORY,
+            sushi_init_hash: Self::SUSHI_INIT_HASH,
+            curve_registry: Self::CURVE_META_REGISTRY,
+        }
+    }
 }
 
 /// Addresses kept resident across `verify` resets.
@@ -180,14 +203,9 @@ impl FromStrRadixHex for Bytes {
     }
 }
 
-/// Deploy Executor via CREATE using real creation bytecode + constructor
-/// args, then copy the resulting runtime into `at`.
-pub fn insert_executor<Ext: DatabaseRef<Error = SimError>>(
-    db: &mut CacheDB<Ext>,
-    at: Address,
-    spec: &ExecutorSpec,
-    deployer: Address,
-) -> Result<(), SimError> {
+/// Creation bytecode from the compiled artifact followed by `spec`'s
+/// constructor arguments: the input of the deploy transaction.
+pub fn executor_initcode(spec: &ExecutorSpec) -> Result<Bytes, SimError> {
     let creation = load_executor_creation_bytecode()?;
     let args = (
         spec.operator,
@@ -206,6 +224,18 @@ pub fn insert_executor<Ext: DatabaseRef<Error = SimError>>(
         .abi_encode();
     let mut data = creation.to_vec();
     data.extend_from_slice(&args);
+    Ok(data.into())
+}
+
+/// Deploy Executor via CREATE using real creation bytecode + constructor
+/// args, then copy the resulting runtime into `at`.
+pub fn insert_executor<Ext: DatabaseRef<Error = SimError>>(
+    db: &mut CacheDB<Ext>,
+    at: Address,
+    spec: &ExecutorSpec,
+    deployer: Address,
+) -> Result<(), SimError> {
+    let data = executor_initcode(spec)?.to_vec();
 
     let mut info = db
         .basic_ref(deployer)

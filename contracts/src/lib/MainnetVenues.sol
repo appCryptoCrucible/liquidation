@@ -17,4 +17,14 @@ library MainnetVenues {
     bytes32 internal constant SUSHI_INIT_HASH =
         0xe18a34eb0e04b04f7a0ac29a6e80748dca96319b42c54d679cb821dca90c6303;
     address internal constant CURVE_META_REGISTRY = 0xF98B45FA17DE75FB1aD0e7aFD971b0ca00e379fC;
+    /// Aave governance v3 PayloadsController (transparent proxy). Reached from
+    /// the Aave V3 Core `PoolAddressesProvider.getACLAdmin()` executor
+    /// 0x5300A1a15135EA4dc7aD5a167152C01EFc9b192A, whose storage slot 0 holds
+    /// it; `getPayloadsCount()` answers there. `executePayload` has no access
+    /// check and requires `block.timestamp > queuedAt + delay`.
+    address internal constant AAVE_PAYLOADS_CONTROLLER = 0xdAbad81aF85554E9ae636395611C58F7eC1aAEc5;
+    /// Sky `DSPause` (chainlog `MCD_PAUSE`). Spark's `SubProxy` is warded to
+    /// its proxy `MCD_PAUSE_PROXY`, so Spark parameter changes are spells
+    /// executed through it.
+    address internal constant SKY_PAUSE = 0xbE286431454714F511008713973d3B053A2d38f3;
 }

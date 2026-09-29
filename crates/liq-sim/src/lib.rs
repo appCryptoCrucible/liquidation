@@ -28,8 +28,8 @@ pub use verify::{
     HealthProbe, SimTx, Trigger,
 };
 pub use warm::{
-    clear_except, insert_executor, load_executor_creation_bytecode, ExecutorSpec, Simulator,
-    WarmSet, PLANNED_EXECUTOR,
+    clear_except, executor_initcode, insert_executor, load_executor_creation_bytecode,
+    ExecutorSpec, Simulator, WarmSet, PLANNED_EXECUTOR,
 };
 pub use worker::{spawn_workers, SimPool, SimReply, SimRequest, SimWorker};
 

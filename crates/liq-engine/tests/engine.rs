@@ -627,3 +627,35 @@ fn misindexed_prices_and_unknown_assets_are_errors() {
     let r = rig.with_world(T0, |e, w| e.on_price_tick(w, &stray));
     assert_eq!(r, Err(EngineError::UnknownAsset(liq_types::AssetId(7))));
 }
+
+/// `probe` answers "which of these are liquidatable and fundable on this
+/// view" with the adapter's own verdict, and leaves every table a fold
+/// maintains exactly as it was: it is run on hypothetical state (a pending
+/// governance change) and must not register thresholds from it.
+#[test]
+fn probe_matches_the_adapter_and_mutates_nothing() {
+    let mut rig = Rig::new(&bands_universe(), pinned_flash(), 64);
+    rig.resync(T0);
+    rig.engine.candidates().count();
+    let ids: Vec<PositionId> = (0..8u32).map(PositionId).collect();
+    let bands_before: Vec<_> = ids.iter().map(|id| rig.engine.band(*id)).collect();
+    let reg_before: Vec<PositionId> = rig.engine.index().registered(WETH).collect();
+    let folds_before = rig.engine.stats().folds;
+    let cause = TriggerCause::ParamChange {
+        market: SPOKE_MARKET,
+    };
+
+    let got = rig.with_world(T0, |e, w| e.probe(w, &ids, &cause));
+
+    let mut got_ids: Vec<PositionId> = got.iter().map(|c| c.position).collect();
+    got_ids.sort_unstable();
+    assert_eq!(got_ids, rig.expected(T0, &pinned_prices()));
+    assert_eq!(got_ids, vec![PositionId(0)]);
+    assert!(got.iter().all(|c| c.cause == cause));
+    let bands_after: Vec<_> = ids.iter().map(|id| rig.engine.band(*id)).collect();
+    assert_eq!(bands_after, bands_before, "bands untouched");
+    let reg_after: Vec<PositionId> = rig.engine.index().registered(WETH).collect();
+    assert_eq!(reg_after, reg_before, "thresholds untouched");
+    assert_eq!(rig.engine.stats().folds, folds_before, "not a fold");
+    assert_eq!(rig.engine.candidates().count(), 0, "nothing queued");
+}

@@ -124,6 +124,7 @@ pub struct Started {
     pub inclusion: Option<crate::inclusion_feed::InclusionJoin>,
     _stall: Option<std::thread::JoinHandle<()>>,
     _svr: Option<std::thread::JoinHandle<()>>,
+    _gov: Option<std::thread::JoinHandle<()>>,
 }
 
 /// Step 5: split ExEx rings and spawn hot (pin asserted inside).
@@ -370,6 +371,10 @@ pub async fn run(
         tracing::error!("inclusion feed not started — ExecPath unbound");
         None
     };
+    let exec = exec.map(|p| match loaded.config.venues.executor {
+        Some(addr) => p.with_executor(addr),
+        None => p,
+    });
     let exec = match (exec, inclusion.as_ref()) {
         (Some(path), Some(feed)) => Some(Arc::new(path.with_watch(feed.cmd_tx.clone()))),
         (Some(path), None) => {
@@ -388,11 +393,55 @@ pub async fn run(
         tracing::error!("ExecPath unbound — drain try_send fails closed; no exec worker");
         (None, None)
     };
+    // Governance liquidations: bundles go out through the same exec worker,
+    // simulated and nonced against the chain at the base block.
+    let (gov_inbox, chain_exec) = if exec.is_some() {
+        match liq_exec::chain::ChainClient::new(&loaded.config.rpc_url) {
+            Ok(chain) => {
+                let (tx, grx) = liq_exec::gov::GovInbox::pair(64);
+                (
+                    Some(tx),
+                    Some(crate::exec_worker::ChainExec {
+                        chain,
+                        gov_rx: Some(grx),
+                        deployed: loaded.config.venues.executor,
+                        profit_sink: profit_sink_from_env(),
+                    }),
+                )
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "chain client refused — no nonce resync, no RPC verification, no governance");
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
     if let (Some(path), Some(rx)) = (exec.clone(), rx) {
-        if let Err(e) = spawn_exec_worker(rx, path) {
+        if let Err(e) = spawn_exec_worker(rx, chain_exec, path) {
             tracing::error!(?e, "exec worker not started — inbox will count full");
         }
     }
+    let (gov, gov_thread) = match gov_inbox {
+        Some(inbox) => {
+            let (tx, grx) =
+                rtrb::RingBuffer::<crate::governance::GovSim>::new(crate::governance::GOV_RING);
+            match crate::governance::spawn_gov_worker(
+                loaded.registry.clone(),
+                loaded.intern.clone(),
+                loaded.config.rpc_url.clone(),
+                tx,
+                Arc::new(AtomicBool::new(false)),
+            ) {
+                Ok(h) => (Some((grx, inbox)), Some(h)),
+                Err(e) => {
+                    tracing::error!(?e, "governance worker not started");
+                    (None, None)
+                }
+            }
+        }
+        None => (None, None),
+    };
     let clock = Arc::new(crate::stall::HeaderClock::new());
     let stall = match crate::stall::spawn(Arc::clone(&clock), shared.risk) {
         Ok(h) => Some(h),
@@ -441,6 +490,10 @@ pub async fn run(
         Some((rx, targets, handle)) => (hook.with_svr(rx, targets), Some(handle)),
         None => (hook, None),
     };
+    let hook = match gov {
+        Some((rx, inbox)) => hook.with_gov(rx, inbox),
+        None => hook,
+    };
     let _map = pin_threads(cores_path, allow_unpinned)?;
     let sink: &'static dyn liq_types::HaltSink = shared.risk;
     let (forwarder, hot, tracked) = register_exex(
@@ -462,6 +515,7 @@ pub async fn run(
         inclusion,
         _stall: stall,
         _svr: svr_thread,
+        _gov: gov_thread,
     })
 }
 

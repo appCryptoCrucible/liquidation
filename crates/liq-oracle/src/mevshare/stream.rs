@@ -175,7 +175,10 @@ fn one_hint(
     let function_selector = match sel_b {
         None => None,
         Some(b) => {
-            let four: [u8; 4] = b.as_ref().try_into().map_err(|_| MevShareError::BadSelector)?;
+            let four: [u8; 4] = b
+                .as_ref()
+                .try_into()
+                .map_err(|_| MevShareError::BadSelector)?;
             Some(four)
         }
     };

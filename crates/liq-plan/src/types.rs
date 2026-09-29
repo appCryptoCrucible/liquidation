@@ -7,6 +7,12 @@ use liq_wire::wire::LegTail;
 
 /// Header flag bit 0 — sweep WETH to `PROFIT_SINK` after this plan.
 pub const FLAG_SWEEP: u8 = liq_wire::wire::FLAG_SWEEP;
+/// Header flag bit 1 — governance plan. Set only by
+/// [`EncodedPlan::with_gov_payload`], which also appends the payload id.
+pub const FLAG_GOV_EXEC: u8 = liq_wire::wire::FLAG_GOV_EXEC;
+/// Header flag bit 2 — Sky spell plan. Set only by
+/// [`EncodedPlan::with_gov_spell`], which also appends the address.
+pub const FLAG_GOV_SPELL: u8 = liq_wire::wire::FLAG_GOV_SPELL;
 /// Swap-leg flag bit 0 — spend the whole `tokenIn` balance.
 pub const LEG_TAKE_BALANCE: u8 = liq_wire::wire::LEG_TAKE_BALANCE;
 /// Swap-leg flag bit 1 — `amount` is an exact output.

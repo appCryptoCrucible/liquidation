@@ -159,6 +159,33 @@ impl NonceAllocator {
         Ok(())
     }
 
+    /// Resync `slot` to the chain: the next nonce is `chain_next`, and
+    /// nothing is in flight. A bundle that did not land used no nonce on
+    /// chain, so every earlier allocation is void once its block has passed.
+    pub fn set_next(&self, slot: usize, chain_next: u64) -> Result<()> {
+        let key = self.slot(slot)?;
+        let mut g = key.state.lock();
+        g.next = chain_next;
+        g.in_flight.clear();
+        drop(g);
+        Ok(())
+    }
+
+    /// Consume `n` consecutive nonces and return the first.
+    pub fn allocate_run(&self, slot: usize, n: u64) -> Result<u64> {
+        let key = self.slot(slot)?;
+        let mut g = key.state.lock();
+        let first = g.next;
+        g.next = first.checked_add(n).ok_or(ExecError::NonceOverflow)?;
+        let mut k = first;
+        while k < g.next {
+            g.in_flight.insert(k, InFlight { dropped: false });
+            k = k.checked_add(1).ok_or(ExecError::NonceOverflow)?;
+        }
+        drop(g);
+        Ok(first)
+    }
+
     pub fn next_of(&self, slot: usize) -> Result<u64> {
         let key = self.slot(slot)?;
         Ok(key.state.lock().next)
@@ -251,6 +278,27 @@ mod tests {
             first.iter().all(|&n| n == 0),
             "slots must not share a nonce sequence: {first:?}"
         );
+    }
+
+    /// A bundle that does not land uses no nonce on chain: the next block
+    /// starts again from the chain's count, not from our local one.
+    #[test]
+    fn resync_restarts_from_the_chain_and_runs_are_consecutive() {
+        let pool = NonceAllocator::from_addresses(vec![addr(7)]).unwrap();
+        pool.allocate(0).unwrap();
+        pool.allocate(0).unwrap();
+        assert_eq!(pool.next_of(0).unwrap(), 2);
+        pool.set_next(0, 40).unwrap();
+        assert!(pool.in_flight(0).unwrap().is_empty());
+        assert_eq!(pool.allocate_run(0, 3).unwrap(), 40);
+        assert_eq!(
+            pool.allocate(0).unwrap().nonce,
+            43,
+            "shared with single jobs"
+        );
+        assert_eq!(pool.in_flight(0).unwrap().len(), 4);
+        pool.set_next(0, 41).unwrap();
+        assert_eq!(pool.next_of(0).unwrap(), 41);
     }
 
     #[test]
