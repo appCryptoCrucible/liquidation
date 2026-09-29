@@ -81,7 +81,10 @@ pub fn read_head(paths: &StatePaths) -> Result<SnapshotHead, BuildError> {
     })
 }
 
-fn write_atomic(path: &Path, bytes_or: impl FnOnce(&Path) -> Result<(), String>) -> Result<(), BuildError> {
+fn write_atomic(
+    path: &Path,
+    bytes_or: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), BuildError> {
     let tmp = path.with_extension(format!(
         "{}.tmp",
         path.extension().and_then(|e| e.to_str()).unwrap_or("new")
@@ -93,7 +96,11 @@ fn write_atomic(path: &Path, bytes_or: impl FnOnce(&Path) -> Result<(), String>)
 /// Write `snap` as the state at `head`: the snapshot, then its head record
 /// (a reader that finds a head finds its snapshot), and an empty WAL if none
 /// exists. `snap.tip` must be `head.number`.
-pub fn write_snapshot(paths: &StatePaths, snap: &StoreSnapshot, head: SnapshotHead) -> Result<(), BuildError> {
+pub fn write_snapshot(
+    paths: &StatePaths,
+    snap: &StoreSnapshot,
+    head: SnapshotHead,
+) -> Result<(), BuildError> {
     if snap.tip != head.number {
         return Err(io(
             &paths.snapshot,
@@ -103,10 +110,13 @@ pub fn write_snapshot(paths: &StatePaths, snap: &StoreSnapshot, head: SnapshotHe
     if let Some(dir) = paths.snapshot.parent() {
         std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
     }
-    write_atomic(&paths.snapshot, |tmp| snap.write_to(tmp).map_err(|e| e.to_string()))?;
+    write_atomic(&paths.snapshot, |tmp| {
+        snap.write_to(tmp).map_err(|e| e.to_string())
+    })?;
     let hp = head_path(paths);
     write_atomic(&hp, |tmp| {
-        std::fs::write(tmp, format!("{} {:#x}\n", head.number, head.hash)).map_err(|e| e.to_string())
+        std::fs::write(tmp, format!("{} {:#x}\n", head.number, head.hash))
+            .map_err(|e| e.to_string())
     })?;
     if !paths.wal.exists() {
         write_empty_wal(&paths.wal).map_err(|e| io(&paths.wal, e))?;
@@ -122,7 +132,11 @@ struct FileSink<'a> {
 impl SnapshotSink for FileSink<'_> {
     fn persist(&mut self, store: &StateStore, at: u64) -> liq_node::Result<()> {
         if at != self.head.number {
-            tracing::error!(at, head = self.head.number, "replay ended off the finalized block");
+            tracing::error!(
+                at,
+                head = self.head.number,
+                "replay ended off the finalized block"
+            );
             return Err(liq_node::IngestError::BlockGap {
                 tip: at,
                 got: self.head.number,
@@ -152,7 +166,37 @@ fn replay_store(base: u64) -> StoreConfig {
 /// First start: replay every adapter's logs from `backfill_from` to the
 /// node's finalized block and write the snapshot there. The node's own RPC
 /// (`rpc_url`) serves the logs from its retained receipts.
-pub async fn build_first_snapshot(config_dir: &Path, paths: &StatePaths) -> Result<SnapshotHead, BuildError> {
+///
+/// The replay runs on its own thread and runtime (`liq-bot-replay`): the
+/// fold's handler tables are not `Sync`, and a replay of this length does
+/// not belong on the node's async workers. The returned future only waits
+/// for that thread, so it is `Send` (the ExEx spawns it on Reth's runtime).
+pub async fn build_first_snapshot(
+    config_dir: &Path,
+    paths: &StatePaths,
+) -> Result<SnapshotHead, BuildError> {
+    let dir = config_dir.to_path_buf();
+    let owned = paths.clone();
+    let worker = std::thread::Builder::new()
+        .name("liq-bot-replay".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| BuildError::Replay(format!("replay runtime: {e}")))?;
+            rt.block_on(replay_to_snapshot(&dir, &owned))
+        })
+        .map_err(|e| BuildError::Replay(format!("replay thread: {e}")))?;
+    tokio::task::spawn_blocking(move || worker.join())
+        .await
+        .map_err(|e| BuildError::Replay(format!("replay join: {e}")))?
+        .map_err(|_| BuildError::Replay("state replay thread panicked".into()))?
+}
+
+async fn replay_to_snapshot(
+    config_dir: &Path,
+    paths: &StatePaths,
+) -> Result<SnapshotHead, BuildError> {
     let loaded = liq_config::boot(config_dir)
         .await
         .map_err(|e| BuildError::Config(e.to_string()))?;
@@ -163,21 +207,36 @@ pub async fn build_first_snapshot(config_dir: &Path, paths: &StatePaths) -> Resu
             "node.toml backfill_from is 0 — set the earliest protocol deployment block".into(),
         ));
     }
-    let http = liq_config::rpc::HttpRpc::connect(&url).map_err(|e| BuildError::Rpc(e.to_string()))?;
+    let http =
+        liq_config::rpc::HttpRpc::connect(&url).map_err(|e| BuildError::Rpc(e.to_string()))?;
     let bind_block = liq_config::rpc::ChainRpc::block_number(&http)
         .await
         .map_err(|e| BuildError::Rpc(e.to_string()))?;
     let live = LiveRpc::new(http);
-    let load = load_protocols(config_dir, &loaded.intern, Some((&live, bind_block)));
+    let mut load = load_protocols(config_dir, &loaded.intern, Some((&live, bind_block)));
+    crate::bind::retry_live_omitted(
+        config_dir,
+        &loaded.intern,
+        Some((&live, bind_block)),
+        &mut load,
+        3,
+    );
     if !load.omitted.is_empty() {
-        let names: Vec<String> = load.omitted.iter().map(|(n, why)| format!("{n}: {why}")).collect();
+        let names: Vec<String> = load
+            .omitted
+            .iter()
+            .map(|(n, why)| format!("{n}: {why}"))
+            .collect();
         return Err(BuildError::Omitted(load.omitted.len(), names.join("; ")));
     }
     let protocols = leak_protocols(load);
 
     let provider = alloy_provider::ProviderBuilder::new()
         .disable_recommended_fillers()
-        .connect_http(url.parse().map_err(|e| BuildError::Rpc(format!("invalid rpc_url: {e}")))?);
+        .connect_http(
+            url.parse()
+                .map_err(|e| BuildError::Rpc(format!("invalid rpc_url: {e}")))?,
+        );
     wait_until_synced(&provider).await?;
     let finalized = alloy_provider::Provider::get_block_by_number(
         &provider,
@@ -198,11 +257,20 @@ pub async fn build_first_snapshot(config_dir: &Path, paths: &StatePaths) -> Resu
     }
 
     let subs = subscriber_refs(protocols);
-    let filters: Vec<LogFilter> = protocols.iter().flat_map(LogSubscriber::subscriptions).collect();
-    let router = LogRouter::from_subscribers(&subs).map_err(|e| BuildError::Replay(e.to_string()))?;
+    let filters: Vec<LogFilter> = protocols
+        .iter()
+        .flat_map(LogSubscriber::subscriptions)
+        .collect();
+    let router =
+        LogRouter::from_subscribers(&subs).map_err(|e| BuildError::Replay(e.to_string()))?;
     let handlers = ingest_handlers(protocols);
-    let refs: Vec<&dyn LogHandler> = handlers.iter().map(|h| h.as_ref() as &dyn LogHandler).collect();
-    let base = from.checked_sub(1).ok_or_else(|| BuildError::Config("backfill_from is 0".into()))?;
+    let refs: Vec<&dyn LogHandler> = handlers
+        .iter()
+        .map(|h| h.as_ref() as &dyn LogHandler)
+        .collect();
+    let base = from
+        .checked_sub(1)
+        .ok_or_else(|| BuildError::Config("backfill_from is 0".into()))?;
     let mut store = StateStore::new(replay_store(base));
     let mut arena = DecodeArena::with_capacity(1 << 20);
     let mut dirty = DirtyAccumulator::new();
@@ -291,11 +359,115 @@ impl SnapshotWriter {
         match self.tx.try_send((store.snapshot(), head)) {
             Ok(()) => self.last = head.number,
             Err(TrySendError::Full(_)) => {
-                tracing::warn!(block = head.number, "previous snapshot still writing — skipped");
+                tracing::warn!(
+                    block = head.number,
+                    "previous snapshot still writing — skipped"
+                );
             }
             Err(TrySendError::Disconnected(_)) => {
                 tracing::error!("snapshot writer thread is gone — state is no longer persisted");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static N: AtomicU64 = AtomicU64::new(0);
+
+    fn paths() -> StatePaths {
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let d = std::env::temp_dir().join(format!("liq-state-build-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        StatePaths {
+            snapshot: d.join("data").join("snapshot.bin"),
+            wal: d.join("data").join("wal.log"),
+        }
+    }
+
+    fn store_at(block: u64) -> StateStore {
+        StateStore::new(replay_store(block))
+    }
+
+    fn is_send<T: Send>(_: &T) {}
+
+    /// The ExEx spawns these on Reth's runtime, which needs `Send`. The
+    /// `reth` binary builds only on Linux; this check runs everywhere.
+    #[test]
+    fn exex_futures_are_send() {
+        let dir = Path::new("config");
+        let p = paths();
+        is_send(&build_first_snapshot(dir, &p));
+        is_send(&crate::startup::run(dir, dir, &p, false));
+        fn started_is_send<T: Send>() {}
+        started_is_send::<crate::startup::Started>();
+        // The ExEx loop's own reads: `wait_for_rpc` and the catch-up check.
+        let rpc = liq_config::rpc::HttpRpc::connect("http://127.0.0.1:8545").unwrap();
+        is_send(&liq_config::rpc::ChainRpc::chain_id(&rpc));
+        is_send(&liq_config::rpc::ChainRpc::block_number(&rpc));
+    }
+
+    #[test]
+    fn snapshot_and_head_round_trip() {
+        let p = paths();
+        let head = SnapshotHead {
+            number: 21_000_000,
+            hash: B256::repeat_byte(0xab),
+        };
+        write_snapshot(&p, &store_at(head.number).snapshot(), head).unwrap();
+        assert_eq!(read_head(&p).unwrap(), head);
+        assert_eq!(StoreSnapshot::load(&p.snapshot).unwrap().tip, head.number);
+        assert!(
+            p.wal.exists(),
+            "an empty WAL is written beside a first snapshot"
+        );
+    }
+
+    #[test]
+    fn snapshot_off_its_head_is_refused() {
+        let p = paths();
+        let head = SnapshotHead {
+            number: 10,
+            hash: B256::ZERO,
+        };
+        assert!(write_snapshot(&p, &store_at(9).snapshot(), head).is_err());
+        assert!(!head_path(&p).exists());
+    }
+
+    #[test]
+    fn malformed_head_is_an_error() {
+        let p = paths();
+        let hp = head_path(&p);
+        std::fs::create_dir_all(hp.parent().unwrap()).unwrap();
+        for bad in ["", "12", "12 0x00 extra", "x 0x00"] {
+            std::fs::write(&hp, bad).unwrap();
+            assert!(read_head(&p).is_err(), "{bad:?} parsed");
+        }
+    }
+
+    #[test]
+    fn writer_waits_the_interval_between_snapshots() {
+        let p = paths();
+        let mut w = SnapshotWriter::spawn(p.clone(), 100).unwrap();
+        let at = |n: u64| SnapshotHead {
+            number: n,
+            hash: B256::repeat_byte(1),
+        };
+        w.after_block(&store_at(1_000), at(1_000));
+        assert_eq!(w.last, 1_000);
+        w.after_block(&store_at(1_050), at(1_050));
+        assert_eq!(w.last, 1_000, "inside the interval: no snapshot");
+        // Let the first write finish so the channel has room.
+        for _ in 0..200 {
+            if read_head(&p).is_ok_and(|h| h.number == 1_000) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        w.after_block(&store_at(1_100), at(1_100));
+        assert_eq!(w.last, 1_100);
     }
 }

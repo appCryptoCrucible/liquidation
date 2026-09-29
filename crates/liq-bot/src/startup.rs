@@ -322,8 +322,7 @@ pub async fn run(
     // whose `Config::new` refuses without a live-registry assertion. Reuses
     // `loaded.config.rpc_url` — the same node `boot()` already asserted the
     // token registry against. A connect/block-number failure here omits
-    // just those four (named reason), the same fail-closed shape as every
-    // other adapter-load failure; it does not fail the whole boot.
+    // those four (named reason), and any omission refuses the start below.
     let live_rpc = match liq_config::rpc::HttpRpc::connect(&loaded.config.rpc_url) {
         Ok(rpc) => match rpc.block_number().await {
             Ok(block) => Some((crate::live_rpc::LiveRpc::new(rpc), block)),
@@ -337,11 +336,24 @@ pub async fn run(
             None
         }
     };
-    let loaded_proto = bind::load_protocols(
-        config_dir,
-        &loaded.intern,
-        live_rpc.as_ref().map(|(rpc, block)| (rpc, *block)),
-    );
+    let live = live_rpc.as_ref().map(|(rpc, block)| (rpc, *block));
+    let mut loaded_proto = bind::load_protocols(config_dir, &loaded.intern, live);
+    bind::retry_live_omitted(config_dir, &loaded.intern, live, &mut loaded_proto, 3);
+    // The snapshot holds every adapter's positions. Running without one would
+    // advance the snapshot past blocks whose events for it were never folded,
+    // and a later start would plan on those gaps. Refuse instead.
+    if !loaded_proto.omitted.is_empty() {
+        let names: Vec<String> = loaded_proto
+            .omitted
+            .iter()
+            .map(|(n, why)| format!("{n}: {why}"))
+            .collect();
+        tracing::error!(omitted = ?names, "adapter bind failed — refusing to start on partial state");
+        return Err(StartupError::Other(format!(
+            "adapter(s) omitted at bind: {}",
+            names.join("; ")
+        )));
+    }
     let adapters = bind::leak_protocols(loaded_proto);
     bind::intern_adapter_tokens(&mut assemble, adapters);
     let gas_model = crate::gas_model::GasModel::load(&config_dir.join("liq-gas.toml"));

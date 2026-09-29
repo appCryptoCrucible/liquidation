@@ -4,14 +4,15 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use alloy_eips::BlockNumHash;
 use eyre::eyre;
 use futures_util::TryStreamExt;
 use liq_bot::lease::StatePaths;
 use liq_bot::shared::PROD_ALLOW_UNPINNED;
 use liq_bot::startup;
+use liq_config::rpc::{ChainRpc, HttpRpc};
 use liq_node::{ExExForwarder, FinishedUpTo, HotHandle, Notification};
 use liq_reth::convert::{committed_tip, owned_chain, reverted_span};
-use alloy_eips::BlockNumHash;
 use reth_ethereum::{
     exex::{ExExContext, ExExEvent, ExExHead, ExExNotification},
     node::api::{FullNodeComponents, NodeTypes},
@@ -39,7 +40,7 @@ where
             .await
             .map_err(|e| eyre!("state build: {e}"))?;
     }
-    let started = startup::run(
+    let mut started = startup::run(
         &config_dir,
         &config_dir.join("cores.toml"),
         &state,
@@ -56,7 +57,7 @@ where
         block = started.head.number,
         "ExEx resumes after the snapshot block; sending waits until the store reaches the node's head"
     );
-    let head_rpc = liq_config::rpc::HttpRpc::connect(&url)?;
+    let head_rpc = HttpRpc::connect(&url)?;
     let mut caught_up = false;
     let flag_file = config_dir.join("node.toml");
     // Detaching would keep the threads, but holding the handles ties them to
@@ -129,7 +130,7 @@ where
                 break;
             }
             if !caught_up {
-                match liq_config::rpc::ChainRpc::block_number(&head_rpc).await {
+                match head_rpc.block_number().await {
                     Ok(node_head) if reth_tip.number >= node_head => {
                         caught_up = true;
                         started.shared.lease.grant();
@@ -184,7 +185,7 @@ fn state_paths(root: &std::path::Path) -> eyre::Result<StatePaths> {
 async fn wait_for_rpc(url: &str) -> eyre::Result<()> {
     let mut logged = false;
     loop {
-        match liq_config::rpc::HttpRpc::connect(url) {
+        match HttpRpc::connect(url) {
             Ok(rpc) => match rpc.chain_id().await {
                 Ok(1) => return Ok(()),
                 Ok(found) => {
@@ -242,9 +243,4 @@ async fn wait_consistent(fwd: &mut ExExForwarder, hot: &HotHandle) -> eyre::Resu
         }
         notified.await;
     }
-}
-
-#[allow(dead_code)]
-fn _convert_linked() {
-    let _ = convert::committed_tip::<reth_ethereum::EthPrimitives>;
 }

@@ -234,6 +234,40 @@ trade; make it knowingly rather than by default.
 twice before it actually removes data. Verify the result rather than trusting the
 command's exit code.
 
+### The bot's state on first start (D65)
+
+The bot does not start from nothing and discover accounts as they appear. On
+its first start it rebuilds every position from the retained receipts, and
+nothing plans or sends until that is done:
+
+1. **Filter file.** Run
+   `cargo test -p liq-bot --lib live_generate_the_prune_filter_from_the_adapters -- --include-ignored`
+   with `MAINNET_RPC_URL` set. It binds every adapter the way production does
+   and writes `tools/d15/receipts_log_filter.bot.toml`: the committed D15
+   filter plus every address a bound adapter subscribes to (`before = 0`),
+   and `tools/d15/subscribed_addresses.txt`. That file is the
+   `[prune.segments.receipts_log_filter]` table in `reth.toml`. Regenerate it
+   whenever an adapter or its TOML changes, **before** the node is set up.
+2. **`backfill_from`** in `config/node.toml` is the earliest deployment block
+   among the subscribed addresses. `reth download --with-receipts-since` must
+   be at or below it, or the replay reads empty ranges as "no events".
+3. **First start of `reth node`.** The ExEx waits for the node to report
+   synced, then replays every adapter's logs from `backfill_from` to the
+   node's *finalized* block over the node's own `eth_getLogs` (2,000-block
+   pages, halved when a response is too large), and writes
+   `data/snapshot.bin` + `data/snapshot.head`. It logs progress every 100,000
+   blocks. Expect hours.
+4. **Every start after that** hands the snapshot's block to Reth as the ExEx
+   head. Reth re-executes the blocks after it and delivers them before live
+   ones, so the store reaches the tip through the normal fold. The node keeps
+   10,064 blocks of state history, so a stop longer than about a day and a
+   half needs the snapshot deleted and rebuilt.
+5. **Sending** starts only once the store has reached the node's head (the
+   lease is granted then). While running, a snapshot is written every
+   `snapshot_every_blocks` (default 100).
+
+To rebuild from scratch, stop the node and delete `data/snapshot.head`.
+
 ## Step 1 — Everything is one process, not just one box
 
 The whole stack colocates: Reth, the oracle layer, the engine, the router,

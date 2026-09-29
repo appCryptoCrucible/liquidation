@@ -138,7 +138,11 @@ impl IntegrityProbe for HeadProbe {
         if store.tip() == self.number {
             Ok(())
         } else {
-            tracing::error!(tip = store.tip(), head = self.number, "restored store is not at its head record");
+            tracing::error!(
+                tip = store.tip(),
+                head = self.number,
+                "restored store is not at its head record"
+            );
             Err(LeaseError::ProbeRefused)
         }
     }

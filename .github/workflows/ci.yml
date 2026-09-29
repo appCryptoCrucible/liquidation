@@ -42,8 +42,8 @@ jobs:
       - name: Install Foundry
         run: |
           curl -L https://foundry.paradigm.xyz | bash
-          /root/.foundry/bin/foundryup
-          echo "/root/.foundry/bin" >> "$GITHUB_PATH"
+          "$HOME/.foundry/bin/foundryup"
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
 
       - name: Install forge-std
         working-directory: contracts
@@ -86,8 +86,8 @@ jobs:
       - name: Install Foundry
         run: |
           curl -L https://foundry.paradigm.xyz | bash
-          /root/.foundry/bin/foundryup
-          echo "/root/.foundry/bin" >> "$GITHUB_PATH"
+          "$HOME/.foundry/bin/foundryup"
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
 
       - name: Install forge-std
         working-directory: contracts
@@ -127,8 +127,8 @@ jobs:
       - name: Install Foundry
         run: |
           curl -L https://foundry.paradigm.xyz | bash
-          /root/.foundry/bin/foundryup
-          echo "/root/.foundry/bin" >> "$GITHUB_PATH"
+          "$HOME/.foundry/bin/foundryup"
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
 
       - name: Install forge-std
         working-directory: contracts
@@ -139,18 +139,20 @@ jobs:
 
       - name: forge test (unit + invariant)
         working-directory: contracts
-        run: forge test --no-match-path test/differential/HealthDiff.t.sol --no-match-path test/fork/
+        run: forge test --no-match-path "test/{fork,differential}/*"
 
       - name: forge test fork
         working-directory: contracts
         env:
           # Public endpoint. A repo secret overrides it; the URL is not a credential.
           MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL || 'https://ethereum-rpc.publicnode.com' }}
-        run: forge test --match-path test/fork/
+        run: forge test --match-path "test/fork/*"
 
       - name: forge snapshot --check (2%)
         working-directory: contracts
-        run: forge snapshot --check --tolerance 2 --no-match-contract "ExecutorInvariantTest|ForkMatrixTest|ForkLiveLiquidationsTest|HealthDiffTest"
+        # Deterministic suites only: fork tests need an RPC and move with the
+        # chain; fuzz and invariant gas varies run to run (no fixed seed).
+        run: forge snapshot --check --tolerance 2 --match-path "test/{unit,gas}/*"
 
       - name: no raw IERC20 transfer/approve in src
         run: |
@@ -171,7 +173,8 @@ jobs:
       - name: Install system packages (git before checkout)
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends             ca-certificates curl git build-essential pkg-config libssl-dev clang libclang-dev
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config libssl-dev clang libclang-dev
 
       - uses: actions/checkout@v4
 

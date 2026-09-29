@@ -382,38 +382,38 @@ pub fn pin_to_core(core: usize) -> Result<(), ThreadError> {
 }
 
 /// Startup assertion: current thread affinity is exactly `core`.
+#[cfg(target_os = "linux")]
 pub fn assert_on_core(core: usize) -> Result<(), ThreadError> {
-    #[cfg(target_os = "linux")]
-    {
-        let allowed = read_cpus_allowed_list()?;
-        let want = u16::try_from(core).map_err(|_| ThreadError::CoreUnavailable { core })?;
-        if allowed.as_slice() == [want] {
-            return Ok(());
-        }
-        tracing::error!(
-            expected = core,
-            actual = ?allowed.as_slice(),
-            "thread not on assigned core"
-        );
-        return Err(ThreadError::AffinityMismatch {
-            expected: core,
-            actual: format!("{:?}", allowed.as_slice()),
-        });
+    let allowed = read_cpus_allowed_list()?;
+    let want = u16::try_from(core).map_err(|_| ThreadError::CoreUnavailable { core })?;
+    if allowed.as_slice() == [want] {
+        return Ok(());
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        // Production box is Linux (A1). Here pin already succeeded and `core`
-        // was in the process set. Thread-mask readback without extra `unsafe`
-        // is Linux `/proc/thread-self`.
-        let ids = core_affinity::get_core_ids().ok_or(ThreadError::CoreUnavailable { core })?;
-        if ids.iter().any(|c| c.id == core) {
-            return Ok(());
-        }
-        Err(ThreadError::AffinityMismatch {
-            expected: core,
-            actual: "process affinity no longer contains core".into(),
-        })
+    tracing::error!(
+        expected = core,
+        actual = ?allowed.as_slice(),
+        "thread not on assigned core"
+    );
+    Err(ThreadError::AffinityMismatch {
+        expected: core,
+        actual: format!("{:?}", allowed.as_slice()),
+    })
+}
+
+/// Startup assertion: current thread affinity is exactly `core`.
+#[cfg(not(target_os = "linux"))]
+pub fn assert_on_core(core: usize) -> Result<(), ThreadError> {
+    // Production box is Linux (A1). Here pin already succeeded and `core`
+    // was in the process set. Thread-mask readback without extra `unsafe`
+    // is Linux `/proc/thread-self`.
+    let ids = core_affinity::get_core_ids().ok_or(ThreadError::CoreUnavailable { core })?;
+    if ids.iter().any(|c| c.id == core) {
+        return Ok(());
     }
+    Err(ThreadError::AffinityMismatch {
+        expected: core,
+        actual: "process affinity no longer contains core".into(),
+    })
 }
 
 #[cfg(target_os = "linux")]

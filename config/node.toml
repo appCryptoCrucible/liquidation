@@ -6,3 +6,10 @@ rpc_url = ""
 # Live send on (D64: no staged rollout; monitored manually). Hot-reloaded:
 # set false to stop sending without a restart.
 submit_enabled = true
+# First-start state replay (D65) begins here: the earliest deployment among
+# the addresses the bound adapters subscribe to (Compound V2 Comptroller,
+# 0x3d98…9cd3b). `reth download --with-receipts-since` must be at or below
+# it. Recompute when an adapter adds an older contract.
+backfill_from = 7710671
+# Blocks between state snapshots while running.
+snapshot_every_blocks = 100

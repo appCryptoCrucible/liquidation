@@ -1,7 +1,9 @@
 //! LLC / dTLB on the hot thread. Read **after** recompute. Linux `perf_event_open`;
 //! other OS: fail closed (no zero-filled counters).
 
-use crate::error::{ObsError, Result};
+#[cfg(not(target_os = "linux"))]
+use crate::error::ObsError;
+use crate::error::Result;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CacheSample {
@@ -108,14 +110,14 @@ mod linux {
         }
     }
 
-    pub struct LinuxCounters {
+    pub(super) struct LinuxCounters {
         first: Pair,
         steady: Pair,
         in_first: bool,
     }
 
     impl LinuxCounters {
-        pub fn open() -> Result<Self> {
+        pub(super) fn open() -> Result<Self> {
             let mut first = Pair::open()?;
             let mut steady = Pair::open()?;
             first.enable()?;
@@ -127,12 +129,12 @@ mod linux {
             })
         }
 
-        pub fn on_block_arrived(&mut self) {
+        pub(super) fn on_block_arrived(&mut self) {
             self.in_first = true;
         }
 
         /// Call only after the recompute returns (GUIDE 09 §5). Never between stages.
-        pub fn read_after_recompute(&mut self) -> Result<CacheSample> {
+        pub(super) fn read_after_recompute(&mut self) -> Result<CacheSample> {
             let first_touch = self.first.read()?;
             let steady = self.steady.read()?;
             if self.in_first {
@@ -158,21 +160,20 @@ pub struct HotPathCounters {
 }
 
 impl HotPathCounters {
+    #[cfg(target_os = "linux")]
     pub fn open() -> Result<Self> {
-        #[cfg(target_os = "linux")]
-        {
-            return Ok(Self {
-                inner: linux::LinuxCounters::open()?,
-            });
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            tracing::error!("perf_event_open is Linux-only; this OS cannot collect LLC/dTLB");
-            Err(ObsError::PerfUnavailable {
-                os: std::env::consts::OS,
-                cause: "perf_event_open not available".into(),
-            })
-        }
+        Ok(Self {
+            inner: linux::LinuxCounters::open()?,
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn open() -> Result<Self> {
+        tracing::error!("perf_event_open is Linux-only; this OS cannot collect LLC/dTLB");
+        Err(ObsError::PerfUnavailable {
+            os: std::env::consts::OS,
+            cause: "perf_event_open not available".into(),
+        })
     }
 
     pub fn on_block_arrived(&mut self) {
@@ -182,19 +183,18 @@ impl HotPathCounters {
         {}
     }
 
+    #[cfg(target_os = "linux")]
     pub fn read_after_recompute(&mut self) -> Result<CacheSample> {
-        #[cfg(target_os = "linux")]
-        {
-            return self.inner.read_after_recompute();
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            tracing::error!("read_after_recompute on non-Linux");
-            Err(ObsError::PerfUnavailable {
-                os: std::env::consts::OS,
-                cause: "perf_event_open not available".into(),
-            })
-        }
+        self.inner.read_after_recompute()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn read_after_recompute(&mut self) -> Result<CacheSample> {
+        tracing::error!("read_after_recompute on non-Linux");
+        Err(ObsError::PerfUnavailable {
+            os: std::env::consts::OS,
+            cause: "perf_event_open not available".into(),
+        })
     }
 }
 

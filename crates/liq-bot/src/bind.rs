@@ -381,6 +381,42 @@ pub fn load_protocols(
     out
 }
 
+/// Rebind the live-bound adapters (Liquity, Fluid, Gearbox, Compound V2)
+/// that `load` omitted, up to `attempts` times. Their binds make hundreds of
+/// `eth_call`s and one failure omits the adapter. Offline omissions (a bad
+/// TOML) are kept as they are.
+pub fn retry_live_omitted(
+    config_dir: &Path,
+    intern: &Intern,
+    live: Option<(&LiveRpc, BlockNum)>,
+    load: &mut ProtocolLoad,
+    attempts: u32,
+) {
+    let proto_dir = config_dir.join("protocols");
+    for attempt in 1..=attempts {
+        if !load
+            .omitted
+            .iter()
+            .any(|(n, _)| matches!(*n, "liquity-v2" | "fluid" | "gearbox" | "compound-v2"))
+        {
+            return;
+        }
+        tracing::warn!(attempt, omitted = ?load.omitted, "rebinding live-bound adapters");
+        let mut retry = ProtocolLoad::default();
+        for (name, why) in std::mem::take(&mut load.omitted) {
+            match name {
+                "liquity-v2" => push_liquity(&proto_dir, live, &mut retry),
+                "fluid" => push_fluid(&proto_dir, intern, live, &mut retry),
+                "gearbox" => push_gearbox(&proto_dir, intern, live, &mut retry),
+                "compound-v2" => push_compound(&proto_dir, intern, live, &mut retry),
+                other => retry.omitted.push((other, why)),
+            }
+        }
+        load.protocols.append(&mut retry.protocols);
+        load.omitted = retry.omitted;
+    }
+}
+
 fn omit(out: &mut ProtocolLoad, name: &'static str, why: impl std::fmt::Display) {
     let why = why.to_string();
     tracing::error!(adapter = name, reason = %why, "adapter omitted — no invented intern/registry/fees");
@@ -1886,13 +1922,18 @@ mod prune_filter {
         drop(rt);
         let rpc = LiveRpc::new(http);
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let intern =
-            Intern::from_registry(&Registry::from_path(&root.join("registry/registry.json")).unwrap())
-                .unwrap();
-        let load = load_protocols(&root.join("config"), &intern, Some((&rpc, block)));
+        let intern = Intern::from_registry(
+            &Registry::from_path(&root.join("registry/registry.json")).unwrap(),
+        )
+        .unwrap();
+        let live = Some((&rpc, block));
+        let mut load = load_protocols(&root.join("config"), &intern, live);
+        // A public endpoint drops the odd `eth_call` in a bind of hundreds.
+        retry_live_omitted(&root.join("config"), &intern, live, &mut load, 5);
         assert!(load.omitted.is_empty(), "omitted: {:?}", load.omitted);
-        let base = std::fs::read_to_string(root.join("tools/d15/d15_receipts_log_filter.complete.toml"))
-            .unwrap();
+        let base =
+            std::fs::read_to_string(root.join("tools/d15/d15_receipts_log_filter.complete.toml"))
+                .unwrap();
         let lower = base.to_lowercase();
         let mut subscribed: Vec<(Address, ProtocolId)> = Vec::new();
         for p in &load.protocols {
@@ -1925,7 +1966,10 @@ mod prune_filter {
         }
         merged.push_str("\n# Added from the live adapter subscriptions.\n");
         for (a, p) in &missing {
-            merged.push_str(&format!("\"{a:#x}\" = {{ before = 0 }}  # protocol {}\n", p.0));
+            merged.push_str(&format!(
+                "\"{a:#x}\" = {{ before = 0 }}  # protocol {}\n",
+                p.0
+            ));
         }
         std::fs::write(root.join("tools/d15/receipts_log_filter.bot.toml"), merged).unwrap();
         eprintln!(
