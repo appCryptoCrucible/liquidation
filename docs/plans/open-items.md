@@ -219,6 +219,8 @@ Morpho's liquidation incentive is the documented floor `wDivDown(WAD, WAD − wM
 
 **Done when** NG pools are in the registry, quote exactly on chain, and a fork liquidation exits through one.
 
+**Done 2026-09-29.** Registry venue `curve_ng` with per-coin `asset_types` (schema updated); `discover_exits.py` admits NG pools whose `stored_rates()` / `offpeg_fee_multiplier()` answer, whose NG factory reports asset types without rebasing coins, and whose own `get_dy` the NG port reproduces exactly at two sizes for every ordered pair — **184 NG pools** at block 26_084_027 (97 standard, 87 with oracle / ERC-4626 rates), plus 17 plain. The router's `CurveState` gains `ng` (`get_D` divides by `N^N` once), the dynamic fee (`ng_dynamic_fee`, also in `curve_rho`), and `stored_rates()` as its rates; the reseed reads `stored_rates()` and `offpeg_fee_multiplier()` with the balances, and pools with oracle / ERC-4626 coins are re-read every block (`dynamic_rates`). NG pool logs (`AddLiquidity`/`RemoveLiquidity*` with dynamic arrays, `ApplyNewFee`) mark the pool stale. Live: all 201 Curve pools quote within 1 wei of `get_dy` (`committed_exit_pools_quote_exactly_on_chain`, 424 quotes). Fork: the Executor repays through an NG pool with standard coins (`0x4f49…3c85`) and one with rate-oracle coins (`0x1804…cc23`) — no contract change. Gas: `[swap].curve_ng = 117_442` (rate-oracle case; standard 108_535).
+
 ---
 
 ## Phase 5: Curve crypto-pool exits (L)

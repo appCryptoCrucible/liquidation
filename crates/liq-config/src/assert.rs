@@ -151,7 +151,7 @@ pub(crate) async fn assert_registry_views<R: ChainRpc + Sync>(
     }
 
     for (addr, pool) in &reg.pools {
-        if pool.venue == PoolVenue::Curve {
+        if pool.venue.is_curve() {
             for (index, coin) in pool.coins.iter().enumerate() {
                 calls.push(call3(
                     *addr,
@@ -605,6 +605,7 @@ mod tests {
                 deployed_block: 0,
                 derived_via: "factory.getPool".into(),
                 coins: Vec::new(),
+                asset_types: Vec::new(),
             },
         );
         Registry {

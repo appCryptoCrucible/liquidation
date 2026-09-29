@@ -67960,6 +67960,15 @@
    "deployed_block": 0,
    "derived_via": "factory.getPair"
   },
+  "0x26aad2da94c59524ac0d93f6d6cbf9071d7086f2": {
+   "venue": "univ2",
+   "token0": "0x111111111117dc0aa78b770fa6a738034120c302",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
   "0x4d5ef58aac27d99935e5b6b4a6778ff292059991": {
    "venue": "univ2",
    "token0": "0x1494ca1f11d487c2bbe4543e90080aeba4ba3c2b",
@@ -68041,6 +68050,15 @@
    "deployed_block": 0,
    "derived_via": "factory.getPair"
   },
+  "0xecba967d84fcf0405f6b32bc45f4d36bfdbb2e81": {
+   "venue": "univ2",
+   "token0": "0x3432b6a60d23ca0dfca7761b7ab56459d9c964d0",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
   "0x3dd49f67e9d5bc4c5e6634b3f70bfd9dc1b6bd74": {
    "venue": "univ2",
    "token0": "0x3845badade8e6dff049820680d1f14bd3903a5d0",
@@ -68095,6 +68113,15 @@
    "deployed_block": 0,
    "derived_via": "factory.getPair"
   },
+  "0x6d4fd456edeca58cf53a8b586cd50754547dbdb2": {
+   "venue": "univ2",
+   "token0": "0x514910771af9ca656af840dff83e8264ecf986ca",
+   "token1": "0x6b175474e89094c44da98b954eedeac495271d0f",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
   "0xa2107fa5b38d9bbd2c461d6edf11b11a50f6b974": {
    "venue": "univ2",
    "token0": "0x514910771af9ca656af840dff83e8264ecf986ca",
@@ -68125,6 +68152,15 @@
   "0x9896bd979f9da57857322cc15e154222c4658a5a": {
    "venue": "univ2",
    "token0": "0x5d3a536e4d6dbd6114cc1ead35777bab948e3643",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xf20ef17b889b437c151eb5ba15a47bfc62bff469": {
+   "venue": "univ2",
+   "token0": "0x5f98805a4e8be255a32880fdec7f6728c6568ba0",
    "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
    "fee": 3000,
    "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
@@ -68179,15 +68215,6 @@
   "0xc97615bd41a6bcdb169bf71a3d7dcebb477e7266": {
    "venue": "univ2",
    "token0": "0x71f56060a5f61c1f06f46ffd892a5afa0848eb42",
-   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
-   "fee": 3000,
-   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
-   "deployed_block": 0,
-   "derived_via": "factory.getPair"
-  },
-  "0x2cc846fff0b08fb3bffad71f53a60b4b6e6d6482": {
-   "venue": "univ2",
-   "token0": "0x72e4f9f808c49a2a61de9c5896298920dc4eeea9",
    "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
    "fee": 3000,
    "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
@@ -68369,6 +68396,24 @@
    "venue": "univ2",
    "token0": "0xc00e94cb662c3520282e6f5717214004a7f26888",
    "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0x43ae24960e5534731fc831386c07755a2dc33d47": {
+   "venue": "univ2",
+   "token0": "0xc011a73ee8576fb46f5e1c5751ca3b9fe0af2a6f",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xb87b65dacc6171b3ca8c4a934601d0fcb6c61049": {
+   "venue": "univ2",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xc18360217d8f7ab5e7c516566761ea12ce7f9d72",
    "fee": 3000,
    "factory": "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
    "deployed_block": 0,
@@ -68599,6 +68644,24 @@
    "deployed_block": 0,
    "derived_via": "factory.getPair"
   },
+  "0xa1d7b2d891e3a1f9ef4bbc5be20630c2feb1c470": {
+   "venue": "univ2",
+   "token0": "0xc011a73ee8576fb46f5e1c5751ca3b9fe0af2a6f",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
+  "0xa1181481beb2dc5de0daf2c85392d81c704bf75d": {
+   "venue": "univ2",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xc18360217d8f7ab5e7c516566761ea12ce7f9d72",
+   "fee": 3000,
+   "factory": "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac",
+   "deployed_block": 0,
+   "derived_via": "factory.getPair"
+  },
   "0x7b504a15ef05f4eed1c07208c5815c49022a0c19": {
    "venue": "univ2",
    "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
@@ -68653,17 +68716,30 @@
     "0x8e870d67f660d95d5be530380d0ec0bd388289e1"
    ]
   },
-  "0x447ddd4960d9fdbf6af9a790560d0af76795cb08": {
+  "0x6a274de3e2462c7614702474d64d376729831dca": {
    "venue": "curve",
-   "token0": "0xae78736cd615f374d3085123a210448e74fc6393",
-   "token1": "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0",
+   "token0": "0xbcca60bb61934080951369a648fb03df4f96263c",
+   "token1": "0x028171bca77440897b824ca71d1c56cac55b68a3",
    "fee": 4000000,
    "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
    "deployed_block": 0,
    "derived_via": "metaregistry.pool_list+get_dy",
    "coins": [
-    "0xae78736cd615f374d3085123a210448e74fc6393",
-    "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
+    "0xbcca60bb61934080951369a648fb03df4f96263c",
+    "0x028171bca77440897b824ca71d1c56cac55b68a3"
+   ]
+  },
+  "0xba3436fd341f2c8a928452db3c5a3670d1d5cc73": {
+   "venue": "curve",
+   "token0": "0x1a7e4e63778b4f12a199c062f3efdd288afcbce8",
+   "token1": "0x1abaea1f7c830bd89acc67ec4af516284b1bc33c",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x1a7e4e63778b4f12a199c062f3efdd288afcbce8",
+    "0x1abaea1f7c830bd89acc67ec4af516284b1bc33c"
    ]
   },
   "0x413928a25d6ea1a26f2625d633207755f67bf97c": {
@@ -68718,6 +68794,19 @@
     "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
    ]
   },
+  "0x9978c6b08d28d3b74437c917c5dd7c026df9d55c": {
+   "venue": "curve",
+   "token0": "0x5f98805a4e8be255a32880fdec7f6728c6568ba0",
+   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x5f98805a4e8be255a32880fdec7f6728c6568ba0",
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
+   ]
+  },
   "0x857110b5f8efd66cc3762abb935315630ac770b5": {
    "venue": "curve",
    "token0": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
@@ -68729,19 +68818,6 @@
    "coins": [
     "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
     "0x6c3ea9036406852006290770bedfcaba0e23a0e8"
-   ]
-  },
-  "0x390f3595bca2df7d23783dfd126427cceb997bf4": {
-   "venue": "curve",
-   "token0": "0xdac17f958d2ee523a2206206994597c13d831ec7",
-   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
-   "fee": 1000000,
-   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
-   "deployed_block": 0,
-   "derived_via": "metaregistry.pool_list+get_dy",
-   "coins": [
-    "0xdac17f958d2ee523a2206206994597c13d831ec7",
-    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
    ]
   },
   "0xca978a0528116dda3cba9acd3e68bc6191ca53d0": {
@@ -68833,6 +68909,3142 @@
    "coins": [
     "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
     "0x5e8422345238f34275888049021821e8e08caa1f"
+   ]
+  },
+  "0xf55b0f6f2da5ffddb104b58a60f2862745960442": {
+   "venue": "curve_ng",
+   "token0": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x02950460e2b9529d0e00284a5fa2d7bdf3fa4d72": {
+   "venue": "curve_ng",
+   "token0": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xe080027bd47353b5d1639772b4a75e9ed3658a0d": {
+   "venue": "curve_ng",
+   "token0": "0xf1c9acdc66974dfb6decb12aa385b9cd01190e38",
+   "token1": "0xae78736cd615f374d3085123a210448e74fc6393",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xf1c9acdc66974dfb6decb12aa385b9cd01190e38",
+    "0xae78736cd615f374d3085123a210448e74fc6393"
+   ],
+   "asset_types": [
+    1,
+    1
+   ]
+  },
+  "0xce6431d21e3fb1036ce9973a3312368ed96f5ce7": {
+   "venue": "curve_ng",
+   "token0": "0x853d955acef822db058eb8505911ed77f175b99e",
+   "token1": "0x83f20f44975d03b1b09e64809b757c47f942beea",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x853d955acef822db058eb8505911ed77f175b99e",
+    "0x83f20f44975d03b1b09e64809b757c47f942beea"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0xa5588f7cdf560811710a2d82d3c9c99769db1dcb": {
+   "venue": "curve_ng",
+   "token0": "0x853d955acef822db058eb8505911ed77f175b99e",
+   "token1": "0x6c3ea9036406852006290770bedfcaba0e23a0e8",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x853d955acef822db058eb8505911ed77f175b99e",
+    "0x6c3ea9036406852006290770bedfcaba0e23a0e8"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x5dc1bf6f1e983c0b21efb003c105133736fa0743": {
+   "venue": "curve_ng",
+   "token0": "0x853d955acef822db058eb8505911ed77f175b99e",
+   "token1": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x853d955acef822db058eb8505911ed77f175b99e",
+    "0x4c9edd5852cd905f086c759e8383e09bff1e68b3"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x8efd02a0a40545f32dba5d664cbbc1570d3fedf6": {
+   "venue": "curve_ng",
+   "token0": "0x0100546f2cd4c9d97f798ffc9755e47865ff7ee6",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x0100546f2cd4c9d97f798ffc9755e47865ff7ee6",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x625e92624bc2d88619accc1788365a69767f6200": {
+   "venue": "curve_ng",
+   "token0": "0x6c3ea9036406852006290770bedfcaba0e23a0e8",
+   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x6c3ea9036406852006290770bedfcaba0e23a0e8",
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x383e6b4437b59fff47b619cba855ca29342a8559": {
+   "venue": "curve_ng",
+   "token0": "0x6c3ea9036406852006290770bedfcaba0e23a0e8",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x6c3ea9036406852006290770bedfcaba0e23a0e8",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x9efe1a1cbd6ca51ee8319afc4573d253c3b732af": {
+   "venue": "curve_ng",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xae78736cd615f374d3085123a210448e74fc6393",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0xae78736cd615f374d3085123a210448e74fc6393"
+   ],
+   "asset_types": [
+    0,
+    1
+   ]
+  },
+  "0xc559f6716d8b1471fc2dc10aafeb0faa219fe9df": {
+   "venue": "curve_ng",
+   "token0": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+   "token1": "0x83f20f44975d03b1b09e64809b757c47f942beea",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+    "0x83f20f44975d03b1b09e64809b757c47f942beea",
+    "0xa663b02cf0a4b149d2ad41910cb81e23e1c41c32"
+   ],
+   "asset_types": [
+    3,
+    3,
+    3
+   ]
+  },
+  "0x278cfb6f06b1efc09d34fc7127d6060c61d629db": {
+   "venue": "curve_ng",
+   "token0": "0xcd5fe23c85820f7b72d0926fc9b05b43e359b7ee",
+   "token1": "0xfae103dc9cf190ed75350761e95403b7b8afa6c0",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcd5fe23c85820f7b72d0926fc9b05b43e359b7ee",
+    "0xfae103dc9cf190ed75350761e95403b7b8afa6c0"
+   ],
+   "asset_types": [
+    1,
+    1
+   ]
+  },
+  "0xb3c8ce1ee157b0dcaa96897c9170aee6281706c9": {
+   "venue": "curve_ng",
+   "token0": "0xd9a442856c234a39a81a089c06451ebaa4306a72",
+   "token1": "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xd9a442856c234a39a81a089c06451ebaa4306a72",
+    "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
+   ],
+   "asset_types": [
+    3,
+    0
+   ]
+  },
+  "0xfe3c78d947b329160496e192b4cf417bb86272ed": {
+   "venue": "curve_ng",
+   "token0": "0xc975342a95ccb75378ddc646b8620fa3cd5bc051",
+   "token1": "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc975342a95ccb75378ddc646b8620fa3cd5bc051",
+    "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
+   ],
+   "asset_types": [
+    1,
+    0
+   ]
+  },
+  "0xf36a4ba50c603204c3fc6d2da8b78a7b69cbc67d": {
+   "venue": "curve_ng",
+   "token0": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+   "token1": "0x6b175474e89094c44da98b954eedeac495271d0f",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+    "0x6b175474e89094c44da98b954eedeac495271d0f"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x167478921b907422f8e88b43c4af2b8bea278d3a": {
+   "venue": "curve_ng",
+   "token0": "0x83f20f44975d03b1b09e64809b757c47f942beea",
+   "token1": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x83f20f44975d03b1b09e64809b757c47f942beea",
+    "0x9d39a5de30e57443bff2a8307a4256c8797a3497"
+   ],
+   "asset_types": [
+    3,
+    3
+   ]
+  },
+  "0x670a72e6d22b0956c0d2573288f82dcc5d6e3a61": {
+   "venue": "curve_ng",
+   "token0": "0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f",
+   "token1": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+   "fee": 500000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f",
+    "0x4c9edd5852cd905f086c759e8383e09bff1e68b3"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x8ffc7b89412efd0d17edea2018f6634ea4c2fcb2": {
+   "venue": "curve_ng",
+   "token0": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "token1": "0x085780639cc2cacd35e474e71f4d000e2405d8f6",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+    "0x085780639cc2cacd35e474e71f4d000e2405d8f6"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xd6982da59f1d26476e259559508f4135135cf9b8": {
+   "venue": "curve_ng",
+   "token0": "0x6c3ea9036406852006290770bedfcaba0e23a0e8",
+   "token1": "0x085780639cc2cacd35e474e71f4d000e2405d8f6",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x6c3ea9036406852006290770bedfcaba0e23a0e8",
+    "0x085780639cc2cacd35e474e71f4d000e2405d8f6"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x189b4e49b5caf33565095097b4b960f14032c7d0": {
+   "venue": "curve_ng",
+   "token0": "0x865377367054516e17014ccded1e7d814edc9ce4",
+   "token1": "0x085780639cc2cacd35e474e71f4d000e2405d8f6",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x865377367054516e17014ccded1e7d814edc9ce4",
+    "0x085780639cc2cacd35e474e71f4d000e2405d8f6"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x1ee81c56e42ec34039d993d12410d437ddea341e": {
+   "venue": "curve_ng",
+   "token0": "0x853d955acef822db058eb8505911ed77f175b99e",
+   "token1": "0x085780639cc2cacd35e474e71f4d000e2405d8f6",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x853d955acef822db058eb8505911ed77f175b99e",
+    "0x085780639cc2cacd35e474e71f4d000e2405d8f6"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x74345504eaea3d9408fc69ae7eb2d14095643c5b": {
+   "venue": "curve_ng",
+   "token0": "0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f",
+   "token1": "0x085780639cc2cacd35e474e71f4d000e2405d8f6",
+   "fee": 500000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f",
+    "0x085780639cc2cacd35e474e71f4d000e2405d8f6"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xeeda34a377dd0ca676b9511ee1324974fa8d980d": {
+   "venue": "curve_ng",
+   "token0": "0xd9a442856c234a39a81a089c06451ebaa4306a72",
+   "token1": "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xd9a442856c234a39a81a089c06451ebaa4306a72",
+    "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
+   ],
+   "asset_types": [
+    3,
+    1
+   ]
+  },
+  "0x16b54e3ac8e3ba088333985035b869847e36e770": {
+   "venue": "curve_ng",
+   "token0": "0xa0d69e286b938e21cbf7e51d71f6a4c8918f482f",
+   "token1": "0x085780639cc2cacd35e474e71f4d000e2405d8f6",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0d69e286b938e21cbf7e51d71f6a4c8918f482f",
+    "0x085780639cc2cacd35e474e71f4d000e2405d8f6"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x635ef0056a597d13863b73825cca297236578595": {
+   "venue": "curve_ng",
+   "token0": "0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f",
+   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "fee": 500000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f",
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x27cb9629ae3ee05cb266b99ca4124ec999303c9d": {
+   "venue": "curve_ng",
+   "token0": "0xbc6da0fe9ad5f3b0d58160288917aa56653660e9",
+   "token1": "0x085780639cc2cacd35e474e71f4d000e2405d8f6",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xbc6da0fe9ad5f3b0d58160288917aa56653660e9",
+    "0x085780639cc2cacd35e474e71f4d000e2405d8f6"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x39f5b252de249790faed0c2f05abead56d2088e1": {
+   "venue": "curve_ng",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xd9a442856c234a39a81a089c06451ebaa4306a72",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0xd9a442856c234a39a81a089c06451ebaa4306a72"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0xdb74dfdd3bb46be8ce6c33dc9d82777bcfc3ded5": {
+   "venue": "curve_ng",
+   "token0": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "token1": "0xcd5fe23c85820f7b72d0926fc9b05b43e359b7ee",
+   "fee": 500000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "0xcd5fe23c85820f7b72d0926fc9b05b43e359b7ee"
+   ],
+   "asset_types": [
+    0,
+    1
+   ]
+  },
+  "0xf8db2accdef8e7a26b0e65c3980adc8ce11671a4": {
+   "venue": "curve_ng",
+   "token0": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+   "token1": "0xc5f0f7b66764f6ec8c8dff7ba683102295e16409",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+    "0xc5f0f7b66764f6ec8c8dff7ba683102295e16409"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x08bfa22bb3e024cdfeb3eca53c0cb93bf59c4147": {
+   "venue": "curve_ng",
+   "token0": "0xa0d69e286b938e21cbf7e51d71f6a4c8918f482f",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0d69e286b938e21cbf7e51d71f6a4c8918f482f",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x57064f49ad7123c92560882a45518374ad982e85": {
+   "venue": "curve_ng",
+   "token0": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "token1": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+    "0x9d39a5de30e57443bff2a8307a4256c8797a3497"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0x79586fa680958102154093b795fdb8efbc013822": {
+   "venue": "curve_ng",
+   "token0": "0x0d86883faf4ffd7aeb116390af37746f45b6f378",
+   "token1": "0xa0d69e286b938e21cbf7e51d71f6a4c8918f482f",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x0d86883faf4ffd7aeb116390af37746f45b6f378",
+    "0xa0d69e286b938e21cbf7e51d71f6a4c8918f482f"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x3ee841f47947fefbe510366e4bbb49e145484195": {
+   "venue": "curve_ng",
+   "token0": "0x66a1e37c9b0eaddca17d3662d6c05f4decf3e110",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x66a1e37c9b0eaddca17d3662d6c05f4decf3e110",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x14100f81e33c33ecc7cdac70181fb45b6e78569f": {
+   "venue": "curve_ng",
+   "token0": "0x73a15fed60bf67631dc6cd7bc5b6e8da8190acf5",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 900000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x73a15fed60bf67631dc6cd7bc5b6e8da8190acf5",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x1d08e7adc263cfc70b1babe6dc5bb339c16eec52": {
+   "venue": "curve_ng",
+   "token0": "0x73a15fed60bf67631dc6cd7bc5b6e8da8190acf5",
+   "token1": "0x35d8949372d46b7a3d5a56006ae77b215fc69bc0",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x73a15fed60bf67631dc6cd7bc5b6e8da8190acf5",
+    "0x35d8949372d46b7a3d5a56006ae77b215fc69bc0"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x5018be882dcce5e3f2f3b0913ae2096b9b3fb61f": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0x085780639cc2cacd35e474e71f4d000e2405d8f6",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0x085780639cc2cacd35e474e71f4d000e2405d8f6"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x74c204520c9e88aa3eb9d61788aba11be1e0193f": {
+   "venue": "curve_ng",
+   "token0": "0x73a15fed60bf67631dc6cd7bc5b6e8da8190acf5",
+   "token1": "0x085780639cc2cacd35e474e71f4d000e2405d8f6",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x73a15fed60bf67631dc6cd7bc5b6e8da8190acf5",
+    "0x085780639cc2cacd35e474e71f4d000e2405d8f6"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xea659b615b48ec6e2d55cd82fcbe5f43d79aeea0": {
+   "venue": "curve_ng",
+   "token0": "0xf469fbd2abcd6b9de8e169d128226c0fc90a012e",
+   "token1": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xf469fbd2abcd6b9de8e169d128226c0fc90a012e",
+    "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xc174fab63f017b562ad94d164635cc91f315dc77": {
+   "venue": "curve_ng",
+   "token0": "0x004626a008b1acdc4c74ab51644093b155e59a23",
+   "token1": "0x5f7827fdeb7c20b443265fc2f40845b715385ff2",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x004626a008b1acdc4c74ab51644093b155e59a23",
+    "0x5f7827fdeb7c20b443265fc2f40845b715385ff2"
+   ],
+   "asset_types": [
+    3,
+    0
+   ]
+  },
+  "0x5f6c431ac417f0f430b84a666a563fabe681da94": {
+   "venue": "curve_ng",
+   "token0": "0x15700b564ca08d9439c58ca5053166e8317aa138",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x15700b564ca08d9439c58ca5053166e8317aa138",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xb478bf40dd622086e0d0889eebbadcb63806adde": {
+   "venue": "curve_ng",
+   "token0": "0x15700b564ca08d9439c58ca5053166e8317aa138",
+   "token1": "0x6b175474e89094c44da98b954eedeac495271d0f",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x15700b564ca08d9439c58ca5053166e8317aa138",
+    "0x6b175474e89094c44da98b954eedeac495271d0f"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x88dfb9370fe350aa51ade31c32549d4d3a24faf2": {
+   "venue": "curve_ng",
+   "token0": "0x15700b564ca08d9439c58ca5053166e8317aa138",
+   "token1": "0x853d955acef822db058eb8505911ed77f175b99e",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x15700b564ca08d9439c58ca5053166e8317aa138",
+    "0x853d955acef822db058eb8505911ed77f175b99e"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xb1c189dfde178fe9f90e72727837cc9289fb944f": {
+   "venue": "curve_ng",
+   "token0": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "token1": "0x677ddbd918637e5f2c79e164d402454de7da8619",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+    "0x677ddbd918637e5f2c79e164d402454de7da8619"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xf2c8f52d07ee33d7a7db78cee084a33b40ab4654": {
+   "venue": "curve_ng",
+   "token0": "0x6900057428c99fb373397d657beb40d92d8ac97f",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x6900057428c99fb373397d657beb40d92d8ac97f",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x7c4e143b23d72e6938e06291f705b5ae3d5c7c7c": {
+   "venue": "curve_ng",
+   "token0": "0x15700b564ca08d9439c58ca5053166e8317aa138",
+   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x15700b564ca08d9439c58ca5053166e8317aa138",
+    "0xdac17f958d2ee523a2206206994597c13d831ec7"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xe79c1c7e24755574438a26d5e062ad2626c04662": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0x00000000efe302beaa2b3e6e1b18d08d69a9012a",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0x00000000efe302beaa2b3e6e1b18d08d69a9012a"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xa4eddfe4ba5143ac17fd6bc1e53de0384df8c660": {
+   "venue": "curve_ng",
+   "token0": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "token1": "0x00000000efe302beaa2b3e6e1b18d08d69a9012a",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "0x00000000efe302beaa2b3e6e1b18d08d69a9012a"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x0e84996ac18fcf6fe18c372520798ce0cdf892d4": {
+   "venue": "curve_ng",
+   "token0": "0x0d86883faf4ffd7aeb116390af37746f45b6f378",
+   "token1": "0x83f20f44975d03b1b09e64809b757c47f942beea",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x0d86883faf4ffd7aeb116390af37746f45b6f378",
+    "0x83f20f44975d03b1b09e64809b757c47f942beea"
+   ],
+   "asset_types": [
+    1,
+    3
+   ]
+  },
+  "0x6ee1955afb64146b126162b4ff018db1eb8f08c3": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0x69000405f9dce69bd4cbf4f2865b79144a69bfe0",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0x69000405f9dce69bd4cbf4f2865b79144a69bfe0"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x964573b560da1ce5b10dd09a4723c5ccbe9f9688": {
+   "venue": "curve_ng",
+   "token0": "0x0d86883faf4ffd7aeb116390af37746f45b6f378",
+   "token1": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x0d86883faf4ffd7aeb116390af37746f45b6f378",
+    "0x9d39a5de30e57443bff2a8307a4256c8797a3497"
+   ],
+   "asset_types": [
+    1,
+    3
+   ]
+  },
+  "0xfa883807fdf5d3f5c408f1f6d78707753af1ffe7": {
+   "venue": "curve_ng",
+   "token0": "0x00000000efe302beaa2b3e6e1b18d08d69a9012a",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x00000000efe302beaa2b3e6e1b18d08d69a9012a",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x839d6bdedff886404a6d7a788ef241e4e28f4802": {
+   "venue": "curve_ng",
+   "token0": "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf",
+   "token1": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf",
+    "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xa10d15538e09479186b4d3278ba5c979110dddb1": {
+   "venue": "curve_ng",
+   "token0": "0xd11c452fc99cf405034ee446803b6f6c1f6d5ed8",
+   "token1": "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0",
+   "fee": 5000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xd11c452fc99cf405034ee446803b6f6c1f6d5ed8",
+    "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
+   ],
+   "asset_types": [
+    3,
+    0
+   ]
+  },
+  "0x1220868672d5b10f3e1cb9ab519e4d0b08545ea4": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0x7c1156e515aa1a2e851674120074968c905aaf37",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0x7c1156e515aa1a2e851674120074968c905aaf37"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x8cc4b0b08e84f76a0e28bc3557dfc629f8062c88": {
+   "venue": "curve_ng",
+   "token0": "0xc81b27ac184a631a0cbde20b51c734664b04d5b3",
+   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc81b27ac184a631a0cbde20b51c734664b04d5b3",
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xd29f8980852c2c76fc3f6e96a7aa06e0bedcc1b1": {
+   "venue": "curve_ng",
+   "token0": "0x0655977feb2f289a4ab78af67bab0d17aab84367",
+   "token1": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x0655977feb2f289a4ab78af67bab0d17aab84367",
+    "0x9d39a5de30e57443bff2a8307a4256c8797a3497"
+   ],
+   "asset_types": [
+    3,
+    3
+   ]
+  },
+  "0x76a962ba6770068bcf454d34dde17175611e6637": {
+   "venue": "curve_ng",
+   "token0": "0x0655977feb2f289a4ab78af67bab0d17aab84367",
+   "token1": "0xb45ad160634c528cc3d2926d9807104fa3157305",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x0655977feb2f289a4ab78af67bab0d17aab84367",
+    "0xb45ad160634c528cc3d2926d9807104fa3157305"
+   ],
+   "asset_types": [
+    3,
+    3
+   ]
+  },
+  "0x744793b5110f6ca9cc7cdfe1ce16677c3eb192ef": {
+   "venue": "curve_ng",
+   "token0": "0x865377367054516e17014ccded1e7d814edc9ce4",
+   "token1": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x865377367054516e17014ccded1e7d814edc9ce4",
+    "0x9d39a5de30e57443bff2a8307a4256c8797a3497"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0x8b83c4aa949254895507d09365229bc3a8c7f710": {
+   "venue": "curve_ng",
+   "token0": "0x865377367054516e17014ccded1e7d814edc9ce4",
+   "token1": "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x865377367054516e17014ccded1e7d814edc9ce4",
+    "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0xff17dab22f1e61078aba2623c89ce6110e878b3c": {
+   "venue": "curve_ng",
+   "token0": "0x865377367054516e17014ccded1e7d814edc9ce4",
+   "token1": "0x0655977feb2f289a4ab78af67bab0d17aab84367",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x865377367054516e17014ccded1e7d814edc9ce4",
+    "0x0655977feb2f289a4ab78af67bab0d17aab84367"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0x394a1e1b934cb4f4a0dc17bdd592ec078741542f": {
+   "venue": "curve_ng",
+   "token0": "0xd11c452fc99cf405034ee446803b6f6c1f6d5ed8",
+   "token1": "0xcd5fe23c85820f7b72d0926fc9b05b43e359b7ee",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xd11c452fc99cf405034ee446803b6f6c1f6d5ed8",
+    "0xcd5fe23c85820f7b72d0926fc9b05b43e359b7ee"
+   ],
+   "asset_types": [
+    1,
+    1
+   ]
+  },
+  "0xd65ed4bce447195187f37ce7d82f56adf1826f8f": {
+   "venue": "curve_ng",
+   "token0": "0x657d9aba1dbb59e53f9f3ecaa878447dcfc96dcb",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x657d9aba1dbb59e53f9f3ecaa878447dcfc96dcb",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   ],
+   "asset_types": [
+    3,
+    0
+   ]
+  },
+  "0x4a0c954d0f19269f4fc5c217821c6150a8870ad4": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0x69000dfd5025e82f48eb28325a2b88a241182ced",
+   "fee": 10000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0x69000dfd5025e82f48eb28325a2b88a241182ced"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xfd1627e3f3469c8392c8c3a261d8f0677586e5e1": {
+   "venue": "curve_ng",
+   "token0": "0x0655977feb2f289a4ab78af67bab0d17aab84367",
+   "token1": "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x0655977feb2f289a4ab78af67bab0d17aab84367",
+    "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd"
+   ],
+   "asset_types": [
+    3,
+    3
+   ]
+  },
+  "0xe99810cd5adcd7b13455ae1be678b382d61f2d1e": {
+   "venue": "curve_ng",
+   "token0": "0x0d86883faf4ffd7aeb116390af37746f45b6f378",
+   "token1": "0x0655977feb2f289a4ab78af67bab0d17aab84367",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x0d86883faf4ffd7aeb116390af37746f45b6f378",
+    "0x0655977feb2f289a4ab78af67bab0d17aab84367"
+   ],
+   "asset_types": [
+    1,
+    3
+   ]
+  },
+  "0xc2921134073151490193ac7369313c8e0b08e1e7": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0xc139190f447e929f090edeb554d95abb8b18ac1c",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0xc139190f447e929f090edeb554d95abb8b18ac1c"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x2d9bf9c1befd77c094461df615bdbe905895f7c6": {
+   "venue": "curve_ng",
+   "token0": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+   "token1": "0xc139190f447e929f090edeb554d95abb8b18ac1c",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+    "0xc139190f447e929f090edeb554d95abb8b18ac1c"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x460638e6f7605b866736e38045c0de8294d7d87f": {
+   "venue": "curve_ng",
+   "token0": "0xb45ad160634c528cc3d2926d9807104fa3157305",
+   "token1": "0xbc6da0fe9ad5f3b0d58160288917aa56653660e9",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xb45ad160634c528cc3d2926d9807104fa3157305",
+    "0xbc6da0fe9ad5f3b0d58160288917aa56653660e9"
+   ],
+   "asset_types": [
+    3,
+    0
+   ]
+  },
+  "0xd001ae433f254283fece51d4acce8c53263aa186": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0x8292bb45bf1ee4d140127049757c2e0ff06317ed",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0x8292bb45bf1ee4d140127049757c2e0ff06317ed"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x90455bd11ce8a67c57d467e634dc142b8e4105aa": {
+   "venue": "curve_ng",
+   "token0": "0xad55aebc9b8c03fc43cd9f62260391c13c23e7c0",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xad55aebc9b8c03fc43cd9f62260391c13c23e7c0",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    1,
+    0
+   ]
+  },
+  "0xdbb1d219d84eacefb850ee04cacf2f1830934580": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0x4c9edd5852cd905f086c759e8383e09bff1e68b3"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x38de22a3175708d45e7c7c64cd78479c8b56f76e": {
+   "venue": "curve_ng",
+   "token0": "0x865377367054516e17014ccded1e7d814edc9ce4",
+   "token1": "0x66a1e37c9b0eaddca17d3662d6c05f4decf3e110",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x865377367054516e17014ccded1e7d814edc9ce4",
+    "0x66a1e37c9b0eaddca17d3662d6c05f4decf3e110"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x4628f13651ead6793f8d838b34b8f8522fb0cc52": {
+   "venue": "curve_ng",
+   "token0": "0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f",
+   "token1": "0x66a1e37c9b0eaddca17d3662d6c05f4decf3e110",
+   "fee": 500000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f",
+    "0x66a1e37c9b0eaddca17d3662d6c05f4decf3e110"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x81a2612f6dea269a6dd1f6deab45c5424ee2c4b7": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0x4d968a5db8da0822a2f08840f553de4129aae5f3": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0x0655977feb2f289a4ab78af67bab0d17aab84367",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0x0655977feb2f289a4ab78af67bab0d17aab84367"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0x15e4ff94b70a8f146b4e4afd069014d126035752": {
+   "venue": "curve_ng",
+   "token0": "0xcf62f905562626cfcdd2261162a51fd02fc9c5b6",
+   "token1": "0x0655977feb2f289a4ab78af67bab0d17aab84367",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcf62f905562626cfcdd2261162a51fd02fc9c5b6",
+    "0x0655977feb2f289a4ab78af67bab0d17aab84367"
+   ],
+   "asset_types": [
+    3,
+    3
+   ]
+  },
+  "0x3bd1017929b43c1414be2aca39892590fba4d6e2": {
+   "venue": "curve_ng",
+   "token0": "0xcf62f905562626cfcdd2261162a51fd02fc9c5b6",
+   "token1": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcf62f905562626cfcdd2261162a51fd02fc9c5b6",
+    "0x9d39a5de30e57443bff2a8307a4256c8797a3497"
+   ],
+   "asset_types": [
+    3,
+    3
+   ]
+  },
+  "0x6691dbb44154a9f23f8357c56fc9ff5548a8bdc4": {
+   "venue": "curve_ng",
+   "token0": "0x865377367054516e17014ccded1e7d814edc9ce4",
+   "token1": "0x15700b564ca08d9439c58ca5053166e8317aa138",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x865377367054516e17014ccded1e7d814edc9ce4",
+    "0x15700b564ca08d9439c58ca5053166e8317aa138"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x4f493b7de8aac7d55f71853688b1f7c8f0243c85": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "fee": 100000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0xdac17f958d2ee523a2206206994597c13d831ec7"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x5b03cccab7ba3010fa5cad23746cbf0794938e96": {
+   "venue": "curve_ng",
+   "token0": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "token1": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+   "fee": 300000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "0x4c9edd5852cd905f086c759e8383e09bff1e68b3"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xbbaf8b2837cbbc7146f5bc978d6f84db0be1cacc": {
+   "venue": "curve_ng",
+   "token0": "0x853d955acef822db058eb8505911ed77f175b99e",
+   "token1": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x853d955acef822db058eb8505911ed77f175b99e",
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x3cef1afc0e8324b57293a6e7ce663781bbefbb79": {
+   "venue": "curve_ng",
+   "token0": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+   "token1": "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+    "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd"
+   ],
+   "asset_types": [
+    3,
+    3
+   ]
+  },
+  "0x72310daaed61321b02b08a547150c07522c6a976": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0xfa2b947eec368f42195f24f36d2af29f7c24cec2",
+   "fee": 3000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0xfa2b947eec368f42195f24f36d2af29f7c24cec2"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xc48a38499a90e3b883c509ca08ec1b540cdf15ee": {
+   "venue": "curve_ng",
+   "token0": "0x68749665ff8d2d112fa859aa293f07a622782f38",
+   "token1": "0x45804880de22913dafe09f4980848ece6ecbaf78",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x68749665ff8d2d112fa859aa293f07a622782f38",
+    "0x45804880de22913dafe09f4980848ece6ecbaf78"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xcc7d5785ad5755b6164e21495e07adb0ff11c2a8": {
+   "venue": "curve_ng",
+   "token0": "0x856c4efb76c1d1ae02e20ceb03a2a6a08b0b8dc3",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x856c4efb76c1d1ae02e20ceb03a2a6a08b0b8dc3",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x00836fe54625be242bcfa286207795405ca4fd10": {
+   "venue": "curve_ng",
+   "token0": "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd",
+   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "fee": 100000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd",
+    "0xdac17f958d2ee523a2206206994597c13d831ec7"
+   ],
+   "asset_types": [
+    3,
+    0
+   ]
+  },
+  "0x712c6efcdb10024997191a7020e783cd3b8d48eb": {
+   "venue": "curve_ng",
+   "token0": "0x7b43e3875440b44613dc3bc08e7763e6da63c8f8",
+   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x7b43e3875440b44613dc3bc08e7763e6da63c8f8",
+    "0xdac17f958d2ee523a2206206994597c13d831ec7"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x81f17e97b1cea46301fe6728d5619e9db2e7fb2c": {
+   "venue": "curve_ng",
+   "token0": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+    "0xdac17f958d2ee523a2206206994597c13d831ec7"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x51f5466690978173f45270f57e06e25b0c888261": {
+   "venue": "curve_ng",
+   "token0": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "token1": "0x699e04f98de2fc395a7dcbf36b48ec837a976490",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "0x699e04f98de2fc395a7dcbf36b48ec837a976490"
+   ],
+   "asset_types": [
+    0,
+    1
+   ]
+  },
+  "0x6a0c68bc96658a2b97201d94986bf7753000f2cf": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0x000000096cb3d4007fc2b79b935c4540c5c2d745",
+   "fee": 10000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0x000000096cb3d4007fc2b79b935c4540c5c2d745"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xefc6516323fbd28e80b85a497b65a86243a54b3e": {
+   "venue": "curve_ng",
+   "token0": "0x6440f144b7e50d6a8439336510312d2f54beb01d",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x6440f144b7e50d6a8439336510312d2f54beb01d",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x7ed17e037b7d88a8270c89b3afa9c38e5218f12b": {
+   "venue": "curve_ng",
+   "token0": "0x6440f144b7e50d6a8439336510312d2f54beb01d",
+   "token1": "0x5f98805a4e8be255a32880fdec7f6728c6568ba0",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x6440f144b7e50d6a8439336510312d2f54beb01d",
+    "0x5f98805a4e8be255a32880fdec7f6728c6568ba0"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x2e2d6c119bdf226c420cb40e3b9fc9689cf5986e": {
+   "venue": "curve_ng",
+   "token0": "0x48f9e38f3070ad8945dfeae3fa70987722e3d89c",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x48f9e38f3070ad8945dfeae3fa70987722e3d89c",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xf74c91b36c26543a0aa820bef407a577e5498bf0": {
+   "venue": "curve_ng",
+   "token0": "0x5086bf358635b81d8c47c66d1c8b9e567db70c72",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x5086bf358635b81d8c47c66d1c8b9e567db70c72",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    1,
+    0
+   ]
+  },
+  "0x46f27bd3ec8f8d602f7ce85d312f4387fbda7b16": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0x12b004719fb632f1e7c010c6f5d6009fb4258442",
+   "fee": 3000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0x12b004719fb632f1e7c010c6f5d6009fb4258442"
+   ],
+   "asset_types": [
+    0,
+    1
+   ]
+  },
+  "0xb6e4821c6fcabe32f5f452dfd3ef20ce2a3a48e2": {
+   "venue": "curve_ng",
+   "token0": "0x7743e50f534a7f9f1791dde7dcd89f7783eefc39",
+   "token1": "0x0655977feb2f289a4ab78af67bab0d17aab84367",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x7743e50f534a7f9f1791dde7dcd89f7783eefc39",
+    "0x0655977feb2f289a4ab78af67bab0d17aab84367"
+   ],
+   "asset_types": [
+    3,
+    3
+   ]
+  },
+  "0x2c683fad51da2cd17793219cc86439c1875c353e": {
+   "venue": "curve_ng",
+   "token0": "0xe72b141df173b999ae7c1adcbf60cc9833ce56a8",
+   "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xe72b141df173b999ae7c1adcbf60cc9833ce56a8",
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   ],
+   "asset_types": [
+    1,
+    0
+   ]
+  },
+  "0x98e9599dab3a936c35de48e13e026ef4ea20b5e6": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0xfa2b947eec368f42195f24f36d2af29f7c24cec2",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0xfa2b947eec368f42195f24f36d2af29f7c24cec2"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x2c7a1b4950fe369e79fb3471284d4a4e66fbea76": {
+   "venue": "curve_ng",
+   "token0": "0x5c5b196abe0d54485975d1ec29617d42d9198326",
+   "token1": "0x15700b564ca08d9439c58ca5053166e8317aa138",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x5c5b196abe0d54485975d1ec29617d42d9198326",
+    "0x15700b564ca08d9439c58ca5053166e8317aa138"
+   ],
+   "asset_types": [
+    3,
+    0
+   ]
+  },
+  "0x78c579a2dcfe10ae8b3c888a583337beb4d91733": {
+   "venue": "curve_ng",
+   "token0": "0xf1376bcef0f78459c0ed0ba5ddce976f1ddf51f4",
+   "token1": "0x5e8422345238f34275888049021821e8e08caa1f",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xf1376bcef0f78459c0ed0ba5ddce976f1ddf51f4",
+    "0x5e8422345238f34275888049021821e8e08caa1f"
+   ],
+   "asset_types": [
+    1,
+    0
+   ]
+  },
+  "0xfcca47ddd4336f08835005d912124b472ed29448": {
+   "venue": "curve_ng",
+   "token0": "0x3db228fe836d99ccb25ec4dfdc80ed6d2cddcb4b",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x3db228fe836d99ccb25ec4dfdc80ed6d2cddcb4b",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    3,
+    0
+   ]
+  },
+  "0x65b05f6b0472b1f36a2f6d90a14cd21900851609": {
+   "venue": "curve_ng",
+   "token0": "0x0d86883faf4ffd7aeb116390af37746f45b6f378",
+   "token1": "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x0d86883faf4ffd7aeb116390af37746f45b6f378",
+    "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd"
+   ],
+   "asset_types": [
+    1,
+    3
+   ]
+  },
+  "0x42cf3b7e98a1bbc51ed6e5c09f5a93743e600889": {
+   "venue": "curve_ng",
+   "token0": "0x1202f5c7b4b9e47a1a484e8b270be34dbbc75055",
+   "token1": "0x4956b52ae2ff65d74ca2d61207523288e4528f96",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x1202f5c7b4b9e47a1a484e8b270be34dbbc75055",
+    "0x4956b52ae2ff65d74ca2d61207523288e4528f96"
+   ],
+   "asset_types": [
+    3,
+    1
+   ]
+  },
+  "0x771c91e699b4b23420de3f81de2aa38c4041632b": {
+   "venue": "curve_ng",
+   "token0": "0xdde3ec717f220fc6a29d6a4be73f91da5b718e55",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xdde3ec717f220fc6a29d6a4be73f91da5b718e55",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x13e12bb0e6a2f1a3d6901a59a9d585e89a6243e1": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x138bb0f3208bd729a561f3786ddb97bbc69e6628": {
+   "venue": "curve_ng",
+   "token0": "0xab5eb14c09d416f0ac63661e57edb7aecdb9befa",
+   "token1": "0x085780639cc2cacd35e474e71f4d000e2405d8f6",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xab5eb14c09d416f0ac63661e57edb7aecdb9befa",
+    "0x085780639cc2cacd35e474e71f4d000e2405d8f6"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x3be454c4391690ab4ddae3fb987c8147b8ecc08a": {
+   "venue": "curve_ng",
+   "token0": "0x0655977feb2f289a4ab78af67bab0d17aab84367",
+   "token1": "0x9cf12ccd6020b6888e4d4c4e4c7aca33c1eb91f8",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x0655977feb2f289a4ab78af67bab0d17aab84367",
+    "0x9cf12ccd6020b6888e4d4c4e4c7aca33c1eb91f8"
+   ],
+   "asset_types": [
+    3,
+    0
+   ]
+  },
+  "0x765cbd88947fcbc5df1f763d02e384b0a2dd285e": {
+   "venue": "curve_ng",
+   "token0": "0xdd468a1ddc392dcdbef6db6e34e89aa338f9f186",
+   "token1": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xdd468a1ddc392dcdbef6db6e34e89aa338f9f186",
+    "0x9d39a5de30e57443bff2a8307a4256c8797a3497"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0x463626cf9028d96ead5084954ff634f813d5ffb9": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0xdcd0f5ab30856f28385f641580bbd85f88349124",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0xdcd0f5ab30856f28385f641580bbd85f88349124"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0x5c2ab69eb2bf12a2f4572d178687bd4660512972": {
+   "venue": "curve_ng",
+   "token0": "0x5086bf358635b81d8c47c66d1c8b9e567db70c72",
+   "token1": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x5086bf358635b81d8c47c66d1c8b9e567db70c72",
+    "0x9d39a5de30e57443bff2a8307a4256c8797a3497"
+   ],
+   "asset_types": [
+    1,
+    3
+   ]
+  },
+  "0xf292eb6c5dcb693eaaf392d0562a01c3710e5978": {
+   "venue": "curve_ng",
+   "token0": "0xcf62f905562626cfcdd2261162a51fd02fc9c5b6",
+   "token1": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcf62f905562626cfcdd2261162a51fd02fc9c5b6",
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29"
+   ],
+   "asset_types": [
+    3,
+    0
+   ]
+  },
+  "0xe8f41b56170abf2bc9ffa3704fd6179dc896298a": {
+   "venue": "curve_ng",
+   "token0": "0xb4444468e444f89e1c2cac2f1d3ee7e336cbd1f5",
+   "token1": "0xb33f4b9c6f0624edeae8881c97381837760d52cb",
+   "fee": 50000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xb4444468e444f89e1c2cac2f1d3ee7e336cbd1f5",
+    "0xb33f4b9c6f0624edeae8881c97381837760d52cb"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0x8b878afe454e31cf0a79c6d7cf2f077dd286c12f": {
+   "venue": "curve_ng",
+   "token0": "0x085780639cc2cacd35e474e71f4d000e2405d8f6",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x085780639cc2cacd35e474e71f4d000e2405d8f6",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0x9cf12ccd6020b6888e4d4c4e4c7aca33c1eb91f8",
+    "0x6440f144b7e50d6a8439336510312d2f54beb01d"
+   ],
+   "asset_types": [
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  "0x2d1eb1704d0ee227b7528c5bdb4fd256d6ac5b09": {
+   "venue": "curve_ng",
+   "token0": "0xcccc62962d17b8914c62d74ffb843d73b2a3cccc",
+   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcccc62962d17b8914c62d74ffb843d73b2a3cccc",
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xa632d59b9b804a956bfaa9b48af3a1b74808fc1f": {
+   "venue": "curve_ng",
+   "token0": "0x6c3ea9036406852006290770bedfcaba0e23a0e8",
+   "token1": "0xdc035d45d973e3ec169d2276ddab16f1e407384f",
+   "fee": 100000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x6c3ea9036406852006290770bedfcaba0e23a0e8",
+    "0xdc035d45d973e3ec169d2276ddab16f1e407384f"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xc061caa073f3d95f80f8e5428d32d2d76f5e1622": {
+   "venue": "curve_ng",
+   "token0": "0xe343167631d89b6ffc58b88d6b7fb0228795491d",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xe343167631d89b6ffc58b88d6b7fb0228795491d",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x64273624eb57c5ca961d366cbf3968e760bf0452": {
+   "venue": "curve_ng",
+   "token0": "0x865377367054516e17014ccded1e7d814edc9ce4",
+   "token1": "0x1202f5c7b4b9e47a1a484e8b270be34dbbc75055",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x865377367054516e17014ccded1e7d814edc9ce4",
+    "0x1202f5c7b4b9e47a1a484e8b270be34dbbc75055"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0xf05bc5c38a8f5e3d98c72f11bc59e713f8a32228": {
+   "venue": "curve_ng",
+   "token0": "0x01ba69727e2860b37bc1a2bd56999c1afb4c15d8",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x01ba69727e2860b37bc1a2bd56999c1afb4c15d8",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    3,
+    0
+   ]
+  },
+  "0x32e616f4f17d43f9a5cd9be0e294727187064cb3": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0x1e33e98af620f1d563fcd3cfd3c75ace841204ef",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0x1e33e98af620f1d563fcd3cfd3c75ace841204ef"
+   ],
+   "asset_types": [
+    0,
+    1
+   ]
+  },
+  "0x20d4c49a873eaeff76efbd0cf19002f6e19ef52c": {
+   "venue": "curve_ng",
+   "token0": "0x9cf12ccd6020b6888e4d4c4e4c7aca33c1eb91f8",
+   "token1": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x9cf12ccd6020b6888e4d4c4e4c7aca33c1eb91f8",
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x4eeb03b2b8f55159f47b3548faafe3efaff43eb9": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0x15700b564ca08d9439c58ca5053166e8317aa138",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0x15700b564ca08d9439c58ca5053166e8317aa138"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xa256d38e73cce6e00447fa64a95069ea7d32f841": {
+   "venue": "curve_ng",
+   "token0": "0x3db228fe836d99ccb25ec4dfdc80ed6d2cddcb4b",
+   "token1": "0x0655977feb2f289a4ab78af67bab0d17aab84367",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x3db228fe836d99ccb25ec4dfdc80ed6d2cddcb4b",
+    "0x0655977feb2f289a4ab78af67bab0d17aab84367"
+   ],
+   "asset_types": [
+    3,
+    3
+   ]
+  },
+  "0xbdf86bd28cb3a8af5d46ccd2f56131be6718b1d8": {
+   "venue": "curve_ng",
+   "token0": "0x01ba69727e2860b37bc1a2bd56999c1afb4c15d8",
+   "token1": "0x085780639cc2cacd35e474e71f4d000e2405d8f6",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x01ba69727e2860b37bc1a2bd56999c1afb4c15d8",
+    "0x085780639cc2cacd35e474e71f4d000e2405d8f6"
+   ],
+   "asset_types": [
+    3,
+    0
+   ]
+  },
+  "0x7e19f0253a564e026c63eeaa9338d6dbddef3b09": {
+   "venue": "curve_ng",
+   "token0": "0xe556aba6fe6036275ec1f87eda296be72c811bce",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xe556aba6fe6036275ec1f87eda296be72c811bce",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x6c5ff8dce52be77b4ece6b51996018f0c1713ba9": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0xdde3ec717f220fc6a29d6a4be73f91da5b718e55",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0xdde3ec717f220fc6a29d6a4be73f91da5b718e55"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x5a8c7623fee10542614e492c670a67e3dfe922f8": {
+   "venue": "curve_ng",
+   "token0": "0xc83e27f270cce0a3a3a29521173a83f402c1768b",
+   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "fee": 0,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc83e27f270cce0a3a3a29521173a83f402c1768b",
+    "0xdac17f958d2ee523a2206206994597c13d831ec7"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x9a9e2e70919c75d80aaaa1d483c46cdbb8ac4d1b": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0xab5eb14c09d416f0ac63661e57edb7aecdb9befa",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0xab5eb14c09d416f0ac63661e57edb7aecdb9befa"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xb09a96129d113845f466215dfe8dfee261ea7d17": {
+   "venue": "curve_ng",
+   "token0": "0x27f6c8289550fce67f6b50bed1f519966afe5287",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x27f6c8289550fce67f6b50bed1f519966afe5287",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    1,
+    0
+   ]
+  },
+  "0x851907cac684797eee43669798d78004e269cb5e": {
+   "venue": "curve_ng",
+   "token0": "0x085780639cc2cacd35e474e71f4d000e2405d8f6",
+   "token1": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x085780639cc2cacd35e474e71f4d000e2405d8f6",
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xa9335f627ba9d80d9dda76b5fea03dd885404132": {
+   "venue": "curve_ng",
+   "token0": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "token1": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+   "fee": 100000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "0x9d39a5de30e57443bff2a8307a4256c8797a3497"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x66039342c66760874047c36943b1e2d8300363bb": {
+   "venue": "curve_ng",
+   "token0": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+   "token1": "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+    "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf",
+    "0x06ea695b91700071b161a434fed42d1dcbad9f00"
+   ],
+   "asset_types": [
+    0,
+    0,
+    0
+   ]
+  },
+  "0xb0cefac820228827a3f40deedbca88d5de44bca9": {
+   "venue": "curve_ng",
+   "token0": "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd",
+   "token1": "0x99cd4ec3f88a45940936f469e4bb72a2a701eeb9",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd",
+    "0x99cd4ec3f88a45940936f469e4bb72a2a701eeb9"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x2c7c98a3b1582d83c43987202aeff638312478ae": {
+   "venue": "curve_ng",
+   "token0": "0xdc035d45d973e3ec169d2276ddab16f1e407384f",
+   "token1": "0x99cd4ec3f88a45940936f469e4bb72a2a701eeb9",
+   "fee": 10000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xdc035d45d973e3ec169d2276ddab16f1e407384f",
+    "0x99cd4ec3f88a45940936f469e4bb72a2a701eeb9"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0x95753095f15870acc0cb0ed224478ea61aeb0b8e": {
+   "venue": "curve_ng",
+   "token0": "0x856c4efb76c1d1ae02e20ceb03a2a6a08b0b8dc3",
+   "token1": "0x85b78aca6deae198fbf201c82daf6ca21942acc6",
+   "fee": 5000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x856c4efb76c1d1ae02e20ceb03a2a6a08b0b8dc3",
+    "0x85b78aca6deae198fbf201c82daf6ca21942acc6"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0x3e823bd1015ba1a12f2f8afd631c822a1cba0de7": {
+   "venue": "curve_ng",
+   "token0": "0x48f9e38f3070ad8945dfeae3fa70987722e3d89c",
+   "token1": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x48f9e38f3070ad8945dfeae3fa70987722e3d89c",
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xffd3b4d343a8964a5c3c1caac20f319c41a97bff": {
+   "venue": "curve_ng",
+   "token0": "0x01ba69727e2860b37bc1a2bd56999c1afb4c15d8",
+   "token1": "0x3db228fe836d99ccb25ec4dfdc80ed6d2cddcb4b",
+   "fee": 10000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x01ba69727e2860b37bc1a2bd56999c1afb4c15d8",
+    "0x3db228fe836d99ccb25ec4dfdc80ed6d2cddcb4b"
+   ],
+   "asset_types": [
+    3,
+    3
+   ]
+  },
+  "0xecb0f0d68c19bdaadaebe24f6752a4db34e2c2cb": {
+   "venue": "curve_ng",
+   "token0": "0xc0c17dd08263c16f6b64e772fb9b723bf1344ddf",
+   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc0c17dd08263c16f6b64e772fb9b723bf1344ddf",
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xbf5047039f2980c21eb5692c790bad8a9533b900": {
+   "venue": "curve_ng",
+   "token0": "0xc0c17dd08263c16f6b64e772fb9b723bf1344ddf",
+   "token1": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xc0c17dd08263c16f6b64e772fb9b723bf1344ddf",
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x421194e547eb49304b3e99ffd26b164f9832d395": {
+   "venue": "curve_ng",
+   "token0": "0x5086bf358635b81d8c47c66d1c8b9e567db70c72",
+   "token1": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x5086bf358635b81d8c47c66d1c8b9e567db70c72",
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29"
+   ],
+   "asset_types": [
+    1,
+    0
+   ]
+  },
+  "0x2e1776968ec75bfd13dbc5b94ae57034d7e85fb9": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0xb8d89678e75a973e74698c976716308abb8a46a4",
+   "fee": 3000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0xb8d89678e75a973e74698c976716308abb8a46a4"
+   ],
+   "asset_types": [
+    0,
+    1
+   ]
+  },
+  "0x917213760af19e938e1c5cf4c6c3a963f6f32152": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0xb8d89678e75a973e74698c976716308abb8a46a4",
+   "fee": 3000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0xb8d89678e75a973e74698c976716308abb8a46a4"
+   ],
+   "asset_types": [
+    0,
+    1
+   ]
+  },
+  "0x17f9682c9cd1a448b31c0428f1d0783ed13a9fa3": {
+   "venue": "curve_ng",
+   "token0": "0xbc6da0fe9ad5f3b0d58160288917aa56653660e9",
+   "token1": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xbc6da0fe9ad5f3b0d58160288917aa56653660e9",
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x1edd809bc939dc80630cd9f7aea2247a83440fe5": {
+   "venue": "curve_ng",
+   "token0": "0xbc6da0fe9ad5f3b0d58160288917aa56653660e9",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xbc6da0fe9ad5f3b0d58160288917aa56653660e9",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xf76329c6dc10fdfbee6ca520d0bf4d474e95e46e": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0xf4c13d631450de6b12a19829e37c8e2826891dc4",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0xf4c13d631450de6b12a19829e37c8e2826891dc4"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x8fc753f96752b35f64d1bae514e6cf8db0b9322e": {
+   "venue": "curve_ng",
+   "token0": "0xcd9f5907f92818bc06c9ad70217f089e190d2a32",
+   "token1": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "fee": 5000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcd9f5907f92818bc06c9ad70217f089e190d2a32",
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29"
+   ],
+   "asset_types": [
+    3,
+    0
+   ]
+  },
+  "0x79b6a7c23d23ef7c180e7fbe235c914dc5e6fa1f": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0x9d39a5de30e57443bff2a8307a4256c8797a3497"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0xe1b96555bbeca40e583bbb41a11c68ca4706a414": {
+   "venue": "curve_ng",
+   "token0": "0x98a878b1cd98131b271883b390f68d2c90674665",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x98a878b1cd98131b271883b390f68d2c90674665",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    1,
+    0
+   ]
+  },
+  "0x0d381fc68487365e90c32c90323352b325e21d23": {
+   "venue": "curve_ng",
+   "token0": "0x52c66b5e7f8fde20843de900c5c8b4b0f23708a0",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x52c66b5e7f8fde20843de900c5c8b4b0f23708a0",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x4c1044a1b6474486a88cdd6a3d40f839abdae283": {
+   "venue": "curve_ng",
+   "token0": "0x38eeb52f0771140d10c4e9a9a72349a329fe8a6a",
+   "token1": "0x98a878b1cd98131b271883b390f68d2c90674665",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x38eeb52f0771140d10c4e9a9a72349a329fe8a6a",
+    "0x98a878b1cd98131b271883b390f68d2c90674665"
+   ],
+   "asset_types": [
+    1,
+    0
+   ]
+  },
+  "0x7015d460019a67d1f0272a784bc18c47951d2ed1": {
+   "venue": "curve_ng",
+   "token0": "0x888883b5f5d21fb10dfeb70e8f9722b9fb0e5e51",
+   "token1": "0x1abaea1f7c830bd89acc67ec4af516284b1bc33c",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x888883b5f5d21fb10dfeb70e8f9722b9fb0e5e51",
+    "0x1abaea1f7c830bd89acc67ec4af516284b1bc33c"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xafba5800252530ce71b03ba2bca2dd5ae44a7f3d": {
+   "venue": "curve_ng",
+   "token0": "0xca83dde9c22254f58e771be5e157773212acbac3",
+   "token1": "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xca83dde9c22254f58e771be5e157773212acbac3",
+    "0xf939e0a03fb07f59a73314e73794be0e57ac1b4e"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xe41be7b340f7c2eda4da1e99b42ee1b228b526b7": {
+   "venue": "curve_ng",
+   "token0": "0x38eeb52f0771140d10c4e9a9a72349a329fe8a6a",
+   "token1": "0x98a878b1cd98131b271883b390f68d2c90674665",
+   "fee": 20000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x38eeb52f0771140d10c4e9a9a72349a329fe8a6a",
+    "0x98a878b1cd98131b271883b390f68d2c90674665"
+   ],
+   "asset_types": [
+    1,
+    0
+   ]
+  },
+  "0x9d8afd5ce19a3b948049468188f1de13951a4383": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0xb45ad160634c528cc3d2926d9807104fa3157305",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0xb45ad160634c528cc3d2926d9807104fa3157305"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0xf4d0cf32908b2c7f1021339c43df0f77f06896d7": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0x23238f20b894f29041f48d88ee91131c395aaa71",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0x23238f20b894f29041f48d88ee91131c395aaa71"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x14b395530d2e14909f8de81b5e120d77fecd72b9": {
+   "venue": "curve_ng",
+   "token0": "0xcf62f905562626cfcdd2261162a51fd02fc9c5b6",
+   "token1": "0x865377367054516e17014ccded1e7d814edc9ce4",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcf62f905562626cfcdd2261162a51fd02fc9c5b6",
+    "0x865377367054516e17014ccded1e7d814edc9ce4"
+   ],
+   "asset_types": [
+    3,
+    0
+   ]
+  },
+  "0x6206ca315c2fcdd2a857b47efb285aa12c529a7a": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0xd166337499e176bbc38a1fbd113ab144e5bd2df7",
+   "fee": 50000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0xd166337499e176bbc38a1fbd113ab144e5bd2df7"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0x96bca2cea58a8e08e7da5c9d68b8acbb28419d1d": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0xbf4e3fbe8b60062a00c7a6b1d97d0d49c2971a19",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0xbf4e3fbe8b60062a00c7a6b1d97d0d49c2971a19"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0xd83c937113a2560b2c0da4a140f31bac61f2b798": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0x23238f20b894f29041f48d88ee91131c395aaa71",
+   "fee": 400000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0x23238f20b894f29041f48d88ee91131c395aaa71"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xcaf1969e9ba98c05113b75d8633a17196e2d02a5": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0xd166337499e176bbc38a1fbd113ab144e5bd2df7",
+   "fee": 2000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0xd166337499e176bbc38a1fbd113ab144e5bd2df7"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0xd50492de3541d75e61edc34d1aa79c7dc2d20da9": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0x098697ba3fee4ea76294c5d6a466a4e3b3e95fe6",
+   "fee": 5000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0x098697ba3fee4ea76294c5d6a466a4e3b3e95fe6"
+   ],
+   "asset_types": [
+    0,
+    1
+   ]
+  },
+  "0x310a9fd2906c6a3ee97289095b183f96309c56ae": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0xcd9f5907f92818bc06c9ad70217f089e190d2a32",
+   "fee": 5000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0xcd9f5907f92818bc06c9ad70217f089e190d2a32"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0x236be730d553e224c5cf84570a8f5fbdb1c66ef9": {
+   "venue": "curve_ng",
+   "token0": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "token1": "0xc0c17dd08263c16f6b64e772fb9b723bf1344ddf",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "0xc0c17dd08263c16f6b64e772fb9b723bf1344ddf"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x16a973f8e466f44e9ea67e7e2d3166bd460ea852": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0x52c66b5e7f8fde20843de900c5c8b4b0f23708a0",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0x52c66b5e7f8fde20843de900c5c8b4b0f23708a0"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x01646f6fe0d75ced6e514fab0ea2f4ed5e1a5c9f": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0x09ad9c6dcadcc3ab0b3e107e8e7da69c2eea8599",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0x09ad9c6dcadcc3ab0b3e107e8e7da69c2eea8599"
+   ],
+   "asset_types": [
+    0,
+    1
+   ]
+  },
+  "0x47ab5f9d8c9c7d002a92320f23a696d348c56a7f": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0x9d39a5de30e57443bff2a8307a4256c8797a3497"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0x15df3f79d89c1f4a542593b06521f64f0d83917f": {
+   "venue": "curve_ng",
+   "token0": "0x9bc2c28df6560c343d3fa9c152bed80d4511dead",
+   "token1": "0x6440f144b7e50d6a8439336510312d2f54beb01d",
+   "fee": 5000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x9bc2c28df6560c343d3fa9c152bed80d4511dead",
+    "0x6440f144b7e50d6a8439336510312d2f54beb01d"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x8bea2a46d56c321a216f97ab6b61c34098b819d2": {
+   "venue": "curve_ng",
+   "token0": "0xca83dde9c22254f58e771be5e157773212acbac3",
+   "token1": "0xab5eb14c09d416f0ac63661e57edb7aecdb9befa",
+   "fee": 6000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xca83dde9c22254f58e771be5e157773212acbac3",
+    "0xab5eb14c09d416f0ac63661e57edb7aecdb9befa"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xde0576968c898bbe7bf13d79862f252c58443f96": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0xca83dde9c22254f58e771be5e157773212acbac3",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0xca83dde9c22254f58e771be5e157773212acbac3"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x7ba89bc658c07569cfa6d7947adaa80181a24568": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0x056b269eb1f75477a8666ae8c7fe01b64dd55ecc",
+   "fee": 3000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0x056b269eb1f75477a8666ae8c7fe01b64dd55ecc"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0xc6ac08424ee6d1373f03611b96f5da849594b6d8": {
+   "venue": "curve_ng",
+   "token0": "0xf17d6f98a5c6eaa99d149079984119e0a4ef6900",
+   "token1": "0x5086bf358635b81d8c47c66d1c8b9e567db70c72",
+   "fee": 4000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xf17d6f98a5c6eaa99d149079984119e0a4ef6900",
+    "0x5086bf358635b81d8c47c66d1c8b9e567db70c72"
+   ],
+   "asset_types": [
+    3,
+    1
+   ]
+  },
+  "0xc3b723b0dae2df9668f876236a1922f72bcb438d": {
+   "venue": "curve_ng",
+   "token0": "0x6440f144b7e50d6a8439336510312d2f54beb01d",
+   "token1": "0xf4c13d631450de6b12a19829e37c8e2826891dc4",
+   "fee": 3000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x6440f144b7e50d6a8439336510312d2f54beb01d",
+    "0xf4c13d631450de6b12a19829e37c8e2826891dc4"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xafec61e7a604f8f81f7cab64ec75bfa07c542630": {
+   "venue": "curve_ng",
+   "token0": "0xf7d85ec4e7710f71992752eac2111312e73e9c9c",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 20000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xf7d85ec4e7710f71992752eac2111312e73e9c9c",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xb5555ab6cb4f37f833f8fbd483b70ccdd4601057": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "fee": 5000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0xdac17f958d2ee523a2206206994597c13d831ec7"
+   ],
+   "asset_types": [
+    1,
+    1
+   ]
+  },
+  "0x706ddbd9f2aad43f50162a89a1cff30a7942ca97": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "fee": 5000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0xdac17f958d2ee523a2206206994597c13d831ec7"
+   ],
+   "asset_types": [
+    1,
+    1
+   ]
+  },
+  "0x509c6c89fbf48b968b52c8069607c729464c78b6": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "fee": 5000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0xdac17f958d2ee523a2206206994597c13d831ec7"
+   ],
+   "asset_types": [
+    1,
+    1
+   ]
+  },
+  "0x18042f2fab99af6e374e4f5f3c2218102993cc23": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0x6b175474e89094c44da98b954eedeac495271d0f",
+   "fee": 5000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0x6b175474e89094c44da98b954eedeac495271d0f"
+   ],
+   "asset_types": [
+    1,
+    1
+   ]
+  },
+  "0xb723a224c9acf3891b20437b4d55dd45600f5fa3": {
+   "venue": "curve_ng",
+   "token0": "0xd0580192e98ea6ceb9c7b6191ed2e27560911697",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xd0580192e98ea6ceb9c7b6191ed2e27560911697",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x25a637c80ad90177d0b3ff28aa2d3f74f7165ccb": {
+   "venue": "curve_ng",
+   "token0": "0x280839980a7ed0d7717f64125fe241012e5f5815",
+   "token1": "0xd0580192e98ea6ceb9c7b6191ed2e27560911697",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x280839980a7ed0d7717f64125fe241012e5f5815",
+    "0xd0580192e98ea6ceb9c7b6191ed2e27560911697"
+   ],
+   "asset_types": [
+    3,
+    0
+   ]
+  },
+  "0xd1d954bc94c843815ec7b8119f2de00af27fa6ff": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0xd0580192e98ea6ceb9c7b6191ed2e27560911697",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0xd0580192e98ea6ceb9c7b6191ed2e27560911697"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x6f63deedc9870d6c16fc644c6654748352cdc87c": {
+   "venue": "curve_ng",
+   "token0": "0x98a878b1cd98131b271883b390f68d2c90674665",
+   "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "fee": 20000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x98a878b1cd98131b271883b390f68d2c90674665",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0x1fce0b50c48a7bf67022a82dec9c26e02683bf52": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0x0b2b2b2076d95dda7817e785989fe353fe955ef9",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0x0b2b2b2076d95dda7817e785989fe353fe955ef9"
+   ],
+   "asset_types": [
+    0,
+    1
+   ]
+  },
+  "0x6819068dc6d1afe3120454a3519ec1fa1a32fbd1": {
+   "venue": "curve_ng",
+   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "token1": "0x093df218d70ea6036afa26704a1c70d12010b908",
+   "fee": 1000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "0x093df218d70ea6036afa26704a1c70d12010b908"
+   ],
+   "asset_types": [
+    0,
+    3
+   ]
+  },
+  "0xd6937ea8d33b0c21348f36f7895fde3054ba4927": {
+   "venue": "curve_ng",
+   "token0": "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+   "fee": 100000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0xcacd6fd266af91b8aed52accc382b4e165586e29",
+    "0xdac17f958d2ee523a2206206994597c13d831ec7"
+   ],
+   "asset_types": [
+    0,
+    0
+   ]
+  },
+  "0xb8ea881c8c0d330f72edc27f8de49d5cae9550bc": {
+   "venue": "curve_ng",
+   "token0": "0x57c3571f10767e49c9d7b60feb6c67804783b7ae",
+   "token1": "0x27f6c8289550fce67f6b50bed1f519966afe5287",
+   "fee": 5000000,
+   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
+   "deployed_block": 0,
+   "derived_via": "metaregistry.pool_list+get_dy",
+   "coins": [
+    "0x57c3571f10767e49c9d7b60feb6c67804783b7ae",
+    "0x27f6c8289550fce67f6b50bed1f519966afe5287"
+   ],
+   "asset_types": [
+    1,
+    0
    ]
   }
  },

@@ -126,6 +126,11 @@ pub struct PoolEntry {
     /// are `coins[0]`/`coins[1]`. Empty for V2/V3.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub coins: Vec<Address>,
+    /// Curve NG only: each coin's `asset_type` (0 standard, 1 rate oracle,
+    /// 2 rebasing, 3 ERC-4626). Types 1 and 3 move `stored_rates()` without
+    /// a pool log. Empty otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asset_types: Vec<u8>,
 }
 
 /// Pool family. Unknown venues fail serde — we must not call `token0`/`fee`
@@ -138,6 +143,19 @@ pub enum PoolVenue {
     Univ2,
     /// Curve StableSwap plain pool; `fee` is `fee()` at discovery (1e10).
     Curve,
+    /// Curve StableSwap-NG pool (`CurveStableSwapNG.vy`); `fee` is `fee()`
+    /// at discovery (1e10). Same `exchange(int128,int128,…)` as plain.
+    #[serde(rename = "curve_ng")]
+    CurveNg,
+}
+
+impl PoolVenue {
+    /// Either Curve StableSwap kind (coins listed, `coins(i)` asserted).
+    #[inline]
+    #[must_use]
+    pub const fn is_curve(self) -> bool {
+        matches!(self, Self::Curve | Self::CurveNg)
+    }
 }
 
 /// Address (Family A markets, UniV3 pools) or 32-byte Morpho market id.
@@ -237,7 +255,7 @@ impl TokenEntry {
     clippy::unwrap_used
 )]
 mod tests {
-    use super::{PoolVenue, Registry, TokenQuirk};
+    use super::{Registry, TokenQuirk};
     use alloy_primitives::{address, Address};
     use std::path::PathBuf;
 
@@ -266,7 +284,7 @@ mod tests {
         assert!(!reg.tokens.is_empty());
         assert!(!reg.pools.is_empty());
         for (addr, p) in &reg.pools {
-            if p.venue == PoolVenue::Curve {
+            if p.venue.is_curve() {
                 assert!(
                     p.coins.len() >= 2 && p.coins[0] == p.token0 && p.coins[1] == p.token1,
                     "curve {addr:#x}: token0/token1 must be coins[0]/coins[1]"

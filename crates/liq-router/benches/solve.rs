@@ -119,6 +119,10 @@ fn curve(n: u64, bal: U256) -> Pool {
             fee: U256::from(4_000_000u64),
             stale: false,
             stale_block: 0,
+            ng: false,
+            offpeg_fee_multiplier: U256::ZERO,
+            dynamic_rates: false,
+            read_block: 0,
         }),
     }
 }

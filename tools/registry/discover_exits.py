@@ -12,12 +12,15 @@ V2: getPair(token, hub) on both factories for every tracked token x HUB_ASSETS.
 Curve: every MetaRegistry pool. Kept only when
     - not a metapool, 2..4 coins, every coin tracked, no native-ETH placeholder,
       no rebasing coin;
-    - coins(uint256)/balances(uint256)/A()/fee() answer and gamma(),
-      stored_rates() and offpeg_fee_multiplier() do not (crypto / NG /
-      lending pools use different math);
+    - coins(uint256)/balances(uint256)/A()/fee() answer and gamma() does not
+      (crypto pools use different math);
+    - plain ("curve"): stored_rates() and offpeg_fee_multiplier() do not
+      answer; StableSwap-NG ("curve_ng"): both answer and the NG factory
+      reports its asset types (no rebasing coin);
     - A is not ramping at the pinned block;
-    - the plain StableSwap math the bot quotes with (RATES = 10^(36-decimals),
-      A_PRECISION 1 or 100) reproduces the pool's own get_dy exactly for every
+    - the bot's own math for that kind (plain: RATES = 10^(36-decimals),
+      A_PRECISION 1 or 100; NG: stored_rates(), get_D dividing by N^N once,
+      the dynamic fee) reproduces the pool's own get_dy exactly for every
       ordered coin pair at two sizes. Anything else is left out, not guessed.
 
 Usage: MAINNET_RPC_URL=... python tools/registry/discover_exits.py [--dry-run]
@@ -43,6 +46,8 @@ UNIV2_INIT_HASH = "96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da3488
 SUSHI_FACTORY = "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac"
 SUSHI_INIT_HASH = "e18a34eb0e04b04f7a0ac29a6e80748dca96319b42c54d679cb821dca90c6303"
 CURVE_META_REGISTRY = "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc"
+# StableSwap-NG factory: `get_pool_asset_types(pool)`.
+CURVE_NG_FACTORY = "0x6a8cbed756804b16e05e741edabd5cb544ae21bf"
 NATIVE_ETH = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 ZERO = "0x0000000000000000000000000000000000000000"
 
@@ -216,6 +221,67 @@ def curve_get_dy(i, j, dx, balances, rates, amp, a_prec, fee) -> int:
     return dy - fee * dy // 10**10
 
 
+# StableSwap-NG (`CurveStableSwapNG.vy` / `CurveStableSwapNGViews.vy`).
+
+
+def ng_get_d(xp: list[int], amp: int) -> int:
+    n = len(xp)
+    s = sum(xp)
+    if s == 0:
+        return 0
+    d = s
+    ann = amp * n
+    for _ in range(255):
+        d_p = d
+        for x in xp:
+            d_p = d_p * d // x
+        d_p //= n**n
+        prev = d
+        d = (ann * s // 100 + d_p * n) * d // ((ann - 100) * d // 100 + (n + 1) * d_p)
+        if abs(d - prev) <= 1:
+            return d
+    raise ValueError("D did not converge")
+
+
+def ng_get_y(i: int, j: int, x: int, xp: list[int], amp: int, d: int) -> int:
+    n = len(xp)
+    ann = amp * n
+    c = d
+    s_ = 0
+    for k in range(n):
+        if k == j:
+            continue
+        _x = x if k == i else xp[k]
+        s_ += _x
+        c = c * d // (_x * n)
+    c = c * d * 100 // (ann * n)
+    b = s_ + d * 100 // ann
+    y = d
+    for _ in range(255):
+        prev = y
+        y = (y * y + c) // (2 * y + b - d)
+        if abs(y - prev) <= 1:
+            return y
+    raise ValueError("y did not converge")
+
+
+def ng_dynamic_fee(xpi: int, xpj: int, fee: int, m: int) -> int:
+    if m <= 10**10:
+        return fee
+    xps2 = (xpi + xpj) ** 2
+    return m * fee // ((m - 10**10) * 4 * xpi * xpj // xps2 + 10**10)
+
+
+def ng_get_dy(i, j, dx, balances, rates, amp, fee, offpeg) -> int:
+    xp = [r * b // 10**18 for r, b in zip(rates, balances)]
+    d = ng_get_d(xp, amp)
+    x = xp[i] + dx * rates[i] // 10**18
+    y = ng_get_y(i, j, x, xp, amp, d)
+    dy = xp[j] - y - 1
+    f = ng_dynamic_fee((xp[i] + x) // 2, (xp[j] + y) // 2, fee, offpeg) * dy // 10**10
+    return (dy - f) * 10**18 // rates[j]
+
+
 def discover_curve(chain: Chain, tracked: set[str], tokens: dict) -> dict[str, dict]:
     reg = CURVE_META_REGISTRY
     count = word(chain.multicall([(reg, sel("pool_count()"))])[0])
@@ -265,30 +331,53 @@ def discover_curve(chain: Chain, tracked: set[str], tokens: dict) -> dict[str, d
             probes.append((p, sel(sig)))
         layout.append(start)
     res = chain.multicall(probes)
+    # NG asset types from the NG factory (empty for a pool it did not deploy).
+    types_res = chain.multicall(
+        [(CURVE_NG_FACTORY, sel("get_pool_asset_types(address)") + enc(p)) for p, _ in stage1]
+    )
     stage2 = []
-    for (p, coins), start in zip(stage1, layout):
+    for (p, coins), start, tr in zip(stage1, layout, types_res):
         n = len(coins)
         r = res[start : start + 2 * n + 7]
         onchain = [word(r[2 * i], "address") for i in range(n)]
         bals = [word(r[2 * i + 1]) for i in range(n)]
-        a, a_prec_v, fee, gamma, stored, offpeg, fut = (word(x) for x in r[2 * n :])
+        a, a_prec_v, fee, gamma = (word(x) for x in r[2 * n : 2 * n + 4])
+        stored_r, offpeg_r, fut_r = r[2 * n + 4 : 2 * n + 7]
+        offpeg, fut = word(offpeg_r), word(fut_r)
+        stored = None
+        if stored_r[0] and len(stored_r[1]) >= 64:
+            try:
+                stored = list(decode(["uint256[]"], stored_r[1])[0])
+            except Exception:  # noqa: BLE001 - a non-array answer is not NG
+                stored = None
         if any(c is None or c.lower() != coins[i] for i, c in enumerate(onchain)):
             continue
         if any(b is None or b == 0 for b in bals) or a is None or fee is None:
             continue
-        if gamma is not None or stored is not None or offpeg is not None:
-            continue
-        if fee >= 2**32:
+        if gamma is not None or fee >= 2**32:
             continue
         if fut is not None and fut > chain.timestamp:
             print(f"  skip {p}: A ramping")
             continue
-        amp, a_prec = (a_prec_v, 100) if a_prec_v else (a, 1)
-        rates = [10 ** (36 - tokens[c]["decimals"]) for c in coins]
+        if stored is None and offpeg is None:
+            kind, types = "curve", []
+            amp, a_prec = (a_prec_v, 100) if a_prec_v else (a, 1)
+            rates = [10 ** (36 - tokens[c]["decimals"]) for c in coins]
+        elif stored is not None and offpeg is not None and a_prec_v:
+            types = []
+            if tr[0] and len(tr[1]) >= 64:
+                types = [int(t) for t in decode(["uint8[]"], tr[1])[0]]
+            if len(types) != n or 2 in types or len(stored) != n or 0 in stored:
+                print(f"  skip {p}: NG without asset types, or rebasing")
+                continue
+            kind, amp, a_prec, rates = "curve_ng", a_prec_v, 100, stored
+        else:
+            continue
         if sum(r_ * b // 10**18 for r_, b in zip(rates, bals)) < CURVE_MIN_UNITS:
             continue
-        stage2.append((p, coins, bals, rates, amp, a_prec, fee))
-    print(f"curve: {len(stage2)} pass the structural probe")
+        stage2.append((p, coins, bals, rates, amp, a_prec, fee, kind, offpeg, types))
+    print(f"curve: {len(stage2)} pass the structural probe "
+          f"({sum(1 for s in stage2 if s[7] == 'curve_ng')} NG)")
 
     # Exact-math check against the pool's own get_dy.
     checks = []
@@ -304,7 +393,7 @@ def discover_curve(chain: Chain, tracked: set[str], tokens: dict) -> dict[str, d
                                    + encode(["int128", "int128", "uint256"], [i, j, dx])))
     res = iter(chain.multicall(checks))
     found: dict[str, dict] = {}
-    for p, coins, bals, rates, amp, a_prec, fee in stage2:
+    for p, coins, bals, rates, amp, a_prec, fee, kind, offpeg, types in stage2:
         n = len(coins)
         exact = True
         for i in range(n):
@@ -315,16 +404,19 @@ def discover_curve(chain: Chain, tracked: set[str], tokens: dict) -> dict[str, d
                     dx = max(bals[i] // div, 1)
                     want = word(next(res))
                     try:
-                        got = curve_get_dy(i, j, dx, bals, rates, amp, a_prec, fee)
+                        if kind == "curve_ng":
+                            got = ng_get_dy(i, j, dx, bals, rates, amp, fee, offpeg)
+                        else:
+                            got = curve_get_dy(i, j, dx, bals, rates, amp, a_prec, fee)
                     except (ValueError, ZeroDivisionError):
                         got = None
                     if want is None or got != want:
                         exact = False
         if not exact:
-            print(f"  skip {p}: plain StableSwap math does not reproduce get_dy")
+            print(f"  skip {p}: {kind} math does not reproduce get_dy")
             continue
         found[p] = {
-            "venue": "curve",
+            "venue": kind,
             "token0": coins[0],
             "token1": coins[1],
             "fee": fee,
@@ -333,7 +425,10 @@ def discover_curve(chain: Chain, tracked: set[str], tokens: dict) -> dict[str, d
             "derived_via": "metaregistry.pool_list+get_dy",
             "coins": coins,
         }
-    print(f"curve: {len(found)} kept (exact get_dy match)")
+        if kind == "curve_ng":
+            found[p]["asset_types"] = types
+    ng = sum(1 for f in found.values() if f["venue"] == "curve_ng")
+    print(f"curve: {len(found)} kept (exact get_dy match), {ng} NG")
     return found
 
 
@@ -354,7 +449,9 @@ def main() -> int:
     }
     v2 = discover_v2(chain, tracked)
     curve = discover_curve(chain, tracked, tokens)
-    pools = {a: p for a, p in reg["pools"].items() if p["venue"] not in ("univ2", "curve")}
+    pools = {
+        a: p for a, p in reg["pools"].items() if p["venue"] not in ("univ2", "curve", "curve_ng")
+    }
     overlap = (set(v2) | set(curve)) & set(pools)
     if overlap:
         print(f"address collision with existing pools: {sorted(overlap)}", file=sys.stderr)
@@ -362,13 +459,16 @@ def main() -> int:
     pools.update(v2)
     pools.update(curve)
     reg["pools"] = pools
-    print(f"pools: {len(pools)} total ({len(v2)} univ2, {len(curve)} curve)")
+    print(f"pools: {len(pools)} total ({len(v2)} univ2, {len(curve)} curve incl. NG)")
     if args.dry_run:
         return 0
     REG.write_text(json.dumps(reg, indent=1) + "\n", encoding="utf-8")
     meta = json.loads(META.read_text(encoding="utf-8"))
     meta["pool_count"] = len(pools)
-    note = f"exits: univ2/curve discovered by tools/registry/discover_exits.py at block {chain.block}"
+    note = (
+        f"exits: univ2/curve/curve_ng discovered by tools/registry/discover_exits.py "
+        f"at block {chain.block}"
+    )
     meta["notes"] = [n for n in meta.get("notes", []) if not n.startswith("exits: ")] + [note]
     META.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     return 0

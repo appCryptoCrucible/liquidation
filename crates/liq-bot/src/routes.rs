@@ -360,6 +360,10 @@ mod tests {
                 fee: U256::from(4_000_000u64),
                 stale: true,
                 stale_block: 0,
+                ng: false,
+                offpeg_fee_multiplier: U256::ZERO,
+                dynamic_rates: false,
+                read_block: 0,
             }),
         };
         assert!(reseed_curve(&mut p, &MissingCurve).is_err());

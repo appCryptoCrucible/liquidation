@@ -95,3 +95,8 @@ univ3 = 82_100
 univ2 = 65_000
 # mainnet Curve `exchange` frames incl. transferFrom: median 104_986 (n 11).
 curve = 104_986
+# StableSwap-NG `exchange` frames incl. transfers, fork at 26_019_284
+# (ForkLiveLiquidations): standard coins 108_535 (0x4f49…3c85), rate-oracle
+# coins 117_442 (0x1804…cc23, two oracle calls). Same fork's 3pool frame:
+# 102_732. Priced at the rate-oracle case.
+curve_ng = 117_442

@@ -637,7 +637,7 @@ fn load_book(
     hops: crate::gas_model::HopGas,
     omitted: &mut Vec<(&'static str, String)>,
 ) -> PoolBook {
-    if hops.univ3 == 0 || hops.univ2 == 0 || hops.curve == 0 {
+    if hops.univ3 == 0 || hops.univ2 == 0 || hops.curve == 0 || hops.curve_ng == 0 {
         tracing::error!(
             ?hops,
             "swap hop gas unmeasured for a venue — priced at 0 until liq-gas.toml loads"
@@ -658,7 +658,7 @@ fn load_book(
     let mut book = PoolBook::new(assets, factory, hops.univ3);
     for (addr, entry) in &registry.pools {
         let tokens: SmallVec<[Address; liq_router::MAX_COINS]> = match entry.venue {
-            PoolVenue::Curve => entry.coins.iter().copied().collect(),
+            PoolVenue::Curve | PoolVenue::CurveNg => entry.coins.iter().copied().collect(),
             PoolVenue::Univ3 | PoolVenue::Univ2 => {
                 SmallVec::from_slice(&[entry.token0, entry.token1])
             }
@@ -678,16 +678,16 @@ fn load_book(
                 break;
             };
             ids.push(id);
-            if entry.venue == PoolVenue::Curve {
+            if entry.venue.is_curve() {
+                // NG: the precision multiplier until the first read replaces
+                // it with `stored_rates()` (the pool starts stale).
                 match registry.tokens.get(t).and_then(|e| curve_rate(e.decimals)) {
                     Some(r) => rates.push(r),
                     None => break,
                 }
             }
         }
-        if ids.len() != tokens.len()
-            || (entry.venue == PoolVenue::Curve && rates.len() != tokens.len())
-        {
+        if ids.len() != tokens.len() || (entry.venue.is_curve() && rates.len() != tokens.len()) {
             omit(
                 omitted,
                 "book",
@@ -748,8 +748,40 @@ fn load_book(
                     fee: U256::from(entry.fee),
                     stale: true,
                     stale_block: 0,
+                    ng: false,
+                    offpeg_fee_multiplier: U256::ZERO,
+                    dynamic_rates: false,
+                    read_block: 0,
                 }),
             ),
+            PoolVenue::CurveNg => {
+                // Rebasing coins (type 2) change balances without a pool
+                // log; the reseed would quote a stale balance. Left out.
+                if entry.asset_types.len() != tokens.len() || entry.asset_types.contains(&2) {
+                    omit(
+                        omitted,
+                        "book",
+                        format!("curve NG {addr:#x}: asset types missing or rebasing"),
+                    );
+                    continue;
+                }
+                (
+                    hops.curve_ng,
+                    PoolState::Curve(CurveState {
+                        balances: tokens.iter().map(|_| U256::ZERO).collect(),
+                        rates,
+                        a: U256::ZERO,
+                        a_precision: U256::from(100u64),
+                        fee: U256::from(entry.fee),
+                        stale: true,
+                        stale_block: 0,
+                        ng: true,
+                        offpeg_fee_multiplier: U256::ZERO,
+                        dynamic_rates: entry.asset_types.iter().any(|t| *t == 1 || *t == 3),
+                        read_block: 0,
+                    }),
+                )
+            }
         };
         let pool = Pool {
             address: *addr,

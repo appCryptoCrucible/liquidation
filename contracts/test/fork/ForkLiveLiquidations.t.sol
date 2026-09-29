@@ -64,6 +64,10 @@ interface ICurve3View {
     function get_dy(int128 i, int128 j, uint256 dx) external view returns (uint256);
 }
 
+interface ICurveCoins {
+    function coins(uint256 i) external view returns (address);
+}
+
 interface IMorphoIrm {
     function borrowRateView(MarketParams memory, IMorpho.Market memory) external view returns (uint256);
 }
@@ -105,6 +109,16 @@ contract ForkLiveLiquidationsTest is Test {
     address constant UNIV2_DAI_WETH = 0xA478c2975Ab1Ea89e8196811F51A7B7Ade33eB11;
     /// Curve 3pool: coins DAI = 0, USDC = 1, USDT = 2.
     address constant CURVE_3POOL = 0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7;
+    /// StableSwap-NG USDC/USDT, standard coins (asset types [0, 0]).
+    address constant CURVE_NG_USDC_USDT = 0x4f493B7dE8aAC7d55F71853688b1F7C8F0243C85;
+    /// StableSwap-NG USDC/DAI with rate-oracle coins (asset types [1, 1]):
+    /// `exchange` static-calls each coin's rate oracle.
+    address constant CURVE_NG_USDC_DAI = 0x18042f2FaB99af6E374e4f5F3c2218102993cc23;
+    address curvePool;
+    /// Whole collateral units for `collOverride` (default 50_000).
+    uint256 collUnits = 50_000;
+    int128 curveI;
+    int128 curveJ;
     bytes32 constant MORPHO_WSTETH_WETH = 0xC54D7ACF14DE29E0E5527CABD7A576506870346A78A11A6762E2CCA66322EC41;
 
     address operator = makeAddr("operator");
@@ -237,6 +251,30 @@ contract ForkLiveLiquidationsTest is Test {
         _runOne(PB.A_V3, PB.P_MORPHO, DAI, false);
     }
 
+    /// Same fixture through a StableSwap-NG pool: USDC collateral sold for
+    /// USDT debt. The Executor's Curve leg verifies the pool on the
+    /// MetaRegistry and calls the same `exchange(int128,int128,…)`.
+    function test_fork_v3_usdc_coll_usdt_repay_via_curve_ng() public onFork {
+        address cfg = IPoolAddressesProviderCfg(IPoolEx(AAVE_V3_POOL).ADDRESSES_PROVIDER()).getPoolConfigurator();
+        vm.prank(0x5300A1a15135EA4dc7aD5a167152C01EFc9b192A);
+        IPoolConfigurator(cfg).setSupplyCap(USDC, 0);
+        (repayVenue, curvePool, curveI, curveJ) = (4, CURVE_NG_USDC_USDT, 0, 1);
+        collOverride = USDC;
+        _runOne(PB.A_V3, PB.P_MORPHO, USDT, false);
+    }
+
+    /// NG pool whose coins carry rate oracles: the swap's `stored_rates()`
+    /// reads them inside `exchange`.
+    function test_fork_v3_usdc_coll_dai_repay_via_curve_ng_rate_oracles() public onFork {
+        address cfg = IPoolAddressesProviderCfg(IPoolEx(AAVE_V3_POOL).ADDRESSES_PROVIDER()).getPoolConfigurator();
+        vm.prank(0x5300A1a15135EA4dc7aD5a167152C01EFc9b192A);
+        IPoolConfigurator(cfg).setSupplyCap(USDC, 0);
+        (repayVenue, curvePool, curveI, curveJ) = (4, CURVE_NG_USDC_DAI, 0, 1);
+        collOverride = USDC;
+        collUnits = 2_000; // the pool holds ~4.4k USDC / 5.6k DAI at the pin
+        _runOne(PB.A_V3, PB.P_MORPHO, DAI, false);
+    }
+
     function test_gas_morpho_weth_morpho() public onFork {
         _runOne(PB.A_MORPHO, PB.P_MORPHO, WETH, false);
     }
@@ -270,7 +308,7 @@ contract ForkLiveLiquidationsTest is Test {
         address user = address(uint160(uint256(keccak256(abi.encode(adapter, provider, debt, surplus, "u")))));
         address coll = collOverride != address(0) ? collOverride : (debt == WETH ? WSTETH : WETH);
         uint256 collAmt = collOverride != address(0)
-            ? 50_000 * (10 ** uint256(IERC20B(coll).decimals()))
+            ? collUnits * (10 ** uint256(IERC20B(coll).decimals()))
             : adapter == PB.A_MORPHO ? 0.4e18 : 5e18;
 
         if (adapter == PB.A_V3) _openAaveV3(user, coll, debt, collAmt);
@@ -302,7 +340,17 @@ contract ForkLiveLiquidationsTest is Test {
             repay = PB.v2Swap(UNIV2_DAI_WETH, 0, coll, debt, PB.L_EXACT_OUT, buyDebt);
         } else if (repayVenue == 3) {
             require(coll == USDC && debt == DAI, "curve venue fixture is USDC/DAI");
-            repay = PB.curveSwap(CURVE_3POOL, 1, 0, coll, debt, 0, _curveDxFor(buyDebt));
+            repay = PB.curveSwap(CURVE_3POOL, 1, 0, coll, debt, 0, _curveDxFor(CURVE_3POOL, 1, 0, buyDebt));
+        } else if (repayVenue == 4) {
+            repay = PB.curveSwap(
+                curvePool,
+                uint8(uint128(curveI)),
+                uint8(uint128(curveJ)),
+                coll,
+                debt,
+                0,
+                _curveDxFor(curvePool, curveI, curveJ, buyDebt)
+            );
         } else {
             repay = PB.poolSwap(_swapPool(coll, debt), coll, debt, PB.L_EXACT_OUT, buyDebt);
         }
@@ -352,14 +400,26 @@ contract ForkLiveLiquidationsTest is Test {
         return DSS_FLASH;
     }
 
-    /// Smallest 0.1 %-step overshoot of USDC in that buys `want` DAI on 3pool.
-    function _curveDxFor(uint256 want) internal view returns (uint128) {
-        uint256 dx = want / 1e12 + 1;
-        for (uint256 k; k < 50; ++k) {
-            if (ICurve3View(CURVE_3POOL).get_dy(1, 0, dx) >= want) return uint128(dx);
-            dx = dx * 1001 / 1000 + 1;
+    /// Smallest 0.1 %-step overshoot of coin `i` (USDC) in that buys `want`
+    /// of coin `j` on `pool`.
+    function _curveDxFor(address pool, int128 i, int128 j, uint256 want) internal view returns (uint128) {
+        // Stable pair: start at `want` rescaled from coin j's decimals to i's.
+        uint256 decIn = IERC20B(ICurveCoins(pool).coins(uint256(uint128(i)))).decimals();
+        uint256 decOut = IERC20B(ICurveCoins(pool).coins(uint256(uint128(j)))).decimals();
+        uint256 hi = want * 10 ** decIn / 10 ** decOut + 1;
+        // Rate-oracle coins trade off 1:1: double until enough, then bisect
+        // to the smallest input that buys `want`.
+        for (uint256 k; ICurve3View(pool).get_dy(i, j, hi) < want; ++k) {
+            require(k < 16, "curve dx");
+            hi *= 2;
         }
-        revert("curve dx");
+        uint256 lo = hi / 2;
+        while (lo + 1 < hi) {
+            uint256 mid = (lo + hi) / 2;
+            if (ICurve3View(pool).get_dy(i, j, mid) >= want) hi = mid;
+            else lo = mid;
+        }
+        return uint128(hi);
     }
 
     function _swapPool(address a, address b) internal pure returns (address) {

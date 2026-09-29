@@ -97,8 +97,19 @@ sol! {
         event RampA(uint256 old_A, uint256 new_A, uint256 initial_time, uint256 future_time);
         event StopRampA(uint256 A, uint256 t);
         event NewFee(uint256 fee, uint256 admin_fee);
+        // StableSwap-NG (`DynArray` logs as `uint256[]`).
+        event AddLiquidity(address indexed provider, uint256[] token_amounts, uint256[] fees, uint256 invariant, uint256 token_supply);
+        event RemoveLiquidity(address indexed provider, uint256[] token_amounts, uint256[] fees, uint256 token_supply);
+        event RemoveLiquidityImbalance(address indexed provider, uint256[] token_amounts, uint256[] fees, uint256 invariant, uint256 token_supply);
+        event ApplyNewFee(uint256 fee, uint256 offpeg_fee_multiplier);
     }
 }
+
+/// `keccak256("RemoveLiquidityOne(address,int128,uint256,uint256,uint256)")`:
+/// NG's event shares the plain name with a different signature, so the
+/// `sol!` alias above hashes the wrong name.
+const NG_REMOVE_LIQUIDITY_ONE: B256 =
+    alloy_primitives::b256!("6f48129db1f37ccb9cc5dd7e119cb32750cabdf75b48375d730d26ce3659bbe1");
 
 /// Curve topic0s that invalidate a plain pool's cached state. The event
 /// *names* are the Vyper ones; the `sol!` aliases above only exist because
@@ -120,6 +131,28 @@ const CURVE_STALE_TOPICS: [B256; 15] = [
     ICurvePool::StopRampA::SIGNATURE_HASH,
     ICurvePool::NewFee::SIGNATURE_HASH,
 ];
+
+/// StableSwap-NG topic0s that invalidate the cached state.
+const CURVE_NG_STALE_TOPICS: [B256; 8] = [
+    ICurvePool::TokenExchange::SIGNATURE_HASH,
+    ICurvePool::AddLiquidity::SIGNATURE_HASH,
+    ICurvePool::RemoveLiquidity::SIGNATURE_HASH,
+    NG_REMOVE_LIQUIDITY_ONE,
+    ICurvePool::RemoveLiquidityImbalance::SIGNATURE_HASH,
+    ICurvePool::RampA::SIGNATURE_HASH,
+    ICurvePool::StopRampA::SIGNATURE_HASH,
+    ICurvePool::ApplyNewFee::SIGNATURE_HASH,
+];
+
+impl CurveState {
+    fn stale_topics(&self) -> &'static [B256] {
+        if self.ng {
+            &CURVE_NG_STALE_TOPICS
+        } else {
+            &CURVE_STALE_TOPICS
+        }
+    }
+}
 
 /// Swap venue family. **No `UniV4`, no `Balancer`** — by construction.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -172,13 +205,17 @@ pub struct V2State {
     pub factory: u8,
 }
 
-/// Curve StableSwap plain pool (`StableSwap*.vy`, `A_PRECISION` ∈ {1, 100}).
-/// Crypto / meta / NG pools are not representable — fail closed.
+/// Curve StableSwap: a plain pool (`StableSwap*.vy`, `A_PRECISION` ∈
+/// {1, 100}) or a StableSwap-NG pool (`CurveStableSwapNG.vy`, `ng`). Crypto
+/// and meta pools are not representable — fail closed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CurveState {
-    /// Raw on-chain `balances(i)`.
+    /// Raw on-chain `balances(i)` (NG: `stored_balances − admin_balances`,
+    /// which is what its `balances(i)` returns).
     pub balances: SmallVec<[U256; MAX_COINS]>,
-    /// `RATES[i]`: `1e18 · 10^(18 − decimals_i)` (precision multipliers).
+    /// Plain: `RATES[i]` = `1e18 · 10^(18 − decimals_i)`. NG: `stored_rates()`
+    /// at the last read — the precision multiplier times any oracle or
+    /// ERC-4626 rate, so it is re-read with the balances.
     pub rates: SmallVec<[U256; MAX_COINS]>,
     /// `A()` as stored (already scaled by `a_precision`).
     pub a: U256,
@@ -192,6 +229,17 @@ pub struct CurveState {
     /// Block of the newest log that set `stale`. A reseed read at an older
     /// block cannot clear it ([`CurveState::reseed_at`]).
     pub stale_block: u64,
+    /// StableSwap-NG math: `get_D` divides `D_P` by `N^N` once, and the fee
+    /// is `_dynamic_fee` with [`Self::offpeg_fee_multiplier`].
+    pub ng: bool,
+    /// NG `offpeg_fee_multiplier()` (1e10). At or below 1e10 the fee is
+    /// flat. 0 on plain pools.
+    pub offpeg_fee_multiplier: U256,
+    /// NG pool with an oracle or ERC-4626 rate: `stored_rates()` moves
+    /// without a pool log, so the reseed thread re-reads it every block.
+    pub dynamic_rates: bool,
+    /// Block of the last applied read.
+    pub read_block: u64,
 }
 
 impl CurveState {
@@ -221,8 +269,55 @@ impl CurveState {
             return Ok(false);
         }
         self.reseed(balances, a, fee)?;
+        self.read_block = block;
         Ok(true)
     }
+
+    /// NG: replace `stored_rates()` and `offpeg_fee_multiplier()` from the
+    /// same read as the balances. Refused for a plain pool (its rates are
+    /// fixed precision multipliers) or a length mismatch.
+    pub fn set_ng_params(&mut self, rates: &[U256], offpeg: U256) -> Result<(), RouteError> {
+        if !self.ng || rates.len() != self.rates.len() || rates.iter().any(|r| r.is_zero()) {
+            return Err(RouteError::BadLeg);
+        }
+        self.rates = rates.iter().copied().collect();
+        self.offpeg_fee_multiplier = offpeg;
+        Ok(())
+    }
+
+    /// The fee `exchange` charges for moving `xp[i] → x`, `xp[j] → y`:
+    /// flat on plain pools, NG `_dynamic_fee((xp_i + x)/2, (xp_j + y)/2)`.
+    fn swap_fee(&self, xpi: U256, xpj: U256) -> Result<U256, RouteError> {
+        if !self.ng {
+            return Ok(self.fee);
+        }
+        ng_dynamic_fee(xpi, xpj, self.fee, self.offpeg_fee_multiplier)
+    }
+}
+
+/// `CurveStableSwapNG._dynamic_fee`: `fee · m / ((m − 1e10)·4·xpi·xpj/(xpi+xpj)² + 1e10)`,
+/// or `fee` when `m <= 1e10`.
+pub fn ng_dynamic_fee(xpi: U256, xpj: U256, fee: U256, m: U256) -> Result<U256, RouteError> {
+    if m <= CURVE_FEE_DENOM {
+        return Ok(fee);
+    }
+    let sum = xpi.checked_add(xpj).ok_or(RouteError::Math)?;
+    let xps2 = sum.checked_mul(sum).ok_or(RouteError::Math)?;
+    if xps2.is_zero() {
+        return Err(RouteError::InsufficientLiquidity);
+    }
+    let skew = m
+        .checked_sub(CURVE_FEE_DENOM)
+        .and_then(|v| v.checked_mul(U256::from(4u8)))
+        .and_then(|v| v.checked_mul(xpi))
+        .and_then(|v| v.checked_mul(xpj))
+        .ok_or(RouteError::Math)?
+        .checked_div(xps2)
+        .ok_or(RouteError::Math)?;
+    let den = skew.checked_add(CURVE_FEE_DENOM).ok_or(RouteError::Math)?;
+    m.checked_mul(fee)
+        .and_then(|v| v.checked_div(den))
+        .ok_or(RouteError::Math)
 }
 
 /// Venue-specific state. Variants are inline (no `Box`): the exact tier
@@ -608,10 +703,17 @@ pub fn curve_get_d(s: &CurveState, xp: &[U256]) -> Result<U256, RouteError> {
     let ann = curve_ann(s, n)?;
     let mut d = sum;
     let n_plus_1 = n.checked_add(U256::ONE).ok_or(RouteError::Math)?;
+    // NG divides by `N^N` once after the product; plain pools by `x·N`
+    // per coin. The integer results differ, so each follows its pool.
+    let n_pow_n = n.checked_pow(n).ok_or(RouteError::Math)?;
     for _ in 0..255 {
         let mut d_p = d;
         for &x in xp {
-            let den = x.checked_mul(n).ok_or(RouteError::Math)?;
+            let den = if s.ng {
+                x
+            } else {
+                x.checked_mul(n).ok_or(RouteError::Math)?
+            };
             if den.is_zero() {
                 return Err(RouteError::InsufficientLiquidity);
             }
@@ -619,6 +721,9 @@ pub fn curve_get_d(s: &CurveState, xp: &[U256]) -> Result<U256, RouteError> {
                 .checked_mul(d)
                 .and_then(|v| v.checked_div(den))
                 .ok_or(RouteError::Math)?;
+        }
+        if s.ng {
+            d_p = d_p.checked_div(n_pow_n).ok_or(RouteError::Math)?;
         }
         let d_prev = d;
         // D = (Ann·S/AP + D_P·n) · D / ((Ann − AP)·D/AP + (n+1)·D_P)
@@ -741,8 +846,14 @@ fn curve_dy(
         .checked_sub(y)
         .and_then(|v| v.checked_sub(U256::ONE))
         .ok_or(RouteError::InsufficientLiquidity)?;
+    let half = |a: U256, b: U256| {
+        a.checked_add(b)
+            .and_then(|v| v.checked_div(U256::from(2u8)))
+            .ok_or(RouteError::Math)
+    };
+    let fee = s.swap_fee(half(xi, x)?, half(xj, y)?)?;
     let fee_xp = dy_xp
-        .checked_mul(s.fee)
+        .checked_mul(fee)
         .and_then(|v| v.checked_div(CURVE_FEE_DENOM))
         .ok_or(RouteError::Math)?;
     let to_raw = |v: U256| {
@@ -851,8 +962,10 @@ pub(crate) fn curve_rho(s: &CurveState, i: u8, j: u8, dx: U256) -> Result<U256, 
         xp.get(j).ok_or(RouteError::BadLeg)?,
     );
     let (ti, tj) = (term(xi)?, term(xj)?);
-    // m = (ti/tj) · (ri/rj) · (1e10 − fee)/1e10 ; ρ = sqrt(m · 2^192)
-    let keep = CURVE_FEE_DENOM.checked_sub(s.fee).ok_or(RouteError::Math)?;
+    // m = (ti/tj) · (ri/rj) · (1e10 − fee)/1e10 ; ρ = sqrt(m · 2^192). NG's
+    // fee for an infinitesimal trade here is the dynamic fee at this point.
+    let fee = s.swap_fee(xi, xj)?;
+    let keep = CURVE_FEE_DENOM.checked_sub(fee).ok_or(RouteError::Math)?;
     let num = U512::from(ti)
         .checked_mul(U512::from(ri))
         .and_then(|v| v.checked_mul(U512::from(keep)))
@@ -1009,6 +1122,7 @@ impl PoolBook {
     /// Apply a Curve read pinned at `block` to pool `id` (off the hot path).
     /// `Ok(false)` when a newer pool log already made that read obsolete or
     /// `id` is not a Curve pool; bumps [`PoolBook::generation`] on success.
+    #[allow(clippy::too_many_arguments)]
     pub fn reseed_curve(
         &mut self,
         id: PoolId,
@@ -1016,11 +1130,21 @@ impl PoolBook {
         a: U256,
         a_precision: U256,
         fee: U256,
+        ng: Option<(&[U256], U256)>,
         block: u64,
     ) -> Result<bool, RouteError> {
         let Some(PoolState::Curve(c)) = self.get_mut(id).map(|p| &mut p.state) else {
             return Ok(false);
         };
+        if c.ng != ng.is_some() {
+            return Err(RouteError::BadLeg);
+        }
+        if c.stale && c.stale_block > block {
+            return Ok(false);
+        }
+        if let Some((rates, offpeg)) = ng {
+            c.set_ng_params(rates, offpeg)?;
+        }
         let prev = c.a_precision;
         c.a_precision = a_precision;
         match c.reseed_at(balances, a, fee, block) {
@@ -1068,7 +1192,7 @@ impl PoolBook {
             PoolState::V3(s) => fold_v3(s, t0, log),
             PoolState::V2(s) => fold_v2(s, t0, log),
             PoolState::Curve(s) => {
-                if CURVE_STALE_TOPICS.contains(&t0) {
+                if s.stale_topics().contains(&t0) {
                     s.stale = true;
                     s.stale_block = s.stale_block.max(log.block);
                     true
@@ -1271,7 +1395,7 @@ impl LogSubscriber for PoolBook {
                     IUniswapV3Pool::Burn::SIGNATURE_HASH,
                 ],
                 PoolState::V2(_) => &[IUniswapV2Pair::Sync::SIGNATURE_HASH],
-                PoolState::Curve(_) => &CURVE_STALE_TOPICS,
+                PoolState::Curve(ref c) => c.stale_topics(),
             };
             out.extend(topics.iter().map(|&topic0| LogFilter {
                 address: p.address,
@@ -1427,6 +1551,57 @@ mod tests {
     /// (2) balanced small swap returns `dx·(1 − fee)` within 1 unit of the
     /// `−1` rounding; (3) the round trip loses only fees; (4) with zero
     /// fee the invariant `D` is preserved by `exchange` to Newton's ±1.
+    /// StableSwap-NG against the Python port in
+    /// `tools/registry/discover_exits.py`, which reproduced `get_dy` on all
+    /// 184 NG pools it admitted. Oracle-style rates, a dynamic fee.
+    #[test]
+    fn ng_math_matches_the_port_that_matched_every_pool() {
+        let u = |v: u128| U256::from(v);
+        let s = CurveState {
+            balances: SmallVec::from_slice(&[
+                u(2_833_345_070_697_224_937_308),
+                u(2_187_051_300_082_150_214_224),
+            ]),
+            rates: SmallVec::from_slice(&[
+                u(1_050_000_000_000_000_000),
+                u(1_120_000_000_000_000_000),
+            ]),
+            a: u(20_000),
+            a_precision: u(100),
+            fee: u(2_000_000),
+            stale: false,
+            stale_block: 0,
+            ng: true,
+            offpeg_fee_multiplier: u(50_000_000_000),
+            dynamic_rates: true,
+            read_block: 0,
+        };
+        let xp = curve_xp(&s).unwrap();
+        assert_eq!(
+            curve_get_d(&s, &xp).unwrap(),
+            u(5_424_381_945_823_831_959_820)
+        );
+        assert_eq!(
+            ng_dynamic_fee(xp[0], xp[1], s.fee, s.offpeg_fee_multiplier).unwrap(),
+            u(2_015_130)
+        );
+        for (dx, fwd, back) in [
+            (
+                1_000_000_000_000_000_000u128,
+                936_389_043_014_965_153u128,
+                1_067_497_336_108_435_281u128,
+            ),
+            (
+                500_000_000_000_000_000_000,
+                467_660_455_744_522_591_678,
+                533_192_225_542_925_994_082,
+            ),
+        ] {
+            assert_eq!(curve_dy(&s, 0, 1, u(dx)).unwrap().0, u(fwd));
+            assert_eq!(curve_dy(&s, 1, 0, u(dx)).unwrap().0, u(back));
+        }
+    }
+
     #[test]
     fn curve_invariants() {
         let bal = [e18(10_000_000), e18(10_000_000), e18(10_000_000)];

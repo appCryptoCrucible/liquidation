@@ -70,6 +70,9 @@ pub struct HopGas {
     pub univ3: u64,
     pub univ2: u64,
     pub curve: u64,
+    /// StableSwap-NG `exchange`: dynamic fee, `stored_rates()` (external
+    /// rate calls for oracle / ERC-4626 coins) and the oracle upkeep.
+    pub curve_ng: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,6 +113,7 @@ struct SwapToml {
     univ3: Option<u64>,
     univ2: Option<u64>,
     curve: Option<u64>,
+    curve_ng: Option<u64>,
 }
 
 impl GasModel {
@@ -152,6 +156,7 @@ impl GasModel {
                 univ3: t.swap.univ3.unwrap_or(0),
                 univ2: t.swap.univ2.unwrap_or(0),
                 curve: t.swap.curve.unwrap_or(0),
+                curve_ng: t.swap.curve_ng.unwrap_or(0),
             },
         })
     }

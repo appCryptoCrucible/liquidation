@@ -42,6 +42,8 @@ sol! {
     function A() returns (uint256);
     function A_precise() returns (uint256);
     function fee() returns (uint256);
+    function stored_rates() returns (uint256[]);
+    function offpeg_fee_multiplier() returns (uint256);
 }
 
 /// Multicall3, same address on every EVM chain.
@@ -297,13 +299,15 @@ pub async fn seed_v2(book: &mut PoolBook, rpc: &HttpRpc) -> SeedStats {
 }
 
 /// One Curve pool read at a block: `balances`, `A` as stored, its
-/// `A_PRECISION`, `fee` (1e10).
+/// `A_PRECISION`, `fee` (1e10), and for NG `stored_rates()` and
+/// `offpeg_fee_multiplier()`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CurveRead {
     pub balances: Vec<U256>,
     pub a: U256,
     pub a_precision: U256,
     pub fee: U256,
+    pub ng: Option<(Vec<U256>, U256)>,
 }
 
 /// `A_precise()` answering means `A_PRECISION = 100` and it is the stored
@@ -320,20 +324,25 @@ fn curve_amp(precise: Option<U256>, plain: Option<U256>) -> Option<(U256, U256)>
 /// read failed or was incomplete — it stays stale.
 async fn read_curve(
     rpc: &HttpRpc,
-    pools: &[(Address, usize)],
+    pools: &[(Address, usize, bool)],
     block: u64,
 ) -> Vec<Option<CurveRead>> {
     let mut out = Vec::with_capacity(pools.len());
-    // n balances + A_precise + A + fee per pool: at most 7 calls each.
-    for chunk in pools.chunks(BATCH / 8) {
+    // n balances + A_precise + A + fee (+ stored_rates, offpeg for NG) per
+    // pool: at most 9 calls each.
+    for chunk in pools.chunks(BATCH / 10) {
         let mut calls = Vec::new();
-        for &(addr, n) in chunk {
+        for &(addr, n, ng) in chunk {
             for i in 0..n {
                 calls.push(call(addr, balancesCall { i: U256::from(i) }.abi_encode()));
             }
             calls.push(call(addr, A_preciseCall {}.abi_encode()));
             calls.push(call(addr, ACall {}.abi_encode()));
             calls.push(call(addr, feeCall {}.abi_encode()));
+            if ng {
+                calls.push(call(addr, stored_ratesCall {}.abi_encode()));
+                calls.push(call(addr, offpeg_fee_multiplierCall {}.abi_encode()));
+            }
         }
         let res = aggregate(rpc, calls, block).await;
         // Every read here returns one `uint256`.
@@ -344,18 +353,35 @@ async fn read_curve(
                 .and_then(|r| balancesCall::abi_decode_returns(&r.returnData).ok())
         };
         let mut at = 0usize;
-        for &(_, n) in chunk {
+        for &(_, n, ng) in chunk {
             let balances: Option<Vec<U256>> = (0..n).map(|i| row(at.saturating_add(i))).collect();
             let precise = row(at.saturating_add(n));
             let plain = row(at.saturating_add(n).saturating_add(1));
             let fee = row(at.saturating_add(n).saturating_add(2));
             at = at.saturating_add(n).saturating_add(3);
-            out.push(match (balances, curve_amp(precise, plain), fee) {
-                (Some(balances), Some((a, a_precision)), Some(fee)) => Some(CurveRead {
+            let ng_read = if ng {
+                let rates = res
+                    .as_ref()
+                    .and_then(|r| r.get(at))
+                    .filter(|r| r.success)
+                    .and_then(|r| stored_ratesCall::abi_decode_returns(&r.returnData).ok())
+                    .filter(|v| v.len() == n);
+                let offpeg = row(at.saturating_add(1));
+                at = at.saturating_add(2);
+                match (rates, offpeg) {
+                    (Some(r), Some(o)) => Some(Some((r, o))),
+                    _ => None,
+                }
+            } else {
+                Some(None)
+            };
+            out.push(match (balances, curve_amp(precise, plain), fee, ng_read) {
+                (Some(balances), Some((a, a_precision)), Some(fee), Some(ng)) => Some(CurveRead {
                     balances,
                     a,
                     a_precision,
                     fee,
+                    ng,
                 }),
                 _ => None,
             });
@@ -364,14 +390,23 @@ async fn read_curve(
     out
 }
 
-/// Every Curve pool (`only_stale` → just the stale ones) as
-/// `(book index, address, n_coins)`.
-fn curve_targets(book: &PoolBook, only_stale: bool) -> Vec<(usize, Address, usize)> {
+/// Every Curve pool (`only_stale` → the stale ones, plus NG pools whose
+/// rates move without a log and were last read before the head) as
+/// `(book index, address, n_coins, ng)`.
+fn curve_targets(
+    book: &PoolBook,
+    only_stale: bool,
+    head: u64,
+) -> Vec<(usize, Address, usize, bool)> {
     book.pools()
         .iter()
         .enumerate()
         .filter_map(|(i, p)| match &p.state {
-            PoolState::Curve(c) if !only_stale || c.stale => Some((i, p.address, c.rates.len())),
+            PoolState::Curve(c)
+                if !only_stale || c.stale || (c.dynamic_rates && c.read_block < head) =>
+            {
+                Some((i, p.address, c.rates.len(), c.ng))
+            }
             _ => None,
         })
         .collect()
@@ -382,21 +417,16 @@ fn curve_targets(book: &PoolBook, only_stale: bool) -> Vec<(usize, Address, usiz
 async fn refresh_curve(
     book: &RwLock<PoolBook>,
     rpc: &HttpRpc,
-    targets: &[(usize, Address, usize)],
+    targets: &[(usize, Address, usize, bool)],
+    block: u64,
 ) -> (usize, usize) {
-    let block = match rpc.block_number().await {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!(error = %e, "curve reseed: head unavailable");
-            return (0, 0);
-        }
-    };
-    let query: Vec<(Address, usize)> = targets.iter().map(|&(_, a, n)| (a, n)).collect();
+    let query: Vec<(Address, usize, bool)> =
+        targets.iter().map(|&(_, a, n, ng)| (a, n, ng)).collect();
     let reads = read_curve(rpc, &query, block).await;
     let read = reads.iter().filter(|r| r.is_some()).count();
     let mut applied = 0usize;
     let mut w = book.write();
-    for (&(i, addr, _), r) in targets.iter().zip(reads) {
+    for (&(i, addr, _, _), r) in targets.iter().zip(reads) {
         let Some(r) = r else {
             tracing::debug!(pool = %addr, block, "curve read failed — stays stale");
             continue;
@@ -404,7 +434,10 @@ async fn refresh_curve(
         let Ok(id) = u32::try_from(i).map(PoolId) else {
             continue;
         };
-        match w.reseed_curve(id, &r.balances, r.a, r.a_precision, r.fee, block) {
+        let ng =
+            r.ng.as_ref()
+                .map(|(rates, offpeg)| (rates.as_slice(), *offpeg));
+        match w.reseed_curve(id, &r.balances, r.a, r.a_precision, r.fee, ng, block) {
             Ok(true) => applied = applied.saturating_add(1),
             Ok(false) => {}
             Err(e) => tracing::error!(pool = %addr, error = ?e, "curve reseed refused"),
@@ -415,12 +448,19 @@ async fn refresh_curve(
 
 /// Seed every Curve pool in `book` at the current head.
 pub async fn seed_curve(book: &mut PoolBook, rpc: &HttpRpc) -> SeedStats {
-    let targets = curve_targets(book, false);
+    let block = match rpc.block_number().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!(error = %e, "curve seed: head unavailable — pools stay stale");
+            return SeedStats::default();
+        }
+    };
+    let targets = curve_targets(book, false, block);
     let lock = RwLock::new(std::mem::replace(
         book,
         PoolBook::new(std::collections::HashMap::new(), None, 0),
     ));
-    let (read, applied) = refresh_curve(&lock, rpc, &targets).await;
+    let (read, applied) = refresh_curve(&lock, rpc, &targets, block).await;
     *book = lock.into_inner();
     let stats = SeedStats {
         pools: targets.len(),
@@ -469,11 +509,18 @@ pub fn spawn_curve_reseed(
             };
             while !stop.load(Ordering::Relaxed) {
                 std::thread::sleep(CURVE_POLL);
-                let targets = curve_targets(&book.read(), true);
+                let head = match rt.block_on(rpc.block_number()) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "curve reseed: head unavailable");
+                        continue;
+                    }
+                };
+                let targets = curve_targets(&book.read(), true, head);
                 if targets.is_empty() {
                     continue;
                 }
-                let (read, applied) = rt.block_on(refresh_curve(&book, &rpc, &targets));
+                let (read, applied) = rt.block_on(refresh_curve(&book, &rpc, &targets, head));
                 tracing::debug!(stale = targets.len(), read, applied, "curve reseed");
             }
         })
@@ -583,6 +630,10 @@ mod tests {
                 fee: U256::ZERO,
                 stale: true,
                 stale_block: 0,
+                ng: false,
+                offpeg_fee_multiplier: U256::ZERO,
+                dynamic_rates: false,
+                read_block: 0,
             }),
         })
         .unwrap();
@@ -626,17 +677,21 @@ mod tests {
         let reg = Registry::from_path(&root.join("registry/registry.json")).unwrap();
         let intern = Intern::from_registry(&reg).unwrap();
         let mut book = crate::index::load_index(&root.join("config"), &intern, &reg).book;
-        let targets = curve_targets(&book, false);
         let block = rpc.block_number().await.unwrap();
-        let query: Vec<(Address, usize)> = targets.iter().map(|&(_, a, n)| (a, n)).collect();
+        let targets = curve_targets(&book, false, block);
+        let query: Vec<(Address, usize, bool)> =
+            targets.iter().map(|&(_, a, n, ng)| (a, n, ng)).collect();
         let reads = read_curve(&rpc, &query, block).await;
         let mut checked = 0usize;
         let mut wrong = Vec::new();
-        for (&(i, addr, n), r) in targets.iter().zip(reads) {
+        for (&(i, addr, n, _), r) in targets.iter().zip(reads) {
             let r = r.unwrap_or_else(|| panic!("curve read failed for {addr}"));
             let id = PoolId(u32::try_from(i).unwrap());
+            let ng =
+                r.ng.as_ref()
+                    .map(|(rates, offpeg)| (rates.as_slice(), *offpeg));
             assert!(book
-                .reseed_curve(id, &r.balances, r.a, r.a_precision, r.fee, block)
+                .reseed_curve(id, &r.balances, r.a, r.a_precision, r.fee, ng, block)
                 .unwrap());
             let pool = book.get(id).unwrap();
             for ci in 0..n {
@@ -651,7 +706,18 @@ mod tests {
                         dx,
                     }
                     .abi_encode();
-                    let raw = rpc.call_at(addr, data.into(), block).await.unwrap();
+                    // A throttled endpoint answers some calls with an error;
+                    // retry before calling it a revert.
+                    let data: alloy_primitives::Bytes = data.into();
+                    let mut raw = rpc.call_at(addr, data.clone(), block).await;
+                    for _ in 0..5 {
+                        if raw.is_ok() {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                        raw = rpc.call_at(addr, data.clone(), block).await;
+                    }
+                    let raw = raw.unwrap();
                     let want = get_dyCall::abi_decode_returns(&raw).unwrap();
                     let got = pool
                         .quote_exact_in(u8::try_from(ci).unwrap(), u8::try_from(cj).unwrap(), dx)

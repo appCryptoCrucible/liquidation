@@ -129,6 +129,10 @@ pub fn curve(n: u64, balances: &[U256], a_times_100: u64, fee_1e10: u64) -> Pool
             fee: U256::from(fee_1e10),
             stale: false,
             stale_block: 0,
+            ng: false,
+            offpeg_fee_multiplier: U256::ZERO,
+            dynamic_rates: false,
+            read_block: 0,
         }),
     }
 }
