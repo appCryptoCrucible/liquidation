@@ -181,6 +181,9 @@ pub(crate) async fn assert_registry_views<R: ChainRpc + Sync>(
                     expected: u.into,
                 });
             }
+            // The LP is its own pool, a registry pool whose `coins(i)` are
+            // asserted with the pools below.
+            Some(u) if u.kind == UnwrapKind::CurveLp => {}
             Some(u) => {
                 let (Some(yt), Some(sy)) = (u.yt, u.sy) else {
                     return Err(ConfigError::PendleMismatch {

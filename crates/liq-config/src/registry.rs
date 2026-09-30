@@ -75,6 +75,9 @@ pub enum UnwrapKind {
     Erc4626,
     /// Expired Pendle PT: `redeemPY` on its YT, then `SY.redeem` into `into`.
     PendlePt,
+    /// Curve StableSwap-NG LP (the token is the pool, a `curve_ng` registry
+    /// pool): `remove_liquidity_one_coin` into coin `into`.
+    CurveLp,
 }
 
 /// Token behaviour that changes what correct code looks like (REGISTRY.md §5).

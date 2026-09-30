@@ -205,7 +205,8 @@ collaterals**, since paths out of different collaterals share output pools.
 per leg, head = 60 bytes:
   1 byte    venue      0 = UniV3 pool-direct · 1 = allowlisted router ·
                        2 = UniV2/Sushi pair · 3 = Curve StableSwap · 4 = Curve crypto ·
-                       5 = unwrap ERC-4626 · 6 = redeem expired Pendle PT
+                       5 = unwrap ERC-4626 · 6 = redeem expired Pendle PT ·
+                       7 = Curve NG LP one-coin withdrawal
   20 bytes  tokenIn    which collateral this leg spends
   20 bytes  tokenOut   where it goes
   1 byte    legFlags   bit0 TAKE_BALANCE · bit1 EXACT_OUT
@@ -260,6 +261,7 @@ Venue data:
 | `4` Curve crypto (twocrypto-ng, tricrypto-ng, original CurveCryptoSwap2) | 22 bytes: pool ‖ i ‖ j. Same checks as `3`; `exchange(uint256,uint256,uint256,uint256)`. |
 | `5` Unwrap ERC-4626 | 20 bytes: the vault, which must equal `tokenIn`; its `asset()` must equal `tokenOut`. `redeem(amount, this, this)`: no approval. Exact input only. |
 | `6` Redeem expired Pendle PT | 20 bytes: the YT. `tokenIn` (the PT) and the YT must name each other (`PT.YT()`, `YT.PT()`) and the YT must be expired. The PT goes to the YT, `redeemPY` pays SY, and `SY.redeem(this, sy, tokenOut, 0, false)` pays `tokenOut` (the SY refuses a token it cannot pay). Exact input only; placed like `5`. |
+| `7` Curve NG LP one-coin withdrawal | 21 bytes: pool ‖ `i`. The pool must equal `tokenIn` (an NG pool is its own LP token), be in Curve's MetaRegistry, and hold `tokenOut` at `i`. `remove_liquidity_one_coin(amount, i, 0)` burns our LP: no approval. Exact input only; placed like `5`. |
 
 **Unwrap legs come first in a repay blob.** A seized collateral with no pool of
 its own is redeemed (`TAKE_BALANCE`) for what it wraps before any leg sells it;

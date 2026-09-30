@@ -102,6 +102,10 @@ contract Executor {
     // Unwrap: redeem an expired Pendle PT (`tokenIn`) through its YT for SY,
     // then the SY for `tokenOut`. Exact input.
     uint8 private constant S_PENDLE_PT_REDEEM = 6;
+    // Unwrap: withdraw a Curve StableSwap-NG LP (`tokenIn`, the pool itself)
+    // as coin `i` (`tokenOut`). Exact input; the pool burns our LP, so there
+    // is no approval.
+    uint8 private constant S_CURVE_LP_ONE_COIN = 7;
     /// Uniswap V2 / SushiSwap swap fee, 0.30 %.
     uint256 private constant V2_FEE_KEEP = 997;
 
@@ -1297,6 +1301,8 @@ contract Executor {
             _unwrap4626(s, amount, data);
         } else if (s.venue == S_PENDLE_PT_REDEEM) {
             _redeemPendlePt(s, amount, data);
+        } else if (s.venue == S_CURVE_LP_ONE_COIN) {
+            _withdrawCurveLp(s, amount, data);
         } else {
             revert UnknownVenue(s.venue);
         }
@@ -1390,6 +1396,23 @@ contract Executor {
             revert BadPool(S_UNWRAP_4626, vault);
         }
         IERC4626Unwrap(vault).redeem(amount, address(this), address(this));
+    }
+
+    /// Withdraw a Curve NG LP held here as one coin. The pool must be in the
+    /// MetaRegistry, be the LP token being spent, and hold `tokenOut` at `i`.
+    function _withdrawCurveLp(SwapLeg memory s, uint256 amount, bytes calldata data) internal {
+        if (s.flags & L_EXACT_OUT != 0) revert ExactOutUnsupported(S_CURVE_LP_ONE_COIN);
+        if (data.length != 21) revert BadPool(S_CURVE_LP_ONE_COIN, address(0));
+        address pool = address(bytes20(data[0:20]));
+        uint8 i = uint8(data[20]);
+        if (pool != s.tokenIn
+            || !ICurveMetaRegistry(CURVE_REGISTRY).is_registered(pool)
+            || ICurvePool(pool).coins(i) != s.tokenOut) {
+            revert BadPool(S_CURVE_LP_ONE_COIN, pool);
+        }
+        // i is uint8: widening to uint128 then int128 is lossless.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        ICurvePool(pool).remove_liquidity_one_coin(amount, int128(uint128(i)), 0);
     }
 
     /// Redeem an expired Pendle PT held here: PT → YT `redeemPY` → SY, then

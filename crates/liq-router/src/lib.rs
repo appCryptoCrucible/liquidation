@@ -102,8 +102,8 @@ pub use select::{
     EXACT_K, NONCE_SLOTS,
 };
 pub use solver::{
-    CurveState, ExitSource, Leg, Pool, PoolBook, PoolId, PoolState, RouteError, Tick, Unwrap,
-    UnwrapKind, V2State, V3State, Venue, MAX_COINS,
+    ng_withdraw_one_coin, CurveState, ExitSource, Leg, Pool, PoolBook, PoolId, PoolState,
+    RouteError, Tick, Unwrap, UnwrapKind, UnwrapRate, V2State, V3State, Venue, MAX_COINS,
 };
 pub use warm::{Bucket, RouteEntry, RouteTable, WarmBuilder, WarmConfig, WarmInputs};
 

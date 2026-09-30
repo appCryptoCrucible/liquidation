@@ -730,7 +730,11 @@
   "0x1d08e7adc263cfc70b1babe6dc5bb339c16eec52": {
    "symbol": "USD0USD0++",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "curve_lp",
+    "into": "0x35d8949372d46b7a3d5a56006ae77b215fc69bc0"
+   }
   },
   "0x6900057428c99fb373397d657beb40d92d8ac97f": {
    "symbol": "USDz",
@@ -1308,7 +1312,11 @@
   "0x90455bd11ce8a67c57d467e634dc142b8e4105aa": {
    "symbol": "cUSDOUSDC",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "curve_lp",
+    "into": "0xad55aebc9b8c03fc43cd9f62260391c13c23e7c0"
+   }
   },
   "0xaaee1a9723aadb7afa2810263653a34ba2c21c7a": {
    "symbol": "Mog",
@@ -1467,7 +1475,11 @@
   "0x3cef1afc0e8324b57293a6e7ce663781bbefbb79": {
    "symbol": "sUSDEsUSDS",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "curve_lp",
+    "into": "0x9d39a5de30e57443bff2a8307a4256c8797a3497"
+   }
   },
   "0xab365c0879024481e4ad3b47bd6fea9c10014fbc": {
    "symbol": "PT-sUSDf-25SEP2025",
@@ -3659,7 +3671,11 @@
   "0x6206ca315c2fcdd2a857b47efb285aa12c529a7a": {
    "symbol": "USDCsUSDat",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "curve_lp",
+    "into": "0xd166337499e176bbc38a1fbd113ab144e5bd2df7"
+   }
   },
   "0xc88fcd8b874fdb3256e8b55b3decb8c24eab4c02": {
    "symbol": "wSPYx",
@@ -4821,7 +4837,11 @@
   "0x3ee841f47947fefbe510366e4bbb49e145484195": {
    "symbol": "USRUSDC",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "curve_lp",
+    "into": "0x66a1e37c9b0eaddca17d3662d6c05f4decf3e110"
+   }
   },
   "0x69000dfd5025e82f48eb28325a2b88a241182ced": {
    "symbol": "ZAI",

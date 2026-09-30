@@ -253,8 +253,8 @@ impl WarmBuilder {
             // unwrap rate (the rate alone when it unwraps into the debt).
             let rho0 = match (unwrap, legs.first()) {
                 (None, Some(l)) => Ok(l.0),
-                (Some(u), Some(l)) => u.scale_rho(l.0),
-                (Some(u), None) if u.into == debt => u.rho(),
+                (Some(u), Some(l)) => u.scale_rho(l.0, book),
+                (Some(u), None) if u.into == debt => u.rho(book),
                 _ => continue,
             };
             let Ok(rho0) = rho0 else {

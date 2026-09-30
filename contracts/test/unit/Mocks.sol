@@ -1211,6 +1211,29 @@ contract MockShareToken {
     }
 }
 
+/// Curve StableSwap-NG double: the pool is its own LP token;
+/// `remove_liquidity_one_coin` burns the caller's LP and pays coin `i` at
+/// `lp · num / den`.
+contract MockCurveNgLp is MockShareToken {
+    address[] public coinList;
+    uint256 public num = 1;
+    uint256 public den = 1;
+
+    constructor(address[] memory c) { coinList = c; }
+
+    function setRate(uint256 n, uint256 d) external { num = n; den = d; }
+
+    function coins(uint256 i) external view returns (address) { return coinList[i]; }
+
+    function remove_liquidity_one_coin(uint256 burn, int128 i, uint256 minOut) external returns (uint256 dy) {
+        _burnFrom(msg.sender, burn);
+        dy = burn * num / den;
+        require(dy >= minOut, "ng: min out");
+        // forge-lint: disable-next-line(unsafe-typecast)
+        Tok.push(coinList[uint256(uint128(i))], msg.sender, dy);
+    }
+}
+
 /// Pendle PT double: points at its YT, which burns what it was sent.
 contract MockPendlePT is MockShareToken {
     address public YT;

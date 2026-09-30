@@ -57,6 +57,7 @@ sol! {
     function exchangeRate() returns (uint256);
     function pyIndexStored() returns (uint256);
     function previewRedeem(address tokenOut, uint256 amountSharesToRedeem) returns (uint256);
+    function totalSupply() returns (uint256);
 }
 
 /// Multicall3, same address on every EVM chain.
@@ -690,7 +691,10 @@ async fn read_words(rpc: &HttpRpc, calls: Vec<Call3>, block: u64) -> Vec<Option<
     out
 }
 
-/// `into` paid for `scale` of each wrapper at `block`:
+/// One word per wrapper at `block` — what its [`liq_router::UnwrapRate`]
+/// is made of:
+/// - Curve LP: the LP's `totalSupply()` (the pool's balances are the
+///   book's own, kept by the Curve reseed);
 /// - ERC-4626: `previewRedeem(scale)`;
 /// - expired Pendle PT: the YT pays `scale · 1e18 / max(SY.exchangeRate(),
 ///   pyIndexStored)` SY (`PendleYieldToken._redeemPY`, `SYUtils.assetToSy`),
@@ -709,6 +713,9 @@ async fn read_unwrap_rates(
                     previewRedeem_0Call { shares: t.scale }.abi_encode(),
                 ));
             }
+            liq_router::UnwrapKind::CurveLp { .. } => {
+                first.push(call(t.token, totalSupplyCall {}.abi_encode()));
+            }
             liq_router::UnwrapKind::PendlePt { yt, sy } => {
                 first.push(call(sy, exchangeRateCall {}.abi_encode()));
                 first.push(call(yt, pyIndexStoredCall {}.abi_encode()));
@@ -723,7 +730,7 @@ async fn read_unwrap_rates(
     let one = U256::from(1_000_000_000_000_000_000u64);
     for (i, t) in targets.iter().enumerate() {
         match t.kind {
-            liq_router::UnwrapKind::Erc4626 => {
+            liq_router::UnwrapKind::Erc4626 | liq_router::UnwrapKind::CurveLp { .. } => {
                 out.push(words.get(at).copied().flatten());
                 at = at.saturating_add(1);
             }
@@ -782,9 +789,19 @@ async fn refresh_unwraps(
     let mut applied = 0usize;
     let mut w = book.write();
     for (t, r) in targets.iter().zip(reads) {
-        let Some(rate) = r.filter(|v| !v.is_zero()) else {
+        let Some(word) = r.filter(|v| !v.is_zero()) else {
             tracing::debug!(token = %t.token, block, "unwrap rate read failed");
             continue;
+        };
+        let rate = match t.kind {
+            liq_router::UnwrapKind::CurveLp { .. } => {
+                liq_router::UnwrapRate::CurveLp { total_supply: word }
+            }
+            liq_router::UnwrapKind::Erc4626 | liq_router::UnwrapKind::PendlePt { .. } => {
+                liq_router::UnwrapRate::Linear {
+                    assets_per_scale: word,
+                }
+            }
         };
         if w.set_unwrap_rate(t.wrapper, rate, block) {
             applied = applied.saturating_add(1);
@@ -1197,8 +1214,12 @@ mod tests {
         let book = lock.into_inner();
         let mut wrong = Vec::new();
         for (t, w) in unit.iter().zip(want) {
+            // Curve LPs are exact, checked in their own test.
+            if matches!(t.kind, liq_router::UnwrapKind::CurveLp { .. }) {
+                continue;
+            }
             let u = book.unwrap_of(t.wrapper).unwrap();
-            let got = u.convert(t.scale).unwrap();
+            let got = u.convert(t.scale, &book).unwrap();
             let w = w.unwrap();
             let slack = w / U256::from(500_000u64) + U256::from(2u64);
             if got > w || w - got > slack {
@@ -1210,5 +1231,99 @@ mod tests {
             "unwrap conversion off:\n{}",
             wrong.join("\n")
         );
+    }
+
+    /// Live check (`MAINNET_RPC_URL`): every committed Curve LP unwrap,
+    /// quoted on its pool as the reseed reads it, equals the pool's own
+    /// `calc_withdraw_one_coin` to the wei at the same block — for one LP
+    /// and for a tenth of the supply.
+    #[tokio::test]
+    #[ignore = "needs MAINNET_RPC_URL"]
+    async fn committed_curve_lp_unwraps_quote_exactly() {
+        use liq_config::{Intern, Registry};
+        sol! {
+            function calc_withdraw_one_coin(uint256 burn, int128 i) returns (uint256);
+        }
+        let url = std::env::var("MAINNET_RPC_URL").expect("MAINNET_RPC_URL");
+        let rpc = HttpRpc::connect(&url).unwrap();
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let reg = Registry::from_path(&root.join("registry/registry.json")).unwrap();
+        let intern = Intern::from_registry(&reg).unwrap();
+        let mut book = crate::index::load_index(&root.join("config"), &intern, &reg).book;
+        let block = rpc.block_number().await.unwrap();
+        let lps: Vec<liq_router::Unwrap> = book
+            .unwraps()
+            .filter(|u| matches!(u.kind, liq_router::UnwrapKind::CurveLp { .. }))
+            .cloned()
+            .collect();
+        assert!(!lps.is_empty(), "registry has Curve LP unwraps");
+        let targets: Vec<_> = curve_targets(&book, false, block)
+            .into_iter()
+            .filter(|t| lps.iter().any(|u| u.wrapper_token == t.1))
+            .collect();
+        let query: Vec<(Address, usize, bool)> =
+            targets.iter().map(|&(_, a, n, ng)| (a, n, ng)).collect();
+        for (&(i, addr, _, _), r) in targets.iter().zip(read_curve(&rpc, &query, block).await) {
+            let r = r.unwrap_or_else(|| panic!("curve read failed for {addr}"));
+            let ng =
+                r.ng.as_ref()
+                    .map(|(rates, offpeg)| (rates.as_slice(), *offpeg));
+            let id = PoolId(u32::try_from(i).unwrap());
+            assert!(book
+                .reseed_curve(id, &r.balances, r.a, r.a_precision, r.fee, ng, block)
+                .unwrap());
+        }
+        let lock = RwLock::new(book);
+        let ut: Vec<_> = unwrap_targets(&lock.read(), block)
+            .into_iter()
+            .filter(|t| matches!(t.kind, liq_router::UnwrapKind::CurveLp { .. }))
+            .collect();
+        let (read, _) = refresh_unwraps(&lock, &rpc, &ut, block).await;
+        assert_eq!(read, ut.len(), "every LP supply reads");
+        let book = lock.into_inner();
+        let mut checked = 0usize;
+        let mut wrong = Vec::new();
+        for u in &lps {
+            let liq_router::UnwrapKind::CurveLp { i } = u.kind else {
+                continue;
+            };
+            let u = book.unwrap_of(u.wrapper).unwrap();
+            let liq_router::UnwrapRate::CurveLp { total_supply } = u.rate else {
+                panic!("{:#x} unread", u.wrapper_token);
+            };
+            for amt in [
+                u.scale * U256::from(1_000u64),
+                total_supply / U256::from(10u64),
+            ] {
+                let data: alloy_primitives::Bytes = calc_withdraw_one_coinCall {
+                    burn: amt,
+                    i: i128::from(i),
+                }
+                .abi_encode()
+                .into();
+                let mut raw = rpc.call_at(u.wrapper_token, data.clone(), block).await;
+                for _ in 0..5 {
+                    if raw.is_ok() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                    raw = rpc.call_at(u.wrapper_token, data.clone(), block).await;
+                }
+                let want = calc_withdraw_one_coinCall::abi_decode_returns(&raw.unwrap()).unwrap();
+                let got = u.convert(amt, &book).ok();
+                checked += 1;
+                if got != Some(want) {
+                    wrong.push(format!(
+                        "{:#x} {amt}: port {got:?} chain {want}",
+                        u.wrapper_token
+                    ));
+                }
+            }
+        }
+        eprintln!(
+            "{} LPs, {checked} withdrawals checked at {block}",
+            lps.len()
+        );
+        assert!(wrong.is_empty(), "LP withdrawal off:\n{}", wrong.join("\n"));
     }
 }

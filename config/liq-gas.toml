@@ -117,3 +117,8 @@ unwrap_4626 = 204_064
 # charged to the caller. An SY that unwraps through another protocol on
 # redeem costs more; the pre-send simulation prices the real one.
 pendle_pt = 141_280
+# Curve NG LP one-coin withdrawal (venue 7), fork at 26_019_284 (ForkUnwrap,
+# USR/USDC 0x3ee8…5195): MetaRegistry `is_registered` 122_873 (it walks
+# every sub-registry) + `coins(i)` 337 + `remove_liquidity_one_coin` 64_684,
+# plus the registry's cold account.
+curve_lp = 190_494

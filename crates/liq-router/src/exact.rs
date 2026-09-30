@@ -948,20 +948,21 @@ pub fn solve_on(
 }
 
 /// [`solve_on`] through `unwrap` when set: the unwrap's output is what the
-/// pools sell (nothing to sell when it is already `debt`).
+/// pools sell (nothing to sell when it is already `debt`). The unwrap is
+/// quoted on the book it came from (a Curve LP reads its pool there).
 fn solve_via(
     pools: &[Pool],
     legs: &[Leg],
-    unwrap: Option<&Unwrap>,
+    unwrap: Option<(&Unwrap, &PoolBook)>,
     debt: AssetId,
     total: U256,
     gas: &GasTerms,
     budget: &SolveBudget,
 ) -> Result<ExitQuote, RouteError> {
-    let Some(u) = unwrap else {
+    let Some((u, book)) = unwrap else {
         return solve_on(pools, legs, total, gas, budget);
     };
-    let inner = u.convert(total)?;
+    let inner = u.convert(total, book)?;
     if inner.is_zero() {
         return Err(RouteError::InsufficientLiquidity);
     }
@@ -978,9 +979,9 @@ fn solve_via(
         solve_on(pools, legs, inner, gas, budget)?
     };
     q.rho0 = if u.into == debt {
-        u.rho()?
+        u.rho(book)?
     } else {
-        u.scale_rho(q.rho0)?
+        u.scale_rho(q.rho0, book)?
     };
     q.amount_in = total;
     q.hop_gas = q.hop_gas.checked_add(u.gas).ok_or(RouteError::Math)?;
@@ -1005,9 +1006,15 @@ pub fn solve_pair(
 ) -> Result<ExitQuote, RouteError> {
     match book.exit_source(asset_in, asset_out) {
         ExitSource::Direct(legs) => solve_on(book.pools(), legs, total, gas, budget),
-        ExitSource::Unwrap(u, legs) => {
-            solve_via(book.pools(), legs, Some(u), asset_out, total, gas, budget)
-        }
+        ExitSource::Unwrap(u, legs) => solve_via(
+            book.pools(),
+            legs,
+            Some((u, book)),
+            asset_out,
+            total,
+            gas,
+            budget,
+        ),
     }
 }
 
@@ -1064,7 +1071,15 @@ pub fn solve_batch(
             let &(_, amount) = colls.get(ci_us).ok_or(RouteError::BadLeg)?;
             let legs = legs_per.get(ci_us).ok_or(RouteError::BadLeg)?;
             let uw = unwrap_per.get(ci_us).ok_or(RouteError::BadLeg)?.as_ref();
-            let q = solve_via(scratch, legs, uw, debt, amount, gas, budget)?;
+            let q = solve_via(
+                scratch,
+                legs,
+                uw.map(|u| (u, book)),
+                debt,
+                amount,
+                gas,
+                budget,
+            )?;
             for a in &q.allocs {
                 if a.amount_in.is_zero() {
                     continue;
@@ -1097,8 +1112,8 @@ pub fn solve_batch(
                 .max();
             let rho0 = match (unwrap_per.get(ci).and_then(Option::as_ref), pool_rho) {
                 (None, Some(r)) => r,
-                (Some(u), Some(r)) => u.scale_rho(r)?,
-                (Some(u), None) if u.into == debt => u.rho()?,
+                (Some(u), Some(r)) => u.scale_rho(r, book)?,
+                (Some(u), None) if u.into == debt => u.rho(book)?,
                 _ => return Err(RouteError::InsufficientLiquidity),
             };
             let notional = mul_div_512(mul_div_512(amount, rho0, Q96)?, rho0, Q96)?;

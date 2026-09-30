@@ -25,7 +25,21 @@ Expired Pendle PTs (swap venue 6, `{"kind": "pendle_pt", "into", "yt", "sy"}`):
       YT.pyIndexStored())) for one PT and for the holder's whole balance.
       Needs `forge build` in contracts/ (the probe's artifact).
 
-Both kinds must also quote linearly: the answer for K whole units is K times
+Curve StableSwap-NG LPs (swap venue 7, `{"kind": "curve_lp", "into": <coin>}`):
+    - the token is a `curve_ng` registry pool (NG pools are their own LP);
+    - this port of `_calc_withdraw_one_coin` (CurveStableSwapNG.vy v7.0.0),
+      on the pool's `balances`, `A_precise`, `fee`, `stored_rates`,
+      `offpeg_fee_multiplier` and the LP `totalSupply`, reproduces the
+      pool's own `calc_withdraw_one_coin` for every coin at 1 LP and at a
+      tenth of the supply;
+    - a real holder's `remove_liquidity_one_coin(amount, i, 0)`, simulated
+      from the holder, pays exactly `calc_withdraw_one_coin`;
+    - `into` is the coin with the deepest normalized balance (the withdrawal
+      that imbalances the pool least).
+    The quote is exact and nonlinear, so the linearity gate below does not
+    apply to it.
+
+Vaults and PTs must also quote linearly: the answer for K whole units is K times
 the answer for one, to rounding, at K = 1_000 and 100_000 — the bot reads one
 rate per block and scales it, so a vault whose redemption slips with size
 (e.g. one that unwinds positions on withdraw) would be overquoted.
@@ -50,7 +64,7 @@ import requests
 from eth_abi import decode, encode
 
 sys.path.insert(0, str(Path(__file__).parent))
-from discover_exits import EXCLUDED_QUIRKS, Chain, sel, word  # noqa: E402
+from discover_exits import EXCLUDED_QUIRKS, Chain, ng_dynamic_fee, ng_get_d, sel, word  # noqa: E402
 
 REG = Path("registry/registry.json")
 META = Path("registry/registry.meta.json")
@@ -179,6 +193,120 @@ def discover_4626(chain, url, tokens, cands, usable, routed) -> dict[str, dict]:
     return found
 
 
+# ── Curve NG LP ─────────────────────────────────────────────────────────────
+
+
+def ng_get_y_d(i: int, xp: list[int], amp: int, d: int) -> int:
+    n = len(xp)
+    ann = amp * n
+    c = d
+    s_ = 0
+    for k in range(n):
+        if k == i:
+            continue
+        s_ += xp[k]
+        c = c * d // (xp[k] * n)
+    c = c * d * 100 // (ann * n)
+    b = s_ + d * 100 // ann
+    y = d
+    for _ in range(255):
+        prev = y
+        y = (y * y + c) // (2 * y + b - d)
+        if abs(y - prev) <= 1:
+            return y
+    raise ValueError("y_D did not converge")
+
+
+def ng_withdraw_one_coin(burn: int, i: int, st: dict) -> int:
+    """`CurveStableSwapNG._calc_withdraw_one_coin(burn, i).dy` (v7.0.0)."""
+    rates, amp, fee, m = st["rates"], st["amp"], st["fee"], st["offpeg"]
+    xp = [r * b // 10**18 for r, b in zip(rates, st["balances"])]
+    n = len(xp)
+    d0 = ng_get_d(xp, amp)
+    d1 = d0 - burn * d0 // st["supply"]
+    new_y = ng_get_y_d(i, xp, amp, d1)
+    base_fee = fee * n // (4 * (n - 1))
+    ys = (d0 + d1) // (2 * n)
+    xr = list(xp)
+    for j in range(n):
+        if j == i:
+            dx_expected = xp[j] * d1 // d0 - new_y
+            xavg = (xp[j] + new_y) // 2
+        else:
+            dx_expected = xp[j] - xp[j] * d1 // d0
+            xavg = xp[j]
+        if dx_expected < 0:
+            raise ValueError("pool reverts")
+        xr[j] = xp[j] - ng_dynamic_fee(xavg, ys, base_fee, m) * dx_expected // 10**10
+    dy = xr[i] - ng_get_y_d(i, xr, amp, d1)
+    return (dy - 1) * 10**18 // rates[i]
+
+
+def ng_state(chain: Chain, pool: str, n: int) -> dict | None:
+    calls = [(pool, sel("balances(uint256)") + encode(["uint256"], [i])) for i in range(n)]
+    calls += [(pool, sel(v)) for v in ("A_precise()", "fee()", "stored_rates()",
+                                       "offpeg_fee_multiplier()", "totalSupply()")]
+    r = chain.multicall(calls)
+    bal = [word(x) for x in r[:n]]
+    amp, fee, rates_r, offpeg, supply = word(r[n]), word(r[n + 1]), r[n + 2], word(r[n + 3]), word(r[n + 4])
+    if None in bal or None in (amp, fee, offpeg, supply) or not rates_r[0]:
+        return None
+    return {"balances": bal, "amp": amp, "fee": fee, "offpeg": offpeg, "supply": supply,
+            "rates": list(decode(["uint256[]"], rates_r[1])[0])}
+
+
+def discover_curve_lp(chain, url, tokens, cands, usable, routed, pools) -> dict[str, dict]:
+    found = {}
+    for t in cands:
+        p = pools.get(t)
+        if not p or p["venue"] != "curve_ng":
+            continue
+        coins = [c.lower() for c in p["coins"]]
+        sym = tokens[t].get("symbol") or t
+        st = ng_state(chain, t, len(coins))
+        if st is None or st["supply"] == 0:
+            print(f"  skip {sym:24} {t}: pool state unreadable")
+            continue
+        sizes = sorted({10 ** tokens[t]["decimals"], st["supply"] // 10} - {0})
+        exact = True
+        for i in range(len(coins)):
+            for amt in sizes:
+                want = word(chain.multicall([(t, sel("calc_withdraw_one_coin(uint256,int128)")
+                                              + encode(["uint256", "int128"], [amt, i]))])[0])
+                try:
+                    got = ng_withdraw_one_coin(amt, i, st)
+                except (ValueError, ZeroDivisionError):
+                    got = None
+                if want != got:
+                    exact = False
+        if not exact:
+            print(f"  skip {sym:24} {t}: port != calc_withdraw_one_coin")
+            continue
+        xp = [r * b // 10**18 for r, b in zip(st["rates"], st["balances"])]
+        order = sorted(range(len(coins)), key=lambda k: -xp[k])
+        i = next((k for k in order if coins[k] in usable and coins[k] in routed), None)
+        if i is None:
+            continue
+        proof = None
+        for h in holders(url, t, chain.block)[:HOLDERS]:
+            bal = balance(chain, t, h)
+            if not bal:
+                continue
+            want = word(chain.multicall([(t, sel("calc_withdraw_one_coin(uint256,int128)")
+                                          + encode(["uint256", "int128"], [bal, i]))])[0])
+            got = call_from(chain, t, sel("remove_liquidity_one_coin(uint256,int128,uint256)")
+                            + encode(["uint256", "int128", "uint256"], [bal, i, 0]), h)
+            if want and got == want:
+                proof = h
+                break
+        if proof is None:
+            print(f"  skip {sym:24} {t}: no holder's withdrawal paid calc_withdraw_one_coin")
+            continue
+        print(f"  unwrap {sym:22} {t} -> {tokens[coins[i]].get('symbol')} (holder {proof})")
+        found[t] = {"kind": "curve_lp", "into": coins[i]}
+    return found
+
+
 # ── Pendle PT ───────────────────────────────────────────────────────────────
 
 
@@ -266,7 +394,7 @@ def discover_pendle(chain, url, tokens, cands, usable, routed) -> dict[str, dict
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--kinds", default="erc4626,pendle_pt")
+    ap.add_argument("--kinds", default="erc4626,pendle_pt,curve_lp")
     ap.add_argument("--recheck", action="store_true")
     args = ap.parse_args()
     kinds = set(args.kinds.split(","))
@@ -291,6 +419,8 @@ def main() -> int:
             u = e.get("unwrap")
             if not u:
                 continue
+            if u["kind"] == "curve_lp":
+                continue  # exact and nonlinear by design
             unit = 10 ** e["decimals"]
             q = (vault_quote(chain, t) if u["kind"] == "erc4626"
                  else (lambda a, u=u, t=t: pt_quote(chain, u["yt"], u["sy"], u["into"], a)))
@@ -305,6 +435,8 @@ def main() -> int:
         return 0
 
     found: dict[str, dict] = {}
+    if "curve_lp" in kinds:
+        found.update(discover_curve_lp(chain, url, tokens, cands, usable, routed, reg["pools"]))
     if "pendle_pt" in kinds:
         found.update(discover_pendle(chain, url, tokens, cands, usable, routed))
     if "erc4626" in kinds:

@@ -63,6 +63,8 @@ contract ForkUnwrapTest is Test {
     address constant UNIV3_FACTORY = 0x1F98431c8aD98523631AE4a59f267346ea31F984;
     bytes32 constant UNIV3_INIT_HASH = 0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54;
     address constant USDC_WETH_005 = 0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640;
+    /// Curve StableSwap-NG USR/USDC: coins [USR, USDC]; the pool is its LP.
+    address constant NG_USR_USDC = 0x3eE841F47947FEFbE510366E4bbb49e145484195;
     /// PT-sUSDE-25SEP2025, its YT and SY (redeems to sUSDe).
     address constant PT_SUSDE = 0x9F56094C450763769BA0EA9Fe2876070c0fD5F77;
     address constant YT_SUSDE = 0x029d6247ADb0A57138c62E3019C92d3dfC9c1840;
@@ -134,6 +136,32 @@ contract ForkUnwrapTest is Test {
             PB.profit(0, "")
         );
         _execute(plan, GT_WETH, USDC);
+    }
+
+    /// A Curve StableSwap-NG LP (USR/USDC, the pool is the LP) as collateral
+    /// against USDC: venue 7 withdraws the seized LP as USDC, which repays
+    /// the flash; the surplus USDC is swept to WETH.
+    function test_fork_morpho_curve_lp_withdrawn_into_usdc_debt() public onFork {
+        address user = makeAddr("lp-borrower");
+        deal(USDC, user, 20_000e6);
+        uint256[] memory amounts = new uint256[](2);
+        amounts[1] = 20_000e6;
+        vm.startPrank(user);
+        _approve(USDC, NG_USR_USDC);
+        uint256 lp = ICurveNgLp(NG_USR_USDC).add_liquidity(amounts, 0);
+        vm.stopPrank();
+        // USDC per LP: the pool's own one-coin withdrawal of one LP.
+        uint256 px = ICurveNgLp(NG_USR_USDC).calc_withdraw_one_coin(1e18, 1) * 1e36 / 1e18;
+        (MarketParams memory mp, bytes32 id) = _openAndSink(NG_USR_USDC, USDC, px, user, lp);
+        uint128 pulled = _repay(mp, id, user);
+        bytes memory plan = bytes.concat(
+            PB.header(PB.F_SWEEP, 0, 0, 0, 1),
+            PB.groupHead(PB.P_MORPHO, MORPHO, USDC, pulled, 1, 1),
+            PB.legMorpho(MORPHO, user, NG_USR_USDC, pulled, id),
+            PB.curveLpOneCoin(NG_USR_USDC, 1, USDC),
+            PB.profit(1, PB.poolSwap(USDC_WETH_005, USDC, WETH, PB.L_TAKE_BALANCE, 0))
+        );
+        _execute(plan, NG_USR_USDC, USDC);
     }
 
     /// An expired Pendle PT (PT-sUSDE-25SEP2025) as collateral against USDT:
@@ -271,6 +299,11 @@ contract ForkUnwrapTest is Test {
         uint256 wethPerUsdcX96 = uint256(sqrtP) * uint256(sqrtP) / (1 << 96);
         return (uint256(1 << 96) * 1e18) / wethPerUsdcX96;
     }
+}
+
+interface ICurveNgLp {
+    function add_liquidity(uint256[] memory amounts, uint256 minMint) external returns (uint256);
+    function calc_withdraw_one_coin(uint256 burn, int128 i) external view returns (uint256);
 }
 
 interface IPendleSYView {

@@ -8,8 +8,8 @@ use liq_types::fixed::{mul_div, Rounding, WAD};
 use liq_types::FlashProvider;
 use liq_wire::wire::{
     LegTail, LEG_EXACT_OUT, LEG_TAKE_BALANCE, V2_FACTORY_SUSHI, VENUE_CURVE_CRYPTO_POOL,
-    VENUE_CURVE_POOL, VENUE_PENDLE_PT_REDEEM, VENUE_ROUTER, VENUE_UNIV2_POOL, VENUE_UNIV3_POOL,
-    VENUE_UNWRAP_4626,
+    VENUE_CURVE_LP_ONE_COIN, VENUE_CURVE_POOL, VENUE_PENDLE_PT_REDEEM, VENUE_ROUTER,
+    VENUE_UNIV2_POOL, VENUE_UNIV3_POOL, VENUE_UNWRAP_4626,
 };
 
 use crate::error::{EncodeError, Result};
@@ -397,6 +397,16 @@ fn check_swap(s: &SwapLeg) -> Result<()> {
         }
         VENUE_UNWRAP_4626 => {
             if s.data.len() != 20 || s.data != s.token_in.as_slice() {
+                return Err(EncodeError::BadUnwrapData(s.data.len()));
+            }
+            if s.flags & LEG_EXACT_OUT != 0 {
+                return Err(EncodeError::UnwrapExactOut);
+            }
+        }
+        // The pool is the LP being spent; it and coin `i` are checked on
+        // chain (MetaRegistry, `coins(i)`).
+        VENUE_CURVE_LP_ONE_COIN => {
+            if s.data.len() != 21 || s.data.get(..20) != Some(s.token_in.as_slice()) {
                 return Err(EncodeError::BadUnwrapData(s.data.len()));
             }
             if s.flags & LEG_EXACT_OUT != 0 {

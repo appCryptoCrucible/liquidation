@@ -64,6 +64,10 @@ pub const VENUE_UNWRAP_4626: u8 = 5;
 /// its YT (`data` = 20-byte YT) for SY, then the SY for `tokenOut`. Exact
 /// input. Placed like venue 5.
 pub const VENUE_PENDLE_PT_REDEEM: u8 = 6;
+/// Swap venue 7 — unwrap: withdraw a Curve StableSwap-NG LP (`tokenIn`, the
+/// pool itself) as one coin, `remove_liquidity_one_coin(amount, i, 0)`
+/// (`data` = 20-byte pool ‖ 1-byte `i`). Exact input. Placed like venue 5.
+pub const VENUE_CURVE_LP_ONE_COIN: u8 = 7;
 /// UniV2 factory ids in venue-2 data.
 pub const V2_FACTORY_UNISWAP: u8 = 0;
 pub const V2_FACTORY_SUSHI: u8 = 1;

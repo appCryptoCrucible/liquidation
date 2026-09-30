@@ -24,12 +24,13 @@ pub const VENUE_CURVE_POOL: u8 = liq_wire::wire::VENUE_CURVE_POOL;
 pub const VENUE_CURVE_CRYPTO_POOL: u8 = liq_wire::wire::VENUE_CURVE_CRYPTO_POOL;
 pub const VENUE_UNWRAP_4626: u8 = liq_wire::wire::VENUE_UNWRAP_4626;
 pub const VENUE_PENDLE_PT_REDEEM: u8 = liq_wire::wire::VENUE_PENDLE_PT_REDEEM;
+pub const VENUE_CURVE_LP_ONE_COIN: u8 = liq_wire::wire::VENUE_CURVE_LP_ONE_COIN;
 
 /// An unwrap venue converts a wrapper into what it wraps, not into the
 /// group's debt asset.
 #[must_use]
 pub const fn is_unwrap_venue(v: u8) -> bool {
-    v == VENUE_UNWRAP_4626 || v == VENUE_PENDLE_PT_REDEEM
+    v == VENUE_UNWRAP_4626 || v == VENUE_PENDLE_PT_REDEEM || v == VENUE_CURVE_LP_ONE_COIN
 }
 /// V2 pair factory ids carried in a `VENUE_UNIV2_POOL` leg's data.
 pub const V2_FACTORY_UNISWAP: u8 = liq_wire::wire::V2_FACTORY_UNISWAP;

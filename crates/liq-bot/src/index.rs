@@ -646,6 +646,7 @@ fn load_book(
         || hops.curve_crypto == 0
         || hops.unwrap_4626 == 0
         || hops.pendle_pt == 0
+        || hops.curve_lp == 0
     {
         tracing::error!(
             ?hops,
@@ -886,6 +887,27 @@ fn add_unwraps(
         };
         let kind = match (u.kind, u.yt, u.sy) {
             (liq_config::UnwrapKind::Erc4626, _, _) => liq_router::UnwrapKind::Erc4626,
+            (liq_config::UnwrapKind::CurveLp, _, _) => {
+                // The LP is its own pool; `into` is one of its coins.
+                let coin = registry
+                    .pools
+                    .get(addr)
+                    .filter(|p| p.venue == PoolVenue::CurveNg)
+                    .and_then(|p| p.coins.iter().position(|c| *c == u.into))
+                    .and_then(|i| u8::try_from(i).ok());
+                let Some(i) = coin else {
+                    omit(
+                        omitted,
+                        "book",
+                        format!(
+                            "curve LP {addr:#x}: not an NG registry pool holding {:#x}",
+                            u.into
+                        ),
+                    );
+                    continue;
+                };
+                liq_router::UnwrapKind::CurveLp { i }
+            }
             (liq_config::UnwrapKind::PendlePt, Some(yt), Some(sy)) => {
                 liq_router::UnwrapKind::PendlePt { yt, sy }
             }
@@ -900,12 +922,20 @@ fn add_unwraps(
             wrapper_token: *addr,
             into,
             into_token: u.into,
-            assets_per_scale: U256::ZERO,
-            scale,
+            rate: liq_router::UnwrapRate::Unread,
+            // A Curve LP's scale is only the step its marginal is taken
+            // over: a thousandth of a token, not a thousand.
+            scale: match kind {
+                liq_router::UnwrapKind::CurveLp { .. } => scale
+                    .checked_div(U256::from(1_000_000u64))
+                    .unwrap_or_default(),
+                _ => scale,
+            },
             read_block: 0,
             gas: match kind {
                 liq_router::UnwrapKind::Erc4626 => hops.unwrap_4626,
                 liq_router::UnwrapKind::PendlePt { .. } => hops.pendle_pt,
+                liq_router::UnwrapKind::CurveLp { .. } => hops.curve_lp,
             },
         });
     }

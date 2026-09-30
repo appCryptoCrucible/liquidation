@@ -15,8 +15,8 @@ use liq_flash::{fee_amount, FlashIndex, Haircut};
 use liq_plan::{
     col_per_unit_debt_1e18, ensure_surplus_borrow_profit_legs, validate, BatchPlan, FlashGroup,
     LiqLeg, SwapLeg, ValidateCtx, LEG_EXACT_OUT, LEG_TAKE_BALANCE, VENUE_CURVE_CRYPTO_POOL,
-    VENUE_CURVE_POOL, VENUE_PENDLE_PT_REDEEM, VENUE_UNIV2_POOL, VENUE_UNIV3_POOL,
-    VENUE_UNWRAP_4626,
+    VENUE_CURVE_LP_ONE_COIN, VENUE_CURVE_POOL, VENUE_PENDLE_PT_REDEEM, VENUE_UNIV2_POOL,
+    VENUE_UNIV3_POOL, VENUE_UNWRAP_4626,
 };
 use liq_protocol::{ExecutorAdapter, FlashRoute, Quote};
 use liq_types::fixed::{mul_div, Rounding};
@@ -907,6 +907,11 @@ fn assemble_one(
                                 UnwrapKind::PendlePt { yt, .. } => {
                                     (VENUE_PENDLE_PT_REDEEM, yt.to_vec())
                                 }
+                                UnwrapKind::CurveLp { i } => {
+                                    let mut d = coll_addr.to_vec();
+                                    d.push(i);
+                                    (VENUE_CURVE_LP_ONE_COIN, d)
+                                }
                             };
                             repay_swaps.insert(
                                 0,
@@ -1605,7 +1610,9 @@ mod tests {
             wrapper_token: tok(2),
             into,
             into_token: if into == A0 { tok(0) } else { tok(1) },
-            assets_per_scale: e18(11) / U256::from(10u64),
+            rate: crate::solver::UnwrapRate::Linear {
+                assets_per_scale: e18(11) / U256::from(10u64),
+            },
             scale: e18(1),
             read_block: 1,
             gas: 60_000,
@@ -1799,6 +1806,51 @@ mod tests {
         assert_eq!((repay[0].token_in, repay[0].token_out), (tok(2), tok(0)));
         assert_eq!(repay[0].data, yt.to_vec());
         assert_eq!(repay[1].flags & LEG_EXACT_OUT, LEG_EXACT_OUT);
+    }
+
+    /// A Curve NG LP exits through venue 7: `pool ‖ i`, the pool being the
+    /// LP itself. Quoted on the pool's state in the book; an unread supply
+    /// is not routed.
+    #[test]
+    fn curve_lp_exit_assembles_as_venue_7() {
+        use liq_plan::VENUE_CURVE_LP_ONE_COIN;
+        // The LP (A2, tok(2)) is an NG pool of (A0, A1): withdraw coin 0.
+        let mut ng =
+            crate::fixtures::curve(2, &[e18(10_000_000), e18(10_000_000)], 100_000, 4_000_000);
+        ng.address = tok(2);
+        ng.assets = smallvec::SmallVec::from_slice(&[A0, A1]);
+        ng.tokens = smallvec::SmallVec::from_slice(&[tok(0), tok(1)]);
+        if let crate::solver::PoolState::Curve(c) = &mut ng.state {
+            c.ng = true;
+        }
+        let mut bk = book(vec![deep(), ng]);
+        let mut lp = unwrap_a2(A0);
+        lp.kind = crate::solver::UnwrapKind::CurveLp { i: 0 };
+        lp.rate = crate::solver::UnwrapRate::Unread;
+        lp.scale = e18(1) / U256::from(1_000u64);
+        bk.add_unwrap(lp);
+        assert!(
+            solve_pair(&bk, A2, A1, e18(10), &GAS, &B).is_err(),
+            "unread"
+        );
+        assert!(bk.set_unwrap_rate(
+            A2,
+            crate::solver::UnwrapRate::CurveLp {
+                total_supply: e18(20_000_000)
+            },
+            1
+        ));
+        let via = solve_pair(&bk, A2, A1, e18(10), &GAS, &B).unwrap();
+        let u = via.unwrap.unwrap();
+        // ~1 coin per LP in a balanced pool, less the withdrawal fee.
+        assert!(u.amount_out < e18(10) && u.amount_out > e18(9));
+        let (_, plan) = assemble_a2_exit(&bk);
+        let repay = &plan.groups[0].repay_swaps;
+        assert_eq!(repay[0].venue, VENUE_CURVE_LP_ONE_COIN);
+        assert_eq!((repay[0].token_in, repay[0].token_out), (tok(2), tok(0)));
+        let mut want = tok(2).to_vec();
+        want.push(0);
+        assert_eq!(repay[0].data, want);
     }
 
     /// A wrapper of the debt asset itself needs no pool: the unwrap pays the

@@ -886,6 +886,142 @@ pub fn curve_get_y(
     Err(RouteError::Math)
 }
 
+/// StableSwap-NG `get_y_D(A, i, xp, D)`: Newton for `xp[i]` when the pool's
+/// invariant is `d` (the other balances fixed).
+fn curve_get_y_d(s: &CurveState, i: usize, xp: &[U256], d: U256) -> Result<U256, RouteError> {
+    let n = n_coins(s)?;
+    let ap = s.a_precision;
+    let ann = curve_ann(s, n)?;
+    let mut c = d;
+    let mut s_ = U256::ZERO;
+    for (k, &xk) in xp.iter().enumerate() {
+        if k == i {
+            continue;
+        }
+        s_ = s_.checked_add(xk).ok_or(RouteError::Math)?;
+        let den = xk.checked_mul(n).ok_or(RouteError::Math)?;
+        if den.is_zero() {
+            return Err(RouteError::InsufficientLiquidity);
+        }
+        c = c
+            .checked_mul(d)
+            .and_then(|v| v.checked_div(den))
+            .ok_or(RouteError::Math)?;
+    }
+    let ann_n = ann.checked_mul(n).ok_or(RouteError::Math)?;
+    c = c
+        .checked_mul(d)
+        .and_then(|v| v.checked_mul(ap))
+        .and_then(|v| v.checked_div(ann_n))
+        .ok_or(RouteError::Math)?;
+    let b = d
+        .checked_mul(ap)
+        .and_then(|v| v.checked_div(ann))
+        .and_then(|v| v.checked_add(s_))
+        .ok_or(RouteError::Math)?;
+    let mut y = d;
+    for _ in 0..255 {
+        let y_prev = y;
+        let num = y
+            .checked_mul(y)
+            .and_then(|v| v.checked_add(c))
+            .ok_or(RouteError::Math)?;
+        let den = y
+            .checked_mul(U256::from(2u64))
+            .and_then(|v| v.checked_add(b))
+            .and_then(|v| v.checked_sub(d))
+            .ok_or(RouteError::Math)?;
+        y = num.checked_div(den).ok_or(RouteError::Math)?;
+        if y.abs_diff(y_prev) <= U256::ONE {
+            return Ok(y);
+        }
+    }
+    Err(RouteError::Math)
+}
+
+/// StableSwap-NG `_calc_withdraw_one_coin(burn, i).dy`: coin `i` (raw
+/// units) paid by `remove_liquidity_one_coin(burn, i, …)` when the LP
+/// supply is `total_supply` (`CurveStableSwapNG.vy` v7.0.0). Checked where
+/// the pool's arithmetic reverts, `unsafe_*` where it does not check.
+pub fn ng_withdraw_one_coin(
+    s: &CurveState,
+    i: u8,
+    burn: U256,
+    total_supply: U256,
+) -> Result<U256, RouteError> {
+    if s.stale {
+        return Err(RouteError::StalePool);
+    }
+    if !s.ng {
+        return Err(RouteError::BadLeg);
+    }
+    let n = n_coins(s)?;
+    let n_us = s.balances.len();
+    let i = usize::from(i);
+    if i >= n_us {
+        return Err(RouteError::BadLeg);
+    }
+    if burn.is_zero() || total_supply.is_zero() {
+        return Err(RouteError::InsufficientLiquidity);
+    }
+    let xp = curve_xp(s)?;
+    let d0 = curve_get_d(s, &xp)?;
+    if d0.is_zero() {
+        return Err(RouteError::InsufficientLiquidity);
+    }
+    let d1 = burn
+        .checked_mul(d0)
+        .and_then(|v| v.checked_div(total_supply))
+        .and_then(|v| d0.checked_sub(v))
+        .ok_or(RouteError::Math)?;
+    let new_y = curve_get_y_d(s, i, &xp, d1)?;
+    // base_fee = fee · N / (4 · (N − 1)); ys = (D0 + D1) / (2N)
+    let base_fee = s
+        .fee
+        .checked_mul(n)
+        .and_then(|v| v.checked_div(U256::from(4u8).checked_mul(n.checked_sub(U256::ONE)?)?))
+        .ok_or(RouteError::Math)?;
+    let ys = d0
+        .checked_add(d1)
+        .and_then(|v| v.checked_div(U256::from(2u8).checked_mul(n)?))
+        .ok_or(RouteError::Math)?;
+    let mut xp_reduced = xp.clone();
+    for (j, (&xp_j, red)) in xp.iter().zip(xp_reduced.iter_mut()).enumerate() {
+        let scaled = xp_j
+            .checked_mul(d1)
+            .and_then(|v| v.checked_div(d0))
+            .ok_or(RouteError::Math)?;
+        let (dx_expected, xavg) = if j == i {
+            (
+                scaled.checked_sub(new_y).ok_or(RouteError::Math)?,
+                xp_j.checked_add(new_y)
+                    .and_then(|v| v.checked_div(U256::from(2u8)))
+                    .ok_or(RouteError::Math)?,
+            )
+        } else {
+            (xp_j.checked_sub(scaled).ok_or(RouteError::Math)?, xp_j)
+        };
+        let fee = ng_dynamic_fee(xavg, ys, base_fee, s.offpeg_fee_multiplier)?;
+        let cut = fee
+            .checked_mul(dx_expected)
+            .and_then(|v| v.checked_div(CURVE_FEE_DENOM))
+            .ok_or(RouteError::Math)?;
+        *red = xp_j.checked_sub(cut).ok_or(RouteError::Math)?;
+    }
+    let y = curve_get_y_d(s, i, &xp_reduced, d1)?;
+    let dy = xp_reduced
+        .get(i)
+        .copied()
+        .ok_or(RouteError::BadLeg)?
+        .checked_sub(y)
+        .and_then(|v| v.checked_sub(U256::ONE))
+        .ok_or(RouteError::InsufficientLiquidity)?;
+    let rate = s.rates.get(i).copied().ok_or(RouteError::BadLeg)?;
+    dy.checked_mul(WAD)
+        .and_then(|v| v.checked_div(rate))
+        .ok_or(RouteError::Math)
+}
+
 /// Output of `exchange(i, j, dx)` — **not** `get_dy`: the two round
 /// differently for non-18-decimal coins (`get_dy` scales to raw before the
 /// fee, `exchange` takes the fee in `xp` units then scales). Execution
@@ -1083,6 +1219,22 @@ pub enum UnwrapKind {
     /// Expired Pendle PT: `redeemPY` on its YT for SY, then `SY.redeem`
     /// into the unwrapped token.
     PendlePt { yt: Address, sy: Address },
+    /// Curve StableSwap-NG LP (the pool is its own LP token):
+    /// `remove_liquidity_one_coin` into coin `i`. The pool is in the book;
+    /// its state there is what the withdrawal is quoted on.
+    CurveLp { i: u8 },
+}
+
+/// What an unwrap pays, as last read.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum UnwrapRate {
+    /// Never read: not routed.
+    Unread,
+    /// `into` paid for [`Unwrap::scale`] wrapper units (ERC-4626 vaults,
+    /// expired PTs): linear in size (discovery checks it).
+    Linear { assets_per_scale: U256 },
+    /// Curve LP: the LP's total supply; the pool's balances are the book's.
+    CurveLp { total_supply: U256 },
 }
 
 /// A collateral the Executor unwraps before selling: the exit for `wrapper`
@@ -1094,9 +1246,10 @@ pub struct Unwrap {
     pub wrapper_token: Address,
     pub into: AssetId,
     pub into_token: Address,
-    /// `previewRedeem(scale)` at [`Self::read_block`].
-    pub assets_per_scale: U256,
-    /// Shares the rate was read at (large, so the linear rate is precise).
+    /// The last read, at [`Self::read_block`].
+    pub rate: UnwrapRate,
+    /// Wrapper units a linear rate is read at (large, so it is precise);
+    /// also the step of the marginal a curve's `ρ` is taken over.
     pub scale: U256,
     /// Block of the last rate read; 0 = never read (not routed).
     pub read_block: u64,
@@ -1108,38 +1261,72 @@ impl Unwrap {
     /// Read at least once, with a usable rate.
     #[must_use]
     pub fn is_live(&self) -> bool {
-        self.read_block > 0 && !self.assets_per_scale.is_zero() && !self.scale.is_zero()
+        if self.read_block == 0 || self.scale.is_zero() {
+            return false;
+        }
+        match self.rate {
+            UnwrapRate::Unread => false,
+            UnwrapRate::Linear { assets_per_scale } => !assets_per_scale.is_zero(),
+            UnwrapRate::CurveLp { total_supply } => !total_supply.is_zero(),
+        }
     }
 
-    /// What unwrapping `amount` pays, conservatively: the linear rate less
-    /// one part per million and one wei (the vault rounds down, and its rate
-    /// moves a little between the read and inclusion).
-    pub fn convert(&self, amount: U256) -> Result<U256, RouteError> {
+    /// What unwrapping `amount` pays. Linear: the rate less one part per
+    /// million and one wei (the vault rounds down, and its rate moves a
+    /// little between the read and inclusion). Curve LP: the pool's own
+    /// withdrawal math on the book's state of the pool, exactly.
+    pub fn convert(&self, amount: U256, book: &PoolBook) -> Result<U256, RouteError> {
         if !self.is_live() {
             return Err(RouteError::StalePool);
         }
-        let raw = mul_div_512(amount, self.assets_per_scale, self.scale)?;
-        let haircut = raw
-            .checked_div(U256::from(1_000_000u64))
-            .unwrap_or_default();
-        Ok(raw.saturating_sub(haircut).saturating_sub(U256::ONE))
+        match (self.rate, self.kind) {
+            (UnwrapRate::Linear { assets_per_scale }, _) => {
+                let raw = mul_div_512(amount, assets_per_scale, self.scale)?;
+                let haircut = raw
+                    .checked_div(U256::from(1_000_000u64))
+                    .unwrap_or_default();
+                Ok(raw.saturating_sub(haircut).saturating_sub(U256::ONE))
+            }
+            (UnwrapRate::CurveLp { total_supply }, UnwrapKind::CurveLp { i }) => {
+                let pool = book
+                    .by_address(self.wrapper_token)
+                    .and_then(|id| book.get(id))
+                    .ok_or(RouteError::BadLeg)?;
+                let PoolState::Curve(s) = &pool.state else {
+                    return Err(RouteError::BadLeg);
+                };
+                ng_withdraw_one_coin(s, i, amount, total_supply)
+            }
+            _ => Err(RouteError::BadLeg),
+        }
     }
 
-    /// `ρ` of the unwrap alone (Q96 sqrt of the rate).
-    pub fn rho(&self) -> Result<U256, RouteError> {
-        let q = U512::from(self.assets_per_scale)
+    /// `into` per wrapper unit at zero size, as `(num, den)`: the linear
+    /// rate, or a curve's marginal over one [`Self::scale`] step.
+    fn marginal(&self, book: &PoolBook) -> Result<(U256, U256), RouteError> {
+        match self.rate {
+            UnwrapRate::Linear { assets_per_scale } => Ok((assets_per_scale, self.scale)),
+            _ => Ok((self.convert(self.scale, book)?, self.scale)),
+        }
+    }
+
+    /// `ρ` of the unwrap alone (Q96 sqrt of its marginal rate).
+    pub fn rho(&self, book: &PoolBook) -> Result<U256, RouteError> {
+        let (num, den) = self.marginal(book)?;
+        let q = U512::from(num)
             .checked_mul(U512::from(Q192))
-            .and_then(|v| v.checked_div(U512::from(self.scale)))
+            .and_then(|v| v.checked_div(U512::from(den)))
             .ok_or(RouteError::Math)?;
         narrow(q.root(2))
     }
 
     /// `ρ` of `inner ∘ unwrap` from `inner`'s `ρ`: `sqrt(ρ_inner² · rate)`.
-    pub fn scale_rho(&self, rho_inner: U256) -> Result<U256, RouteError> {
+    pub fn scale_rho(&self, rho_inner: U256, book: &PoolBook) -> Result<U256, RouteError> {
+        let (num, den) = self.marginal(book)?;
         let q = U512::from(rho_inner)
             .checked_mul(U512::from(rho_inner))
-            .and_then(|v| v.checked_mul(U512::from(self.assets_per_scale)))
-            .and_then(|v| v.checked_div(U512::from(self.scale)))
+            .and_then(|v| v.checked_mul(U512::from(num)))
+            .and_then(|v| v.checked_div(U512::from(den)))
             .ok_or(RouteError::Math)?;
         narrow(q.root(2))
     }
@@ -1291,21 +1478,16 @@ impl PoolBook {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    /// Record a wrapper's `previewRedeem(scale)` read at `block`.
-    pub fn set_unwrap_rate(
-        &mut self,
-        wrapper: AssetId,
-        assets_per_scale: U256,
-        block: u64,
-    ) -> bool {
+    /// Record a wrapper's rate read at `block`.
+    pub fn set_unwrap_rate(&mut self, wrapper: AssetId, rate: UnwrapRate, block: u64) -> bool {
         let Some(u) = self.unwraps.get_mut(&wrapper) else {
             return false;
         };
         if block < u.read_block {
             return false;
         }
-        let changed = u.assets_per_scale != assets_per_scale;
-        u.assets_per_scale = assets_per_scale;
+        let changed = u.rate != rate;
+        u.rate = rate;
         u.read_block = block;
         if changed {
             self.generation = self.generation.wrapping_add(1);

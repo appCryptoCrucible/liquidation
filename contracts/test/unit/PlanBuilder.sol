@@ -22,6 +22,7 @@ library PlanBuilder {
     uint8 internal constant S_CURVE_CRYPTO = 4;
     uint8 internal constant S_UNWRAP_4626 = 5;
     uint8 internal constant S_PENDLE_PT_REDEEM = 6;
+    uint8 internal constant S_CURVE_LP_ONE_COIN = 7;
 
     function header(uint8 flags, uint16 bidBps, uint128 gasCostWei, uint128 minProfit, uint8 groups)
         internal pure returns (bytes memory)
@@ -138,6 +139,11 @@ library PlanBuilder {
     /// Redeem all held `vault` shares into its asset.
     function unwrap4626(address vault, address asset) internal pure returns (bytes memory) {
         return swap(S_UNWRAP_4626, vault, asset, L_TAKE_BALANCE, 0, abi.encodePacked(vault));
+    }
+
+    /// Withdraw a Curve NG LP (the pool) as coin `i` (`tokenOut`).
+    function curveLpOneCoin(address pool, uint8 i, address tokenOut) internal pure returns (bytes memory) {
+        return swap(S_CURVE_LP_ONE_COIN, pool, tokenOut, L_TAKE_BALANCE, 0, abi.encodePacked(pool, i));
     }
 
     /// Redeem an expired Pendle PT through its YT and SY into `tokenOut`.

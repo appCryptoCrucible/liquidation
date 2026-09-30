@@ -813,6 +813,6 @@
     "WP C2 triage: morpho debt switched to accrued expectedTotalBorrowAssets, silo to getDebtAssets(); Family B repriced at one block (admitted 190 -> 192)",
     "WP C2 triage: \u00a74b flagged 9 symbol-colliding tokens on 25 market entries",
     "exits: univ2/curve/curve_ng/curve_crypto discovered by tools/registry/discover_exits.py at block 26084994",
-    "unwraps: 59 erc4626, 78 pendle_pt discovered by tools/registry/discover_unwraps.py at block 26087717 (linearity recheck applied)"
+    "unwraps: 5 curve_lp, 59 erc4626, 78 pendle_pt discovered by tools/registry/discover_unwraps.py at block 26088575"
   ]
 }

@@ -153,6 +153,11 @@ interface IUniV2Pair {
 interface ICurvePool {
     function coins(uint256 i) external view returns (address);
     function exchange(int128 i, int128 j, uint256 dx, uint256 min_dy) external;
+    /// StableSwap-NG: burns the caller's LP (the pool is its own LP token)
+    /// and pays coin `i` to the caller.
+    function remove_liquidity_one_coin(uint256 burn_amount, int128 i, uint256 min_received)
+        external
+        returns (uint256);
 }
 
 /// Curve crypto pool (twocrypto-ng, tricrypto-ng, the original

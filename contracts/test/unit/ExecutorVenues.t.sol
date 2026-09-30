@@ -5,7 +5,8 @@ import {Executor} from "../../src/Executor.sol";
 import {ExecutorTestBase} from "./Base.sol";
 import {PlanBuilder as PB} from "./PlanBuilder.sol";
 import {
-    MockV2Pair, MockCurvePool, MockCurveCryptoPool, MockVault4626, MockPendlePT, MockPendleYT, MockPendleSY
+    MockV2Pair, MockCurvePool, MockCurveCryptoPool, MockVault4626, MockPendlePT, MockPendleYT, MockPendleSY,
+    MockCurveNgLp
 } from "./Mocks.sol";
 
 /// Pool-direct UniswapV2 / SushiSwap and Curve legs. The success paths run
@@ -263,6 +264,61 @@ contract ExecutorVenuesTest is ExecutorTestBase {
         bytes memory leg = PB.swap(5, address(v), address(coll), PB.L_TAKE_BALANCE, 0, abi.encodePacked(address(other)));
         vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(5), address(other)));
         _exec(_vaultPlan(v, leg));
+    }
+
+    // ── Curve NG LP one-coin withdrawal ───────────────────────────────────
+
+    /// An NG pool of (COLL, DEBT) whose LP pays 1 COLL per LP.
+    function _ngLp(bool register) internal returns (MockCurveNgLp lp) {
+        address[] memory coins = new address[](2);
+        coins[0] = address(coll);
+        coins[1] = address(debt);
+        lp = new MockCurveNgLp(coins);
+        lp.mint(address(pool), 1e12);
+        coll.mint(address(lp), 1e12);
+        if (register) curveRegistry.register(address(lp));
+    }
+
+    function _lpPlan(address lp, bytes memory withdrawLeg) internal view returns (bytes memory) {
+        return bytes.concat(
+            PB.header(PB.F_SWEEP, 0, GAS_COST, MIN_PROFIT, 1),
+            PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 2),
+            PB.legV3(address(pool), borrower, lp, REPAY),
+            withdrawLeg,
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.profit(1, _collProfit())
+        );
+    }
+
+    function test_curve_lp_withdraws_one_coin_then_repays() public {
+        MockCurveNgLp lp = _ngLp(true);
+        uint256 sinkBefore = weth.balanceOf(sink);
+        _exec(_lpPlan(address(lp), PB.curveLpOneCoin(address(lp), 0, address(coll))));
+        assertGt(weth.balanceOf(sink), sinkBefore, "no profit");
+        assertEq(lp.balanceOf(address(ex)), 0, "LP all withdrawn");
+        _assertClean();
+    }
+
+    function test_curve_lp_unregistered_pool_is_refused() public {
+        MockCurveNgLp lp = _ngLp(false);
+        vm.expectRevert(bytes("no registry"));
+        _exec(_lpPlan(address(lp), PB.curveLpOneCoin(address(lp), 0, address(coll))));
+    }
+
+    function test_curve_lp_wrong_coin_is_refused() public {
+        MockCurveNgLp lp = _ngLp(true);
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(7), address(lp)));
+        _exec(_lpPlan(address(lp), PB.curveLpOneCoin(address(lp), 1, address(coll))));
+    }
+
+    /// The pool must be the LP being spent: a registered pool cannot be named
+    /// to withdraw some other token.
+    function test_curve_lp_pool_must_be_the_spent_token() public {
+        MockCurveNgLp lp = _ngLp(true);
+        MockCurveNgLp other = _ngLp(true);
+        bytes memory leg = PB.swap(7, address(lp), address(coll), PB.L_TAKE_BALANCE, 0, abi.encodePacked(address(other), uint8(0)));
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(7), address(other)));
+        _exec(_lpPlan(address(lp), leg));
     }
 
     // ── Pendle PT redeem (expired) ────────────────────────────────────────

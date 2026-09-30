@@ -410,14 +410,14 @@ contract ExecutorFlowTest is ExecutorTestBase {
     }
 
     function test_unknown_venue_reverts() public {
-        bytes memory profitLeg = PB.swap(7, address(coll), address(weth), PB.L_TAKE_BALANCE, 0, abi.encodePacked(address(pCollWeth)));
+        bytes memory profitLeg = PB.swap(9, address(coll), address(weth), PB.L_TAKE_BALANCE, 0, abi.encodePacked(address(pCollWeth)));
         bytes memory plan = bytes.concat(
             PB.header(PB.F_SWEEP, 0, GAS_COST, 0, 1),
             PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 1),
             PB.legV3(address(pool), borrower, address(coll), REPAY), _repayLeg(),
             PB.profit(1, profitLeg)
         );
-        vm.expectRevert(abi.encodeWithSelector(Executor.UnknownVenue.selector, uint8(7)));
+        vm.expectRevert(abi.encodeWithSelector(Executor.UnknownVenue.selector, uint8(9)));
         _exec(plan);
     }
 
