@@ -1223,9 +1223,19 @@ pub enum UnwrapKind {
     /// `remove_liquidity_one_coin` into coin `i`. The pool is in the book;
     /// its state there is what the withdrawal is quoted on.
     CurveLp { i: u8 },
+    /// Live Pendle PT: sold on its market (`swapExactPtForSy`), then
+    /// `SY.redeem` into the unwrapped token.
+    PendleMarket {
+        market: Address,
+        yt: Address,
+        sy: Address,
+    },
 }
 
 /// What an unwrap pays, as last read.
+// One per wrapper, replaced every block: a boxed snapshot would allocate on
+// each read, the size difference costs nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum UnwrapRate {
     /// Never read: not routed.
@@ -1235,6 +1245,8 @@ pub enum UnwrapRate {
     Linear { assets_per_scale: U256 },
     /// Curve LP: the LP's total supply; the pool's balances are the book's.
     CurveLp { total_supply: U256 },
+    /// Live Pendle PT: the market and SY as read ([`crate::pendle`]).
+    Pendle(crate::pendle::MarketSnapshot),
 }
 
 /// A collateral the Executor unwraps before selling: the exit for `wrapper`
@@ -1268,6 +1280,9 @@ impl Unwrap {
             UnwrapRate::Unread => false,
             UnwrapRate::Linear { assets_per_scale } => !assets_per_scale.is_zero(),
             UnwrapRate::CurveLp { total_supply } => !total_supply.is_zero(),
+            UnwrapRate::Pendle(s) => {
+                s.total_pt > alloy_primitives::I256::ZERO && !s.sy_scale.is_zero()
+            }
         }
     }
 
@@ -1296,6 +1311,9 @@ impl Unwrap {
                     return Err(RouteError::BadLeg);
                 };
                 ng_withdraw_one_coin(s, i, amount, total_supply)
+            }
+            (UnwrapRate::Pendle(s), UnwrapKind::PendleMarket { .. }) => {
+                crate::pendle::sell_pt_for_out(&s, amount)
             }
             _ => Err(RouteError::BadLeg),
         }

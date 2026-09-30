@@ -81,6 +81,8 @@ pub struct HopGas {
     pub pendle_pt: u64,
     /// Curve NG `remove_liquidity_one_coin` (swap venue 7).
     pub curve_lp: u64,
+    /// Pendle market `swapExactPtForSy` + SY `redeem` (swap venue 8).
+    pub pendle_market: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,6 +128,7 @@ struct SwapToml {
     unwrap_4626: Option<u64>,
     pendle_pt: Option<u64>,
     curve_lp: Option<u64>,
+    pendle_market: Option<u64>,
 }
 
 impl GasModel {
@@ -173,6 +176,7 @@ impl GasModel {
                 unwrap_4626: t.swap.unwrap_4626.unwrap_or(0),
                 pendle_pt: t.swap.pendle_pt.unwrap_or(0),
                 curve_lp: t.swap.curve_lp.unwrap_or(0),
+                pendle_market: t.swap.pendle_market.unwrap_or(0),
             },
         })
     }

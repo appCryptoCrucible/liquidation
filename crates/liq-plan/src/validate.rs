@@ -8,8 +8,8 @@ use liq_types::fixed::{mul_div, Rounding, WAD};
 use liq_types::FlashProvider;
 use liq_wire::wire::{
     LegTail, LEG_EXACT_OUT, LEG_TAKE_BALANCE, V2_FACTORY_SUSHI, VENUE_CURVE_CRYPTO_POOL,
-    VENUE_CURVE_LP_ONE_COIN, VENUE_CURVE_POOL, VENUE_PENDLE_PT_REDEEM, VENUE_ROUTER,
-    VENUE_UNIV2_POOL, VENUE_UNIV3_POOL, VENUE_UNWRAP_4626,
+    VENUE_CURVE_LP_ONE_COIN, VENUE_CURVE_POOL, VENUE_PENDLE_MARKET_SELL, VENUE_PENDLE_PT_REDEEM,
+    VENUE_ROUTER, VENUE_UNIV2_POOL, VENUE_UNIV3_POOL, VENUE_UNWRAP_4626,
 };
 
 use crate::error::{EncodeError, Result};
@@ -413,9 +413,9 @@ fn check_swap(s: &SwapLeg) -> Result<()> {
                 return Err(EncodeError::UnwrapExactOut);
             }
         }
-        // The YT is checked against the PT on chain (they must name each
-        // other); here only its shape.
-        VENUE_PENDLE_PT_REDEEM => {
+        // The YT (venue 6) is checked against the PT on chain, and the
+        // market (venue 8) against Pendle's factory; here only the shape.
+        VENUE_PENDLE_PT_REDEEM | VENUE_PENDLE_MARKET_SELL => {
             if s.data.len() != 20 || s.data.iter().all(|b| *b == 0) {
                 return Err(EncodeError::BadUnwrapData(s.data.len()));
             }

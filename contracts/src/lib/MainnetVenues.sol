@@ -27,4 +27,9 @@ library MainnetVenues {
     /// its proxy `MCD_PAUSE_PROXY`, so Spark parameter changes are spells
     /// executed through it.
     address internal constant SKY_PAUSE = 0xbE286431454714F511008713973d3B053A2d38f3;
+    /// Pendle `PendleMarketFactoryV6` (pendle-core-v2-public
+    /// `deployments/1-core.json` `marketFactoryV6`). Every live mainnet PT's
+    /// market at 2026-09-30 is `isValidMarket` here, and the PT-sale math the
+    /// bot quotes is ported from its `PendleMarketV6`.
+    address internal constant PENDLE_MARKET_FACTORY_V6 = 0x6d247b1c044fA1E22e6B04fA9F71Baf99EB29A9f;
 }

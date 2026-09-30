@@ -58,6 +58,18 @@ sol! {
     function pyIndexStored() returns (uint256);
     function previewRedeem(address tokenOut, uint256 amountSharesToRedeem) returns (uint256);
     function totalSupply() returns (uint256);
+    struct MarketState {
+        int256 totalPt;
+        int256 totalSy;
+        int256 totalLp;
+        address treasury;
+        int256 scalarRoot;
+        uint256 expiry;
+        uint256 lnFeeRateRoot;
+        uint256 reserveFeePercent;
+        uint256 lastLnImpliedRate;
+    }
+    function readState(address router) returns (MarketState market);
 }
 
 /// Multicall3, same address on every EVM chain.
@@ -720,6 +732,8 @@ async fn read_unwrap_rates(
                 first.push(call(sy, exchangeRateCall {}.abi_encode()));
                 first.push(call(yt, pyIndexStoredCall {}.abi_encode()));
             }
+            // A market is a snapshot, read by `read_pendle_markets`.
+            liq_router::UnwrapKind::PendleMarket { .. } => {}
         }
     }
     let words = read_words(rpc, first, block).await;
@@ -758,6 +772,7 @@ async fn read_unwrap_rates(
                     pending.push(i);
                 }
             }
+            liq_router::UnwrapKind::PendleMarket { .. } => out.push(None),
         }
     }
     if !second.is_empty() {
@@ -767,6 +782,112 @@ async fn read_unwrap_rates(
                 *slot = w;
             }
         }
+    }
+    out
+}
+
+/// Each live-PT market at `block` as a [`liq_router::pendle::MarketSnapshot`]
+/// quoted for the next block (`timestamp + 12`): `readState(0)` (no router
+/// fee override applies to the Executor), the index `YT.pyIndexCurrent()`
+/// would return (`max(SY.exchangeRate(), pyIndexStored)`), and
+/// `SY.previewRedeem(into, 1000 PT-units)`. `None` for any other target or a
+/// failed read.
+async fn read_pendle_markets(
+    rpc: &HttpRpc,
+    targets: &[UnwrapTarget],
+    block: u64,
+) -> Vec<Option<liq_router::pendle::MarketSnapshot>> {
+    let mut calls = vec![call(
+        MULTICALL3,
+        getCurrentBlockTimestampCall {}.abi_encode(),
+    )];
+    for t in targets {
+        if let liq_router::UnwrapKind::PendleMarket { market, yt, sy } = t.kind {
+            let sy_scale = t.scale.saturating_mul(U256::from(1_000u64));
+            calls.push(call(
+                market,
+                readStateCall {
+                    router: Address::ZERO,
+                }
+                .abi_encode(),
+            ));
+            calls.push(call(sy, exchangeRateCall {}.abi_encode()));
+            calls.push(call(yt, pyIndexStoredCall {}.abi_encode()));
+            calls.push(call(
+                sy,
+                previewRedeem_1Call {
+                    tokenOut: t.into,
+                    amountSharesToRedeem: sy_scale,
+                }
+                .abi_encode(),
+            ));
+        }
+    }
+    let mut out = Vec::with_capacity(targets.len());
+    if calls.len() == 1 {
+        out.resize(targets.len(), None);
+        return out;
+    }
+    let mut rows = Vec::with_capacity(calls.len());
+    for chunk in calls.chunks(BATCH) {
+        let res = aggregate(rpc, chunk.to_vec(), block).await;
+        for k in 0..chunk.len() {
+            rows.push(
+                res.as_ref()
+                    .and_then(|r| r.get(k))
+                    .filter(|r| r.success)
+                    .map(|r| r.returnData.clone()),
+            );
+        }
+    }
+    let ts = rows
+        .first()
+        .cloned()
+        .flatten()
+        .and_then(|d| getCurrentBlockTimestampCall::abi_decode_returns(&d).ok())
+        .and_then(|t| u64::try_from(t).ok());
+    let word = |k: usize| {
+        rows.get(k)
+            .cloned()
+            .flatten()
+            .and_then(|d| exchangeRateCall::abi_decode_returns(&d).ok())
+    };
+    let mut at = 1usize;
+    for t in targets {
+        let liq_router::UnwrapKind::PendleMarket { .. } = t.kind else {
+            out.push(None);
+            continue;
+        };
+        let state = rows
+            .get(at)
+            .cloned()
+            .flatten()
+            .and_then(|d| readStateCall::abi_decode_returns(&d).ok());
+        let (rate, stored, out_per) = (
+            word(at.saturating_add(1)),
+            word(at.saturating_add(2)),
+            word(at.saturating_add(3)),
+        );
+        at = at.saturating_add(4);
+        let snap = match (ts, state, rate, stored, out_per) {
+            (Some(ts), Some(m), Some(rate), Some(stored), Some(out_per)) => u64::try_from(m.expiry)
+                .ok()
+                .map(|expiry| liq_router::pendle::MarketSnapshot {
+                    total_pt: m.totalPt,
+                    total_sy: m.totalSy,
+                    scalar_root: m.scalarRoot,
+                    expiry,
+                    ln_fee_rate_root: m.lnFeeRateRoot,
+                    reserve_fee_percent: m.reserveFeePercent,
+                    last_ln_implied_rate: m.lastLnImpliedRate,
+                    index: rate.max(stored),
+                    quote_ts: ts.saturating_add(12),
+                    out_per_sy_scale: out_per,
+                    sy_scale: t.scale.saturating_mul(U256::from(1_000u64)),
+                }),
+            _ => None,
+        };
+        out.push(snap);
     }
     out
 }
@@ -782,26 +903,28 @@ async fn refresh_unwraps(
     block: u64,
 ) -> (usize, usize) {
     let reads = read_unwrap_rates(rpc, targets, block).await;
-    let read = reads
+    let markets = read_pendle_markets(rpc, targets, block).await;
+    let rates: Vec<Option<liq_router::UnwrapRate>> = targets
         .iter()
-        .filter(|r| r.is_some_and(|v| !v.is_zero()))
-        .count();
+        .zip(reads)
+        .zip(markets)
+        .map(|((t, word), snap)| match t.kind {
+            liq_router::UnwrapKind::PendleMarket { .. } => snap.map(liq_router::UnwrapRate::Pendle),
+            liq_router::UnwrapKind::CurveLp { .. } => word
+                .filter(|v| !v.is_zero())
+                .map(|total_supply| liq_router::UnwrapRate::CurveLp { total_supply }),
+            liq_router::UnwrapKind::Erc4626 | liq_router::UnwrapKind::PendlePt { .. } => word
+                .filter(|v| !v.is_zero())
+                .map(|assets_per_scale| liq_router::UnwrapRate::Linear { assets_per_scale }),
+        })
+        .collect();
+    let read = rates.iter().filter(|r| r.is_some()).count();
     let mut applied = 0usize;
     let mut w = book.write();
-    for (t, r) in targets.iter().zip(reads) {
-        let Some(word) = r.filter(|v| !v.is_zero()) else {
+    for (t, r) in targets.iter().zip(rates) {
+        let Some(rate) = r else {
             tracing::debug!(token = %t.token, block, "unwrap rate read failed");
             continue;
-        };
-        let rate = match t.kind {
-            liq_router::UnwrapKind::CurveLp { .. } => {
-                liq_router::UnwrapRate::CurveLp { total_supply: word }
-            }
-            liq_router::UnwrapKind::Erc4626 | liq_router::UnwrapKind::PendlePt { .. } => {
-                liq_router::UnwrapRate::Linear {
-                    assets_per_scale: word,
-                }
-            }
         };
         if w.set_unwrap_rate(t.wrapper, rate, block) {
             applied = applied.saturating_add(1);
@@ -1214,8 +1337,13 @@ mod tests {
         let book = lock.into_inner();
         let mut wrong = Vec::new();
         for (t, w) in unit.iter().zip(want) {
-            // Curve LPs are exact, checked in their own test.
-            if matches!(t.kind, liq_router::UnwrapKind::CurveLp { .. }) {
+            // Curve LPs and Pendle markets are exact, checked against the
+            // chain in their own tests (live withdrawals, recorded sales).
+            if matches!(
+                t.kind,
+                liq_router::UnwrapKind::CurveLp { .. }
+                    | liq_router::UnwrapKind::PendleMarket { .. }
+            ) {
                 continue;
             }
             let u = book.unwrap_of(t.wrapper).unwrap();
@@ -1231,6 +1359,37 @@ mod tests {
             "unwrap conversion off:\n{}",
             wrong.join("\n")
         );
+    }
+
+    /// Live check (`MAINNET_RPC_URL`): every committed live-PT market reads
+    /// as a snapshot, and one PT sells through it (the port itself is
+    /// checked against recorded sales in `liq-router`'s `pendle_vectors`).
+    #[tokio::test]
+    #[ignore = "needs MAINNET_RPC_URL"]
+    async fn committed_pendle_markets_read_and_quote() {
+        use liq_config::{Intern, Registry};
+        let url = std::env::var("MAINNET_RPC_URL").expect("MAINNET_RPC_URL");
+        let rpc = HttpRpc::connect(&url).unwrap();
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let reg = Registry::from_path(&root.join("registry/registry.json")).unwrap();
+        let intern = Intern::from_registry(&reg).unwrap();
+        let book = crate::index::load_index(&root.join("config"), &intern, &reg).book;
+        let block = rpc.block_number().await.unwrap();
+        let lock = RwLock::new(book);
+        let targets: Vec<_> = unwrap_targets(&lock.read(), block)
+            .into_iter()
+            .filter(|t| matches!(t.kind, liq_router::UnwrapKind::PendleMarket { .. }))
+            .collect();
+        assert!(!targets.is_empty(), "registry has live-PT markets");
+        let (read, _) = refresh_unwraps(&lock, &rpc, &targets, block).await;
+        assert_eq!(read, targets.len(), "every market reads");
+        let book = lock.into_inner();
+        for t in &targets {
+            let u = book.unwrap_of(t.wrapper).unwrap();
+            let out = u.convert(u.scale, &book).unwrap();
+            assert!(!out.is_zero(), "{:#x}: one PT sells for nothing", t.token);
+        }
+        eprintln!("{} markets read and quoted at {block}", targets.len());
     }
 
     /// Live check (`MAINNET_RPC_URL`): every committed Curve LP unwrap,

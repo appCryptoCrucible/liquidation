@@ -39,7 +39,19 @@ Curve StableSwap-NG LPs (swap venue 7, `{"kind": "curve_lp", "into": <coin>}`):
     The quote is exact and nonlinear, so the linearity gate below does not
     apply to it.
 
-Vaults and PTs must also quote linearly: the answer for K whole units is K times
+Live Pendle PTs (swap venue 8, `{"kind": "pendle_market", "into", "market",
+"yt", "sy"}`):
+    - the PT's market (Pendle's API, `/core/v1/1/markets/active`) is valid on
+      `PendleMarketFactoryV6` (the Executor's anchor) and its `readTokens()`
+      are this PT, its YT and SY;
+    - `pendle_math.sell_pt` (the port of `MarketMathCore.swapExactPtForSy`)
+      pays exactly what a real holder's sale pays — `swapExactPtForSy` run
+      by `eth_call` with the holder's code overridden by `PendleSellProbe` —
+      at one PT and at the holder's balance;
+    - `into` is a token of `SY.getTokensOut()` that the holder's SY redeems
+      into without reverting, and whose `SY.previewRedeem` is linear.
+
+Vaults, expired PTs and a live PT's SY redemption must also quote linearly: the answer for K whole units is K times
 the answer for one, to rounding, at K = 1_000 and 100_000 — the bot reads one
 rate per block and scales it, so a vault whose redemption slips with size
 (e.g. one that unwinds positions on withdraw) would be overquoted.
@@ -64,11 +76,15 @@ import requests
 from eth_abi import decode, encode
 
 sys.path.insert(0, str(Path(__file__).parent))
+import pendle_math as pm  # noqa: E402
 from discover_exits import EXCLUDED_QUIRKS, Chain, ng_dynamic_fee, ng_get_d, sel, word  # noqa: E402
 
 REG = Path("registry/registry.json")
 META = Path("registry/registry.meta.json")
 PROBE = Path("contracts/out/PendleRedeemProbe.sol/PendleRedeemProbe.json")
+SELL_PROBE = Path("contracts/out/PendleSellProbe.sol/PendleSellProbe.json")
+PENDLE_API = "https://api-v2.pendle.finance/core/v1/1/markets/active"
+PENDLE_MARKET_FACTORY_V6 = "0x6d247b1c044fa1e22e6b04fa9f71baf99eb29a9f"
 QUIRKS_OUT = EXCLUDED_QUIRKS | {"fee_on_transfer"}
 HOLDERS = 15
 
@@ -391,10 +407,102 @@ def discover_pendle(chain, url, tokens, cands, usable, routed) -> dict[str, dict
     return found
 
 
+def market_state(chain: Chain, mk: str, sy: str, yt: str) -> dict:
+    r = chain.multicall([(mk, sel("readState(address)") + encode(["address"], ["0x" + "00" * 20])),
+                         (sy, sel("exchangeRate()")), (yt, sel("pyIndexStored()"))])
+    f = decode(["int256", "int256", "int256", "address", "int256", "uint256", "uint256", "uint256",
+                "uint256"], r[0][1])
+    return {"total_pt": f[0], "total_sy": f[1], "scalar_root": f[4], "expiry": f[5],
+            "ln_fee_rate_root": f[6], "reserve_fee_percent": f[7], "last_ln_implied_rate": f[8],
+            "index": max(word(r[1]), word(r[2]))}
+
+
+def sell_probe(chain: Chain, code: str, holder, pt, mk, sy, out, amount):
+    cs = chain.w3.to_checksum_address
+    data = sel("probe(address,address,address,address,uint256)") + encode(
+        ["address"] * 4 + ["uint256"], [cs(pt), cs(mk), cs(sy), cs(out), amount])
+    for attempt in range(4):
+        try:
+            raw = chain.w3.eth.call({"to": cs(holder), "data": "0x" + data.hex()}, chain.block,
+                                    {cs(holder): {"code": code}})
+            return decode(["uint256", "uint256"], raw)
+        except Exception as ex:  # noqa: BLE001
+            if "revert" in str(ex).lower() or "execution" in str(ex).lower():
+                return None
+            time.sleep(1.5 * 2**attempt)
+    return None
+
+
+def discover_pendle_market(chain, url, tokens, cands, usable, routed) -> dict[str, dict]:
+    if not SELL_PROBE.exists():
+        raise SystemExit(f"{SELL_PROBE} missing: run `forge build` in contracts/")
+    code = json.loads(SELL_PROBE.read_text(encoding="utf-8"))["deployedBytecode"]["object"]
+    api = requests.get(PENDLE_API, timeout=60).json()["markets"]
+    by_pt = {m["pt"].split("-", 1)[1].lower(): m["address"].lower() for m in api}
+    ts = chain.w3.eth.get_block(chain.block)["timestamp"]
+    found = {}
+    for t in cands:
+        r = one_token_views(chain, t, [("YT()", b""), ("SY()", b""), ("expiry()", b"")])
+        yt, sy = word(r[0], "address"), word(r[1], "address")
+        if yt is None or sy is None or word(r[2]) is None:
+            continue
+        yt, sy = yt.lower(), sy.lower()
+        if word(chain.multicall([(yt, sel("isExpired()"))])[0], "bool"):
+            continue  # expired: the `pendle_pt` pass redeems it
+        sym = tokens[t].get("symbol") or t
+        mk = by_pt.get(t)
+        if not mk:
+            print(f"  skip {sym:24} {t}: no active market")
+            continue
+        v = chain.multicall([(PENDLE_MARKET_FACTORY_V6, sel("isValidMarket(address)") + encode(["address"], [mk])),
+                             (mk, sel("readTokens()"))])
+        toks = decode(["address", "address", "address"], v[1][1]) if v[1][0] else ()
+        if not word(v[0], "bool") or [x.lower() for x in toks] != [sy, t, yt]:
+            print(f"  skip {sym:24} {t}: market {mk} not a V6 market for this PT")
+            continue
+        st = market_state(chain, mk, sy, yt)
+        outs = decode(["address[]"], chain.multicall([(sy, sel("getTokensOut()"))])[0][1])[0]
+        outs = [o.lower() for o in outs if o.lower() in usable and o.lower() in routed]
+        unit = 10 ** tokens[t]["decimals"]
+        admitted = None
+        hs = [h for h in holders(url, t, chain.block) if h != mk][:HOLDERS] if outs else []
+        for out in outs:
+            sy_quote = (lambda a, out=out: word(chain.multicall(
+                [(sy, sel("previewRedeem(address,uint256)") + encode(["address", "uint256"], [out, a]))])[0]))
+            if not linear(sy_quote, unit):
+                continue
+            for h in hs:
+                bal = balance(chain, t, h)
+                if not bal:
+                    continue
+                ok = True
+                for amt in sorted({min(bal, unit), bal}):
+                    got = sell_probe(chain, code, h, t, mk, sy, out, amt)
+                    try:
+                        want = pm.sell_pt(st, amt, ts)[0]
+                    except ValueError:
+                        want = None
+                    if got is None or want is None or got[0] != want or got[1] == 2**256 - 1:
+                        ok = False
+                        break
+                if ok:
+                    admitted = (out, h)
+                    break
+            if admitted:
+                break
+        if admitted is None:
+            print(f"  skip {sym:24} {t}: no routed SY output sold and redeemed at the quote")
+            continue
+        out, h = admitted
+        print(f"  unwrap {sym:22} {t} -> {tokens[out].get('symbol')} via {mk} (holder {h})")
+        found[t] = {"kind": "pendle_market", "into": out, "market": mk, "yt": yt, "sy": sy}
+    return found
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--kinds", default="erc4626,pendle_pt,curve_lp")
+    ap.add_argument("--kinds", default="erc4626,pendle_pt,curve_lp,pendle_market")
     ap.add_argument("--recheck", action="store_true")
     args = ap.parse_args()
     kinds = set(args.kinds.split(","))
@@ -419,8 +527,8 @@ def main() -> int:
             u = e.get("unwrap")
             if not u:
                 continue
-            if u["kind"] == "curve_lp":
-                continue  # exact and nonlinear by design
+            if u["kind"] in ("curve_lp", "pendle_market"):
+                continue  # exact market math, nonlinear by design
             unit = 10 ** e["decimals"]
             q = (vault_quote(chain, t) if u["kind"] == "erc4626"
                  else (lambda a, u=u, t=t: pt_quote(chain, u["yt"], u["sy"], u["into"], a)))
@@ -439,6 +547,8 @@ def main() -> int:
         found.update(discover_curve_lp(chain, url, tokens, cands, usable, routed, reg["pools"]))
     if "pendle_pt" in kinds:
         found.update(discover_pendle(chain, url, tokens, cands, usable, routed))
+    if "pendle_market" in kinds:
+        found.update(discover_pendle_market(chain, url, tokens, cands, usable, routed))
     if "erc4626" in kinds:
         rest = [c for c in cands if c not in found]
         found.update(discover_4626(chain, url, tokens, rest, usable, routed))

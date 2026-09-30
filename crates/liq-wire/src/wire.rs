@@ -68,6 +68,10 @@ pub const VENUE_PENDLE_PT_REDEEM: u8 = 6;
 /// pool itself) as one coin, `remove_liquidity_one_coin(amount, i, 0)`
 /// (`data` = 20-byte pool ‖ 1-byte `i`). Exact input. Placed like venue 5.
 pub const VENUE_CURVE_LP_ONE_COIN: u8 = 7;
+/// Swap venue 8 — unwrap: sell a live Pendle PT (`tokenIn`) on its market
+/// (`swapExactPtForSy`), then `SY.redeem` into `tokenOut` (`data` = 20-byte
+/// market, checked against Pendle's V6 market factory). Exact input.
+pub const VENUE_PENDLE_MARKET_SELL: u8 = 8;
 /// UniV2 factory ids in venue-2 data.
 pub const V2_FACTORY_UNISWAP: u8 = 0;
 pub const V2_FACTORY_SUSHI: u8 = 1;

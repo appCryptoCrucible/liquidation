@@ -182,6 +182,19 @@ interface IPendleYT {
     function redeemPY(address receiver) external returns (uint256 amountSyOut);
 }
 
+/// Pendle market (`PendleMarketV6`): PT sent to it first, then
+/// `swapExactPtForSy` pays SY to `receiver`.
+interface IPendleMarket {
+    function readTokens() external view returns (address sy, address pt, address yt);
+    function swapExactPtForSy(address receiver, uint256 exactPtIn, bytes calldata data)
+        external
+        returns (uint256 netSyOut, uint256 netSyFee);
+}
+
+interface IPendleMarketFactory {
+    function isValidMarket(address market) external view returns (bool);
+}
+
 /// Pendle standardized yield (`SYBase.redeem`): burns the caller's shares.
 interface IPendleSY {
     function redeem(

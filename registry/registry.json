@@ -3867,7 +3867,14 @@
   "0xaf687b5ecb525ccea96115088999b4ed80c388b6": {
    "symbol": "PT-apxUSD-5NOV2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_market",
+    "into": "0x98a878b1cd98131b271883b390f68d2c90674665",
+    "market": "0xaf0349fb9b1ba07d34381870c59b560b31412660",
+    "yt": "0x7fbc01c63b0ac372ec75907f3a1d8adc8cf28e1f",
+    "sy": "0x4f116ee5bcd227d1a1c4f57918d694a4abe7b3fc"
+   }
   },
   "0x4614f7a56a3eb83b2ff9fa4b4b9575b28fb68644": {
    "symbol": "wFalconX",
@@ -3972,7 +3979,14 @@
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "pendle_market",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "market": "0x4a5067c3ff1abb7449244025b0e37feaf77d8e3e",
+    "yt": "0x5cffcc9ddef0fdcf395e2ea24ca5ed5a12032706",
+    "sy": "0xea3bc608f32847b97965c5e1648bdfcd4c2c40d0"
+   }
   },
   "0x74db7a52773a52699dbc0c01b1254e5301e3e119": {
    "symbol": "AVLT",
@@ -4031,7 +4045,14 @@
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "pendle_market",
+    "into": "0x5086bf358635b81d8c47c66d1c8b9e567db70c72",
+    "market": "0x13285bcbc27f92b47b4edb99d744c07b48c977c0",
+    "yt": "0xa8bd3b21291ace53927b35563fc80615919e63d7",
+    "sy": "0x9487bd5a3b16ecb5f3184453e3ee75b800141648"
+   }
   },
   "0x62923a64d7940be920fd5cdc27873ab8eec59f9f": {
    "symbol": "stakedao-frxsUSDS",
@@ -4227,7 +4248,14 @@
   "0xdc169abe56461a2e0c034da431ac2a3ebf596094": {
    "symbol": "PT-sUSDS-26NOV2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_market",
+    "into": "0x6b175474e89094c44da98b954eedeac495271d0f",
+    "market": "0x9c560ebaf78e596cbcc27411d633a74d628dd7dc",
+    "yt": "0xc7b8551c6b286ce0b44952320e940bd3dee58a09",
+    "sy": "0xbe3d4ec488a0a042bb86f9176c24f8cd54018ba7"
+   }
   },
   "0x4dbe3f01abe271d3e65432c74851625a8c30aa7b": {
    "symbol": "vaSTETH",
@@ -4417,12 +4445,26 @@
   "0x74299580811e1c3c1a2831db079ba0a8f513998f": {
    "symbol": "PT-strUSD-26NOV2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_market",
+    "into": "0x280839980a7ed0d7717f64125fe241012e5f5815",
+    "market": "0xac028348c46d3455899a2b9b50077c11960eaddb",
+    "yt": "0xc4bb3ec6588ff14d7676445a40f2716e690a3203",
+    "sy": "0x7e8a16e87fa6b0f2e657db47f3dbfe2e981ef211"
+   }
   },
   "0x7191878f1fe834b28f4d0cead0e4375b814c4abb": {
    "symbol": "PT-trUSD-26NOV2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_market",
+    "into": "0xd0580192e98ea6ceb9c7b6191ed2e27560911697",
+    "market": "0xfcf009cb3135da12a6eb1f73f3ee05392a7bc947",
+    "yt": "0x1fcdb1e747419bb8d1a029c4d1f83b41e8afe8ce",
+    "sy": "0xa09482f2f6cb5f2177b05144bc276d06b8b818eb"
+   }
   },
   "0xa98b4a70e17e55045cde4972b95bc2e8cec22a0f": {
    "symbol": "aguaUSDCgc",
@@ -4473,14 +4515,28 @@
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "pendle_market",
+    "into": "0x23238f20b894f29041f48d88ee91131c395aaa71",
+    "market": "0x4ccf6deb3d1895373f604b418ff55d8adae8b846",
+    "yt": "0x480c3c9470fa4bbda030f6396fa4b17adefc1ce0",
+    "sy": "0x7a7de491e1be5287874904e2b7c8488249a4d0a9"
+   }
   },
   "0x0b985c624bb2949432cce77cfd246f01390a0517": {
    "symbol": "PT-sUSDat-14JAN2027",
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "pendle_market",
+    "into": "0xd166337499e176bbc38a1fbd113ab144e5bd2df7",
+    "market": "0xb6fe0f0811931a38aa97534bac3c147437223e38",
+    "yt": "0xc38901aa77112efc519a1f8bd501eb2f68055689",
+    "sy": "0x8917f8c7feb840b5837edc7e128123baa2f289f9"
+   }
   },
   "0x0a2f67c696b3845daceef73fa7982fea77e678c2": {
    "symbol": "sUSDh",
@@ -4509,7 +4565,14 @@
   "0xb195b618ea52b77cb2a58846f452f59f8dfa9390": {
    "symbol": "PT-sUSDE-26NOV2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_market",
+    "into": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+    "market": "0x47ad2cd1dd15739a7a035b9d3b7828d916fef77e",
+    "yt": "0x89e6e5f7c3a60e7d6347f054051a29a272f4ce44",
+    "sy": "0xbf98480425a29197e5d99d003017f63a1e595d02"
+   }
   },
   "0xd48e565561416de59da1050ed70b8d75e8ef28f9": {
    "symbol": "USDnr",
@@ -4588,7 +4651,14 @@
   "0x079c3469143804af5d0d645a878c371dbe8d038e": {
    "symbol": "PT-fxSAVE-29OCT2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_market",
+    "into": "0x7743e50f534a7f9f1791dde7dcd89f7783eefc39",
+    "market": "0x8308e53f584a7e5f0c581059d9ba971c0bec9454",
+    "yt": "0x1964590af52cd77c2f30970bdbcb4d6e3dbdc615",
+    "sy": "0x13945b761b2ed3219a497a46d15a8923f418d2ab"
+   }
   },
   "0xc5a9f6edb48160ed9d9fb156a23c39d7140457ee": {
    "symbol": "deHYB",
@@ -4630,7 +4700,14 @@
   "0x459bcab2490843ad1fe1e4feff7f7ea16a14408b": {
    "symbol": "PT-sUSDD-26NOV2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_market",
+    "into": "0xc5d6a7b61d18afa11435a889557b068bb9f29930",
+    "market": "0xbeab098b510f758cd35122ee345957b8eccbb322",
+    "yt": "0xc08aaed663c1c257f677f9d4b92a7a265967e54f",
+    "sy": "0xdd0c9da25f8eb47116f3bed8a311899a5eb449b4"
+   }
   },
   "0xbf4e3fbe8b60062a00c7a6b1d97d0d49c2971a19": {
    "symbol": "USPC",
@@ -6568,7 +6645,14 @@
   "0x59bc9fae5d62b19d4f8d07d758047acb9ee19d34": {
    "symbol": "PT-srUSDe-22OCT2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_market",
+    "into": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+    "market": "0x66ec657c59cdcaf171ab43b83da3942758bf8a97",
+    "yt": "0xfe6040719cca36aeb85e352f48fe956057728814",
+    "sy": "0xc9bfebc79a722c05dc34bd2a227ef2db19fd1b8e"
+   }
   },
   "0x5f98805a4e8be255a32880fdec7f6728c6568ba0": {
    "symbol": "LUSD",

@@ -5,7 +5,7 @@ import {SafeTransfer} from "./lib/SafeTransfer.sol";
 import {Plan, FlashGroup, LiqLeg, SwapLeg, FluidTail, PlanDecoder} from "./lib/PlanDecoder.sol";
 import {
     IERC20, IWETH, IAavePool, IAaveV4Spoke, IMorpho, MarketParams,
-    IUniV3Pool, IUniV2Pair, ICurvePool, ICurveCryptoPool, IERC4626Unwrap, IPendlePT, IPendleYT, IPendleSY, ICurveMetaRegistry, IPoolManager, IDssFlash,
+    IUniV3Pool, IUniV2Pair, ICurvePool, ICurveCryptoPool, IERC4626Unwrap, IPendlePT, IPendleYT, IPendleSY, IPendleMarket, IPendleMarketFactory, ICurveMetaRegistry, IPoolManager, IDssFlash,
     IEVault, IEVC, ISiloHook, ITroveManager, IFluidT1, IFluidT2, IFluidT3, IFluidT4, ICreditFacadeV3, ICreditFacadeV3Multicall, MultiCall, PriceUpdate,
     ICToken, IComptroller, ICErc20, ICEther, IPayloadsController, IDssSpell, IDSPause
 } from "./lib/Interfaces.sol";
@@ -106,6 +106,9 @@ contract Executor {
     // as coin `i` (`tokenOut`). Exact input; the pool burns our LP, so there
     // is no approval.
     uint8 private constant S_CURVE_LP_ONE_COIN = 7;
+    // Unwrap: sell a live Pendle PT (`tokenIn`) on its market for SY, then
+    // redeem the SY for `tokenOut`. Exact input.
+    uint8 private constant S_PENDLE_MARKET_SELL = 8;
     /// Uniswap V2 / SushiSwap swap fee, 0.30 %.
     uint256 private constant V2_FEE_KEEP = 997;
 
@@ -1303,6 +1306,8 @@ contract Executor {
             _redeemPendlePt(s, amount, data);
         } else if (s.venue == S_CURVE_LP_ONE_COIN) {
             _withdrawCurveLp(s, amount, data);
+        } else if (s.venue == S_PENDLE_MARKET_SELL) {
+            _sellPendlePt(s, amount, data);
         } else {
             revert UnknownVenue(s.venue);
         }
@@ -1413,6 +1418,23 @@ contract Executor {
         // i is uint8: widening to uint128 then int128 is lossless.
         // forge-lint: disable-next-line(unsafe-typecast)
         ICurvePool(pool).remove_liquidity_one_coin(amount, int128(uint128(i)), 0);
+    }
+
+    /// Sell a Pendle PT held here on its market, then redeem the SY. The
+    /// market must be one Pendle's V6 factory created and trade `tokenIn`;
+    /// the SY is the market's own and refuses a token it cannot pay.
+    function _sellPendlePt(SwapLeg memory s, uint256 amount, bytes calldata data) internal {
+        if (s.flags & L_EXACT_OUT != 0) revert ExactOutUnsupported(S_PENDLE_MARKET_SELL);
+        if (data.length != 20) revert BadPool(S_PENDLE_MARKET_SELL, address(0));
+        address market = address(bytes20(data[0:20]));
+        if (!IPendleMarketFactory(MainnetVenues.PENDLE_MARKET_FACTORY_V6).isValidMarket(market)) {
+            revert BadPool(S_PENDLE_MARKET_SELL, market);
+        }
+        (address sy, address pt,) = IPendleMarket(market).readTokens();
+        if (pt != s.tokenIn) revert BadPool(S_PENDLE_MARKET_SELL, market);
+        s.tokenIn.safeTransfer(market, amount);
+        (uint256 syOut,) = IPendleMarket(market).swapExactPtForSy(address(this), amount, "");
+        IPendleSY(sy).redeem(address(this), syOut, s.tokenOut, 0, false);
     }
 
     /// Redeem an expired Pendle PT held here: PT → YT `redeemPY` → SY, then

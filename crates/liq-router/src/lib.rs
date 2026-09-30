@@ -66,6 +66,7 @@ pub mod cache;
 pub mod crypto;
 pub mod exact;
 pub mod gas;
+pub mod pendle;
 pub mod profit;
 pub mod select;
 pub mod solver;

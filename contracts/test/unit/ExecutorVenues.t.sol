@@ -6,8 +6,9 @@ import {ExecutorTestBase} from "./Base.sol";
 import {PlanBuilder as PB} from "./PlanBuilder.sol";
 import {
     MockV2Pair, MockCurvePool, MockCurveCryptoPool, MockVault4626, MockPendlePT, MockPendleYT, MockPendleSY,
-    MockCurveNgLp
+    MockCurveNgLp, MockPendleMarket, MockPendleFactory
 } from "./Mocks.sol";
+import {MainnetVenues} from "../../src/lib/MainnetVenues.sol";
 
 /// Pool-direct UniswapV2 / SushiSwap and Curve legs. The success paths run
 /// the reference liquidation with the repay swap on the new venue; the
@@ -384,6 +385,44 @@ contract ExecutorVenuesTest is ExecutorTestBase {
         (MockPendlePT pt, MockPendleYT yt,) = _pendle();
         vm.expectRevert(bytes("sy: token out"));
         _exec(_ptPlan(address(pt), PB.pendlePtRedeem(address(pt), address(yt), address(debt))));
+    }
+
+    // ── Pendle market sale (live PT) ──────────────────────────────────────
+
+    /// A live PT sold on a V6-factory market at 0.8 SY per PT; the SY
+    /// redeems at 1.25 COLL: 1 PT sells for 1 COLL.
+    function _pendleMarket(bool valid) internal returns (MockPendlePT pt, MockPendleMarket market) {
+        MockPendleSY sy;
+        MockPendleYT yt;
+        (pt, yt, sy) = _pendle();
+        yt.setExpired(false);
+        market = new MockPendleMarket(address(sy), address(pt), address(yt));
+        market.setRate(4, 5);
+        vm.etch(MainnetVenues.PENDLE_MARKET_FACTORY_V6, address(new MockPendleFactory()).code);
+        if (valid) MockPendleFactory(MainnetVenues.PENDLE_MARKET_FACTORY_V6).add(address(market));
+    }
+
+    function test_pendle_market_sale_then_redeem_then_repay() public {
+        (MockPendlePT pt, MockPendleMarket market) = _pendleMarket(true);
+        uint256 sinkBefore = weth.balanceOf(sink);
+        _exec(_ptPlan(address(pt), PB.pendleMarketSell(address(pt), address(market), address(coll))));
+        assertGt(weth.balanceOf(sink), sinkBefore, "no profit");
+        assertEq(pt.balanceOf(address(ex)), 0, "PT all sold");
+        _assertClean();
+    }
+
+    function test_pendle_market_not_from_the_factory_is_refused() public {
+        (MockPendlePT pt, MockPendleMarket market) = _pendleMarket(false);
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(8), address(market)));
+        _exec(_ptPlan(address(pt), PB.pendleMarketSell(address(pt), address(market), address(coll))));
+    }
+
+    /// A valid market for another PT cannot be handed this PT.
+    function test_pendle_market_must_trade_the_spent_pt() public {
+        (, MockPendleMarket market) = _pendleMarket(true);
+        (MockPendlePT otherPt,,) = _pendle();
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(8), address(market)));
+        _exec(_ptPlan(address(otherPt), PB.pendleMarketSell(address(otherPt), address(market), address(coll))));
     }
 
     // ── constructor ───────────────────────────────────────────────────────

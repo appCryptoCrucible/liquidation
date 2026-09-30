@@ -647,6 +647,7 @@ fn load_book(
         || hops.unwrap_4626 == 0
         || hops.pendle_pt == 0
         || hops.curve_lp == 0
+        || hops.pendle_market == 0
     {
         tracing::error!(
             ?hops,
@@ -915,6 +916,21 @@ fn add_unwraps(
                 omit(omitted, "book", format!("pendle PT {addr:#x}: no yt/sy"));
                 continue;
             }
+            (liq_config::UnwrapKind::PendleMarket, Some(yt), Some(sy)) if u.market.is_some() => {
+                liq_router::UnwrapKind::PendleMarket {
+                    market: u.market.unwrap_or_default(),
+                    yt,
+                    sy,
+                }
+            }
+            (liq_config::UnwrapKind::PendleMarket, _, _) => {
+                omit(
+                    omitted,
+                    "book",
+                    format!("pendle market PT {addr:#x}: no market/sy"),
+                );
+                continue;
+            }
         };
         book.add_unwrap(liq_router::Unwrap {
             kind,
@@ -929,6 +945,11 @@ fn add_unwraps(
                 liq_router::UnwrapKind::CurveLp { .. } => scale
                     .checked_div(U256::from(1_000_000u64))
                     .unwrap_or_default(),
+                // One whole PT: the market's marginal (a smaller sale can
+                // pay a zero LP fee, which the market refuses).
+                liq_router::UnwrapKind::PendleMarket { .. } => {
+                    scale.checked_div(U256::from(1_000u64)).unwrap_or_default()
+                }
                 _ => scale,
             },
             read_block: 0,
@@ -936,6 +957,7 @@ fn add_unwraps(
                 liq_router::UnwrapKind::Erc4626 => hops.unwrap_4626,
                 liq_router::UnwrapKind::PendlePt { .. } => hops.pendle_pt,
                 liq_router::UnwrapKind::CurveLp { .. } => hops.curve_lp,
+                liq_router::UnwrapKind::PendleMarket { .. } => hops.pendle_market,
             },
         });
     }

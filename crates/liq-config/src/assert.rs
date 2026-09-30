@@ -16,6 +16,10 @@ use alloy_sol_types::{sol, SolCall};
 /// still an on-chain view of the target, not a cache.
 const MULTICALL3: Address = address!("0xcA11bde05977b3631167028862bE2a173976CA11");
 
+/// Pendle `PendleMarketFactoryV6` — the Executor's anchor for venue 8
+/// (`MainnetVenues.PENDLE_MARKET_FACTORY_V6`).
+const PENDLE_MARKET_FACTORY_V6: Address = address!("0x6d247b1c044fA1E22e6B04fA9F71Baf99EB29A9f");
+
 /// Inner calls per Multicall3 `eth_call`. Sized so a public RPC will accept
 /// the payload; accuracy does not depend on the size.
 const BATCH: usize = 64;
@@ -37,6 +41,9 @@ sol! {
     interface IPendleYT {
         function PT() external view returns (address);
         function SY() external view returns (address);
+    }
+    interface IPendleMarketFactory {
+        function isValidMarket(address market) external view returns (bool);
     }
     interface IUniswapV3Pool {
         function token0() external view returns (address);
@@ -82,6 +89,11 @@ enum Expect<'a> {
     UnwrapAsset {
         token: Address,
         expected: Address,
+    },
+    /// Pendle's V6 factory must still know `market`.
+    PendleMarketValid {
+        token: Address,
+        market: Address,
     },
     /// `what` read on `target` must equal `expected` (Pendle PT ↔ YT ↔ SY).
     PendleLink {
@@ -220,6 +232,26 @@ pub(crate) async fn assert_registry_views<R: ChainRpc + Sync>(
                         target,
                         what,
                         expected,
+                    });
+                }
+                if u.kind == UnwrapKind::PendleMarket {
+                    let Some(market) = u.market else {
+                        return Err(ConfigError::PendleMismatch {
+                            token: *addr,
+                            what: "market",
+                            expected: Address::ZERO,
+                            found: Address::ZERO,
+                        });
+                    };
+                    calls.push(call3(
+                        PENDLE_MARKET_FACTORY_V6,
+                        Bytes::from(
+                            IPendleMarketFactory::isValidMarketCall { market }.abi_encode(),
+                        ),
+                    ));
+                    expect.push(Expect::PendleMarketValid {
+                        token: *addr,
+                        market,
                     });
                 }
             }
@@ -373,6 +405,7 @@ fn check_one(exp: &Expect<'_>, row: &IMulticall3::Result) -> Result<()> {
         | Expect::Symbol { token, .. }
         | Expect::UnwrapAsset { token, .. } => (*token, "token view"),
         Expect::PendleLink { target, .. } => (*target, "pendle view"),
+        Expect::PendleMarketValid { .. } => (PENDLE_MARKET_FACTORY_V6, "pendle factory view"),
         Expect::Token0 { pool, .. }
         | Expect::Token1 { pool, .. }
         | Expect::Fee { pool, .. }
@@ -448,6 +481,23 @@ fn check_one(exp: &Expect<'_>, row: &IMulticall3::Result) -> Result<()> {
                     token: *token,
                     expected: *expected,
                     found,
+                });
+            }
+        }
+        Expect::PendleMarketValid { token, market } => {
+            let valid = IPendleMarketFactory::isValidMarketCall::abi_decode_returns_validate(
+                &row.returnData,
+            )
+            .map_err(|_| ConfigError::CallFailed {
+                address: PENDLE_MARKET_FACTORY_V6,
+                what: "isValidMarket decode",
+            })?;
+            if !valid {
+                return Err(ConfigError::PendleMismatch {
+                    token: *token,
+                    what: "market (not a V6-factory market)",
+                    expected: *market,
+                    found: Address::ZERO,
                 });
             }
         }

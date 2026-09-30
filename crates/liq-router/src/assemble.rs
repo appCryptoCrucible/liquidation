@@ -15,8 +15,8 @@ use liq_flash::{fee_amount, FlashIndex, Haircut};
 use liq_plan::{
     col_per_unit_debt_1e18, ensure_surplus_borrow_profit_legs, validate, BatchPlan, FlashGroup,
     LiqLeg, SwapLeg, ValidateCtx, LEG_EXACT_OUT, LEG_TAKE_BALANCE, VENUE_CURVE_CRYPTO_POOL,
-    VENUE_CURVE_LP_ONE_COIN, VENUE_CURVE_POOL, VENUE_PENDLE_PT_REDEEM, VENUE_UNIV2_POOL,
-    VENUE_UNIV3_POOL, VENUE_UNWRAP_4626,
+    VENUE_CURVE_LP_ONE_COIN, VENUE_CURVE_POOL, VENUE_PENDLE_MARKET_SELL, VENUE_PENDLE_PT_REDEEM,
+    VENUE_UNIV2_POOL, VENUE_UNIV3_POOL, VENUE_UNWRAP_4626,
 };
 use liq_protocol::{ExecutorAdapter, FlashRoute, Quote};
 use liq_types::fixed::{mul_div, Rounding};
@@ -911,6 +911,9 @@ fn assemble_one(
                                     let mut d = coll_addr.to_vec();
                                     d.push(i);
                                     (VENUE_CURVE_LP_ONE_COIN, d)
+                                }
+                                UnwrapKind::PendleMarket { market, .. } => {
+                                    (VENUE_PENDLE_MARKET_SELL, market.to_vec())
                                 }
                             };
                             repay_swaps.insert(
@@ -1851,6 +1854,54 @@ mod tests {
         let mut want = tok(2).to_vec();
         want.push(0);
         assert_eq!(repay[0].data, want);
+    }
+
+    /// A live Pendle PT exits through venue 8 with its market as the data,
+    /// quoted by the market math on a recorded mainnet state (PT-apyUSD's
+    /// market: one PT sold for 686343938057976701 SY at this state).
+    #[test]
+    fn pendle_market_exit_assembles_as_venue_8() {
+        use liq_plan::VENUE_PENDLE_MARKET_SELL;
+        let i = |s: &str| s.parse::<alloy_primitives::I256>().unwrap();
+        let u = |s: &str| s.parse::<U256>().unwrap();
+        let snap = crate::pendle::MarketSnapshot {
+            total_pt: i("7187962440982406255028943"),
+            total_sy: i("9112559297158223896269820"),
+            scalar_root: i("22856551821273811277"),
+            expiry: 1_793_836_800,
+            ln_fee_rate_root: u("11533235813673030"),
+            reserve_fee_percent: U256::from(80u64),
+            last_ln_implied_rate: u("145627713077751416"),
+            index: u("1434777256254465538"),
+            quote_ts: 1_790_753_291,
+            // The SY redeems at 1.6 here, so a PT is worth ~1.1 and the
+            // test world's 5 % bonus leg clears.
+            out_per_sy_scale: e18(1600),
+            sy_scale: e18(1000),
+        };
+        assert_eq!(
+            crate::pendle::sell_pt(&snap, e18(1)).unwrap(),
+            u("686343938057976701")
+        );
+        let market = addr(0x8888);
+        let mut bk = book(vec![deep()]);
+        let mut pt = unwrap_a2(A0);
+        pt.kind = crate::solver::UnwrapKind::PendleMarket {
+            market,
+            yt: addr(0x7777),
+            sy: addr(0x5555),
+        };
+        pt.rate = crate::solver::UnwrapRate::Pendle(snap);
+        bk.add_unwrap(pt);
+        let via = solve_pair(&bk, A2, A1, e18(10), &GAS, &B).unwrap();
+        // 10 PT → ~6.86 SY → ~10.98 out (less the SY step's 1 ppm haircut).
+        let out = via.unwrap.unwrap().amount_out;
+        assert!(out > e18(10) && out < e18(11), "{out}");
+        let (_, plan) = assemble_a2_exit(&bk);
+        let repay = &plan.groups[0].repay_swaps;
+        assert_eq!(repay[0].venue, VENUE_PENDLE_MARKET_SELL);
+        assert_eq!((repay[0].token_in, repay[0].token_out), (tok(2), tok(0)));
+        assert_eq!(repay[0].data, market.to_vec());
     }
 
     /// A wrapper of the debt asset itself needs no pool: the unwrap pays the

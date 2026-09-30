@@ -1291,6 +1291,40 @@ contract MockPendleYT {
     }
 }
 
+/// Pendle market double: sells PT sent to it for SY at `num / den`, and
+/// checks it received the PT (as `PendleMarketV6` does).
+contract MockPendleMarket {
+    address public sy;
+    address public pt;
+    address public yt;
+    uint256 public num = 1;
+    uint256 public den = 1;
+    uint256 internal held;
+
+    constructor(address sy_, address pt_, address yt_) { sy = sy_; pt = pt_; yt = yt_; }
+
+    function setRate(uint256 n, uint256 d) external { num = n; den = d; }
+
+    function readTokens() external view returns (address, address, address) { return (sy, pt, yt); }
+
+    function swapExactPtForSy(address receiver, uint256 exactPtIn, bytes calldata)
+        external returns (uint256 netSyOut, uint256 netSyFee)
+    {
+        held += exactPtIn;
+        require(MockShareToken(pt).balanceOf(address(this)) >= held, "market: pt not received");
+        netSyOut = exactPtIn * num / den;
+        MockPendleSY(sy).mint(receiver, netSyOut);
+        netSyFee = 0;
+    }
+}
+
+/// Pendle market factory double, etched at the V6 factory's address.
+contract MockPendleFactory {
+    mapping(address => bool) public isValidMarket;
+
+    function add(address m) external { isValidMarket[m] = true; }
+}
+
 /// MetaRegistry double: an unregistered pool reverts, as the real one does.
 contract MockCurveRegistry {
     mapping(address => bool) internal registered;

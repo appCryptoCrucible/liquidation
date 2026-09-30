@@ -64,6 +64,9 @@ pub struct TokenUnwrap {
     /// Pendle PT only: the YT's SY.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sy: Option<Address>,
+    /// Live Pendle PT only: its market (a `PendleMarketFactoryV6` market).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub market: Option<Address>,
 }
 
 /// Unwrap mechanism.
@@ -78,6 +81,8 @@ pub enum UnwrapKind {
     /// Curve StableSwap-NG LP (the token is the pool, a `curve_ng` registry
     /// pool): `remove_liquidity_one_coin` into coin `into`.
     CurveLp,
+    /// Live Pendle PT: sold on `market`, then `SY.redeem` into `into`.
+    PendleMarket,
 }
 
 /// Token behaviour that changes what correct code looks like (REGISTRY.md §5).

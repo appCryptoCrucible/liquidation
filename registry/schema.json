@@ -113,10 +113,11 @@
           "description": "A wrapper the Executor unwraps instantly (swap venue 5) into another registry token (tools/registry/discover_unwraps.py).",
           "required": ["kind", "into"],
           "properties": {
-            "kind": { "type": "string", "enum": ["erc4626", "pendle_pt", "curve_lp"] },
+            "kind": { "type": "string", "enum": ["erc4626", "pendle_pt", "curve_lp", "pendle_market"] },
             "into": { "$ref": "#/$defs/address" },
             "yt": { "$ref": "#/$defs/address", "description": "pendle_pt only: PT.YT()." },
-            "sy": { "$ref": "#/$defs/address", "description": "pendle_pt only: YT.SY()." }
+            "sy": { "$ref": "#/$defs/address", "description": "pendle_pt / pendle_market: YT.SY()." },
+            "market": { "$ref": "#/$defs/address", "description": "pendle_market only: the PT's V6 market." }
           },
           "additionalProperties": false
         }

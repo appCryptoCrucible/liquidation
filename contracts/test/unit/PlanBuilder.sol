@@ -23,6 +23,7 @@ library PlanBuilder {
     uint8 internal constant S_UNWRAP_4626 = 5;
     uint8 internal constant S_PENDLE_PT_REDEEM = 6;
     uint8 internal constant S_CURVE_LP_ONE_COIN = 7;
+    uint8 internal constant S_PENDLE_MARKET_SELL = 8;
 
     function header(uint8 flags, uint16 bidBps, uint128 gasCostWei, uint128 minProfit, uint8 groups)
         internal pure returns (bytes memory)
@@ -144,6 +145,11 @@ library PlanBuilder {
     /// Withdraw a Curve NG LP (the pool) as coin `i` (`tokenOut`).
     function curveLpOneCoin(address pool, uint8 i, address tokenOut) internal pure returns (bytes memory) {
         return swap(S_CURVE_LP_ONE_COIN, pool, tokenOut, L_TAKE_BALANCE, 0, abi.encodePacked(pool, i));
+    }
+
+    /// Sell a live Pendle PT on `market`, then redeem the SY into `tokenOut`.
+    function pendleMarketSell(address pt, address market, address tokenOut) internal pure returns (bytes memory) {
+        return swap(S_PENDLE_MARKET_SELL, pt, tokenOut, L_TAKE_BALANCE, 0, abi.encodePacked(market));
     }
 
     /// Redeem an expired Pendle PT through its YT and SY into `tokenOut`.

@@ -122,3 +122,9 @@ pendle_pt = 141_280
 # every sub-registry) + `coins(i)` 337 + `remove_liquidity_one_coin` 64_684,
 # plus the registry's cold account.
 curve_lp = 190_494
+# Live Pendle PT sold on its market (venue 8), fork at 26_088_000
+# (ForkPendleMarket, PT-sUSDS-26NOV2026 → DAI): V6 factory `isValidMarket`
+# 9_536 + `readTokens` 413 + PT transfer 11_119 + `swapExactPtForSy` 141_337
+# + SY `redeem` 275_577 (sUSDS → USDS → DAI; a plain SY output is far
+# cheaper), plus three cold accounts. The simulation prices the real one.
+pendle_market = 445_782
