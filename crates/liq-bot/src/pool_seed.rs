@@ -324,6 +324,32 @@ pub async fn seed_v2(book: &mut PoolBook, rpc: &HttpRpc) -> SeedStats {
     stats
 }
 
+/// `getReserves` of each pair at `block`; `None` for a failed read.
+pub(crate) async fn read_v2_reserves(
+    rpc: &HttpRpc,
+    pairs: &[Address],
+    block: u64,
+) -> Vec<Option<(U256, U256)>> {
+    let mut out = Vec::with_capacity(pairs.len());
+    for chunk in pairs.chunks(BATCH) {
+        let calls = chunk
+            .iter()
+            .map(|&a| call(a, getReservesCall {}.abi_encode()))
+            .collect();
+        let res = aggregate(rpc, calls, block).await;
+        for k in 0..chunk.len() {
+            out.push(
+                res.as_ref()
+                    .and_then(|r| r.get(k))
+                    .filter(|r| r.success)
+                    .and_then(|r| getReservesCall::abi_decode_returns(&r.returnData).ok())
+                    .map(|r| (U256::from(r.reserve0), U256::from(r.reserve1))),
+            );
+        }
+    }
+    out
+}
+
 /// One Curve pool read at a block: `balances`, `A` as stored, its
 /// `A_PRECISION`, `fee` (1e10), and for NG `stored_rates()` and
 /// `offpeg_fee_multiplier()`.

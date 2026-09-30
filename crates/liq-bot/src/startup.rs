@@ -125,8 +125,9 @@ pub struct Started {
     pub shared: &'static Shared,
     pub hot: liq_node::HotHandle,
     pub forwarder: liq_node::ExExForwarder,
-    /// Union-filter addresses. The ExEx copies only these logs.
-    pub tracked: std::collections::HashSet<alloy_primitives::Address>,
+    /// Union-filter addresses, rebuilt when subscriptions change at
+    /// runtime. The ExEx copies only these logs.
+    pub tracked: Arc<liq_node::Resubscribe>,
     /// 13A path. `None` when secrets/builders are missing — not an invented signer.
     pub exec: Option<Arc<ExecPath<ShadowRecorder, &'static RiskGate>>>,
     pub assemble: ProcessAssembleView,
@@ -151,7 +152,7 @@ pub fn register_exex(
     (
         liq_node::ExExForwarder,
         liq_node::HotHandle,
-        std::collections::HashSet<alloy_primitives::Address>,
+        Arc<liq_node::Resubscribe>,
     ),
     StartupError,
 > {
@@ -164,7 +165,8 @@ pub fn register_exex(
     }
     let subs = bind::router_subscribers(adapters, index);
     let router = LogRouter::from_subscribers(&subs).map_err(StartupError::Ingest)?;
-    let tracked = router.tracked_addresses().clone();
+    let tracked = Arc::clone(&index.resubscribe);
+    tracked.publish(router.tracked_addresses().clone(), tracked.requested());
     let handle = install_hot(
         store,
         router,
@@ -175,6 +177,7 @@ pub fn register_exex(
         Arc::clone(&inst.height),
         allow_unpinned,
         after_block,
+        Some(Arc::clone(&tracked)),
     )?;
     Ok((inst.forwarder, handle, tracked))
 }
@@ -369,6 +372,37 @@ pub async fn run(
         tracing::error!(
             ?e,
             "curve reseed thread not started — traded Curve pools stay unrouted"
+        );
+    }
+    // New exits for already-interned tokens join the book from the registry
+    // file without a restart; anything else goes to the review log.
+    let registry_path = loaded.config.registry_path.clone();
+    let review_log = registry_path
+        .parent()
+        .and_then(std::path::Path::parent)
+        .map_or_else(
+            || std::path::PathBuf::from("data/review/registry-watch.log"),
+            |root| root.join("data/review/registry-watch.log"),
+        );
+    let hops = crate::gas_model::GasModel::load(&config_dir.join("liq-gas.toml"))
+        .map(|m| m.hop)
+        .unwrap_or_default();
+    if let Err(e) = crate::registry_watch::spawn(
+        crate::registry_watch::RegistryWatch {
+            path: registry_path,
+            review_log,
+            rpc_url: loaded.config.rpc_url.clone(),
+            intern: loaded.intern.clone(),
+            hops,
+            book: Arc::clone(&index.book),
+            resubscribe: Arc::clone(&index.resubscribe),
+            loaded: loaded.registry.clone(),
+        },
+        Arc::new(AtomicBool::new(false)),
+    ) {
+        tracing::error!(
+            ?e,
+            "registry watch not started — registry changes need a restart"
         );
     }
     let engine_positions = store.len().saturating_mul(2);

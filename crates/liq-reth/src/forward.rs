@@ -69,7 +69,7 @@ where
         lease_held = started.shared.lease.held(),
         exec_bound = started.exec.is_some(),
         nonce_resync = started.shared.lease.nonce_resync(),
-        tracked = started.tracked.len(),
+        tracked = started.tracked.tracked().len(),
         "liquidator ExEx attached; FinishedHeight follows store consistency"
     );
 
@@ -77,7 +77,11 @@ where
     while let Some(notification) = ctx.notifications.try_next().await? {
         let (owned, reth_tip) = match &notification {
             ExExNotification::ChainCommitted { new } => {
-                let owned = owned_chain(new.as_ref(), &started.tracked, &mut started.forwarder)?;
+                let owned = owned_chain(
+                    new.as_ref(),
+                    &started.tracked.tracked(),
+                    &mut started.forwarder,
+                )?;
                 let tip = committed_tip(new.as_ref())?;
                 (Notification::Committed { new: owned }, Some(tip))
             }
@@ -87,7 +91,11 @@ where
             }
             ExExNotification::ChainReorged { old, new } => {
                 let (old_first, old_last) = reverted_span(old.as_ref())?;
-                let owned = owned_chain(new.as_ref(), &started.tracked, &mut started.forwarder)?;
+                let owned = owned_chain(
+                    new.as_ref(),
+                    &started.tracked.tracked(),
+                    &mut started.forwarder,
+                )?;
                 let tip = committed_tip(new.as_ref())?;
                 (
                     Notification::Reorged {

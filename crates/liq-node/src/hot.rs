@@ -179,6 +179,9 @@ pub struct HotSpawn {
     pub allow_unpinned: bool,
     /// Bot-owned after apply+collapse. `None` keeps ingest-only behaviour.
     pub after_block: Option<Box<dyn AfterBlock>>,
+    /// Rebuild the router from `handlers` when a handler asks
+    /// ([`crate::Resubscribe`]); `None` keeps the startup router for good.
+    pub resubscribe: Option<Arc<crate::Resubscribe>>,
 }
 
 /// Spawn the named hot thread. `pin` is the 16A seam. Failure of `pin` with
@@ -195,7 +198,12 @@ pub fn spawn(cfg: HotSpawn) -> Result<HotHandle> {
         pin,
         allow_unpinned,
         mut after_block,
+        resubscribe,
     } = cfg;
+    let mut router = router;
+    // The router given here matches the last published epoch; any request
+    // after it — even one made before the thread first runs — is rebuilt.
+    let mut seen = resubscribe.as_ref().map_or(0, |r| r.applied());
     let stop = Arc::new(AtomicBool::new(false));
     let stop_t = Arc::clone(&stop);
     let (pin_tx, pin_rx) = mpsc::sync_channel(1);
@@ -222,6 +230,33 @@ pub fn spawn(cfg: HotSpawn) -> Result<HotHandle> {
             loop {
                 if stop_t.load(Ordering::Acquire) {
                     break;
+                }
+                if let Some(r) = resubscribe.as_ref() {
+                    let want = r.requested();
+                    if want != seen {
+                        seen = want;
+                        // The same handlers, in the same order, as the
+                        // startup router: indices into `refs` stay valid.
+                        let subs: Vec<&dyn liq_types::LogSubscriber> = refs
+                            .iter()
+                            .map(|h| *h as &dyn liq_types::LogSubscriber)
+                            .collect();
+                        match LogRouter::from_subscribers(&subs) {
+                            Ok(next) => {
+                                let n = next.tracked_addresses().len();
+                                r.publish(next.tracked_addresses().clone(), want);
+                                router = next;
+                                tracing::info!(epoch = want, addresses = n, "log router rebuilt");
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    ?e,
+                                    epoch = want,
+                                    "log router rebuild refused — the old router stays"
+                                );
+                            }
+                        }
+                    }
                 }
                 {
                     let mut ctx = ApplyCtx {
@@ -571,11 +606,77 @@ mod tests {
             pin: super::pin_deferred,
             allow_unpinned: true,
             after_block: None,
+            resubscribe: None,
         })
         .unwrap();
         h.request_stop();
         let joined = h.join().unwrap();
         assert!(joined.is_ok());
+    }
+
+    /// A handler that starts following an address after startup (a pool
+    /// added to the book) is routed once it asks: the hot thread rebuilds
+    /// its router from the same handlers and publishes the address.
+    #[test]
+    fn resubscribe_rebuilds_the_router_and_publishes_the_address() {
+        struct Growing(Arc<Mutex<Vec<LogFilter>>>);
+        impl LogSubscriber for Growing {
+            fn subscriptions(&self) -> Vec<LogFilter> {
+                self.0.lock().unwrap().clone()
+            }
+        }
+        impl LogHandler for Growing {
+            fn apply_log(
+                &self,
+                _st: &mut dyn liq_protocol::StateWriter,
+                _log: &liq_protocol::DecodedLog<'_>,
+            ) -> core::result::Result<DirtySet, liq_protocol::ProtocolError> {
+                Ok(DirtySet::None)
+            }
+        }
+        let filters = Arc::new(Mutex::new(Vec::new()));
+        let g = Growing(Arc::clone(&filters));
+        let subs: [&dyn LogSubscriber; 1] = [&g];
+        let router = LogRouter::from_subscribers(&subs).unwrap();
+        let resub = Arc::new(crate::Resubscribe::new());
+        resub.publish(router.tracked_addresses().clone(), 0);
+        let (_fwd, ingress) = split_exex();
+        let sink: &'static dyn HaltSink = Box::leak(Box::new(Sink));
+        let h = spawn(HotSpawn {
+            store: StateStore::new(cfg()),
+            router,
+            handlers: vec![Box::new(Growing(Arc::clone(&filters)))],
+            ingress,
+            sink,
+            protocols: Box::from([ProtocolId(1)]),
+            height: Arc::new(ConsistentHeight::new(NumHash {
+                number: 0,
+                hash: B256::ZERO,
+            })),
+            pin: super::pin_deferred,
+            allow_unpinned: true,
+            after_block: None,
+            resubscribe: Some(Arc::clone(&resub)),
+        })
+        .unwrap();
+        let pool = alloy_primitives::Address::repeat_byte(0x42);
+        assert!(!resub.tracked().contains(&pool));
+        filters.lock().unwrap().push(LogFilter {
+            address: pool,
+            topic0: B256::repeat_byte(1),
+        });
+        let epoch = resub.request();
+        let ok = resub.wait_applied(epoch, std::time::Duration::from_secs(5));
+        assert!(
+            ok,
+            "requested {} applied {} finished {}",
+            resub.requested(),
+            resub.applied(),
+            h.is_finished()
+        );
+        assert!(resub.tracked().contains(&pool), "the ExEx now forwards it");
+        h.request_stop();
+        assert!(h.join().unwrap().is_ok());
     }
 
     #[test]
@@ -599,6 +700,7 @@ mod tests {
             pin: pin_fail,
             allow_unpinned: false,
             after_block: None,
+            resubscribe: None,
         }) {
             Ok(_) => panic!("pin required must fail-closed"),
             Err(e) => e,
@@ -638,6 +740,7 @@ mod tests {
             pin: super::pin_deferred,
             allow_unpinned: true,
             after_block: None,
+            resubscribe: None,
         })
         .unwrap();
         let joined = h.join_no_stop().unwrap();

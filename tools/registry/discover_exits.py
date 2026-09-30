@@ -47,8 +47,9 @@ from web3 import Web3
 sys.path.insert(0, str(Path(__file__).parent))
 import crypto_math as cm  # noqa: E402
 
-REG = Path("registry/registry.json")
-META = Path("registry/registry.meta.json")
+ROOT = Path(__file__).resolve().parents[2]
+REG = ROOT / "registry" / "registry.json"
+META = ROOT / "registry" / "registry.meta.json"
 
 MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11"
 UNIV2_FACTORY = "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f"
@@ -586,7 +587,13 @@ def discover_crypto(chain: Chain, tracked: set[str], tokens: dict) -> dict[str, 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--registry", type=Path, default=None,
+                    help="registry.json to read and write (default: the repo's); its meta is the sibling registry.meta.json")
     args = ap.parse_args()
+    global REG, META
+    if args.registry is not None:
+        REG = args.registry
+        META = args.registry.with_name("registry.meta.json")
     url = os.environ.get("MAINNET_RPC_URL")
     if not url:
         print("MAINNET_RPC_URL is required", file=sys.stderr)

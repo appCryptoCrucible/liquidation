@@ -79,10 +79,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 import pendle_math as pm  # noqa: E402
 from discover_exits import EXCLUDED_QUIRKS, Chain, ng_dynamic_fee, ng_get_d, sel, word  # noqa: E402
 
-REG = Path("registry/registry.json")
-META = Path("registry/registry.meta.json")
-PROBE = Path("contracts/out/PendleRedeemProbe.sol/PendleRedeemProbe.json")
-SELL_PROBE = Path("contracts/out/PendleSellProbe.sol/PendleSellProbe.json")
+ROOT = Path(__file__).resolve().parents[2]
+REG = ROOT / "registry" / "registry.json"
+META = ROOT / "registry" / "registry.meta.json"
+PROBE = ROOT / "contracts/out/PendleRedeemProbe.sol/PendleRedeemProbe.json"
+SELL_PROBE = ROOT / "contracts/out/PendleSellProbe.sol/PendleSellProbe.json"
 PENDLE_API = "https://api-v2.pendle.finance/core/v1/1/markets/active"
 PENDLE_MARKET_FACTORY_V6 = "0x6d247b1c044fa1e22e6b04fa9f71baf99eb29a9f"
 QUIRKS_OUT = EXCLUDED_QUIRKS | {"fee_on_transfer"}
@@ -502,9 +503,15 @@ def discover_pendle_market(chain, url, tokens, cands, usable, routed) -> dict[st
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--registry", type=Path, default=None,
+                    help="registry.json to read and write (default: the repo's); its meta is the sibling registry.meta.json")
     ap.add_argument("--kinds", default="erc4626,pendle_pt,curve_lp,pendle_market")
     ap.add_argument("--recheck", action="store_true")
     args = ap.parse_args()
+    global REG, META
+    if args.registry is not None:
+        REG = args.registry
+        META = args.registry.with_name("registry.meta.json")
     kinds = set(args.kinds.split(","))
     url = os.environ.get("MAINNET_RPC_URL")
     if not url:

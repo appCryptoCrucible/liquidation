@@ -17,6 +17,7 @@ pub mod exex;
 pub mod hot;
 pub mod mempool;
 pub mod reorg;
+pub mod resubscribe;
 pub mod router;
 pub mod source;
 
@@ -35,6 +36,7 @@ pub use hot::{
 pub use liq_protocol::conformance::AllocMeter;
 pub use mempool::{split_mempool, MempoolProducer};
 pub use reorg::{apply_contained, handle_notification, unwind_to};
+pub use resubscribe::Resubscribe;
 pub use router::{LogRouter, Route};
 pub use source::{ExExSource, LogSource, OwnedBlock, OwnedLog, Poll, RpcPoll, DEFAULT_PAGE_BLOCKS};
 

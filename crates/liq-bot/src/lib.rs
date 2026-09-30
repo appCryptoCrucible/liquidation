@@ -29,6 +29,7 @@ pub mod live_rpc;
 pub mod pool_seed;
 pub mod protocol_prices;
 pub mod rebuild;
+pub mod registry_watch;
 pub mod reload;
 pub mod routes;
 pub mod shared;

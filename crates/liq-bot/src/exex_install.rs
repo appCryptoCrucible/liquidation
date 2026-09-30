@@ -72,6 +72,7 @@ pub fn install_hot(
     height: std::sync::Arc<ConsistentHeight>,
     allow_unpinned: bool,
     after_block: Option<Box<dyn AfterBlock>>,
+    resubscribe: Option<std::sync::Arc<liq_node::Resubscribe>>,
 ) -> liq_node::Result<HotHandle> {
     let pin = if allow_unpinned {
         pin_deferred
@@ -89,6 +90,7 @@ pub fn install_hot(
         pin,
         allow_unpinned,
         after_block,
+        resubscribe,
     })
 }
 

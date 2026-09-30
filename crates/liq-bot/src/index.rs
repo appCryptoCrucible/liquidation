@@ -169,6 +169,9 @@ impl LogHandler for FlashHandler {
 #[derive(Clone)]
 pub struct BookHandler {
     book: Arc<RwLock<PoolBook>>,
+    /// A pool the book discovers from a log (Uniswap V3 `PoolCreated`) needs
+    /// its own logs routed: ask the hot thread to rebuild its router.
+    resubscribe: Arc<liq_node::Resubscribe>,
 }
 
 impl LogSubscriber for BookHandler {
@@ -183,7 +186,12 @@ impl LogHandler for BookHandler {
         _st: &mut dyn liq_protocol::StateWriter,
         log: &DecodedLog<'_>,
     ) -> core::result::Result<DirtySet, ProtocolError> {
-        self.book.write().apply_log(log);
+        let mut book = self.book.write();
+        let before = book.discovered();
+        book.apply_log(log);
+        if book.discovered() != before {
+            self.resubscribe.request();
+        }
         Ok(DirtySet::None)
     }
 }
@@ -284,6 +292,9 @@ pub struct BoundIndex {
     pub canonical: Option<Arc<Mutex<CanonicalBook>>>,
     pub derived: Option<Arc<Mutex<DerivedBook>>>,
     pub flash_assets: usize,
+    /// Asks the hot thread to rebuild its router and the ExEx to forward the
+    /// new address set when what the book follows changes at runtime.
+    pub resubscribe: Arc<liq_node::Resubscribe>,
     flash_handlers: Vec<FlashHandler>,
     book_handler: Option<BookHandler>,
     feed_sub: Option<FeedSub>,
@@ -340,7 +351,10 @@ impl BoundIndex {
     #[must_use]
     pub fn subscriber_empty(&self) -> bool {
         self.flash_handlers.is_empty()
-            && self.book_handler.is_none()
+            && self
+                .book_handler
+                .as_ref()
+                .is_none_or(|h| h.subscriptions().is_empty())
             && self.feed_sub.is_none()
             && self.derived_sub.is_none()
     }
@@ -398,16 +412,13 @@ impl IndexLoad {
             });
         }
         let book = Arc::new(RwLock::new(self.book));
-        let book_handler = {
-            let subs = book.read().subscriptions();
-            if subs.iter().any(|f| !f.address.is_zero()) {
-                Some(BookHandler {
-                    book: Arc::clone(&book),
-                })
-            } else {
-                None
-            }
-        };
+        let resubscribe = Arc::new(liq_node::Resubscribe::new());
+        // Always present: pools the registry watcher or V3 discovery adds at
+        // runtime subscribe through it even when the book starts empty.
+        let book_handler = Some(BookHandler {
+            book: Arc::clone(&book),
+            resubscribe: Arc::clone(&resubscribe),
+        });
         let canonical = self.canonical.map(|b| Arc::new(Mutex::new(b)));
         let feed_sub = canonical.as_ref().and_then(|b| {
             let subs = b.lock().feeds().subscriptions();
@@ -436,6 +447,7 @@ impl IndexLoad {
             canonical,
             derived,
             flash_assets: self.flash_assets,
+            resubscribe,
             flash_handlers,
             book_handler,
             feed_sub,
@@ -668,186 +680,13 @@ fn load_book(
     let factory = univ3_factory(registry);
     let mut book = PoolBook::new(assets, factory, hops.univ3);
     for (addr, entry) in &registry.pools {
-        let tokens: SmallVec<[Address; liq_router::MAX_COINS]> = match entry.venue {
-            PoolVenue::Curve | PoolVenue::CurveNg | PoolVenue::CurveCrypto => {
-                entry.coins.iter().copied().collect()
-            }
-            PoolVenue::Univ3 | PoolVenue::Univ2 => {
-                SmallVec::from_slice(&[entry.token0, entry.token1])
-            }
-        };
-        if addr.is_zero()
-            || tokens.len() < 2
-            || tokens.len() > liq_router::MAX_COINS
-            || tokens.iter().any(|t| t.is_zero())
-        {
-            omit(omitted, "book", format!("zero address on pool {addr:#x}"));
-            continue;
-        }
-        let mut ids = SmallVec::new();
-        let mut rates = SmallVec::new();
-        for t in &tokens {
-            let Some(id) = intern.asset(*t) else {
-                break;
-            };
-            ids.push(id);
-            if entry.venue.is_curve() {
-                // NG: the precision multiplier until the first read replaces
-                // it with `stored_rates()` (the pool starts stale).
-                match registry.tokens.get(t).and_then(|e| curve_rate(e.decimals)) {
-                    Some(r) => rates.push(r),
-                    None => break,
+        match build_pool(intern, registry, hops, *addr, entry) {
+            Ok(pool) => {
+                if let Err(e) = book.add(pool) {
+                    tracing::error!(error = ?e, pool = %addr, "pool address seed refused");
                 }
             }
-        }
-        if ids.len() != tokens.len() || (entry.venue.is_curve() && rates.len() != tokens.len()) {
-            omit(
-                omitted,
-                "book",
-                format!("pool {addr:#x} has a coin not interned / no decimals"),
-            );
-            continue;
-        }
-        let (hop_gas, state) = match entry.venue {
-            PoolVenue::Univ3 => {
-                let Some(spacing) = univ3_tick_spacing(entry.fee) else {
-                    omit(
-                        omitted,
-                        "book",
-                        format!("unknown univ3 fee {} on {addr:#x}", entry.fee),
-                    );
-                    continue;
-                };
-                (
-                    hops.univ3,
-                    PoolState::V3(V3State {
-                        sqrt_price_x96: U256::ZERO,
-                        tick: 0,
-                        liquidity: 0,
-                        fee_pips: entry.fee,
-                        tick_spacing: spacing,
-                        ticks: Vec::new(),
-                    }),
-                )
-            }
-            PoolVenue::Univ2 => {
-                let Some(factory) = v2_factory_id(entry.factory) else {
-                    omit(
-                        omitted,
-                        "book",
-                        format!(
-                            "v2 pair {addr:#x} factory {:#x} not verifiable",
-                            entry.factory
-                        ),
-                    );
-                    continue;
-                };
-                (
-                    hops.univ2,
-                    PoolState::V2(V2State {
-                        reserve0: U256::ZERO,
-                        reserve1: U256::ZERO,
-                        factory,
-                    }),
-                )
-            }
-            PoolVenue::Curve => (
-                hops.curve,
-                PoolState::Curve(CurveState {
-                    balances: tokens.iter().map(|_| U256::ZERO).collect(),
-                    rates,
-                    a: U256::ZERO,
-                    a_precision: U256::from(1u64),
-                    fee: U256::from(entry.fee),
-                    stale: true,
-                    stale_block: 0,
-                    ng: false,
-                    offpeg_fee_multiplier: U256::ZERO,
-                    dynamic_rates: false,
-                    read_block: 0,
-                }),
-            ),
-            PoolVenue::CurveCrypto => {
-                let kind = match entry.crypto_kind {
-                    Some(liq_config::CryptoKind::TwoV1) => CryptoKind::TwoV1,
-                    Some(liq_config::CryptoKind::TwoV200) => CryptoKind::TwoV200,
-                    Some(liq_config::CryptoKind::TwoV210) => CryptoKind::TwoV210,
-                    Some(liq_config::CryptoKind::Tri) => CryptoKind::Tri,
-                    None => {
-                        omit(
-                            omitted,
-                            "book",
-                            format!("curve crypto {addr:#x}: no crypto_kind"),
-                        );
-                        continue;
-                    }
-                };
-                // `10^(18 − decimals)`; `rates` holds `10^(36 − decimals)`.
-                let precisions = rates
-                    .iter()
-                    .map(|r| r.checked_div(U256::from(10u64).pow(U256::from(18u64))))
-                    .collect::<Option<SmallVec<[U256; liq_router::MAX_COINS]>>>();
-                let Some(precisions) = precisions else {
-                    omit(omitted, "book", format!("curve crypto {addr:#x}: decimals"));
-                    continue;
-                };
-                (
-                    hops.curve_crypto,
-                    PoolState::Crypto(CryptoState {
-                        kind,
-                        balances: tokens.iter().map(|_| U256::ZERO).collect(),
-                        precisions,
-                        price_scale: tokens.iter().skip(1).map(|_| U256::ZERO).collect(),
-                        d: U256::ZERO,
-                        ann: U256::ZERO,
-                        gamma: U256::ZERO,
-                        mid_fee: U256::ZERO,
-                        out_fee: U256::ZERO,
-                        fee_gamma: U256::ZERO,
-                        stale: true,
-                        stale_block: 0,
-                        read_block: 0,
-                    }),
-                )
-            }
-            PoolVenue::CurveNg => {
-                // Rebasing coins (type 2) change balances without a pool
-                // log; the reseed would quote a stale balance. Left out.
-                if entry.asset_types.len() != tokens.len() || entry.asset_types.contains(&2) {
-                    omit(
-                        omitted,
-                        "book",
-                        format!("curve NG {addr:#x}: asset types missing or rebasing"),
-                    );
-                    continue;
-                }
-                (
-                    hops.curve_ng,
-                    PoolState::Curve(CurveState {
-                        balances: tokens.iter().map(|_| U256::ZERO).collect(),
-                        rates,
-                        a: U256::ZERO,
-                        a_precision: U256::from(100u64),
-                        fee: U256::from(entry.fee),
-                        stale: true,
-                        stale_block: 0,
-                        ng: true,
-                        offpeg_fee_multiplier: U256::ZERO,
-                        dynamic_rates: entry.asset_types.iter().any(|t| *t == 1 || *t == 3),
-                        read_block: 0,
-                    }),
-                )
-            }
-        };
-        let pool = Pool {
-            address: *addr,
-            assets: ids,
-            tokens,
-            hop_gas,
-            state,
-        };
-        if let Err(e) = book.add(pool) {
-            tracing::error!(error = ?e, pool = %addr, "pool address seed refused");
+            Err(why) => omit(omitted, "book", why),
         }
     }
     if book.pools().is_empty() {
@@ -857,8 +696,170 @@ fn load_book(
     book
 }
 
+/// One registry pool as an unseeded book pool (V3 / V2 zero state, Curve
+/// and crypto stale until read). `Err` names why it cannot be routed.
+pub(crate) fn build_pool(
+    intern: &Intern,
+    registry: &Registry,
+    hops: crate::gas_model::HopGas,
+    addr: Address,
+    entry: &liq_config::PoolEntry,
+) -> Result<Pool, String> {
+    let tokens: SmallVec<[Address; liq_router::MAX_COINS]> = match entry.venue {
+        PoolVenue::Curve | PoolVenue::CurveNg | PoolVenue::CurveCrypto => {
+            entry.coins.iter().copied().collect()
+        }
+        PoolVenue::Univ3 | PoolVenue::Univ2 => SmallVec::from_slice(&[entry.token0, entry.token1]),
+    };
+    if addr.is_zero()
+        || tokens.len() < 2
+        || tokens.len() > liq_router::MAX_COINS
+        || tokens.iter().any(|t| t.is_zero())
+    {
+        return Err(format!("zero address on pool {addr:#x}"));
+    }
+    let mut ids = SmallVec::new();
+    let mut rates = SmallVec::new();
+    for t in &tokens {
+        let Some(id) = intern.asset(*t) else {
+            break;
+        };
+        ids.push(id);
+        if entry.venue.is_curve() {
+            // NG: the precision multiplier until the first read replaces
+            // it with `stored_rates()` (the pool starts stale).
+            match registry.tokens.get(t).and_then(|e| curve_rate(e.decimals)) {
+                Some(r) => rates.push(r),
+                None => break,
+            }
+        }
+    }
+    if ids.len() != tokens.len() || (entry.venue.is_curve() && rates.len() != tokens.len()) {
+        return Err(format!(
+            "pool {addr:#x} has a coin not interned / no decimals"
+        ));
+    }
+    let (hop_gas, state) = match entry.venue {
+        PoolVenue::Univ3 => {
+            let Some(spacing) = univ3_tick_spacing(entry.fee) else {
+                return Err(format!("unknown univ3 fee {} on {addr:#x}", entry.fee));
+            };
+            (
+                hops.univ3,
+                PoolState::V3(V3State {
+                    sqrt_price_x96: U256::ZERO,
+                    tick: 0,
+                    liquidity: 0,
+                    fee_pips: entry.fee,
+                    tick_spacing: spacing,
+                    ticks: Vec::new(),
+                }),
+            )
+        }
+        PoolVenue::Univ2 => {
+            let Some(factory) = v2_factory_id(entry.factory) else {
+                return Err(format!(
+                    "v2 pair {addr:#x} factory {:#x} not verifiable",
+                    entry.factory
+                ));
+            };
+            (
+                hops.univ2,
+                PoolState::V2(V2State {
+                    reserve0: U256::ZERO,
+                    reserve1: U256::ZERO,
+                    factory,
+                }),
+            )
+        }
+        PoolVenue::Curve => (
+            hops.curve,
+            PoolState::Curve(CurveState {
+                balances: tokens.iter().map(|_| U256::ZERO).collect(),
+                rates,
+                a: U256::ZERO,
+                a_precision: U256::from(1u64),
+                fee: U256::from(entry.fee),
+                stale: true,
+                stale_block: 0,
+                ng: false,
+                offpeg_fee_multiplier: U256::ZERO,
+                dynamic_rates: false,
+                read_block: 0,
+            }),
+        ),
+        PoolVenue::CurveCrypto => {
+            let kind = match entry.crypto_kind {
+                Some(liq_config::CryptoKind::TwoV1) => CryptoKind::TwoV1,
+                Some(liq_config::CryptoKind::TwoV200) => CryptoKind::TwoV200,
+                Some(liq_config::CryptoKind::TwoV210) => CryptoKind::TwoV210,
+                Some(liq_config::CryptoKind::Tri) => CryptoKind::Tri,
+                None => return Err(format!("curve crypto {addr:#x}: no crypto_kind")),
+            };
+            // `10^(18 − decimals)`; `rates` holds `10^(36 − decimals)`.
+            let precisions = rates
+                .iter()
+                .map(|r| r.checked_div(U256::from(10u64).pow(U256::from(18u64))))
+                .collect::<Option<SmallVec<[U256; liq_router::MAX_COINS]>>>();
+            let Some(precisions) = precisions else {
+                return Err(format!("curve crypto {addr:#x}: decimals"));
+            };
+            (
+                hops.curve_crypto,
+                PoolState::Crypto(CryptoState {
+                    kind,
+                    balances: tokens.iter().map(|_| U256::ZERO).collect(),
+                    precisions,
+                    price_scale: tokens.iter().skip(1).map(|_| U256::ZERO).collect(),
+                    d: U256::ZERO,
+                    ann: U256::ZERO,
+                    gamma: U256::ZERO,
+                    mid_fee: U256::ZERO,
+                    out_fee: U256::ZERO,
+                    fee_gamma: U256::ZERO,
+                    stale: true,
+                    stale_block: 0,
+                    read_block: 0,
+                }),
+            )
+        }
+        PoolVenue::CurveNg => {
+            // Rebasing coins (type 2) change balances without a pool
+            // log; the reseed would quote a stale balance. Left out.
+            if entry.asset_types.len() != tokens.len() || entry.asset_types.contains(&2) {
+                return Err(format!(
+                    "curve NG {addr:#x}: asset types missing or rebasing"
+                ));
+            }
+            (
+                hops.curve_ng,
+                PoolState::Curve(CurveState {
+                    balances: tokens.iter().map(|_| U256::ZERO).collect(),
+                    rates,
+                    a: U256::ZERO,
+                    a_precision: U256::from(100u64),
+                    fee: U256::from(entry.fee),
+                    stale: true,
+                    stale_block: 0,
+                    ng: true,
+                    offpeg_fee_multiplier: U256::ZERO,
+                    dynamic_rates: entry.asset_types.iter().any(|t| *t == 1 || *t == 3),
+                    read_block: 0,
+                }),
+            )
+        }
+    };
+    Ok(Pool {
+        address: addr,
+        assets: ids,
+        tokens,
+        hop_gas,
+        state,
+    })
+}
+
 /// Registry wrappers → the book's unwraps. The rate starts unread (not
-/// routed) until the reseed thread reads `previewRedeem`.
+/// routed) until the reseed thread reads it.
 fn add_unwraps(
     book: &mut PoolBook,
     intern: &Intern,
@@ -867,105 +868,106 @@ fn add_unwraps(
     omitted: &mut Vec<(&'static str, String)>,
 ) {
     for (addr, entry) in &registry.tokens {
-        let Some(u) = entry.unwrap else {
-            continue;
-        };
-        let (Some(wrapper), Some(into)) = (intern.asset(*addr), intern.asset(u.into)) else {
-            omit(
-                omitted,
-                "book",
-                format!("unwrap {addr:#x} → {:#x}: token not interned", u.into),
-            );
-            continue;
-        };
-        // A thousand whole shares: the linear rate keeps three more digits
-        // than one share would.
-        let Some(scale) =
-            U256::from(10u64).checked_pow(U256::from(entry.decimals.saturating_add(3)))
-        else {
-            omit(omitted, "book", format!("unwrap {addr:#x}: decimals"));
-            continue;
-        };
-        let kind = match (u.kind, u.yt, u.sy) {
-            (liq_config::UnwrapKind::Erc4626, _, _) => liq_router::UnwrapKind::Erc4626,
-            (liq_config::UnwrapKind::CurveLp, _, _) => {
-                // The LP is its own pool; `into` is one of its coins.
-                let coin = registry
-                    .pools
-                    .get(addr)
-                    .filter(|p| p.venue == PoolVenue::CurveNg)
-                    .and_then(|p| p.coins.iter().position(|c| *c == u.into))
-                    .and_then(|i| u8::try_from(i).ok());
-                let Some(i) = coin else {
-                    omit(
-                        omitted,
-                        "book",
-                        format!(
-                            "curve LP {addr:#x}: not an NG registry pool holding {:#x}",
-                            u.into
-                        ),
-                    );
-                    continue;
-                };
-                liq_router::UnwrapKind::CurveLp { i }
-            }
-            (liq_config::UnwrapKind::PendlePt, Some(yt), Some(sy)) => {
-                liq_router::UnwrapKind::PendlePt { yt, sy }
-            }
-            (liq_config::UnwrapKind::PendlePt, _, _) => {
-                omit(omitted, "book", format!("pendle PT {addr:#x}: no yt/sy"));
-                continue;
-            }
-            (liq_config::UnwrapKind::PendleMarket, Some(yt), Some(sy)) if u.market.is_some() => {
-                liq_router::UnwrapKind::PendleMarket {
-                    market: u.market.unwrap_or_default(),
-                    yt,
-                    sy,
-                }
-            }
-            (liq_config::UnwrapKind::PendleMarket, _, _) => {
-                omit(
-                    omitted,
-                    "book",
-                    format!("pendle market PT {addr:#x}: no market/sy"),
-                );
-                continue;
-            }
-        };
-        book.add_unwrap(liq_router::Unwrap {
-            kind,
-            wrapper,
-            wrapper_token: *addr,
-            into,
-            into_token: u.into,
-            rate: liq_router::UnwrapRate::Unread,
-            // A Curve LP's scale is only the step its marginal is taken
-            // over: a thousandth of a token, not a thousand.
-            scale: match kind {
-                liq_router::UnwrapKind::CurveLp { .. } => scale
-                    .checked_div(U256::from(1_000_000u64))
-                    .unwrap_or_default(),
-                // One whole PT: the market's marginal (a smaller sale can
-                // pay a zero LP fee, which the market refuses).
-                liq_router::UnwrapKind::PendleMarket { .. } => {
-                    scale.checked_div(U256::from(1_000u64)).unwrap_or_default()
-                }
-                _ => scale,
-            },
-            read_block: 0,
-            gas: match kind {
-                liq_router::UnwrapKind::Erc4626 => hops.unwrap_4626,
-                liq_router::UnwrapKind::PendlePt { .. } => hops.pendle_pt,
-                liq_router::UnwrapKind::CurveLp { .. } => hops.curve_lp,
-                liq_router::UnwrapKind::PendleMarket { .. } => hops.pendle_market,
-            },
-            // At expiry a market PT switches to the post-expiry redeem.
-            expiry_gas: match kind {
-                liq_router::UnwrapKind::PendleMarket { .. } => hops.pendle_pt,
-                _ => 0,
-            },
-        });
+        match build_unwrap(intern, registry, hops, *addr, entry) {
+            Ok(Some(u)) => book.add_unwrap(u),
+            Ok(None) => {}
+            Err(why) => omit(omitted, "book", why),
+        }
     }
+}
+
+/// A registry token's unwrap as an unread book unwrap; `None` when the
+/// token has none. `Err` names why it cannot be routed.
+pub(crate) fn build_unwrap(
+    intern: &Intern,
+    registry: &Registry,
+    hops: crate::gas_model::HopGas,
+    addr: Address,
+    entry: &liq_config::TokenEntry,
+) -> Result<Option<liq_router::Unwrap>, String> {
+    let Some(u) = entry.unwrap else {
+        return Ok(None);
+    };
+    let (Some(wrapper), Some(into)) = (intern.asset(addr), intern.asset(u.into)) else {
+        return Err(format!(
+            "unwrap {addr:#x} → {:#x}: token not interned",
+            u.into
+        ));
+    };
+    // A thousand whole shares: the linear rate keeps three more digits
+    // than one share would.
+    let Some(scale) = U256::from(10u64).checked_pow(U256::from(entry.decimals.saturating_add(3)))
+    else {
+        return Err(format!("unwrap {addr:#x}: decimals"));
+    };
+    let kind = match (u.kind, u.yt, u.sy) {
+        (liq_config::UnwrapKind::Erc4626, _, _) => liq_router::UnwrapKind::Erc4626,
+        (liq_config::UnwrapKind::CurveLp, _, _) => {
+            // The LP is its own pool; `into` is one of its coins.
+            let coin = registry
+                .pools
+                .get(&addr)
+                .filter(|p| p.venue == PoolVenue::CurveNg)
+                .and_then(|p| p.coins.iter().position(|c| *c == u.into))
+                .and_then(|i| u8::try_from(i).ok());
+            let Some(i) = coin else {
+                return Err(format!(
+                    "curve LP {addr:#x}: not an NG registry pool holding {:#x}",
+                    u.into
+                ));
+            };
+            liq_router::UnwrapKind::CurveLp { i }
+        }
+        (liq_config::UnwrapKind::PendlePt, Some(yt), Some(sy)) => {
+            liq_router::UnwrapKind::PendlePt { yt, sy }
+        }
+        (liq_config::UnwrapKind::PendlePt, _, _) => {
+            return Err(format!("pendle PT {addr:#x}: no yt/sy"));
+        }
+        (liq_config::UnwrapKind::PendleMarket, Some(yt), Some(sy)) if u.market.is_some() => {
+            liq_router::UnwrapKind::PendleMarket {
+                market: u.market.unwrap_or_default(),
+                yt,
+                sy,
+            }
+        }
+        (liq_config::UnwrapKind::PendleMarket, _, _) => {
+            return Err(format!("pendle market PT {addr:#x}: no market/sy"));
+        }
+    };
+    Ok(Some(liq_router::Unwrap {
+        kind,
+        wrapper,
+        wrapper_token: addr,
+        into,
+        into_token: u.into,
+        rate: liq_router::UnwrapRate::Unread,
+        // A Curve LP's scale is only the step its marginal is taken
+        // over: a thousandth of a token, not a thousand.
+        scale: match kind {
+            liq_router::UnwrapKind::CurveLp { .. } => scale
+                .checked_div(U256::from(1_000_000u64))
+                .unwrap_or_default(),
+            // One whole PT: the market's marginal (a smaller sale can
+            // pay a zero LP fee, which the market refuses).
+            liq_router::UnwrapKind::PendleMarket { .. } => {
+                scale.checked_div(U256::from(1_000u64)).unwrap_or_default()
+            }
+            _ => scale,
+        },
+        read_block: 0,
+        gas: match kind {
+            liq_router::UnwrapKind::Erc4626 => hops.unwrap_4626,
+            liq_router::UnwrapKind::PendlePt { .. } => hops.pendle_pt,
+            liq_router::UnwrapKind::CurveLp { .. } => hops.curve_lp,
+            liq_router::UnwrapKind::PendleMarket { .. } => hops.pendle_market,
+        },
+        // At expiry a market PT switches to the post-expiry redeem.
+        expiry_gas: match kind {
+            liq_router::UnwrapKind::PendleMarket { .. } => hops.pendle_pt,
+            _ => 0,
+        },
+    }))
 }
 
 fn load_feeds(

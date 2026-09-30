@@ -179,6 +179,27 @@ Consequences to plan around:
 - **Post-restart drift check gates the lease** (Step 2). A binary that restarts
   into wrong state must not submit.
 
+### Registry changes are not restarts
+
+New exits for tokens the bot already tracks — V2 pairs, Curve plain / NG /
+crypto pools, vault / Curve-LP / Pendle-PT unwraps — reach the running ExEx
+from `registry/registry.json` with no restart. `liq-discovery.timer`
+(`ops/systemd/liq-discovery.{service,timer}`) runs
+`tools/registry/daily_refresh.py` once a day: it re-runs exit discovery on a
+copy with every gate, replaces the live file atomically when exits changed,
+and the ExEx's registry watch (`liq-bot/src/registry_watch.rs`) asserts the
+additions on chain, adds them to the pool book, has the hot thread route
+their logs, and only then seeds them. A live PT that reaches expiry moves to
+its post-expiry redeem on its own. What cannot be added live — new tokens
+(asset ids are fixed at start), new protocol markets, oracle or flash-source
+changes, Uniswap V3 pools from the registry, pools that drop out — is written
+to `data/review/<date>.md` (the daily scan, including a full `discover.py`
+market enumeration) and `data/review/registry-watch.log` (anything the watch
+refused) for a person to decide; adding one is a config change and a
+restart, batched like any deploy. A run that would drop more than 10 % (and at
+least 3) of an exit kind applies nothing (a failing RPC fails gates; it does not retire
+pools).
+
 ## Step 2 — Supervision
 
 - Process supervisor restarts `liq-bot`; the ExEx restarts with Reth

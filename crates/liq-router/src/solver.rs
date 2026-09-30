@@ -1377,6 +1377,10 @@ pub struct PoolBook {
     assets: HashMap<Address, AssetId>,
     /// Wrapper asset → how to unwrap it.
     unwraps: HashMap<AssetId, Unwrap>,
+    /// V2 pairs added at runtime and not yet seeded → block of the newest
+    /// `Sync` folded into them (0 = none). A seed read older than that is
+    /// refused: the `Sync` already set the reserves exactly.
+    pending_v2: HashMap<PoolId, u64>,
     v3_factory: Option<Address>,
     /// Gas per V3 hop for discovered pools.
     v3_hop_gas: u64,
@@ -1399,6 +1403,7 @@ impl PoolBook {
             legs: HashMap::new(),
             assets,
             unwraps: HashMap::new(),
+            pending_v2: HashMap::new(),
             v3_factory,
             v3_hop_gas,
             discovered: 0,
@@ -1491,6 +1496,71 @@ impl PoolBook {
                 .filter(move |p| !self.legs.contains_key(p))
         });
         direct.chain(via)
+    }
+
+    /// Add a V2 pair while running: unseeded (zero reserves, not live) until
+    /// [`Self::seed_pending_v2`] applies a read, or a `Sync` folds in.
+    pub fn add_pending_v2(&mut self, pool: Pool) -> Result<PoolId, RouteError> {
+        if !matches!(pool.state, PoolState::V2(_)) {
+            return Err(RouteError::BadLeg);
+        }
+        let id = self.add(pool)?;
+        self.pending_v2.insert(id, 0);
+        Ok(id)
+    }
+
+    /// Seed a runtime-added V2 pair from `getReserves` read at `block`.
+    /// Refused (`false`, and the pair is no longer pending) when a `Sync` at
+    /// or after `block` already set its reserves.
+    pub fn seed_pending_v2(&mut self, id: PoolId, r0: U256, r1: U256, block: u64) -> bool {
+        let Some(last_sync) = self.pending_v2.remove(&id) else {
+            return false;
+        };
+        if last_sync >= block {
+            return false;
+        }
+        let Some(PoolState::V2(s)) = self.get_mut(id).map(|p| &mut p.state) else {
+            return false;
+        };
+        s.reserve0 = r0;
+        s.reserve1 = r1;
+        self.generation = self.generation.wrapping_add(1);
+        true
+    }
+
+    /// Runtime-added V2 pairs still waiting for their seed.
+    pub fn pending_v2(&self) -> impl Iterator<Item = PoolId> + '_ {
+        self.pending_v2.keys().copied()
+    }
+
+    /// Force a Curve / crypto pool to be re-read at or after `block` (a pool
+    /// added at runtime: logs before its subscription were not seen).
+    pub fn mark_stale(&mut self, id: PoolId, block: u64) -> bool {
+        let Some(pool) = self.get_mut(id) else {
+            return false;
+        };
+        match &mut pool.state {
+            PoolState::Curve(s) => {
+                s.stale = true;
+                s.stale_block = s.stale_block.max(block);
+            }
+            PoolState::Crypto(s) => {
+                s.stale = true;
+                s.stale_block = s.stale_block.max(block);
+            }
+            PoolState::V2(_) | PoolState::V3(_) => return false,
+        }
+        self.generation = self.generation.wrapping_add(1);
+        true
+    }
+
+    /// Stop unwrapping `wrapper` (no longer admitted). `true` when it was.
+    pub fn remove_unwrap(&mut self, wrapper: AssetId) -> bool {
+        let removed = self.unwraps.remove(&wrapper).is_some();
+        if removed {
+            self.generation = self.generation.wrapping_add(1);
+        }
+        removed
     }
 
     /// Register a wrapper's unwrap. Its rate starts unread.
@@ -1685,6 +1755,9 @@ impl PoolBook {
         else {
             return;
         };
+        if let Some(last) = self.pending_v2.get_mut(&id) {
+            *last = (*last).max(log.block);
+        }
         let changed = match &mut pool.state {
             PoolState::V3(s) => fold_v3(s, t0, log),
             PoolState::V2(s) => fold_v2(s, t0, log),
@@ -2242,6 +2315,42 @@ mod tests {
             b.add(p).unwrap();
         }
         b
+    }
+
+    /// A pair added while running is not live until seeded; a seed read
+    /// older than a `Sync` already folded in is refused (the `Sync` set the
+    /// reserves exactly), and a later one applies once.
+    #[test]
+    fn runtime_v2_seed_is_refused_behind_a_newer_sync() {
+        let mut book = book_with(vec![]);
+        let mut p = v2(9, U256::ZERO, U256::ZERO);
+        p.address = addr(9);
+        let id = book.add_pending_v2(p).unwrap();
+        assert!(!book.get(id).unwrap().is_live());
+        assert_eq!(book.pending_v2().collect::<Vec<_>>(), vec![id]);
+        // A Sync at block 50 lands before the seed read at 40.
+        let log = v2_sync_log(addr(9), e18(5), e18(7));
+        let mut d = log.decoded();
+        d.block = 50;
+        book.apply_log(&d);
+        assert!(
+            !book.seed_pending_v2(id, e18(1), e18(1), 40),
+            "older read refused"
+        );
+        assert!(book.pending_v2().next().is_none(), "no longer pending");
+        let PoolState::V2(s) = &book.get(id).unwrap().state else {
+            panic!()
+        };
+        assert_eq!((s.reserve0, s.reserve1), (e18(5), e18(7)));
+        // A second pair with no Sync takes its seed.
+        let mut q = v2(8, U256::ZERO, U256::ZERO);
+        q.address = addr(8);
+        let id2 = book.add_pending_v2(q).unwrap();
+        assert!(book.seed_pending_v2(id2, e18(3), e18(4), 60));
+        assert!(!book.seed_pending_v2(id2, e18(9), e18(9), 61), "seeds once");
+        assert!(book.get(id2).unwrap().is_live());
+        // A Curve pool added at runtime is forced stale at a block.
+        assert!(!book.mark_stale(id2, 70), "V2 has no stale flag");
     }
 
     /// Oracle: log folds reproduce the state a direct read would show —

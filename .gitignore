@@ -36,3 +36,6 @@ tools/gas-measure/cache/
 tools/gas-measure/run.log
 tools/gas-measure/report.out
 tools/gas-measure/fork-trace*.txt
+
+# Registry refresh reports and the watch review log (ops/systemd/liq-discovery)
+data/review/
