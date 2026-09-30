@@ -42,7 +42,7 @@ jobs:
       - name: Install Foundry
         run: |
           curl -L https://foundry.paradigm.xyz | bash
-          "$HOME/.foundry/bin/foundryup"
+          "$HOME/.foundry/bin/foundryup" --install v1.8.3  # pinned: .gas-snapshot is this version's gas
           echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
 
       - name: Install forge-std
@@ -86,7 +86,7 @@ jobs:
       - name: Install Foundry
         run: |
           curl -L https://foundry.paradigm.xyz | bash
-          "$HOME/.foundry/bin/foundryup"
+          "$HOME/.foundry/bin/foundryup" --install v1.8.3  # pinned: .gas-snapshot is this version's gas
           echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
 
       - name: Install forge-std
@@ -127,7 +127,7 @@ jobs:
       - name: Install Foundry
         run: |
           curl -L https://foundry.paradigm.xyz | bash
-          "$HOME/.foundry/bin/foundryup"
+          "$HOME/.foundry/bin/foundryup" --install v1.8.3  # pinned: .gas-snapshot is this version's gas
           echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
 
       - name: Install forge-std

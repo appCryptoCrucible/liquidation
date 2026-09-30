@@ -83,7 +83,8 @@ pub fn fee_amount(provider: FlashProvider, amount: U256, fee_bps: u16) -> Option
         // so this bounds the contract's fee from above.
         FlashProvider::SkyDss => mul_div(amount, bps, BPS, Rounding::Down).ok(),
         // Fee-free by construction (GUIDE 07 §3).
-        FlashProvider::UniV4 | FlashProvider::Morpho => None,
+        // Fee-free by construction (GUIDE 07 §3); nothing borrowed at all.
+        FlashProvider::UniV4 | FlashProvider::Morpho | FlashProvider::None => None,
     }
 }
 

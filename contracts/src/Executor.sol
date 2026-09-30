@@ -111,6 +111,11 @@ contract Executor {
     uint8 private constant P_UNIV4   = 2;
     uint8 private constant P_MORPHO  = 3;
     uint8 private constant P_SKY_DSS = 4;
+    /// Reward-only group: nothing is borrowed and nothing repaid. The legs
+    /// pay the liquidator without taking its money (Liquity V2 gas
+    /// compensation, Sky keeper incentives); `flashAmount` and `flashSource`
+    /// must be zero.
+    uint8 private constant P_NONE    = 5;
 
     // Flags
     uint8 private constant F_SWEEP = 1 << 0; // sweep WETH after this plan
@@ -262,6 +267,14 @@ contract Executor {
         for (uint256 g; g < p.groupCount; ++g) {
             (FlashGroup memory fg, uint256 next) = plan.group(cursor);
             cursor = next;
+
+            if (fg.provider == P_NONE) {
+                if (fg.flashAmount != 0 || fg.flashSource != address(0)) revert FlashMismatch();
+                assembly { tstore(T_GROUP, g) }
+                // Reverts `AllLegsFailed` when nothing filled.
+                _core(fg, plan);
+                continue;
+            }
 
             assembly {
                 tstore(T_GROUP, g)

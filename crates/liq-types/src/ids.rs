@@ -41,6 +41,9 @@ pub enum FlashProvider {
     Morpho = 3,
     /// D09: provider id `4` = Sky DSS Flash.
     SkyDss = 4,
+    /// No flash: a reward-only group (Liquity V2 gas compensation, Sky
+    /// keeper incentives) borrows and repays nothing. Executor `P_NONE`.
+    None = 5,
 }
 
 /// The full natural key. Interned to [`PositionId`] once, then never used on

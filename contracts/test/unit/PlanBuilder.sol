@@ -13,7 +13,7 @@ library PlanBuilder {
     uint8 internal constant L_EXACT_OUT    = 2;
 
     uint8 internal constant P_AAVE = 0; uint8 internal constant P_UNIV3 = 1; uint8 internal constant P_UNIV4 = 2;
-    uint8 internal constant P_MORPHO = 3; uint8 internal constant P_SKY = 4;
+    uint8 internal constant P_MORPHO = 3; uint8 internal constant P_SKY = 4; uint8 internal constant P_NONE = 5;
     uint8 internal constant A_V3 = 0; uint8 internal constant A_V4 = 1; uint8 internal constant A_MORPHO = 2;
     uint8 internal constant A_EULER = 3; uint8 internal constant A_SILO = 4; uint8 internal constant A_LIQUITY = 5;
     uint8 internal constant A_FLUID = 6; uint8 internal constant A_GEARBOX = 7; uint8 internal constant A_COMPOUND = 8;

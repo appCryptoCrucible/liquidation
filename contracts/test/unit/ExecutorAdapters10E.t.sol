@@ -143,6 +143,38 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
         ));
     }
 
+    /// Liquity pays gas compensation and takes nothing: a reward-only group
+    /// (`P_NONE`) runs the leg with no flash, and the reward closes to WETH.
+    function _rewardOnlyPlan(uint128 flashAmount, address src) internal view returns (bytes memory) {
+        return bytes.concat(
+            PB.header(PB.F_SWEEP, 0, GAS_COST, 0.1e18, 1),
+            PB.groupHead(PB.P_NONE, src, address(debt), flashAmount, 1, 0),
+            PB.legLiquity(address(liquity), borrower, address(coll), 0, uint256(uint160(borrower))),
+            PB.profit(1, PB.poolSwap(address(pCollWeth), address(coll), address(weth), PB.L_TAKE_BALANCE, 0))
+        );
+    }
+
+    function test_reward_only_group_needs_no_flash() public {
+        uint256 sinkBefore = weth.balanceOf(sink);
+        _exec(_rewardOnlyPlan(0, address(0)));
+        assertEq(liquity.lastId(), uint256(uint160(borrower)));
+        assertGt(weth.balanceOf(sink), sinkBefore, "reward reached WETH");
+        _assertClean();
+    }
+
+    function test_reward_only_group_refuses_a_flash_amount() public {
+        vm.expectRevert(Executor.FlashMismatch.selector);
+        _exec(_rewardOnlyPlan(1, address(0)));
+        vm.expectRevert(Executor.FlashMismatch.selector);
+        _exec(_rewardOnlyPlan(0, address(pool)));
+    }
+
+    function test_reward_only_group_with_nothing_filled_reverts() public {
+        liquity.setTrove(uint256(uint160(borrower)), 2, COLL_OUT); // closed by owner
+        vm.expectRevert(Executor.AllLegsFailed.selector);
+        _exec(_rewardOnlyPlan(0, address(0)));
+    }
+
     function test_fluid_dispatch_approve_zero() public {
         _execLeg(PB.legFluid(address(fluid), address(fluid), address(coll), REPAY, 1e18));
         assertEq(fluid.lastAbsorb(), true);

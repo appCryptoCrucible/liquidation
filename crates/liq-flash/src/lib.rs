@@ -159,6 +159,7 @@ mod tests {
                 | CallbackShape::UniV4UnlockCallback
                 | CallbackShape::MorphoFlashCallback
                 | CallbackShape::SkyDssOnFlashLoan => {}
+                CallbackShape::Direct => panic!("a lender never has the flash-less shape"),
             }
         }
         assert_eq!(srcs[4].available(ID_USDC), U256::ZERO);

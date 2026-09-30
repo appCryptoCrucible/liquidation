@@ -23,18 +23,21 @@ pub enum CallbackShape {
     MorphoFlashCallback,
     /// Sky DSS Flash (ERC-3156): `onFlashLoan(initiator, token, amount, fee, data)`.
     SkyDssOnFlashLoan,
+    /// No flash and no re-entry: a reward-only group runs its legs inline.
+    Direct,
 }
 
 impl CallbackShape {
     /// Every shape, for harnesses that must exercise each one. Kept in step
     /// with the enum by [`CallbackShape::provider`]'s exhaustive `match` — a
     /// new variant is a compile error there before it can be missing here.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::AaveExecuteOperation,
         Self::UniV3FlashCallback,
         Self::UniV4UnlockCallback,
         Self::MorphoFlashCallback,
         Self::SkyDssOnFlashLoan,
+        Self::Direct,
     ];
 
     /// The provider that re-enters through this shape. Exhaustive.
@@ -47,6 +50,7 @@ impl CallbackShape {
             Self::UniV4UnlockCallback => FlashProvider::UniV4,
             Self::MorphoFlashCallback => FlashProvider::Morpho,
             Self::SkyDssOnFlashLoan => FlashProvider::SkyDss,
+            Self::Direct => FlashProvider::None,
         }
     }
 }
@@ -96,13 +100,14 @@ mod tests {
                 | FlashProvider::UniV3
                 | FlashProvider::UniV4
                 | FlashProvider::Morpho
-                | FlashProvider::SkyDss => {}
+                | FlashProvider::SkyDss
+                | FlashProvider::None => {}
             }
         }
         assert_eq!(
             CallbackShape::ALL.len(),
-            5,
-            "oracle: GUIDE 07 §3 — five arenas"
+            6,
+            "oracle: GUIDE 07 §3 — five arenas plus the flash-less group"
         );
     }
 }

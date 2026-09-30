@@ -292,6 +292,7 @@ pub const fn provider_from_wire(b: u8) -> Option<FlashProvider> {
         2 => Some(FlashProvider::UniV4),
         3 => Some(FlashProvider::Morpho),
         4 => Some(FlashProvider::SkyDss),
+        5 => Some(FlashProvider::None),
         _ => None,
     }
 }
@@ -663,10 +664,11 @@ mod tests {
             FlashProvider::UniV4,
             FlashProvider::Morpho,
             FlashProvider::SkyDss,
+            FlashProvider::None,
         ] {
             assert_eq!(provider_from_wire(p as u8), Some(p));
         }
-        assert_eq!(provider_from_wire(5), None);
+        assert_eq!(provider_from_wire(6), None);
     }
 
     /// Oracle: `PlanDecoder.sol` constants.
