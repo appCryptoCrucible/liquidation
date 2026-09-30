@@ -53,6 +53,10 @@ sol! {
     function price_scale() returns (uint256);
     function price_scale(uint256 k) returns (uint256);
     function offpeg_fee_multiplier() returns (uint256);
+    function previewRedeem(uint256 shares) returns (uint256);
+    function exchangeRate() returns (uint256);
+    function pyIndexStored() returns (uint256);
+    function previewRedeem(address tokenOut, uint256 amountSharesToRedeem) returns (uint256);
 }
 
 /// Multicall3, same address on every EVM chain.
@@ -478,6 +482,14 @@ pub async fn seed_curve(book: &mut PoolBook, rpc: &HttpRpc) -> SeedStats {
         seeded = c_applied,
         "Curve crypto pool state seeded"
     );
+    let unwraps = unwrap_targets(&lock.read(), block);
+    let (u_read, u_applied) = refresh_unwraps(&lock, rpc, &unwraps, block).await;
+    tracing::info!(
+        wrappers = unwraps.len(),
+        read = u_read,
+        seeded = u_applied,
+        "unwrap rates seeded"
+    );
     *book = lock.into_inner();
     let stats = SeedStats {
         pools: targets.len(),
@@ -635,6 +647,152 @@ async fn refresh_crypto(
     (read, applied)
 }
 
+/// One wrapper to re-read.
+#[derive(Clone, Copy, Debug)]
+struct UnwrapTarget {
+    wrapper: liq_types::AssetId,
+    token: Address,
+    into: Address,
+    scale: U256,
+    kind: liq_router::UnwrapKind,
+}
+
+/// Wrappers whose rate was last read before `head`. Vault and SY rates move
+/// every block (interest), without a log.
+fn unwrap_targets(book: &PoolBook, head: u64) -> Vec<UnwrapTarget> {
+    book.unwraps()
+        .filter(|u| u.read_block < head)
+        .map(|u| UnwrapTarget {
+            wrapper: u.wrapper,
+            token: u.wrapper_token,
+            into: u.into_token,
+            scale: u.scale,
+            kind: u.kind,
+        })
+        .collect()
+}
+
+/// Rows of one `aggregate` as `uint256`s (`None` per failed row).
+async fn read_words(rpc: &HttpRpc, calls: Vec<Call3>, block: u64) -> Vec<Option<U256>> {
+    let n = calls.len();
+    let mut out = Vec::with_capacity(n);
+    for chunk in calls.chunks(BATCH) {
+        let res = aggregate(rpc, chunk.to_vec(), block).await;
+        for k in 0..chunk.len() {
+            out.push(
+                res.as_ref()
+                    .and_then(|r| r.get(k))
+                    .filter(|r| r.success)
+                    .and_then(|r| exchangeRateCall::abi_decode_returns(&r.returnData).ok()),
+            );
+        }
+    }
+    out
+}
+
+/// `into` paid for `scale` of each wrapper at `block`:
+/// - ERC-4626: `previewRedeem(scale)`;
+/// - expired Pendle PT: the YT pays `scale · 1e18 / max(SY.exchangeRate(),
+///   pyIndexStored)` SY (`PendleYieldToken._redeemPY`, `SYUtils.assetToSy`),
+///   and the SY `previewRedeem(into, ·)` of that.
+async fn read_unwrap_rates(
+    rpc: &HttpRpc,
+    targets: &[UnwrapTarget],
+    block: u64,
+) -> Vec<Option<U256>> {
+    let mut first = Vec::new();
+    for t in targets {
+        match t.kind {
+            liq_router::UnwrapKind::Erc4626 => {
+                first.push(call(
+                    t.token,
+                    previewRedeem_0Call { shares: t.scale }.abi_encode(),
+                ));
+            }
+            liq_router::UnwrapKind::PendlePt { yt, sy } => {
+                first.push(call(sy, exchangeRateCall {}.abi_encode()));
+                first.push(call(yt, pyIndexStoredCall {}.abi_encode()));
+            }
+        }
+    }
+    let words = read_words(rpc, first, block).await;
+    let mut out: Vec<Option<U256>> = Vec::with_capacity(targets.len());
+    let mut second = Vec::new();
+    let mut pending = Vec::new();
+    let mut at = 0usize;
+    let one = U256::from(1_000_000_000_000_000_000u64);
+    for (i, t) in targets.iter().enumerate() {
+        match t.kind {
+            liq_router::UnwrapKind::Erc4626 => {
+                out.push(words.get(at).copied().flatten());
+                at = at.saturating_add(1);
+            }
+            liq_router::UnwrapKind::PendlePt { sy, .. } => {
+                let rate = words.get(at).copied().flatten();
+                let stored = words.get(at.saturating_add(1)).copied().flatten();
+                at = at.saturating_add(2);
+                out.push(None);
+                let sy_out = match (rate, stored) {
+                    (Some(r), Some(s)) => {
+                        let index = r.max(s);
+                        t.scale.checked_mul(one).and_then(|v| v.checked_div(index))
+                    }
+                    _ => None,
+                };
+                if let Some(shares) = sy_out.filter(|v| !v.is_zero()) {
+                    second.push(call(
+                        sy,
+                        previewRedeem_1Call {
+                            tokenOut: t.into,
+                            amountSharesToRedeem: shares,
+                        }
+                        .abi_encode(),
+                    ));
+                    pending.push(i);
+                }
+            }
+        }
+    }
+    if !second.is_empty() {
+        let words = read_words(rpc, second, block).await;
+        for (i, w) in pending.into_iter().zip(words) {
+            if let Some(slot) = out.get_mut(i) {
+                *slot = w;
+            }
+        }
+    }
+    out
+}
+
+/// Read `previewRedeem(scale)` for the targets at `block` and record it.
+/// A failed or zero read leaves the old rate, which ages out of routing
+/// only by being old — the conversion's haircut covers a few blocks' drift,
+/// and the simulation before any send checks the real redeem.
+async fn refresh_unwraps(
+    book: &RwLock<PoolBook>,
+    rpc: &HttpRpc,
+    targets: &[UnwrapTarget],
+    block: u64,
+) -> (usize, usize) {
+    let reads = read_unwrap_rates(rpc, targets, block).await;
+    let read = reads
+        .iter()
+        .filter(|r| r.is_some_and(|v| !v.is_zero()))
+        .count();
+    let mut applied = 0usize;
+    let mut w = book.write();
+    for (t, r) in targets.iter().zip(reads) {
+        let Some(rate) = r.filter(|v| !v.is_zero()) else {
+            tracing::debug!(token = %t.token, block, "unwrap rate read failed");
+            continue;
+        };
+        if w.set_unwrap_rate(t.wrapper, rate, block) {
+            applied = applied.saturating_add(1);
+        }
+    }
+    (read, applied)
+}
+
 /// How often the Curve reseed thread looks for stale pools.
 const CURVE_POLL: Duration = Duration::from_millis(500);
 
@@ -675,6 +833,12 @@ pub fn spawn_curve_reseed(
                         continue;
                     }
                 };
+                let unwraps = unwrap_targets(&book.read(), head);
+                if !unwraps.is_empty() {
+                    let (read, applied) =
+                        rt.block_on(refresh_unwraps(&book, &rpc, &unwraps, head));
+                    tracing::debug!(wrappers = unwraps.len(), read, applied, "unwrap rates");
+                }
                 let crypto = crypto_targets(&book.read(), head);
                 if !crypto.is_empty() {
                     let (read, applied) = rt.block_on(refresh_crypto(&book, &rpc, &crypto, head));
@@ -997,5 +1161,54 @@ mod tests {
         // Negative ticks floor, not truncate.
         assert_eq!(words(-1, 60), Some((-2, 0)));
         assert_eq!(words(0, 0), None);
+    }
+
+    /// Live check (`MAINNET_RPC_URL`): every committed unwrap reads a rate at
+    /// the head, and the linear conversion of one whole unit is at or under
+    /// the chain's own answer for that size, within 2 ppm.
+    #[tokio::test]
+    #[ignore = "needs MAINNET_RPC_URL"]
+    async fn committed_unwraps_read_and_convert_conservatively() {
+        use liq_config::{Intern, Registry};
+        let url = std::env::var("MAINNET_RPC_URL").expect("MAINNET_RPC_URL");
+        let rpc = HttpRpc::connect(&url).unwrap();
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let reg = Registry::from_path(&root.join("registry/registry.json")).unwrap();
+        let intern = Intern::from_registry(&reg).unwrap();
+        let book = crate::index::load_index(&root.join("config"), &intern, &reg).book;
+        let block = rpc.block_number().await.unwrap();
+        let lock = RwLock::new(book);
+        let targets = unwrap_targets(&lock.read(), block);
+        let (read, applied) = refresh_unwraps(&lock, &rpc, &targets, block).await;
+        eprintln!(
+            "{} unwraps, {read} read, {applied} applied at {block}",
+            targets.len()
+        );
+        assert_eq!(read, targets.len(), "every unwrap reads");
+        // The chain's answer for one whole unit (scale / 1000).
+        let unit: Vec<UnwrapTarget> = targets
+            .iter()
+            .map(|t| UnwrapTarget {
+                scale: t.scale / U256::from(1_000u64),
+                ..*t
+            })
+            .collect();
+        let want = read_unwrap_rates(&rpc, &unit, block).await;
+        let book = lock.into_inner();
+        let mut wrong = Vec::new();
+        for (t, w) in unit.iter().zip(want) {
+            let u = book.unwrap_of(t.wrapper).unwrap();
+            let got = u.convert(t.scale).unwrap();
+            let w = w.unwrap();
+            let slack = w / U256::from(500_000u64) + U256::from(2u64);
+            if got > w || w - got > slack {
+                wrong.push(format!("{:#x}: convert {got} chain {w}", t.token));
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "unwrap conversion off:\n{}",
+            wrong.join("\n")
+        );
     }
 }

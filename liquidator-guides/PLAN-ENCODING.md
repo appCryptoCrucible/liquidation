@@ -204,7 +204,8 @@ collaterals**, since paths out of different collaterals share output pools.
 1 byte    legCount
 per leg, head = 60 bytes:
   1 byte    venue      0 = UniV3 pool-direct · 1 = allowlisted router ·
-                       2 = UniV2/Sushi pair · 3 = Curve StableSwap · 4 = Curve crypto
+                       2 = UniV2/Sushi pair · 3 = Curve StableSwap · 4 = Curve crypto ·
+                       5 = unwrap ERC-4626 · 6 = redeem expired Pendle PT
   20 bytes  tokenIn    which collateral this leg spends
   20 bytes  tokenOut   where it goes
   1 byte    legFlags   bit0 TAKE_BALANCE · bit1 EXACT_OUT
@@ -257,6 +258,15 @@ Venue data:
 | `2` UniV2 / Sushi pair | 21 bytes: pair ‖ factory id (0 Uniswap V2, 1 SushiSwap). The pair is re-derived by CREATE2 against that factory before any token moves. |
 | `3` Curve StableSwap (plain and NG) | 22 bytes: pool ‖ i ‖ j. Exact input only. The pool must be in Curve's MetaRegistry and hold `tokenIn`/`tokenOut` at `i`/`j`; `exchange(int128,int128,uint256,uint256)`. Exact approval, zeroed after. |
 | `4` Curve crypto (twocrypto-ng, tricrypto-ng, original CurveCryptoSwap2) | 22 bytes: pool ‖ i ‖ j. Same checks as `3`; `exchange(uint256,uint256,uint256,uint256)`. |
+| `5` Unwrap ERC-4626 | 20 bytes: the vault, which must equal `tokenIn`; its `asset()` must equal `tokenOut`. `redeem(amount, this, this)`: no approval. Exact input only. |
+| `6` Redeem expired Pendle PT | 20 bytes: the YT. `tokenIn` (the PT) and the YT must name each other (`PT.YT()`, `YT.PT()`) and the YT must be expired. The PT goes to the YT, `redeemPY` pays SY, and `SY.redeem(this, sy, tokenOut, 0, false)` pays `tokenOut` (the SY refuses a token it cannot pay). Exact input only; placed like `5`. |
+
+**Unwrap legs come first in a repay blob.** A seized collateral with no pool of
+its own is redeemed (`TAKE_BALANCE`) for what it wraps before any leg sells it;
+the legs after it spend the unwrapped token. The unwrap is the only repay leg
+whose `tokenOut` is not the group's debt asset, and what it produces must leave
+the Executor: it is the debt asset (repaid, surplus swept), WETH, or closed to
+WETH by a `TAKE_BALANCE` profit leg. The encoder asserts all three.
 
 **Uniswap V4 is not a swap venue.** Hooks make swap behaviour pool-specific, so
 there is no generic quote (GUIDE 12 Step 3). V4 remains the preferred *flashloan

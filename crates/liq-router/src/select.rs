@@ -733,7 +733,7 @@ fn apply_displaced(
 }
 
 /// Inverse of `solve_batch`'s first-seen scratch remapping. Must iterate
-/// `book.legs` in the same order `exact.rs` does.
+/// `book.exit_legs` in the same order `exact.rs` does.
 fn remap_scratch_ids(
     book: &PoolBook,
     colls: &[(liq_types::AssetId, U256)],
@@ -742,7 +742,7 @@ fn remap_scratch_ids(
 ) {
     let mut ids: SmallVec<[PoolId; 16]> = SmallVec::new();
     for &(coll, _) in colls {
-        for leg in book.legs(coll, debt) {
+        for leg in book.exit_legs(coll, debt) {
             if !ids.contains(&leg.pool) {
                 ids.push(leg.pool);
             }

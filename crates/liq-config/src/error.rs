@@ -69,6 +69,21 @@ pub enum ConfigError {
         expected: Address,
         found: Address,
     },
+    /// A wrapper's `asset()` is no longer the token the registry unwraps it into.
+    #[error("wrapper {token}: asset() {found}, registry unwraps into {expected}")]
+    UnwrapAssetMismatch {
+        token: Address,
+        expected: Address,
+        found: Address,
+    },
+    /// A Pendle PT's YT or SY is not the one the registry pins.
+    #[error("pendle PT {token}: {what} {found}, registry pins {expected}")]
+    PendleMismatch {
+        token: Address,
+        what: &'static str,
+        expected: Address,
+        found: Address,
+    },
     /// Oracle proxy `decimals()` disagrees with the committed registry.
     #[error("oracle decimals mismatch for {proxy:#x}: registry {expected}, chain {found}")]
     OracleDecimalsMismatch {

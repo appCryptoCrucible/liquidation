@@ -106,3 +106,14 @@ curve_ng = 117_442
 # CurveCryptoSwap2 170_472 (0x5fae…404a, behind its proxy). Priced at the
 # higher.
 curve_crypto = 170_472
+# ERC-4626 unwrap (venue 5): `asset()` check + `redeem` frames, fork at
+# 26_019_284 (ForkUnwrap): MetaMorpho gtUSDC 498 + 203_566 (the vault
+# withdraws across its Morpho markets), gtWETH 180_040. Priced at the higher;
+# plain vaults (static aTokens, savings wrappers) cost far less.
+unwrap_4626 = 204_064
+# Expired Pendle PT (venue 6), fork at 26_019_284 (ForkUnwrap,
+# PT-sUSDE-25SEP2025): PT/YT checks 4_107 + PT transfer 28_238 + YT
+# `redeemPY` 76_325 + SY `redeem` 27_410, plus two cold accounts (YT, SY)
+# charged to the caller. An SY that unwraps through another protocol on
+# redeem costs more; the pre-send simulation prices the real one.
+pendle_pt = 141_280

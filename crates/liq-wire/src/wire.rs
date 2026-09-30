@@ -55,6 +55,15 @@ pub const VENUE_CURVE_POOL: u8 = 3;
 /// 1-byte j), `exchange(uint256,uint256,uint256,uint256)`. Exact input only;
 /// verified like venue 3.
 pub const VENUE_CURVE_CRYPTO_POOL: u8 = 4;
+/// Swap venue 5 — unwrap: redeem ERC-4626 shares (`tokenIn` is the vault)
+/// for its `asset()` (`tokenOut`) (`data` = 20-byte vault). Exact input.
+/// In a repay blob an unwrap leg converts the seized collateral before the
+/// legs that sell it.
+pub const VENUE_UNWRAP_4626: u8 = 5;
+/// Swap venue 6 — unwrap: redeem an expired Pendle PT (`tokenIn`) through
+/// its YT (`data` = 20-byte YT) for SY, then the SY for `tokenOut`. Exact
+/// input. Placed like venue 5.
+pub const VENUE_PENDLE_PT_REDEEM: u8 = 6;
 /// UniV2 factory ids in venue-2 data.
 pub const V2_FACTORY_UNISWAP: u8 = 0;
 pub const V2_FACTORY_SUSHI: u8 = 1;

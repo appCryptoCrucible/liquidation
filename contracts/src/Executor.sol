@@ -5,7 +5,7 @@ import {SafeTransfer} from "./lib/SafeTransfer.sol";
 import {Plan, FlashGroup, LiqLeg, SwapLeg, FluidTail, PlanDecoder} from "./lib/PlanDecoder.sol";
 import {
     IERC20, IWETH, IAavePool, IAaveV4Spoke, IMorpho, MarketParams,
-    IUniV3Pool, IUniV2Pair, ICurvePool, ICurveCryptoPool, ICurveMetaRegistry, IPoolManager, IDssFlash,
+    IUniV3Pool, IUniV2Pair, ICurvePool, ICurveCryptoPool, IERC4626Unwrap, IPendlePT, IPendleYT, IPendleSY, ICurveMetaRegistry, IPoolManager, IDssFlash,
     IEVault, IEVC, ISiloHook, ITroveManager, IFluidT1, IFluidT2, IFluidT3, IFluidT4, ICreditFacadeV3, ICreditFacadeV3Multicall, MultiCall, PriceUpdate,
     ICToken, IComptroller, ICErc20, ICEther, IPayloadsController, IDssSpell, IDSPause
 } from "./lib/Interfaces.sol";
@@ -95,6 +95,13 @@ contract Executor {
     // Curve crypto pool, pool-direct, exact input: MetaRegistry-verified like
     // S_CURVE_POOL, `exchange(uint256,uint256,uint256,uint256)`.
     uint8 private constant S_CURVE_CRYPTO_POOL = 4;
+    // Unwrap: redeem ERC-4626 shares (`tokenIn` is the vault) for its
+    // `asset()` (`tokenOut`). Exact input; owner and receiver are this
+    // contract, so there is no approval.
+    uint8 private constant S_UNWRAP_4626 = 5;
+    // Unwrap: redeem an expired Pendle PT (`tokenIn`) through its YT for SY,
+    // then the SY for `tokenOut`. Exact input.
+    uint8 private constant S_PENDLE_PT_REDEEM = 6;
     /// Uniswap V2 / SushiSwap swap fee, 0.30 %.
     uint256 private constant V2_FEE_KEEP = 997;
 
@@ -1273,6 +1280,10 @@ contract Executor {
             _swapCurve(s, amount, data);
         } else if (s.venue == S_CURVE_CRYPTO_POOL) {
             _swapCurveCrypto(s, amount, data);
+        } else if (s.venue == S_UNWRAP_4626) {
+            _unwrap4626(s, amount, data);
+        } else if (s.venue == S_PENDLE_PT_REDEEM) {
+            _redeemPendlePt(s, amount, data);
         } else {
             revert UnknownVenue(s.venue);
         }
@@ -1354,6 +1365,34 @@ contract Executor {
         s.tokenIn.safeApprove(pool, amount);
         ICurveCryptoPool(pool).exchange(i, j, amount, 0);
         s.tokenIn.safeApprove(pool, 0);
+    }
+
+    /// Redeem ERC-4626 shares held here into the vault's asset. The vault is
+    /// the token being spent, and its `asset()` must be the leg's output.
+    function _unwrap4626(SwapLeg memory s, uint256 amount, bytes calldata data) internal {
+        if (s.flags & L_EXACT_OUT != 0) revert ExactOutUnsupported(S_UNWRAP_4626);
+        if (data.length != 20) revert BadPool(S_UNWRAP_4626, address(0));
+        address vault = address(bytes20(data[0:20]));
+        if (vault != s.tokenIn || IERC4626Unwrap(vault).asset() != s.tokenOut) {
+            revert BadPool(S_UNWRAP_4626, vault);
+        }
+        IERC4626Unwrap(vault).redeem(amount, address(this), address(this));
+    }
+
+    /// Redeem an expired Pendle PT held here: PT → YT `redeemPY` → SY, then
+    /// SY `redeem` → `tokenOut` (the SY refuses a token it cannot pay). The
+    /// PT and YT must name each other, so the PT only ever goes to its own YT.
+    function _redeemPendlePt(SwapLeg memory s, uint256 amount, bytes calldata data) internal {
+        if (s.flags & L_EXACT_OUT != 0) revert ExactOutUnsupported(S_PENDLE_PT_REDEEM);
+        if (data.length != 20) revert BadPool(S_PENDLE_PT_REDEEM, address(0));
+        address yt = address(bytes20(data[0:20]));
+        if (IPendlePT(s.tokenIn).YT() != yt || IPendleYT(yt).PT() != s.tokenIn || !IPendleYT(yt).isExpired()) {
+            revert BadPool(S_PENDLE_PT_REDEEM, yt);
+        }
+        address sy = IPendleYT(yt).SY();
+        s.tokenIn.safeTransfer(yt, amount);
+        uint256 syOut = IPendleYT(yt).redeemPY(address(this));
+        IPendleSY(sy).redeem(address(this), syOut, s.tokenOut, 0, false);
     }
 
     /// Uniswap V3 swap callback. Distinct selector from the flash callback, and

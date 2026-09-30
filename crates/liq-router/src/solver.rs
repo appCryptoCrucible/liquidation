@@ -1075,6 +1075,86 @@ pub(crate) fn mul_div_512(a: U256, b: U256, d: U256) -> Result<U256, RouteError>
 
 // ───────────────────────────── PoolBook ─────────────────────────────
 
+/// What a wrapper token unwraps into.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum UnwrapKind {
+    /// ERC-4626 `redeem(shares, self, self)` into `asset()`.
+    Erc4626,
+    /// Expired Pendle PT: `redeemPY` on its YT for SY, then `SY.redeem`
+    /// into the unwrapped token.
+    PendlePt { yt: Address, sy: Address },
+}
+
+/// A collateral the Executor unwraps before selling: the exit for `wrapper`
+/// is `unwrap → into` and then the pools of `into`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unwrap {
+    pub kind: UnwrapKind,
+    pub wrapper: AssetId,
+    pub wrapper_token: Address,
+    pub into: AssetId,
+    pub into_token: Address,
+    /// `previewRedeem(scale)` at [`Self::read_block`].
+    pub assets_per_scale: U256,
+    /// Shares the rate was read at (large, so the linear rate is precise).
+    pub scale: U256,
+    /// Block of the last rate read; 0 = never read (not routed).
+    pub read_block: u64,
+    /// Gas of the unwrap step inside the Executor.
+    pub gas: u64,
+}
+
+impl Unwrap {
+    /// Read at least once, with a usable rate.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        self.read_block > 0 && !self.assets_per_scale.is_zero() && !self.scale.is_zero()
+    }
+
+    /// What unwrapping `amount` pays, conservatively: the linear rate less
+    /// one part per million and one wei (the vault rounds down, and its rate
+    /// moves a little between the read and inclusion).
+    pub fn convert(&self, amount: U256) -> Result<U256, RouteError> {
+        if !self.is_live() {
+            return Err(RouteError::StalePool);
+        }
+        let raw = mul_div_512(amount, self.assets_per_scale, self.scale)?;
+        let haircut = raw
+            .checked_div(U256::from(1_000_000u64))
+            .unwrap_or_default();
+        Ok(raw.saturating_sub(haircut).saturating_sub(U256::ONE))
+    }
+
+    /// `ρ` of the unwrap alone (Q96 sqrt of the rate).
+    pub fn rho(&self) -> Result<U256, RouteError> {
+        let q = U512::from(self.assets_per_scale)
+            .checked_mul(U512::from(Q192))
+            .and_then(|v| v.checked_div(U512::from(self.scale)))
+            .ok_or(RouteError::Math)?;
+        narrow(q.root(2))
+    }
+
+    /// `ρ` of `inner ∘ unwrap` from `inner`'s `ρ`: `sqrt(ρ_inner² · rate)`.
+    pub fn scale_rho(&self, rho_inner: U256) -> Result<U256, RouteError> {
+        let q = U512::from(rho_inner)
+            .checked_mul(U512::from(rho_inner))
+            .and_then(|v| v.checked_mul(U512::from(self.assets_per_scale)))
+            .and_then(|v| v.checked_div(U512::from(self.scale)))
+            .ok_or(RouteError::Math)?;
+        narrow(q.root(2))
+    }
+}
+
+/// Where a `(collateral, debt)` exit comes from.
+#[derive(Debug)]
+pub enum ExitSource<'a> {
+    /// Pools holding both tokens.
+    Direct(&'a [Leg]),
+    /// Unwrap first, then these pools of the unwrapped asset (empty when the
+    /// unwrapped asset is the debt itself).
+    Unwrap(&'a Unwrap, &'a [Leg]),
+}
+
 /// Every routable pool plus the `(asset_in, asset_out) → legs` index.
 /// Written by the ingest thread (`apply_log`), cloned by the warm builder
 /// per publish. Discovery: V3 `PoolCreated` at the factory adds a pool
@@ -1087,6 +1167,8 @@ pub struct PoolBook {
     by_address: HashMap<Address, PoolId>,
     legs: HashMap<(AssetId, AssetId), SmallVec<[Leg; 8]>>,
     assets: HashMap<Address, AssetId>,
+    /// Wrapper asset → how to unwrap it.
+    unwraps: HashMap<AssetId, Unwrap>,
     v3_factory: Option<Address>,
     /// Gas per V3 hop for discovered pools.
     v3_hop_gas: u64,
@@ -1108,6 +1190,7 @@ impl PoolBook {
             by_address: HashMap::new(),
             legs: HashMap::new(),
             assets,
+            unwraps: HashMap::new(),
             v3_factory,
             v3_hop_gas,
             discovered: 0,
@@ -1184,9 +1267,85 @@ impl PoolBook {
             .map_or(&[], SmallVec::as_slice)
     }
 
-    /// Every `(in, out)` pair with at least one leg.
+    /// Every `(in, out)` pair with at least one leg, plus each unwrapped
+    /// wrapper's pairs (`(wrapper, into)` and `(wrapper, out)` for each
+    /// `(into, out)`) that have no pool of their own.
     pub fn pairs(&self) -> impl Iterator<Item = (AssetId, AssetId)> + '_ {
-        self.legs.keys().copied()
+        let direct = self.legs.keys().copied();
+        let via = self.unwraps.values().flat_map(move |u| {
+            core::iter::once((u.wrapper, u.into))
+                .chain(
+                    self.legs
+                        .keys()
+                        .filter(move |(a, _)| *a == u.into)
+                        .map(move |(_, d)| (u.wrapper, *d)),
+                )
+                .filter(move |p| !self.legs.contains_key(p))
+        });
+        direct.chain(via)
+    }
+
+    /// Register a wrapper's unwrap. Its rate starts unread.
+    pub fn add_unwrap(&mut self, u: Unwrap) {
+        self.unwraps.insert(u.wrapper, u);
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Record a wrapper's `previewRedeem(scale)` read at `block`.
+    pub fn set_unwrap_rate(
+        &mut self,
+        wrapper: AssetId,
+        assets_per_scale: U256,
+        block: u64,
+    ) -> bool {
+        let Some(u) = self.unwraps.get_mut(&wrapper) else {
+            return false;
+        };
+        if block < u.read_block {
+            return false;
+        }
+        let changed = u.assets_per_scale != assets_per_scale;
+        u.assets_per_scale = assets_per_scale;
+        u.read_block = block;
+        if changed {
+            self.generation = self.generation.wrapping_add(1);
+        }
+        true
+    }
+
+    #[must_use]
+    pub fn unwrap_of(&self, wrapper: AssetId) -> Option<&Unwrap> {
+        self.unwraps.get(&wrapper)
+    }
+
+    pub fn unwraps(&self) -> impl Iterator<Item = &Unwrap> {
+        self.unwraps.values()
+    }
+
+    /// The exit for `(coll, debt)`: pools holding both when there are any,
+    /// otherwise unwrap `coll` (when it is a wrapper with a live rate) and
+    /// route what it unwraps into.
+    #[must_use]
+    pub fn exit_source(&self, coll: AssetId, debt: AssetId) -> ExitSource<'_> {
+        let direct = self.legs(coll, debt);
+        if !direct.is_empty() {
+            return ExitSource::Direct(direct);
+        }
+        match self.unwraps.get(&coll) {
+            Some(u) if u.is_live() && (u.into == debt || !self.legs(u.into, debt).is_empty()) => {
+                ExitSource::Unwrap(u, self.legs(u.into, debt))
+            }
+            _ => ExitSource::Direct(direct),
+        }
+    }
+
+    /// The pools an exit of `(coll, debt)` swaps through, in the order the
+    /// solve iterates them.
+    #[must_use]
+    pub fn exit_legs(&self, coll: AssetId, debt: AssetId) -> &[Leg] {
+        match self.exit_source(coll, debt) {
+            ExitSource::Direct(l) | ExitSource::Unwrap(_, l) => l,
+        }
     }
 
     /// Bumped on every state change; the warm tier rebuilds when it moves.

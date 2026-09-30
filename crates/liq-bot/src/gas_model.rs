@@ -75,6 +75,10 @@ pub struct HopGas {
     pub curve_ng: u64,
     /// Curve crypto `exchange`: the gamma-curve solve plus `tweak_price`.
     pub curve_crypto: u64,
+    /// ERC-4626 `redeem` of a seized wrapper (swap venue 5).
+    pub unwrap_4626: u64,
+    /// Expired Pendle PT: YT `redeemPY` + SY `redeem` (swap venue 6).
+    pub pendle_pt: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,6 +121,8 @@ struct SwapToml {
     curve: Option<u64>,
     curve_ng: Option<u64>,
     curve_crypto: Option<u64>,
+    unwrap_4626: Option<u64>,
+    pendle_pt: Option<u64>,
 }
 
 impl GasModel {
@@ -161,6 +167,8 @@ impl GasModel {
                 curve: t.swap.curve.unwrap_or(0),
                 curve_ng: t.swap.curve_ng.unwrap_or(0),
                 curve_crypto: t.swap.curve_crypto.unwrap_or(0),
+                unwrap_4626: t.swap.unwrap_4626.unwrap_or(0),
+                pendle_pt: t.swap.pendle_pt.unwrap_or(0),
             },
         })
     }

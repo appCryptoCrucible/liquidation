@@ -188,12 +188,24 @@
   "0x50d2c7992b802eef16c04feadab310f31866a545": {
    "symbol": "PT-eUSDE-29MAY2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+    "yt": "0x708dd9b344ddc7842f44c7b90492cf0e1e3eb868",
+    "sy": "0x7ac8ca87959b1d5edfe2df5325a37c304dcea4d0"
+   }
   },
   "0x3b3fb9c57858ef816833dc91565efcd85d96f634": {
    "symbol": "PT-sUSDE-31JUL2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+    "yt": "0xb7e51d15161c49c823f3951d579ded61cd27272b",
+    "sy": "0xf541aa4d6f29ec2423a0d306dbc677021a02dbc0"
+   }
   },
   "0xc139190f447e929f090edeb554d95abb8b18ac1c": {
    "symbol": "USDtb",
@@ -203,12 +215,24 @@
   "0x917459337caac939d41d7493b3999f571d20d667": {
    "symbol": "PT-USDe-31JUL2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+    "yt": "0x733ee9ba88f16023146ebc965b7a1da18a322464",
+    "sy": "0xb47cbf6697a6518222c7af4098a43aefe2739c8c"
+   }
   },
   "0x14bdc3a3ae09f5518b923b69489cbcafb238e617": {
    "symbol": "PT-eUSDE-14AUG2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+    "yt": "0xe8ef806c8aadc541408dcad36107c7d26a391712",
+    "sy": "0x7ac8ca87959b1d5edfe2df5325a37c304dcea4d0"
+   }
   },
   "0x90d2af7d622ca3141efa4d8f1f24d86e5974cc8f": {
    "symbol": "eUSDe",
@@ -232,12 +256,24 @@
   "0x9f56094c450763769ba0ea9fe2876070c0fd5f77": {
    "symbol": "PT-sUSDE-25SEP2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+    "yt": "0x029d6247adb0a57138c62e3019c92d3dfc9c1840",
+    "sy": "0xc01cde799245a25e6eabc550b36a47f6f83cc0f1"
+   }
   },
   "0xbc6736d346a5ebc0debc997397912cd9b8fae10a": {
    "symbol": "PT-USDe-25SEP2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+    "yt": "0x48bbbedc4d2491cc08915d7a5c7cc8a8edf165da",
+    "sy": "0xf3dbde762e5b67fad09d88da3dfd38a83f753ffe"
+   }
   },
   "0xd11c452fc99cf405034ee446803b6f6c1f6d5ed8": {
    "symbol": "tETH",
@@ -259,7 +295,13 @@
   "0xe6a934089bbee34f832060ce98848359883749b3": {
    "symbol": "PT-sUSDE-27NOV2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+    "yt": "0x28e626b560f1faac01544770425e2de8fd179c79",
+    "sy": "0xabf8165dd7a90ab75878161db15bf85f6f781d9b"
+   }
   },
   "0x62c6e813b9589c3631ba0cdb013acdb8544038b7": {
    "symbol": "PT-USDe-27NOV2025",
@@ -269,12 +311,24 @@
   "0x1f84a51296691320478c98b8d77f2bbd17d34350": {
    "symbol": "PT-USDe-5FEB2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+    "yt": "0x5a62ae8118536cf2de315e2c42f9af035d8129f2",
+    "sy": "0x925a15bd6a1582fa7c0ebbfc3dbd29c34f58340e"
+   }
   },
   "0xe8483517077afa11a9b07f849cee2552f040d7b2": {
    "symbol": "PT-sUSDE-5FEB2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+    "yt": "0xe36c6c271779c080ba2e68e1e68410291a1b3f7a",
+    "sy": "0x50cbf8837791ab3d8dcfb3ce3d1b0d128e1105d4"
+   }
   },
   "0xaca92e438df0b2401ff60da7e4337b687a2435da": {
    "symbol": "mUSD",
@@ -300,12 +354,24 @@
   "0x3de0ff76e8b528c092d47b9dac775931cef80f49": {
    "symbol": "PT-sUSDE-7MAY2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+    "yt": "0x30775b422b9c7415349855346352faa61fd97e41",
+    "sy": "0xbf98480425a29197e5d99d003017f63a1e595d02"
+   }
   },
   "0x9bf45ab47747f4b4dd09b3c2c73953484b4eb375": {
    "symbol": "PT-srUSDe-2APR2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+    "yt": "0x31f9e6692e87d81ff8d64de1f475fce6880a030f",
+    "sy": "0xc9bfebc79a722c05dc34bd2a227ef2db19fd1b8e"
+   }
   },
   "0xb0f70c0bd6fd87dbeb7c10dc692a2a6106817072": {
    "symbol": "BTC.b",
@@ -317,14 +383,26 @@
   "0x619d75e3b790ebc21c289f2805bb7177a7d732e2": {
    "symbol": "PT-srUSDe-25JUN2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+    "yt": "0x1ff9c3b5d9969ddec8e3f801b638da08d769fde5",
+    "sy": "0xc9bfebc79a722c05dc34bd2a227ef2db19fd1b8e"
+   }
   },
   "0x9db38d74a0d29380899ad354121dfb521adb0548": {
    "symbol": "PT-USDG-28MAY2026",
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xe343167631d89b6ffc58b88d6b7fb0228795491d",
+    "yt": "0x4a1294749a70bc32a998b49dd11bf26e9379e3c1",
+    "sy": "0xc1799cab1f201946f7cfafbaf1bcc089b2f08927"
+   }
   },
   "0xa3931d71877c0e7a3148cb7eb4463524fec27fbd": {
    "symbol": "sUSDS",
@@ -474,27 +552,49 @@
   "0xc69ad9bab1dee23f4605a82b3354f8e40d1e5966": {
    "symbol": "PT-weETH-27JUN2024",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xcd5fe23c85820f7b72d0926fc9b05b43e359b7ee",
+    "yt": "0xfb35fd0095dd1096b1ca49ad44d8c5812a201677",
+    "sy": "0xac0047886a985071476a1186be89222659970d65"
+   }
   },
   "0x2371e134e3455e0593363cbf89d3b6cf53740618": {
    "symbol": "gtWETH",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   }
   },
   "0x78fc2c2ed1a4cdb5402365934ae5648adad094d0": {
    "symbol": "Re7WETH",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   }
   },
   "0xdd0f28e19c1780eb6396170735d45153d261490d": {
    "symbol": "gtUSDC",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   }
   },
   "0x95eef579155cd2c5510f312c8fa39208c3be01a8": {
    "symbol": "Re7USDT",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xdac17f958d2ee523a2206206994597c13d831ec7"
+   }
   },
   "0x004626a008b1acdc4c74ab51644093b155e59a23": {
    "symbol": "stEUR",
@@ -504,7 +604,13 @@
   "0xa0021ef8970104c2d008f38d92f115ad56a9b8e1": {
    "symbol": "PT-USDe-25JUL2024",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+    "yt": "0x1e3d13932c31d7355fcb3fec680b0cd159dc1a07",
+    "sy": "0x42862f48eade25661558afe0a630b132038553d0"
+   }
   },
   "0xe72b141df173b999ae7c1adcbf60cc9833ce56a8": {
    "symbol": "ETH+",
@@ -541,7 +647,13 @@
   "0x6ee2b5e19ecba773a352e5b21415dc419a700d1d": {
    "symbol": "PT-weETH-26DEC2024",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xcd5fe23c85820f7b72d0926fc9b05b43e359b7ee",
+    "yt": "0x129e6b5dbc0ecc12f9e486c5bc9cdf1a6a80bc6a",
+    "sy": "0xac0047886a985071476a1186be89222659970d65"
+   }
   },
   "0x73a15fed60bf67631dc6cd7bc5b6e8da8190acf5": {
    "symbol": "USD0",
@@ -551,7 +663,13 @@
   "0xf7906f274c174a52d444175729e3fa98f9bde285": {
    "symbol": "PT-ezETH-26DEC2024",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xbf5495efe5db9ce00f80364c8b423567e58d2110",
+    "yt": "0x7749f5ed1e356edc63d469c2fcac9adeb56d1c2b",
+    "sy": "0x22e12a50e3ca49fb183074235cb1db84fe4c716d"
+   }
   },
   "0x35d8949372d46b7a3d5a56006ae77b215fc69bc0": {
    "symbol": "bUSD0",
@@ -596,7 +714,13 @@
   "0xae5099c39f023c91d3dd55244cafb36225b0850e": {
    "symbol": "PT-sUSDE-24OCT2024",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+    "yt": "0x279e76fa6310976dc651c5f48ec7e768e9e2ccb4",
+    "sy": "0x1605a410c8480a18a3e958faff3b6d2834fbae22"
+   }
   },
   "0x547213367cfb08ab418e7b54d7883b2c2aa27fd7": {
    "symbol": "sUSDz",
@@ -633,7 +757,11 @@
    "decimals": 8,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599"
+   }
   },
   "0x437cc33344a0b27a429f795ff6b469c72698b291": {
    "symbol": "wM",
@@ -662,7 +790,11 @@
   "0xb1a757a68d4a04a6b5a0f06d0cb4fd739048f614": {
    "symbol": "apWETH",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   }
   },
   "0x45804880de22913dafe09f4980848ece6ecbaf78": {
    "symbol": "PAXG",
@@ -694,7 +826,13 @@
   "0x270d664d2fc7d962012a787aec8661ca83df24eb": {
    "symbol": "PT-USD0++-31OCT2024",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x35d8949372d46b7a3d5a56006ae77b215fc69bc0",
+    "yt": "0x4f0b4e6512630480b868e62a8a1d3451b0e9192d",
+    "sy": "0x47bce1bb5d9a9072161ec25009bcd6e8d367b7d3"
+   }
   },
   "0x64351fc9810adad17a690e4e1717df5e7e085160": {
    "symbol": "msETH",
@@ -709,7 +847,13 @@
   "0xee9085fc268f6727d5d4293dbabccf901ffdcc29": {
    "symbol": "PT-sUSDE-26DEC2024",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+    "yt": "0xbe05538f48d76504953c5d1068898c6642937427",
+    "sy": "0xd288755556c235afffb6316702719c32bd8706e8"
+   }
   },
   "0xec53bf9167f50cdeb3ae105f56099aaab9061f83": {
    "symbol": "EIGEN",
@@ -719,7 +863,13 @@
   "0xe00bd3df25fb187d6abbb620b3dfd19839947b81": {
    "symbol": "PT-sUSDE-27MAR2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+    "yt": "0x96512230bf0fa4e20cf02c3e8a7d983132cd2b9f",
+    "sy": "0x3ee118efc826d30a29645eaf3b2eaac9e8320185"
+   }
   },
   "0x7751e2f4b8ae93ef6b79d86419d42fe3295a4559": {
    "symbol": "wUSDL",
@@ -821,7 +971,13 @@
   "0x8a47b431a7d947c6a3ed6e42d501803615a97eaa": {
    "symbol": "PT-USDe-27MAR2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+    "yt": "0x4a8036efa1307f1ca82d932c0895faa18db0c9ee",
+    "sy": "0x4db99b79361f98865230f5702de024c69f629fec"
+   }
   },
   "0x8eb67a509616cd6a7c1b3c8c21d48ff57df3d458": {
    "symbol": "gtUSDCcore",
@@ -836,7 +992,13 @@
   "0xb7de5dfcb74d25c2f21841fbd6230355c50d9308": {
    "symbol": "PT-sUSDE-29MAY2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+    "yt": "0x1de6ff19fda7496ddc12f2161f6ad6427c52abbe",
+    "sy": "0xe877b2a8a53763c8b0534a15e87da28f3ac1257e"
+   }
   },
   "0xf696fe29ef85e892b5926313897d178288faa07e": {
    "symbol": "PT-USD0++-26JUN2025",
@@ -851,7 +1013,11 @@
   "0xda0002859b2d05f66a753d8241fcde8623f26f4f": {
    "symbol": "dWETHV3",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   }
   },
   "0x0655977feb2f289a4ab78af67bab0d17aab84367": {
    "symbol": "scrvUSD",
@@ -920,7 +1086,11 @@
   "0x4ce9c93513dff543bc392870d57df8c04e89ba0a": {
    "symbol": "ysUSDS",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xdc035d45d973e3ec169d2276ddab16f1e407384f"
+   }
   },
   "0x7c1156e515aa1a2e851674120074968c905aaf37": {
    "symbol": "lvlUSD",
@@ -930,17 +1100,29 @@
   "0xe87ed29896b91421ff43f69257abf78300e40c7a": {
    "symbol": "Re7wstETH",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
+   }
   },
   "0xbeefc011e94f43b8b7b455ebab290c7ab4e216f1": {
    "symbol": "csUSDL",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x7751e2f4b8ae93ef6b79d86419d42fe3295a4559"
+   }
   },
   "0x7204b7dbf9412567835633b6f00c3edc3a8d6330": {
    "symbol": "csUSDC",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   }
   },
   "0xd9d920aa40f578ab794426f5c90f6c731d159def": {
    "symbol": "xSolvBTC",
@@ -969,7 +1151,11 @@
   "0x5085dd6fad07c12e38fae01bc2a4938d2c08b1bc": {
    "symbol": "aprUSR",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x66a1e37c9b0eaddca17d3662d6c05f4decf3e110"
+   }
   },
   "0x5c5b196abe0d54485975d1ec29617d42d9198326": {
    "symbol": "sdeUSD",
@@ -994,7 +1180,13 @@
   "0x84d17ef6bec165484c320b852eeb294203e191be": {
    "symbol": "PT-tETH-29MAY2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xd11c452fc99cf405034ee446803b6f6c1f6d5ed8",
+    "yt": "0x06c055753e37356b463813a288b2b0931b024dd4",
+    "sy": "0xb2dbc10f4fa6113ac75eea254806f6a2aa4bf20b"
+   }
   },
   "0x085780639cc2cacd35e474e71f4d000e2405d8f6": {
    "symbol": "fxUSD",
@@ -1016,7 +1208,13 @@
   "0x40b7b4ab1e95e28df06971581276966fdf95688e": {
    "symbol": "PT-beraSTONE-10APR2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x97ad75064b20fb2b2447fed4fa953bf7f007a706",
+    "yt": "0x695e502ee8e39a128fb79e8d01230d15f368ea45",
+    "sy": "0xd7b2a47ac9236d9685b573a2428f72ec45e97c45"
+   }
   },
   "0x6ca4d5d2ecb72e3bbf17543b3367746b80d22694": {
    "symbol": "PT-LBTC-26JUN2025",
@@ -1060,7 +1258,11 @@
   "0xd50da5f859811a91fd1876c9461fd39c23c747ad": {
    "symbol": "MC-USR",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x66a1e37c9b0eaddca17d3662d6c05f4decf3e110"
+   }
   },
   "0x4a977653c58cfd82d42fd706cf68a0c1b6d0ca56": {
    "symbol": "PT-wstUSR-1750896030",
@@ -1070,7 +1272,13 @@
   "0xae4be3acd95b6a4ac5a0524ab95da90c721f6c83": {
    "symbol": "PT-USR-29MAY2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x66a1e37c9b0eaddca17d3662d6c05f4decf3e110",
+    "yt": "0x77de4be22ecc633416d79371ef8e861fb1d2cc39",
+    "sy": "0x6afde97a0c27e57cf0582373f9d7dc2b9f1cc3a3"
+   }
   },
   "0x23e60d1488525bf4685f53b3aa8e676c30321066": {
    "symbol": "PT-wstUSR-25SEP2025",
@@ -1129,12 +1337,22 @@
   "0x9bca74f805ab0a22ddd0886db0942199a0feba71": {
    "symbol": "PT-lvlUSD-29MAY2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x7c1156e515aa1a2e851674120074968c905aaf37",
+    "yt": "0x65901ac9efa7cdaf1bdb4dbce4c53b151ae8d014",
+    "sy": "0x8b9d898327c0ac74b946ca3ca9fcfcbe9bc29c48"
+   }
   },
   "0x833adaef212c5cd3f78906b44bbfb18258f238f0": {
    "symbol": "bbqWSTETH",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
+   }
   },
   "0x4f62a7a25a4fd6ae386e957284afb5fbf1e1f32c": {
    "symbol": "PT-SolvBTC.BBN-26JUN2025",
@@ -1151,7 +1369,13 @@
   "0x4d4062bad41e03b1cdee4c06263f96eb81832341": {
    "symbol": "PT-slvlUSD-29MAY2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x4737d9b4592b40d51e110b94c9c043c6654067ae",
+    "yt": "0x4d74ad0287f5a3a799659aad542e4d9d9f31d443",
+    "sy": "0x10222f882f3594455343abc9831213854902ed8e"
+   }
   },
   "0x4ae0154f83427a5864e5de6513a47dac9e5d5a69": {
    "symbol": "PT-sw-inwstETHs-1752969615",
@@ -1168,7 +1392,13 @@
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x80ac24aa929eaf5013f6436cda2a7ba190f5cc0b",
+    "yt": "0x42f2d4058eb48619ac803e7ba12793b08c6338cc",
+    "sy": "0xc9e9c85b33e87fde85c44dbf72b4b842a071551d"
+   }
   },
   "0x4737d9b4592b40d51e110b94c9c043c6654067ae": {
    "symbol": "slvlUSD",
@@ -1183,7 +1413,11 @@
   "0xb0f05e4de970a1aaf77f8c2f823953a367504ba9": {
    "symbol": "aUSDC",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   }
   },
   "0xf736acf34ff7cd9b3565b73a1f15e652859bf322": {
    "symbol": "PT-RUSD-31JUL2025",
@@ -1222,7 +1456,13 @@
   "0x933b9ffee0ad3ef8e4dbb52688ea905826d73755": {
    "symbol": "PT-cUSDO-19JUN2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xad55aebc9b8c03fc43cd9f62260391c13c23e7c0",
+    "yt": "0x42e2ba2bab73650442f0624297190fab219bb5d5",
+    "sy": "0xfcaae839cfc7e3627741bd9914f661fd75cc3cbf"
+   }
   },
   "0x3cef1afc0e8324b57293a6e7ce663781bbefbb79": {
    "symbol": "sUSDEsUSDS",
@@ -1237,7 +1477,13 @@
   "0x207f7205fd6c4b602fa792c8b2b60e6006d4a0b8": {
    "symbol": "PT-lvlUSD-25SEP2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x7c1156e515aa1a2e851674120074968c905aaf37",
+    "yt": "0x946934554a2bf59039661f971986f0223e906264",
+    "sy": "0x14ff57675c9c34eeb9e1516ffda7cac6ed1b9748"
+   }
   },
   "0x2ca5f2c4300450d53214b00546795c1c07b89acb": {
    "symbol": "PT-slvlUSD-25SEP2025",
@@ -1310,7 +1556,11 @@
   "0x3c124fb80e6eedd88d108c2f04013ae5cd571abc": {
    "symbol": "fUSDf",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xfa2b947eec368f42195f24f36d2af29f7c24cec2"
+   }
   },
   "0x6bf340db729d82af1f6443a0ea0d79647b1c3ddf": {
    "symbol": "tacBTC",
@@ -1361,22 +1611,42 @@
   "0x21aace56a8f21210b7e76d8ef1a77253db85bf0a": {
    "symbol": "PT-fxSAVE-30OCT2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x7743e50f534a7f9f1791dde7dcd89f7783eefc39",
+    "yt": "0x3787c19c32e727310708c0693aec00fb37a01e7b",
+    "sy": "0x13945b761b2ed3219a497a46d15a8923f418d2ab"
+   }
   },
   "0xffec096c087c13cc268497b89a613cace4df9a48": {
    "symbol": "PT-USDS-14AUG2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x6b175474e89094c44da98b954eedeac495271d0f",
+    "yt": "0x4eb0bb058bcfeac8a2b3c2fc3cae2b8ad7ff7f6e",
+    "sy": "0x508defdb5dd2adeefe36f58fdcd75d6efa36697b"
+   }
   },
   "0xd3fd63209fa2d55b07a0f6db36c2f43900be3094": {
    "symbol": "wsrUSD",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x09d4214c03d01f49544c0448dbe3a27f768f2b34"
+   }
   },
   "0xd41830d88dfd08678b0b886e0122193d54b02acc": {
    "symbol": "MC_PTs",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   }
   },
   "0xa849eaae994fb86afa73382e9bd88c2b6b18dc71": {
    "symbol": "MVL",
@@ -1486,7 +1756,11 @@
   "0x50bd66d59911f5e086ec87ae43c811e0d059dd11": {
    "symbol": "sBOLD",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x6440f144b7e50d6a8439336510312d2f54beb01d"
+   }
   },
   "0x23346b04a7f55b8760e5860aa5a77383d63491cd": {
    "symbol": "ysyBOLD",
@@ -1526,7 +1800,11 @@
   "0xce22b5fb17ccbc0c5d87dc2e0df47dd71e3adc0a": {
    "symbol": "sUSDu",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xdde3ec717f220fc6a29d6a4be73f91da5b718e55"
+   }
   },
   "0xb530a1b5259a71187f1d69acf0488f102637a3ed": {
    "symbol": "iFALC",
@@ -1541,7 +1819,11 @@
   "0xa0804346780b4c2e3be118ac957d1db82f9d7484": {
    "symbol": "bbqUSDT",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xdac17f958d2ee523a2206206994597c13d831ec7"
+   }
   },
   "0x05be1d4c307c19450a6fd7ce7307ce72a3829a60": {
    "symbol": "IMF",
@@ -1583,17 +1865,33 @@
   "0xc347584b415715b1b66774b2899fef2fd3b56d6e": {
    "symbol": "PT-staking-USDS-25SEP2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x6b175474e89094c44da98b954eedeac495271d0f",
+    "yt": "0xce2308d36c59c5c18f161e65cbee716da619af32",
+    "sy": "0x0ee69a11b4391c5af5eb2fb088c2df5dd2a0d075"
+   }
   },
   "0xd0a4b74a6b62aa2b6c02349463d9041606608f36": {
    "symbol": "PT-tUSDe-25SEP2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+    "yt": "0x3fe980d9a60ec3c96cfc8cd9c3cdf163b3e701eb",
+    "sy": "0xee9bfff7da99e6f85abc4f7fc33f5278473124e0"
+   }
   },
   "0x637f00cab9665cb07d91bfb9c6f3fa8fabfef8bc": {
    "symbol": "svZCHF",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xb58e61c3098d85632df34eecfb899a1ed80921cb"
+   }
   },
   "0x9b5528528656dbc094765e2abb79f293c21191b9": {
    "symbol": "mHYPER",
@@ -1613,12 +1911,24 @@
   "0x10a099baf814b5fda138c4e6b60ed42c0d975be8": {
    "symbol": "PT-wsrUSD-30OCT2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "yt": "0xa43bcdedda97e7b0d706db82c020d1100b86ac87",
+    "sy": "0x212670e78cbec6f219204c52889763628bedd15e"
+   }
   },
   "0xdcfdf8434e8fdfff2dd7dfc9299877e813348ee7": {
    "symbol": "PT-RUSD-30OCT2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "yt": "0x75c7105d1938753b3e6138fb0f956410a38e811f",
+    "sy": "0x43d6651ff941776976ae8e5b11ef513e054a7931"
+   }
   },
   "0xe2fc85bfb48c4cf147921fbe110cf92ef9f26f94": {
    "symbol": "xUSD",
@@ -1630,7 +1940,11 @@
   "0x0f90a6962e86b5587b4c11ba2b9697dc3ba84800": {
    "symbol": "sUSDS+s",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xdc035d45d973e3ec169d2276ddab16f1e407384f"
+   }
   },
   "0x99e05cdbeac5d91150935c59ff8e9ba9945d6884": {
    "symbol": "AA_GauntletTestUSDC",
@@ -1667,7 +1981,13 @@
   "0xf3f491e5608f8b8a6fd9e9d66a4a4036d7fd282c": {
    "symbol": "PT-pUSDe-16OCT2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+    "yt": "0xe49462ffd604d35061fb6937626f675873314c93",
+    "sy": "0x33e88943b00e699fc5b6597c5f8bcb0872af8bee"
+   }
   },
   "0xd17049ed25d8f99fe3bfd10cef2263da9995cfd8": {
    "symbol": "synUSD+",
@@ -1726,7 +2046,13 @@
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x80ac24aa929eaf5013f6436cda2a7ba190f5cc0b",
+    "yt": "0xf9294a1611169acf336791a206a15b55c9644abb",
+    "sy": "0xc9e9c85b33e87fde85c44dbf72b4b842a071551d"
+   }
   },
   "0x0520930f21b14cafac7a27b102487bee7138a017": {
    "symbol": "BGBTC",
@@ -1745,7 +2071,13 @@
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xbb51e2a15a9158ebe2b0ceb8678511e063ab7a55",
+    "yt": "0x95fc6d0f0fd80408b7f7a0ab0854c20c142b7b2a",
+    "sy": "0xb5130e951e5d8d77ac2fd1ca40982d03b2483782"
+   }
   },
   "0x5c351e5da659ac83969045d6e0642ea0895a5a58": {
    "symbol": "USD\u0421",
@@ -1776,7 +2108,11 @@
   "0x88887be419578051ff9f4eb6c858a951921d8888": {
    "symbol": "stcUSD",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xcccc62962d17b8914c62d74ffb843d73b2a3cccc"
+   }
   },
   "0x9ebb9230276e858efb8209618055add25a2bf41b": {
    "symbol": "PT-slvlUSD(lvlUSD)-2026/01/18",
@@ -1786,7 +2122,13 @@
   "0xc3c7e5e277d31cd24a3ac4cc9af3b6770f30ea33": {
    "symbol": "PT-stcUSD-29JAN2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "yt": "0x8b4a52d28e49a9e8994d563420422e1a26a83df1",
+    "sy": "0x27010ce8d14b4e73ef48af1cf9a5a91e8356d10f"
+   }
   },
   "0x1dc1b09d656c07404aa2747a9930c0b4d297b4f3": {
    "symbol": "PT-sw-xUSD(USDC)-2025/10/10",
@@ -1815,7 +2157,13 @@
   "0xb44cdbef3145c1c1e772e8228e1154c80e70618e": {
    "symbol": "PT-iUSD-4DEC2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x48f9e38f3070ad8945dfeae3fa70987722e3d89c",
+    "yt": "0xbf678e1828ae2fb3c1e4cfbce00ba595542513e3",
+    "sy": "0x47743a9203e636674467ff58b7ab0ae0ee6f97cb"
+   }
   },
   "0x711214da1a94f478b96c1ca3d14a750f496f2a80": {
    "symbol": "PT-PendleInfiniFi-siUSD-9OCT2025",
@@ -1834,7 +2182,13 @@
   "0x23e0d07095daec91b6ae016ca9f08222dcc64c49": {
    "symbol": "PT-USR-4DEC2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x66a1e37c9b0eaddca17d3662d6c05f4decf3e110",
+    "yt": "0x13bddf66cb25ac8d2c7d25fe29ee52919bcfe3bd",
+    "sy": "0x6afde97a0c27e57cf0582373f9d7dc2b9f1cc3a3"
+   }
   },
   "0xe24a3dc889621612422a64e6388927901608b91d": {
    "symbol": "sUSN",
@@ -1868,7 +2222,13 @@
   "0x545a490f9ab534adf409a2e682bc4098f49952e3": {
    "symbol": "PT-cUSD-29JAN2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "yt": "0x06f946d590010eab6a5556ad29d9979eb1a7fa3a",
+    "sy": "0x3eaf6c8425b40c554099beed4dcb9f4601942fcb"
+   }
   },
   "0xdd468a1ddc392dcdbef6db6e34e89aa338f9f186": {
    "symbol": "MUSD",
@@ -1890,7 +2250,13 @@
   "0xa2a420230a5cb045db052e377d20b9c156805b95": {
    "symbol": "PT-staking-USDS-18DEC2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x6b175474e89094c44da98b954eedeac495271d0f",
+    "yt": "0x39e8b021fb4cba3d1ca8016aed3b0a0f7b902e52",
+    "sy": "0x0ee69a11b4391c5af5eb2fb088c2df5dd2a0d075"
+   }
   },
   "0x199cc8f0ac008bdc8cf0b1ccd5187f84e168c4d2": {
    "symbol": "zkBTC",
@@ -1914,7 +2280,13 @@
   "0x1135b22d6e8fd0809392478eedcd8c107db6af9d": {
    "symbol": "PT-tUSDe-18DEC2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+    "yt": "0xdbe7ff0be76c073d88314e5c140e116c24f652c0",
+    "sy": "0xee9bfff7da99e6f85abc4f7fc33f5278473124e0"
+   }
   },
   "0xfceeb7586bab730fa400a5bf3fcf298d0db4c7e7": {
    "symbol": "PT-wstUSR-29JAN2026",
@@ -1943,7 +2315,13 @@
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xdcd0f5ab30856f28385f641580bbd85f88349124",
+    "yt": "0xd7c3fc198bd7a50b99629cfe302006e9224f087b",
+    "sy": "0x8e5e017d6b3f567623b5d4a690a2a686bf7ba515"
+   }
   },
   "0xa0769f7a8fc65e47de93797b4e21c073c117fc80": {
    "symbol": "EUTBL",
@@ -2025,7 +2403,11 @@
   "0x52317a47585a6acdfbd7a29b494c3e2baae96abc": {
    "symbol": "aMUSD",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xdd468a1ddc392dcdbef6db6e34e89aa338f9f186"
+   }
   },
   "0x1ee774b40eecef1ed4bb702c83a97dc949c900e5": {
    "symbol": "oBTC",
@@ -2087,7 +2469,11 @@
   "0xc58d044404d8b14e953c115e67823784dea53d8f": {
    "symbol": "jrUSDe",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3"
+   }
   },
   "0x1fb3c5c35d95f48e48ffc8e36bcce5cb5f29f57c": {
    "symbol": "PT-srUSDe-15JAN2026",
@@ -2114,7 +2500,13 @@
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xdcd0f5ab30856f28385f641580bbd85f88349124",
+    "yt": "0xba31c7c0189e9b6ab6cf6b27cd3d1a4d6d3d0fd6",
+    "sy": "0x8e5e017d6b3f567623b5d4a690a2a686bf7ba515"
+   }
   },
   "0x5a42864b14c0c8241ef5ab62dae975b163a2e0c1": {
    "symbol": "mHyperETH",
@@ -2165,7 +2557,11 @@
   "0x3d7d6fdf07ee548b939a80edbc9b2256d0cdc003": {
    "symbol": "srUSDe",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3"
+   }
   },
   "0x53f3373f0d811902405f91eb0d5cc3957887220d": {
    "symbol": "PT-jrUSDe-15JAN2026",
@@ -2175,19 +2571,37 @@
   "0xeeaa924eb3667f30be02db9c55d87566a3f4df7a": {
    "symbol": "PT-RUSD-26FEB2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "yt": "0xf63bdb49ab15eb8f85d5e200d4fa9e242cc4e853",
+    "sy": "0x43d6651ff941776976ae8e5b11ef513e054a7931"
+   }
   },
   "0x5aa4afe7359d5a68d193f03e013d553deb7dbd1f": {
    "symbol": "PT-wsrUSD-26FEB2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "yt": "0x77b50ef8d55b8d6f9a632468e417be21d5712a2e",
+    "sy": "0x212670e78cbec6f219204c52889763628bedd15e"
+   }
   },
   "0xfa9fbcf2e52037328f9376ad8fadbac07b0e863d": {
    "symbol": "PT-syrupUSDC-18DEC2025",
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x80ac24aa929eaf5013f6436cda2a7ba190f5cc0b",
+    "yt": "0x35e057e85b6fdf41196c81f207a49eb9607c54ce",
+    "sy": "0xc9e9c85b33e87fde85c44dbf72b4b842a071551d"
+   }
   },
   "0xda06ee2dacf9245aa80072a4407debdea0d7e341": {
    "symbol": "savETH",
@@ -2226,7 +2640,11 @@
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   }
   },
   "0x77b80f4ac4c6cbb4982689749177349cf1635115": {
    "symbol": "ezUSD",
@@ -2280,7 +2698,13 @@
   "0x67aeeed39c1675e0df93ad8bab543b17992d433b": {
    "symbol": "PT-cUSDO-28MAY2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xad55aebc9b8c03fc43cd9f62260391c13c23e7c0",
+    "yt": "0xc333743a887b9394ddcdb1e813c7835f93e1046f",
+    "sy": "0x20b59becded839835a3ba58629430375dae02720"
+   }
   },
   "0x056b269eb1f75477a8666ae8c7fe01b64dd55ecc": {
    "symbol": "USD3",
@@ -2311,7 +2735,13 @@
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x1e33e98af620f1d563fcd3cfd3c75ace841204ef",
+    "yt": "0x0d572721d36f672a5391a9907a063904a9252efc",
+    "sy": "0x4a312fca9b7e568ab99e4e5ccbfb409221e1ed36"
+   }
   },
   "0x8209b01357946a64a0793e9773f6f3fe5a5f2526": {
    "symbol": "PT-DETH-29JAN2026",
@@ -2321,14 +2751,26 @@
   "0xec4402d1389e749c14a7caeef3e4c1f861e09bc8": {
    "symbol": "PT-iUSD-19FEB2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x48f9e38f3070ad8945dfeae3fa70987722e3d89c",
+    "yt": "0x60fd558d1dff7a4adfcd1f8be09fd73861d50e6a",
+    "sy": "0x47743a9203e636674467ff58b7ab0ae0ee6f97cb"
+   }
   },
   "0x29fd7180e5cced14ad148c7997e6b6857a8be86e": {
    "symbol": "PT-RLP-9APR2026",
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x4956b52ae2ff65d74ca2d61207523288e4528f96",
+    "yt": "0x922de73352658c3dce25fdd99487309d58798056",
+    "sy": "0xa004dd9439c2cf00794786c9662267bee6d9f723"
+   }
   },
   "0x99cd4ec3f88a45940936f469e4bb72a2a701eeb9": {
    "symbol": "stUSDS",
@@ -2380,7 +2822,13 @@
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x5086bf358635b81d8c47c66d1c8b9e567db70c72",
+    "yt": "0x03f1954443e73513a6fa6840685488a379ed6f64",
+    "sy": "0x9487bd5a3b16ecb5f3184453e3ee75b800141648"
+   }
   },
   "0x90a2a4c76b5d8c0bc892a69ea28aa775a8f2dd48": {
    "symbol": "SPYx",
@@ -2430,7 +2878,11 @@
   "0xbeefff4716a49418d69c251cab8759bb107e57c8": {
    "symbol": "bbqUSDCturbo",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   }
   },
   "0xe39d1d3cacea800fd5afb87dd98a42a8a364da08": {
    "symbol": "PT-USD3-29JAN2026",
@@ -2554,7 +3006,13 @@
   "0x606b5c773dc4d6e625c411cf60565f8c30c467d2": {
    "symbol": "PT-savUSD-14MAY2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xb8d89678e75a973e74698c976716308abb8a46a4",
+    "yt": "0xc4924f9e6e1feea9f44ed117711af2ed14600081",
+    "sy": "0x0caefeb807152fbd945bf947893e6feba5aed61b"
+   }
   },
   "0x419d2136c9e84acc918d8894bab6327036c0bf5f": {
    "symbol": "lvWETH",
@@ -2584,12 +3042,24 @@
   "0x2d3c279e5fcdf5b793c0a75ed90738d7369b0b83": {
    "symbol": "PT-stcUSD-23JUL2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "yt": "0x1c24abce084f1e5b337a7e5236803ce0577b6d26",
+    "sy": "0x27010ce8d14b4e73ef48af1cf9a5a91e8356d10f"
+   }
   },
   "0x928fb6ed39100a92b2480f5cbb93453f98d9f4ce": {
    "symbol": "PT-cUSD-23JUL2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "yt": "0x46f963c52d5fa0ad2bd1199cbc6453f0d7b9e7bd",
+    "sy": "0x3eaf6c8425b40c554099beed4dcb9f4601942fcb"
+   }
   },
   "0x643c4e15d7d62ad0abec4a9bd4b001aa3ef52d66": {
    "symbol": "SYRUP",
@@ -2770,7 +3240,11 @@
   "0x65a44528e8868166401ea08b549e19552af589db": {
    "symbol": "srNUSD",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xe556aba6fe6036275ec1f87eda296be72c811bce"
+   }
   },
   "0x82b853db31f025858792d8fa969f2a1dc245c179": {
    "symbol": "PT-srNUSD-28MAY2026",
@@ -2785,12 +3259,22 @@
   "0xd8cd72a2eb7a4312404c00aed5172c0026da0c27": {
    "symbol": "alphaFraxUSDenhanced",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xcacd6fd266af91b8aed52accc382b4e165586e29"
+   }
   },
   "0xcc16cd49194e7aa3dca780c742580e2f9b418874": {
    "symbol": "PT-avUSD-14MAY2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xf4c13d631450de6b12a19829e37c8e2826891dc4",
+    "yt": "0x5d928577454dfb826dd6163c75a487ab96032c2d",
+    "sy": "0xaa6a8d538e36f23975beab59f5def2f19152d114"
+   }
   },
   "0x3bc801419479865b24b4d32fab0bf64638abbd5f": {
    "symbol": "sBTCD",
@@ -2846,7 +3330,11 @@
   "0x153bd1abe60104bd46aa05a27fa12d1346d64a57": {
    "symbol": "alphaForexV2",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   }
   },
   "0xc04619cc040254b553439a7e4803355ffa9d7a6f": {
    "symbol": "JAB78",
@@ -2858,7 +3346,13 @@
   "0x5dbf246b37e1b9ac5d08bb38233d71322ae7d166": {
    "symbol": "PT-iUSD-25JUN2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x48f9e38f3070ad8945dfeae3fa70987722e3d89c",
+    "yt": "0x26564c11d16e5b5e58061ba513deb4d1fd6fdaa2",
+    "sy": "0x47743a9203e636674467ff58b7ab0ae0ee6f97cb"
+   }
   },
   "0x12e04c932d682a2999b4582f7c9b86171b73220d": {
    "symbol": "xPRISM",
@@ -2868,7 +3362,11 @@
   "0xbeef088055857739c12cd3765f20b7679def0f51": {
    "symbol": "steakUSDC",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   }
   },
   "0x91d14789071e5e195ffc9f745348736677de3292": {
    "symbol": "dCOMP",
@@ -2997,7 +3495,13 @@
   "0x3365554a61ceff74a76528f9e86c1e87946d16a5": {
    "symbol": "PT-apyUSD-18JUN2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x38eeb52f0771140d10c4e9a9a72349a329fe8a6a",
+    "yt": "0x4864dcfa317b29e13e6caa04b5c37f24c79a465e",
+    "sy": "0x04f8dca7bccd8997ac57ca6fef7c705e17d6bcb6"
+   }
   },
   "0x92a6a01b07984de46c24e8eba248449beb8b1dcb": {
    "symbol": "PT-apxUSD-18JUN2026",
@@ -3206,14 +3710,24 @@
   "0xbd373c9d3d8976a4fecc504a93c768bbe8c3227c": {
    "symbol": "ROY-ST-apyUSD",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x38eeb52f0771140d10c4e9a9a72349a329fe8a6a"
+   }
   },
   "0x1d69402390657308c91179aa184bf992908c1e08": {
    "symbol": "PT-USDat-27AUG2026",
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x23238f20b894f29041f48d88ee91131c395aaa71",
+    "yt": "0x076a3ea71e83ca09319b161e40f5fb3bb943d3c6",
+    "sy": "0x7a7de491e1be5287874904e2b7c8488249a4d0a9"
+   }
   },
   "0x93e62845c1dd5822ebc807ab71a5fb750decd15a": {
    "symbol": "wNVDAx",
@@ -3372,7 +3886,13 @@
   "0x5a19fa369f2895dcd8d2cee62e4ceae58ef92bbb": {
    "symbol": "PT-sUSDE-13AUG2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x9d39a5de30e57443bff2a8307a4256c8797a3497",
+    "yt": "0x45a699a11a4a17fe0931ef3cea4bfc3235e659f2",
+    "sy": "0xbf98480425a29197e5d99d003017f63a1e595d02"
+   }
   },
   "0x22ae3d9a738471f405169af055d31c687087d4c7": {
    "symbol": "PST",
@@ -3384,7 +3904,13 @@
   "0xd341a146a4fd20ea89898e4d86ae1829bf3a1c23": {
    "symbol": "PT-sUSDD-27AUG2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xc5d6a7b61d18afa11435a889557b068bb9f29930",
+    "yt": "0xf069c41f4b3ebf551fe0015e06333b15ee175c32",
+    "sy": "0x149bd983030e14e8b2f1ebdc8bbd9c419411fbc9"
+   }
   },
   "0x54c1ff361b402f66c13107421e6a431c3375ef24": {
    "symbol": "FLHYon",
@@ -3401,17 +3927,29 @@
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   }
   },
   "0xbeef01735c132ada46aa9aa4c54623caa92a64cb": {
    "symbol": "steakUSDC",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   }
   },
   "0x8c106eedad96553e64287a5a6839c3cc78afa3d0": {
    "symbol": "gtusdcp",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   }
   },
   "0x7f47c3e6b2c00fc4eb4d5ae50d0ab0ab6888eb4d": {
    "symbol": "PT-USD3-17DEC2026",
@@ -3519,7 +4057,11 @@
   "0xbeeff047c03714965a54b671a37c18bef6b96210": {
    "symbol": "reservoirUSDC",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   }
   },
   "0x59d5c6f5fdf8fa53c6fe44bb053b41ab1eaaaa23": {
    "symbol": "USDC",
@@ -3556,7 +4098,11 @@
   "0x75741a12b36d181f44f389e0c6b1e0210311e3ff": {
    "symbol": "steakEURCV",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x5f7827fdeb7c20b443265fc2f40845b715385ff2"
+   }
   },
   "0xf7d85ec4e7710f71992752eac2111312e73e9c9c": {
    "symbol": "ftUSD",
@@ -3568,7 +4114,11 @@
   "0xbeef0c075da5d01112ae5cf34d257074fb5ddb2f": {
    "symbol": "steakEURCV",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x5f7827fdeb7c20b443265fc2f40845b715385ff2"
+   }
   },
   "0x546329a16dcedc46e93f7b03a65f49a84700bca1": {
    "symbol": "Ultra_USD",
@@ -3618,7 +4168,13 @@
   "0xd28b0d694b8e814fa905a8b480b30691e18396eb": {
    "symbol": "PT-apxUSD-27AUG2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x98a878b1cd98131b271883b390f68d2c90674665",
+    "yt": "0xc95541af9925035eed46051466d7ae011574293c",
+    "sy": "0x4f116ee5bcd227d1a1c4f57918d694a4abe7b3fc"
+   }
   },
   "0xc46efcc8e39c8f02425e367423871cd4633b7908": {
    "symbol": "Ultra_ETH",
@@ -3713,14 +4269,22 @@
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   }
   },
   "0xe2e7a17dff93280dec073c995595155283e3c372": {
    "symbol": "spUSDT",
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xdac17f958d2ee523a2206206994597c13d831ec7"
+   }
   },
   "0xfe6eb3b609a7c8352a241f7f3a21cea4e9209b8f": {
    "symbol": "spETH",
@@ -3730,12 +4294,20 @@
   "0xa2eaad0d586cf9fd73bb2c09cf6a7e3e187d68cd": {
    "symbol": "armUSDCs",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   }
   },
   "0xb576765fb15505433af24fee2c0325895c559fb2": {
    "symbol": "senPYUSDmain",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x6c3ea9036406852006290770bedfcaba0e23a0e8"
+   }
   },
   "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc": {
    "symbol": "UNI-V2",
@@ -3752,7 +4324,11 @@
   "0x7320cf22ac095ba2a2e0a652f77efb836c2e751b": {
    "symbol": "waCoreWETH",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+   }
   },
   "0xf84a37545e313e8177d80039158ed478c7dc9079": {
    "symbol": "TTVusdc",
@@ -3773,14 +4349,22 @@
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   }
   },
   "0xba98fc35c9dfd69178ad5dce9fa29c64554783b5": {
    "symbol": "ePYUSD-6",
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x6c3ea9036406852006290770bedfcaba0e23a0e8"
+   }
   },
   "0xf7303119e4e58c1f912cfc39d30f0167429a3dc2": {
    "symbol": "XAUa",
@@ -3847,7 +4431,11 @@
   "0xc360e625f19a7ea47e47810b13e386221d5187d1": {
    "symbol": "nvPRIME",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x19ebb35279a16207ec4ba82799cc64715065f7f6"
+   }
   },
   "0xed9a8a387cca6e068b4c7074045810c1988628c1": {
    "symbol": "GOOGL",
@@ -4045,12 +4633,20 @@
   "0x5dc53a23adc9f2bed98de6f59f7f309a7c71ff2b": {
    "symbol": "armUSDCp",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+   }
   },
   "0xbf29043164660c60a2a72cd15ffe2304e87b6838": {
    "symbol": "armUSDTp",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xdac17f958d2ee523a2206206994597c13d831ec7"
+   }
   },
   "0x49c8919162dae24468965557c9344ba2aa8121b8": {
    "symbol": "zSMB",
@@ -4117,12 +4713,20 @@
   "0xbeef69ac7870777598a04b2bd4771c71212e6abc": {
    "symbol": "steakLRT",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
+   }
   },
   "0x7a4effd87c2f3c55ca251080b1343b605f327e3a": {
    "symbol": "rstETH",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
+   }
   },
   "0x7aa68e84bcd8d1b4c9e10b1e565db993f68a3e09": {
    "symbol": "PT-agETH-26DEC2024",
@@ -4281,7 +4885,13 @@
   "0xedce58c0d14a9beaa4f053ebdbdb2df83f211118": {
    "symbol": "PT-USN-31JUL2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xda67b4284609d2d48e5d10cfac411572727dc1ed",
+    "yt": "0x267f578f866617628386211da738347e063eccb7",
+    "sy": "0x2c452bdd2192a197fb085a7c73fe6c82782401dc"
+   }
   },
   "0x7c5aa3e49d46e582f50287f70695278d962392df": {
    "symbol": "PT-sUSN-31JUL2025",
@@ -4306,7 +4916,13 @@
   "0x076bda095a434a7b00733115a0d679de6478d9f8": {
    "symbol": "PT-YU-4SEP2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xe868084cf08f3c3db11f4b73a95473762d9463f7",
+    "yt": "0x1f509072388208a698c8d5784bda2702cae06f9c",
+    "sy": "0x385d17215295a186c1ff0d1fd121831694dd9ba4"
+   }
   },
   "0x136389d329968bd82efe05f0911eeb20ee74a138": {
    "symbol": "PT-USD0++-27NOV2025",
@@ -4348,12 +4964,24 @@
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x19ebd191f7a24ece672ba13a302212b5ef7f35cb",
+    "yt": "0x3de3421a44eb00b62d72fb325b18cf2b155151db",
+    "sy": "0xd3f2cc98cf302365582757fcd6288efb92e8d254"
+   }
   },
   "0xec3b5e45dd278d5ab9cdb31754b54db314e9d52a": {
    "symbol": "PT-USDf-29JAN2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xfa2b947eec368f42195f24f36d2af29f7c24cec2",
+    "yt": "0x7d00afaf9c7847602264497a810a1e587f54338c",
+    "sy": "0x982be58c67689e0bab9e884c30e7a6e78e064c9d"
+   }
   },
   "0x9fd7466f987fd4c45a5bbde22ed8aba5bc8d72d1": {
    "symbol": "hwHLP",
@@ -4367,7 +4995,13 @@
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x9fd7466f987fd4c45a5bbde22ed8aba5bc8d72d1",
+    "yt": "0x2974797bdd13d94f5b68d44b2b1267cb79795188",
+    "sy": "0x86f6817c22a14393550b135710ea58f311e457ed"
+   }
   },
   "0x14cf922aa1512adfc34409b63e18d391e4a86a2f": {
    "symbol": "STRAT",
@@ -4377,7 +5011,11 @@
   "0xa62b204099277762d1669d283732dcc1b3aa96ce": {
    "symbol": "pUSDe",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3"
+   }
   },
   "0xb33f4b9c6f0624edeae8881c97381837760d52cb": {
    "symbol": "lstRZR",
@@ -4411,7 +5049,13 @@
   "0xd7158ee345dab25b4fc95266c2bd8d062f243a13": {
    "symbol": "PT-YU-4DEC2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xe868084cf08f3c3db11f4b73a95473762d9463f7",
+    "yt": "0x2c4f6e06ff4ffa2424ebf24dc4823f31a9b03d7d",
+    "sy": "0x385d17215295a186c1ff0d1fd121831694dd9ba4"
+   }
   },
   "0x48e502fbb6ff2cc687d049150e2c8addc765a43a": {
    "symbol": "PT-sUSDf-29JAN2026",
@@ -4443,7 +5087,11 @@
   "0x89e93172aef8261db8437b90c3dcb61545a05317": {
    "symbol": "sUSDaf",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x9cf12ccd6020b6888e4d4c4e4c7aca33c1eb91f8"
+   }
   },
   "0xa3ca92a69c6809607837bc3bd6b13e4c1e1e8ae9": {
    "symbol": "PT-sUSDaf-13NOV2025",
@@ -4453,7 +5101,13 @@
   "0x9b02ca5685e9c332b158c01459562a161c8e8adf": {
    "symbol": "PT-USDaf-13NOV2025",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x9cf12ccd6020b6888e4d4c4e4c7aca33c1eb91f8",
+    "yt": "0xfac0a88f74570478367ba1a52b4a30cfec6ec431",
+    "sy": "0x6fc5b9eebf6f19556db8c8fdcc8d4a52e6dc106d"
+   }
   },
   "0x8cfed6a728017a8641a213bd9e2ea6183de275e8": {
    "symbol": "PT-mAPOLLO-20NOV2025",
@@ -4493,7 +5147,13 @@
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "yt": "0xb1c7d752d0fb01cf7b0f5cbdcbdbfb8162634264",
+    "sy": "0x690f305e51650e7549fb60182cd0db81bafb7687"
+   }
   },
   "0xb64c014307622eb15046c66ff71d04258f5963dc": {
    "symbol": "mevBTC",
@@ -4675,7 +5335,11 @@
   "0xe7e553cd128f0011777323a0b44a7b96ea1cb540": {
    "symbol": "wSPYx",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x90a2a4c76b5d8c0bc892a69ea28aa775a8f2dd48"
+   }
   },
   "0xe31aa86e21e420d03e52aaa06c349bdc525a664f": {
    "symbol": "cy-crvUSD",
@@ -4734,7 +5398,13 @@
   "0x11214ad8159a315148d98eeece228ccda8b1c6d8": {
    "symbol": "PT-tETH-8JAN2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xd11c452fc99cf405034ee446803b6f6c1f6d5ed8",
+    "yt": "0x8ccaec55fee95e7edb6cf334182999c611b36db6",
+    "sy": "0xb2dbc10f4fa6113ac75eea254806f6a2aa4bf20b"
+   }
   },
   "0x2d6361c8a70af5a415e39c0f916133774f7f0c65": {
    "symbol": "PT-xUSD-25SEP2025",
@@ -4761,7 +5431,13 @@
   "0xdc9a5a2e3ce7ac881fc3b28c629c05d1617d1c56": {
    "symbol": "PT-reUSDe-25JUN2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xddc0f880ff6e4e22e4b74632fbb43ce4df6ccc5a",
+    "yt": "0x37a98dce27835496af6f72b247a8480daf2351ee",
+    "sy": "0x47dfd0c8eee949748c1d5cb6b695a4aba5fe7379"
+   }
   },
   "0x5f0169d5bd3120d90d7673f20ac71d08e98968cd": {
    "symbol": "PT-savETH-14MAY2026",
@@ -4958,7 +5634,13 @@
   "0xeee8aed1957ca1545a0508afb51b53cca7e3c0d1": {
    "symbol": "PT-ezETH-25APR2024",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0xbf5495efe5db9ce00f80364c8b423567e58d2110",
+    "yt": "0x256fb830945141f7927785c06b65dabc3744213c",
+    "sy": "0x22e12a50e3ca49fb183074235cb1db84fe4c716d"
+   }
   },
   "0x15f74458ae0bfdaa1a96ca1aa779d715cc1eefe4": {
    "symbol": "GRAI",
@@ -5033,7 +5715,11 @@
   "0x028ec7330ff87667b6dfb0d94b954c820195336c": {
    "symbol": "yvDAI-1",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x6b175474e89094c44da98b954eedeac495271d0f"
+   }
   },
   "0x65c4c0517025ec0843c9146af266a2c5a2d148a2": {
    "symbol": "ETH2X",
@@ -5115,7 +5801,11 @@
   "0x1b4d88f5f38988bea334c79f48aa69beeefe2e1e": {
    "symbol": "KrswETH",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xfae103dc9cf190ed75350761e95403b7b8afa6c0"
+   }
   },
   "0xdf217efd8f3ecb5e837aedf203c28c1f06854017": {
    "symbol": "stBTC",
@@ -5619,7 +6309,11 @@
    "decimals": 6,
    "quirks": [
     "low_decimals"
-   ]
+   ],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0xdac17f958d2ee523a2206206994597c13d831ec7"
+   }
   },
   "0x2234ed28768fa6b21827dfd2d9b593925de9b49e": {
    "symbol": "LVWETH8",
@@ -5803,7 +6497,11 @@
   "0x73e65dbd630f90604062f6e02fab9138e713edd9": {
    "symbol": "spDAI",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "erc4626",
+    "into": "0x6b175474e89094c44da98b954eedeac495271d0f"
+   }
   },
   "0x8b9734bbaa628bfc0c9f323ba08ed184e5b88da2": {
    "symbol": "RWA009",
@@ -5867,7 +6565,13 @@
   "0xaebf0bb9f57e89260d57f31af34eb58657d96ce0": {
    "symbol": "PT-USDe-7MAY2026",
    "decimals": 18,
-   "quirks": []
+   "quirks": [],
+   "unwrap": {
+    "kind": "pendle_pt",
+    "into": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3",
+    "yt": "0x4265ebf36f738d4d623c201becbbc0f92be57198",
+    "sy": "0xf0bacd9c3d94fc924dbcaaf644208c4e3f4d3bb4"
+   }
   },
   "0xaf5191b0de278c7286d6c7cc6ab6bb8a73ba2cd6": {
    "symbol": "STG",

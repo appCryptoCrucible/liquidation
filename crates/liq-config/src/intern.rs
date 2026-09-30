@@ -350,6 +350,7 @@ mod tests {
                 decimals: 6,
                 quirks: Vec::new(),
                 symbol_collision: None,
+                unwrap: None,
             },
         );
         let mut grown_ids = grown.asset_ledger.as_ref().unwrap().live().clone();

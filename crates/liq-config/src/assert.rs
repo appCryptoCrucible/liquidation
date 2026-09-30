@@ -1,10 +1,11 @@
 //! Boot assertion (REGISTRY.md §4c). Re-reads `decimals`/`symbol` for every
-//! token, `token0`/`token1`/`fee` for every pool, and `decimals`/`aggregator`
-//! for every oracle proxy from chain. Any mismatch or RPC failure refuses to
+//! token (and `asset()` for every unwrappable one), `token0`/`token1`/`fee`
+//! for every pool, and `decimals`/`aggregator` for every oracle proxy from
+//! chain. Any mismatch or RPC failure refuses to
 //! start.
 
 use crate::error::ConfigError;
-use crate::registry::{PoolVenue, Registry};
+use crate::registry::{PoolVenue, Registry, UnwrapKind};
 use crate::rpc::ChainRpc;
 use crate::validate::Validate;
 use crate::Result;
@@ -26,6 +27,16 @@ sol! {
     }
     interface IERC20Bytes32 {
         function symbol() external view returns (bytes32);
+    }
+    interface IERC4626 {
+        function asset() external view returns (address);
+    }
+    interface IPendlePT {
+        function YT() external view returns (address);
+    }
+    interface IPendleYT {
+        function PT() external view returns (address);
+        function SY() external view returns (address);
     }
     interface IUniswapV3Pool {
         function token0() external view returns (address);
@@ -67,6 +78,17 @@ enum Expect<'a> {
         token: Address,
         expected: Option<&'a str>,
         bytes32: bool,
+    },
+    UnwrapAsset {
+        token: Address,
+        expected: Address,
+    },
+    /// `what` read on `target` must equal `expected` (Pendle PT ↔ YT ↔ SY).
+    PendleLink {
+        token: Address,
+        target: Address,
+        what: &'static str,
+        expected: Address,
     },
     Token0 {
         pool: Address,
@@ -148,6 +170,58 @@ pub(crate) async fn assert_registry_views<R: ChainRpc + Sync>(
             expected: tok.symbol.as_deref(),
             bytes32,
         });
+        match &tok.unwrap {
+            Some(u) if u.kind == UnwrapKind::Erc4626 => {
+                calls.push(call3(
+                    *addr,
+                    Bytes::from(IERC4626::assetCall {}.abi_encode()),
+                ));
+                expect.push(Expect::UnwrapAsset {
+                    token: *addr,
+                    expected: u.into,
+                });
+            }
+            Some(u) => {
+                let (Some(yt), Some(sy)) = (u.yt, u.sy) else {
+                    return Err(ConfigError::PendleMismatch {
+                        token: *addr,
+                        what: "yt/sy",
+                        expected: Address::ZERO,
+                        found: Address::ZERO,
+                    });
+                };
+                let links: [(Address, &'static str, Bytes, Address); 3] = [
+                    (
+                        *addr,
+                        "YT()",
+                        Bytes::from(IPendlePT::YTCall {}.abi_encode()),
+                        yt,
+                    ),
+                    (
+                        yt,
+                        "PT()",
+                        Bytes::from(IPendleYT::PTCall {}.abi_encode()),
+                        *addr,
+                    ),
+                    (
+                        yt,
+                        "SY()",
+                        Bytes::from(IPendleYT::SYCall {}.abi_encode()),
+                        sy,
+                    ),
+                ];
+                for (target, what, data, expected) in links {
+                    calls.push(call3(target, data));
+                    expect.push(Expect::PendleLink {
+                        token: *addr,
+                        target,
+                        what,
+                        expected,
+                    });
+                }
+            }
+            None => {}
+        }
     }
 
     for (addr, pool) in &reg.pools {
@@ -292,7 +366,10 @@ async fn aggregate3<R: ChainRpc + Sync>(
 
 fn check_one(exp: &Expect<'_>, row: &IMulticall3::Result) -> Result<()> {
     let (address, what) = match exp {
-        Expect::Decimals { token, .. } | Expect::Symbol { token, .. } => (*token, "token view"),
+        Expect::Decimals { token, .. }
+        | Expect::Symbol { token, .. }
+        | Expect::UnwrapAsset { token, .. } => (*token, "token view"),
+        Expect::PendleLink { target, .. } => (*target, "pendle view"),
         Expect::Token0 { pool, .. }
         | Expect::Token1 { pool, .. }
         | Expect::Fee { pool, .. }
@@ -352,6 +429,43 @@ fn check_one(exp: &Expect<'_>, row: &IMulticall3::Result) -> Result<()> {
             } else {
                 return Err(ConfigError::SymbolMissing {
                     token: *token,
+                    found,
+                });
+            }
+        }
+        Expect::UnwrapAsset { token, expected } => {
+            let found = IERC4626::assetCall::abi_decode_returns_validate(&row.returnData).map_err(
+                |_| ConfigError::CallFailed {
+                    address: *token,
+                    what: "asset decode",
+                },
+            )?;
+            if found != *expected {
+                return Err(ConfigError::UnwrapAssetMismatch {
+                    token: *token,
+                    expected: *expected,
+                    found,
+                });
+            }
+        }
+        Expect::PendleLink {
+            token,
+            target,
+            what,
+            expected,
+        } => {
+            // All three views return one address word.
+            let found = IERC4626::assetCall::abi_decode_returns_validate(&row.returnData).map_err(
+                |_| ConfigError::CallFailed {
+                    address: *target,
+                    what: "pendle link decode",
+                },
+            )?;
+            if found != *expected {
+                return Err(ConfigError::PendleMismatch {
+                    token: *token,
+                    what,
+                    expected: *expected,
                     found,
                 });
             }
@@ -543,6 +657,7 @@ mod tests {
                 decimals: 18,
                 quirks: vec![],
                 symbol_collision: None,
+                unwrap: None,
             },
         );
         t.insert(
@@ -552,6 +667,7 @@ mod tests {
                 decimals: 6,
                 quirks: vec![TokenQuirk::LowDecimals],
                 symbol_collision: None,
+                unwrap: None,
             },
         );
         t.insert(
@@ -565,6 +681,7 @@ mod tests {
                     TokenQuirk::NoReturnData,
                 ],
                 symbol_collision: None,
+                unwrap: None,
             },
         );
         t.insert(
@@ -574,6 +691,7 @@ mod tests {
                 decimals: 18,
                 quirks: vec![TokenQuirk::NonstandardMetadata],
                 symbol_collision: None,
+                unwrap: None,
             },
         );
         t

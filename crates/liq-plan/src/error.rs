@@ -132,6 +132,14 @@ pub enum EncodeError {
     BadCurveDataLen(usize),
     #[error("Curve legs are exact input only")]
     CurveExactOut,
+    #[error("unwrap leg data must be the 20-byte vault that is tokenIn, got {0} bytes")]
+    BadUnwrapData(usize),
+    #[error("unwrap legs are exact input only")]
+    UnwrapExactOut,
+    #[error("an unwrap leg must come before every other repay leg")]
+    UnwrapNotFirst,
+    #[error("unwrapped {asset} is not closed to WETH by a TAKE_BALANCE leg")]
+    UnwrapOutputUnclosed { asset: Address },
     #[error("zero address in plan field {0}")]
     ZeroAddress(&'static str),
     #[error("protocol_pull {pull} is zero")]

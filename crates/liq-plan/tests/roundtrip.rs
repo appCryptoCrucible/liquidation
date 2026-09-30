@@ -1377,3 +1377,90 @@ fn curve_crypto_leg_validates_like_curve() {
         Err(EncodeError::BadCurveDataLen(21))
     ));
 }
+
+/// Seized ERC-4626 shares (`VAULT`, wrapping WETH… here DAI-debt with a USDC
+/// vault) are redeemed first; the repay then sells the asset, and the asset's
+/// residual is closed to WETH.
+#[test]
+fn unwrap_leg_converts_the_collateral_before_the_repay() {
+    const VAULT: Address = address!("dd0f28e19c1780eb6396170735d45153d261490d"); // gtUSDC
+    let c = ctx();
+    let mut p = plan_v3();
+    let owed = p.groups[0].repay_swaps[0].amount;
+    for l in &mut p.groups[0].liqs {
+        l.collateral_asset = VAULT;
+    }
+    let unwrap = SwapLeg {
+        venue: liq_plan::VENUE_UNWRAP_4626,
+        token_in: VAULT,
+        token_out: USDC,
+        flags: LEG_TAKE_BALANCE,
+        amount: 0,
+        data: VAULT.to_vec(),
+    };
+    let repay = exact_out(USDC, DAI, owed);
+    p.groups[0].repay_swaps = vec![unwrap.clone(), repay.clone()];
+    // The unwrapped USDC must be closed to WETH.
+    assert!(matches!(
+        EncodedPlan::encode(&p, &c),
+        Err(EncodeError::UnwrapOutputUnclosed { asset }) if asset == USDC
+    ));
+    p.profit_swaps = vec![profit_tb(USDC)];
+    let bytes = EncodedPlan::encode(&p, &c).expect("validate").into_bytes();
+    assert!(wire_eq(&p, &decode_batch(&bytes).unwrap()));
+
+    // Unwrap after a selling leg: the shares would be sold unconverted.
+    p.groups[0].repay_swaps = vec![repay, unwrap.clone()];
+    assert!(matches!(
+        EncodedPlan::encode(&p, &c),
+        Err(EncodeError::UnwrapNotFirst)
+    ));
+    // The data must name the vault being spent.
+    let mut bad = unwrap;
+    bad.data = USDC.to_vec();
+    p.groups[0].repay_swaps = vec![bad, exact_out(USDC, DAI, owed)];
+    assert!(matches!(
+        EncodedPlan::encode(&p, &c),
+        Err(EncodeError::BadUnwrapData(20))
+    ));
+}
+
+/// An expired Pendle PT is redeemed first (venue 6, data = its YT) and
+/// validates like any unwrap: first, exact input, output closed.
+#[test]
+fn pendle_pt_redeem_leg_validates_like_an_unwrap() {
+    const PT: Address = address!("9f56094c450763769ba0ea9fe2876070c0fd5f77");
+    const YT: Address = address!("029d6247adb0a57138c62e3019c92d3dfc9c1840");
+    let c = ctx();
+    let mut p = plan_v3();
+    let owed = p.groups[0].repay_swaps[0].amount;
+    for l in &mut p.groups[0].liqs {
+        l.collateral_asset = PT;
+    }
+    let redeem = SwapLeg {
+        venue: liq_plan::VENUE_PENDLE_PT_REDEEM,
+        token_in: PT,
+        token_out: USDC,
+        flags: LEG_TAKE_BALANCE,
+        amount: 0,
+        data: YT.to_vec(),
+    };
+    p.groups[0].repay_swaps = vec![redeem.clone(), exact_out(USDC, DAI, owed)];
+    p.profit_swaps = vec![profit_tb(USDC)];
+    let bytes = EncodedPlan::encode(&p, &c).expect("validate").into_bytes();
+    assert!(wire_eq(&p, &decode_batch(&bytes).unwrap()));
+    let mut exact = redeem.clone();
+    exact.flags = LEG_EXACT_OUT;
+    p.groups[0].repay_swaps = vec![exact, exact_out(USDC, DAI, owed)];
+    assert!(matches!(
+        EncodedPlan::encode(&p, &c),
+        Err(EncodeError::UnwrapExactOut)
+    ));
+    let mut empty = redeem;
+    empty.data = vec![0; 20];
+    p.groups[0].repay_swaps = vec![empty, exact_out(USDC, DAI, owed)];
+    assert!(matches!(
+        EncodedPlan::encode(&p, &c),
+        Err(EncodeError::BadUnwrapData(20))
+    ));
+}

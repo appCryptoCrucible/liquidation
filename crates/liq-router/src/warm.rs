@@ -21,7 +21,7 @@ use liq_types::AssetId;
 use smallvec::SmallVec;
 
 use crate::exact::{solve_pair, GasTerms, SolveBudget};
-use crate::solver::{mul_div_512, Leg, PoolBook, RouteError, Q96};
+use crate::solver::{mul_div_512, ExitSource, Leg, PoolBook, RouteError, Q96};
 
 /// Bucket ladder length (GUIDE 12 §3: `$10k / $100k / $1M / $5M`).
 pub const BUCKETS: usize = 4;
@@ -235,8 +235,12 @@ impl WarmBuilder {
                 priority_fee_wei: priority_fee,
                 out_per_eth: per_eth,
             };
+            let unwrap = match book.exit_source(coll, debt) {
+                ExitSource::Unwrap(u, _) => Some(u),
+                ExitSource::Direct(_) => None,
+            };
             let mut legs: SmallVec<[(U256, Leg); 8]> = book
-                .legs(coll, debt)
+                .exit_legs(coll, debt)
                 .iter()
                 .filter_map(|l| {
                     let p = book.get(l.pool)?;
@@ -244,11 +248,18 @@ impl WarmBuilder {
                         .then(|| p.rho_at_zero(l.i, l.j).ok().map(|r| (r, *l)))?
                 })
                 .collect();
-            if legs.is_empty() {
-                continue;
-            }
             legs.sort_by_key(|l| std::cmp::Reverse(l.0));
-            let rho0 = legs.first().map_or(U256::ZERO, |l| l.0);
+            // Through an unwrap the marginal is the pools' scaled by the
+            // unwrap rate (the rate alone when it unwraps into the debt).
+            let rho0 = match (unwrap, legs.first()) {
+                (None, Some(l)) => Ok(l.0),
+                (Some(u), Some(l)) => u.scale_rho(l.0),
+                (Some(u), None) if u.into == debt => u.rho(),
+                _ => continue,
+            };
+            let Ok(rho0) = rho0 else {
+                continue;
+            };
             let rings = self
                 .history
                 .entry((coll, debt))

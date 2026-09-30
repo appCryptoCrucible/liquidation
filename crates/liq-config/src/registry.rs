@@ -44,6 +44,37 @@ pub struct TokenEntry {
     /// §4b identity collision, recorded when the canonical list disagrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symbol_collision: Option<SymbolCollision>,
+    /// A wrapper the Executor can unwrap instantly (swap venue 5) into
+    /// another registry token, for a collateral with no pool of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unwrap: Option<TokenUnwrap>,
+}
+
+/// How a wrapper token unwraps (`tools/registry/discover_unwraps.py`).
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TokenUnwrap {
+    pub kind: UnwrapKind,
+    /// What it unwraps into: the vault's `asset()`, or the token a Pendle
+    /// SY redeems to.
+    pub into: Address,
+    /// Pendle PT only: its YT (`PT.YT()`, which names the PT back).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yt: Option<Address>,
+    /// Pendle PT only: the YT's SY.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sy: Option<Address>,
+}
+
+/// Unwrap mechanism.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnwrapKind {
+    /// ERC-4626 `redeem(shares, self, self)`; admitted only when a redeem
+    /// pays `previewRedeem` (no queue, no cooldown).
+    Erc4626,
+    /// Expired Pendle PT: `redeemPY` on its YT, then `SY.redeem` into `into`.
+    PendlePt,
 }
 
 /// Token behaviour that changes what correct code looks like (REGISTRY.md §5).

@@ -15,7 +15,8 @@ use liq_flash::{fee_amount, FlashIndex, Haircut};
 use liq_plan::{
     col_per_unit_debt_1e18, ensure_surplus_borrow_profit_legs, validate, BatchPlan, FlashGroup,
     LiqLeg, SwapLeg, ValidateCtx, LEG_EXACT_OUT, LEG_TAKE_BALANCE, VENUE_CURVE_CRYPTO_POOL,
-    VENUE_CURVE_POOL, VENUE_UNIV2_POOL, VENUE_UNIV3_POOL,
+    VENUE_CURVE_POOL, VENUE_PENDLE_PT_REDEEM, VENUE_UNIV2_POOL, VENUE_UNIV3_POOL,
+    VENUE_UNWRAP_4626,
 };
 use liq_protocol::{ExecutorAdapter, FlashRoute, Quote};
 use liq_types::fixed::{mul_div, Rounding};
@@ -27,7 +28,7 @@ use crate::bid::{searcher_net, Bid};
 use crate::exact::{Allocation, ExitQuote, GasTerms};
 use crate::profit::ProfitError;
 use crate::select::{Scored, SelectCfg, SelectedPlan};
-use crate::solver::{PoolBook, PoolId, PoolState, RouteError, Venue};
+use crate::solver::{PoolBook, PoolId, PoolState, RouteError, UnwrapKind, Venue};
 
 /// Adapter fields `Protocol::encode` would have supplied. Required per
 /// position; missing → the plan is not emitted.
@@ -677,11 +678,11 @@ fn fund_premium(swaps: &mut [SwapLeg], premium: u128) -> Result<(), AssembleErro
             .ok_or(AssembleError::AmountTooLarge)?;
     }
     if n == 0 || total.is_zero() {
-        // Exact-in (Curve) repay legs carry the premium in their overshoot.
-        if swaps
-            .iter()
-            .any(|s| s.flags & (LEG_EXACT_OUT | LEG_TAKE_BALANCE) == 0)
-        {
+        // Exact-in (Curve) repay legs carry the premium in their overshoot;
+        // an unwrap into the debt carries it in the seize bonus.
+        if swaps.iter().any(|s| {
+            s.flags & (LEG_EXACT_OUT | LEG_TAKE_BALANCE) == 0 || liq_plan::is_unwrap_venue(s.venue)
+        }) {
             return Ok(());
         }
         return Err(AssembleError::Missing("repay swap"));
@@ -716,6 +717,13 @@ fn fund_premium(swaps: &mut [SwapLeg], premium: u128) -> Result<(), AssembleErro
 /// Move an already-funded premium when a fallback source charges a different fee.
 fn shift_premium(swaps: &mut [SwapLeg], old_fee: u128, new_fee: u128) -> Result<(), AssembleError> {
     if old_fee == new_fee {
+        return Ok(());
+    }
+    if !swaps.iter().any(|s| s.flags & LEG_EXACT_OUT != 0)
+        && swaps.iter().any(|s| liq_plan::is_unwrap_venue(s.venue))
+    {
+        // Every repay is an unwrap straight into the debt: the premium comes
+        // out of the unwrapped surplus, whatever the fee.
         return Ok(());
     }
     let last = swaps
@@ -854,15 +862,51 @@ fn assemble_one(
                     protocol_pull: pull,
                 });
                 let overshoot = cfg.min_out_tolerance_bps.saturating_add(cg.fee_bps);
-                let (repay, profit) =
-                    swaps_for_leg(s, book, weth, pull, debt_addr, coll_addr, overshoot)?;
+                // A wrapper with no pool of its own is unwrapped first (the
+                // whole balance, ahead of every selling leg) and what it
+                // unwraps into is sold instead.
+                let sell_addr = match s.leg.exit.unwrap {
+                    Some(u) => {
+                        let into = token(view, u.into)?;
+                        if !repay_swaps.iter().any(|x: &SwapLeg| {
+                            liq_plan::is_unwrap_venue(x.venue) && x.token_in == coll_addr
+                        }) {
+                            let (venue, data) = match u.kind {
+                                UnwrapKind::Erc4626 => (VENUE_UNWRAP_4626, coll_addr.to_vec()),
+                                UnwrapKind::PendlePt { yt, .. } => {
+                                    (VENUE_PENDLE_PT_REDEEM, yt.to_vec())
+                                }
+                            };
+                            repay_swaps.insert(
+                                0,
+                                SwapLeg {
+                                    venue,
+                                    token_in: coll_addr,
+                                    token_out: into,
+                                    flags: LEG_TAKE_BALANCE,
+                                    amount: 0,
+                                    data,
+                                },
+                            );
+                        }
+                        into
+                    }
+                    None => coll_addr,
+                };
+                // Unwrapped straight into the debt: nothing to sell; the
+                // surplus debt is swept by `route_surplus_debt`.
+                let (repay, profit) = if sell_addr == debt_addr {
+                    (Vec::new(), None)
+                } else {
+                    swaps_for_leg(s, book, weth, pull, debt_addr, sell_addr, overshoot)?
+                };
                 repay_swaps.extend(repay);
                 // One TAKE_BALANCE closer per non-WETH collateral across the
                 // whole plan. WETH collateral has no closer.
                 if let Some(profit) = profit {
                     if !profit_swaps
                         .iter()
-                        .any(|x| x.token_in == coll_addr && x.flags & LEG_TAKE_BALANCE != 0)
+                        .any(|x| x.token_in == sell_addr && x.flags & LEG_TAKE_BALANCE != 0)
                     {
                         profit_swaps.push(profit);
                     }
@@ -947,7 +991,9 @@ fn route_surplus_debt(
             .try_fold(0u128, |a, l| a.checked_add(l.protocol_pull))
             .ok_or(AssembleError::AmountTooLarge)?;
         let exact_in = g.repay_swaps.iter().any(|s| {
-            s.token_out == g.debt_asset && s.flags & (LEG_EXACT_OUT | LEG_TAKE_BALANCE) == 0
+            s.token_out == g.debt_asset
+                && (s.flags & (LEG_EXACT_OUT | LEG_TAKE_BALANCE) == 0
+                    || liq_plan::is_unwrap_venue(s.venue))
         });
         if g.debt_asset == weth || (g.flash_amount <= pull && !exact_in) {
             continue;
@@ -1513,6 +1559,153 @@ mod tests {
             .profit_swaps
             .iter()
             .any(|s| s.venue == VENUE_CURVE_POOL && s.flags & LEG_TAKE_BALANCE != 0));
+    }
+
+    /// A2 is an ERC-4626 wrapper of `into` at 1.1 assets per share.
+    fn unwrap_a2(into: AssetId) -> crate::solver::Unwrap {
+        crate::solver::Unwrap {
+            kind: crate::solver::UnwrapKind::Erc4626,
+            wrapper: A2,
+            wrapper_token: tok(2),
+            into,
+            into_token: if into == A0 { tok(0) } else { tok(1) },
+            assets_per_scale: e18(11) / U256::from(10u64),
+            scale: e18(1),
+            read_block: 1,
+            gas: 60_000,
+        }
+    }
+
+    fn assemble_a2_exit(bk: &PoolBook) -> (SmallVec<[SelectedPlan; 4]>, BatchPlan) {
+        let (_s, flash) = idx();
+        let mut quote = q(1);
+        quote.seize_options[0].asset = A2;
+        let world = world_one(&quote);
+        let plans = select(
+            &[input_of(&quote)],
+            &cfg(),
+            &flash,
+            H,
+            bk,
+            None,
+            &world,
+            &GAS,
+        )
+        .unwrap();
+        assert_eq!(plans.len(), 1);
+        let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
+        let price = gas_price_in_debt(&GAS).unwrap();
+        let assembled = assemble(
+            &plans,
+            &cfg(),
+            bk,
+            &world,
+            &vctx(tok(1)),
+            &bd,
+            price,
+            &GAS,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let plan = assembled[0].plan.clone();
+        validate(&plan, &vctx(tok(1))).unwrap();
+        (plans, plan)
+    }
+
+    /// A wrapper with no pool is solved through its unwrap: the pools see the
+    /// converted amount, the marginal is scaled by the rate, and the unwrap's
+    /// gas is on the route.
+    #[test]
+    fn wrapper_without_a_pool_routes_through_its_unwrap() {
+        let mut bk = book(vec![deep()]);
+        assert!(solve_pair(&bk, A2, A1, e18(10), &GAS, &B).is_err());
+        bk.add_unwrap(unwrap_a2(A0));
+        let via = solve_pair(&bk, A2, A1, e18(10), &GAS, &B).unwrap();
+        let u = via.unwrap.unwrap();
+        assert_eq!((u.wrapper, u.into), (A2, A0));
+        // 10 shares at 1.1, less 1 ppm and 1 wei.
+        let raw = e18(11);
+        assert_eq!(
+            u.amount_out,
+            raw - raw / U256::from(1_000_000u64) - U256::ONE
+        );
+        let inner = solve_pair(&bk, A0, A1, u.amount_out, &GAS, &B).unwrap();
+        assert_eq!(via.amount_out, inner.amount_out);
+        assert_eq!(via.allocs, inner.allocs);
+        assert_eq!(via.amount_in, e18(10));
+        assert_eq!(via.hop_gas, inner.hop_gas + 60_000);
+        assert!(via.rho0 > inner.rho0, "rate 1.1 raises the marginal");
+        assert!(bk.pairs().any(|p| p == (A2, A1)));
+        // An unread rate is not routed.
+        bk.add_unwrap(crate::solver::Unwrap {
+            read_block: 0,
+            ..unwrap_a2(A0)
+        });
+        assert!(solve_pair(&bk, A2, A1, e18(10), &GAS, &B).is_err());
+    }
+
+    /// The seized wrapper is unwrapped (whole balance) ahead of the leg that
+    /// sells what it unwraps into, and that asset is closed to WETH.
+    #[test]
+    fn unwrap_exit_assembles_ahead_of_the_repay() {
+        use liq_plan::VENUE_UNWRAP_4626;
+        let mut bk = book(vec![deep()]);
+        bk.add_unwrap(unwrap_a2(A0));
+        let (plans, plan) = assemble_a2_exit(&bk);
+        assert!(plans[0].groups[0].legs[0].leg.exit.unwrap.is_some());
+        let repay = &plan.groups[0].repay_swaps;
+        assert_eq!(plan.groups[0].liqs[0].collateral_asset, tok(2));
+        assert_eq!(repay[0].venue, VENUE_UNWRAP_4626);
+        assert_eq!((repay[0].token_in, repay[0].token_out), (tok(2), tok(0)));
+        assert_eq!(repay[0].flags, LEG_TAKE_BALANCE);
+        assert_eq!(repay[0].data, tok(2).to_vec());
+        assert_eq!((repay[1].token_in, repay[1].token_out), (tok(0), tok(1)));
+        assert_eq!(repay[1].flags & LEG_EXACT_OUT, LEG_EXACT_OUT);
+        assert!(plan.profit_swaps.iter().any(|s| s.token_in == tok(0)
+            && s.token_out == tok(1)
+            && s.flags & LEG_TAKE_BALANCE != 0));
+        assert!(!plan.profit_swaps.iter().any(|s| s.token_in == tok(2)));
+    }
+
+    /// An expired Pendle PT exits through venue 6 with its YT as the data;
+    /// the rest of the plan is the same as a vault's.
+    #[test]
+    fn pendle_pt_exit_assembles_as_venue_6() {
+        use liq_plan::VENUE_PENDLE_PT_REDEEM;
+        let yt = addr(0x7777);
+        let mut bk = book(vec![deep()]);
+        bk.add_unwrap(crate::solver::Unwrap {
+            kind: crate::solver::UnwrapKind::PendlePt {
+                yt,
+                sy: addr(0x5555),
+            },
+            ..unwrap_a2(A0)
+        });
+        let (_, plan) = assemble_a2_exit(&bk);
+        let repay = &plan.groups[0].repay_swaps;
+        assert_eq!(repay[0].venue, VENUE_PENDLE_PT_REDEEM);
+        assert_eq!((repay[0].token_in, repay[0].token_out), (tok(2), tok(0)));
+        assert_eq!(repay[0].data, yt.to_vec());
+        assert_eq!(repay[1].flags & LEG_EXACT_OUT, LEG_EXACT_OUT);
+    }
+
+    /// A wrapper of the debt asset itself needs no pool: the unwrap pays the
+    /// repay and the surplus is the profit.
+    #[test]
+    fn unwrap_into_the_debt_needs_no_pool() {
+        use liq_plan::VENUE_UNWRAP_4626;
+        let mut bk = book(vec![deep()]);
+        bk.add_unwrap(unwrap_a2(A1));
+        let q = solve_pair(&bk, A2, A1, e18(10), &GAS, &B).unwrap();
+        assert!(q.allocs.is_empty());
+        assert_eq!(q.amount_out, q.unwrap.unwrap().amount_out);
+        let (_, plan) = assemble_a2_exit(&bk);
+        let repay = &plan.groups[0].repay_swaps;
+        assert_eq!(repay.len(), 1);
+        assert_eq!(repay[0].venue, VENUE_UNWRAP_4626);
+        assert_eq!((repay[0].token_in, repay[0].token_out), (tok(2), tok(1)));
     }
 
     /// Assembled plan satisfies `liq-plan::validate`. Debt = WETH (A1)

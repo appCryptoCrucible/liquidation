@@ -102,8 +102,8 @@ pub use select::{
     EXACT_K, NONCE_SLOTS,
 };
 pub use solver::{
-    CurveState, Leg, Pool, PoolBook, PoolId, PoolState, RouteError, Tick, V2State, V3State, Venue,
-    MAX_COINS,
+    CurveState, ExitSource, Leg, Pool, PoolBook, PoolId, PoolState, RouteError, Tick, Unwrap,
+    UnwrapKind, V2State, V3State, Venue, MAX_COINS,
 };
 pub use warm::{Bucket, RouteEntry, RouteTable, WarmBuilder, WarmConfig, WarmInputs};
 

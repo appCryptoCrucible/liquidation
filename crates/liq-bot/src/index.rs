@@ -644,6 +644,8 @@ fn load_book(
         || hops.curve == 0
         || hops.curve_ng == 0
         || hops.curve_crypto == 0
+        || hops.unwrap_4626 == 0
+        || hops.pendle_pt == 0
     {
         tracing::error!(
             ?hops,
@@ -849,7 +851,64 @@ fn load_book(
     if book.pools().is_empty() {
         tracing::error!("PoolBook has no seeded addresses — empty publish until logs");
     }
+    add_unwraps(&mut book, intern, registry, hops, omitted);
     book
+}
+
+/// Registry wrappers → the book's unwraps. The rate starts unread (not
+/// routed) until the reseed thread reads `previewRedeem`.
+fn add_unwraps(
+    book: &mut PoolBook,
+    intern: &Intern,
+    registry: &Registry,
+    hops: crate::gas_model::HopGas,
+    omitted: &mut Vec<(&'static str, String)>,
+) {
+    for (addr, entry) in &registry.tokens {
+        let Some(u) = entry.unwrap else {
+            continue;
+        };
+        let (Some(wrapper), Some(into)) = (intern.asset(*addr), intern.asset(u.into)) else {
+            omit(
+                omitted,
+                "book",
+                format!("unwrap {addr:#x} → {:#x}: token not interned", u.into),
+            );
+            continue;
+        };
+        // A thousand whole shares: the linear rate keeps three more digits
+        // than one share would.
+        let Some(scale) =
+            U256::from(10u64).checked_pow(U256::from(entry.decimals.saturating_add(3)))
+        else {
+            omit(omitted, "book", format!("unwrap {addr:#x}: decimals"));
+            continue;
+        };
+        let kind = match (u.kind, u.yt, u.sy) {
+            (liq_config::UnwrapKind::Erc4626, _, _) => liq_router::UnwrapKind::Erc4626,
+            (liq_config::UnwrapKind::PendlePt, Some(yt), Some(sy)) => {
+                liq_router::UnwrapKind::PendlePt { yt, sy }
+            }
+            (liq_config::UnwrapKind::PendlePt, _, _) => {
+                omit(omitted, "book", format!("pendle PT {addr:#x}: no yt/sy"));
+                continue;
+            }
+        };
+        book.add_unwrap(liq_router::Unwrap {
+            kind,
+            wrapper,
+            wrapper_token: *addr,
+            into,
+            into_token: u.into,
+            assets_per_scale: U256::ZERO,
+            scale,
+            read_block: 0,
+            gas: match kind {
+                liq_router::UnwrapKind::Erc4626 => hops.unwrap_4626,
+                liq_router::UnwrapKind::PendlePt { .. } => hops.pendle_pt,
+            },
+        });
+    }
 }
 
 fn load_feeds(
@@ -1171,5 +1230,32 @@ mod tests {
             venues.iter().all(|&n| n > 0),
             "every venue loads: {venues:?}"
         );
+    }
+
+    /// Every registry unwrap reaches the book, unread (not routed) until the
+    /// reseed thread reads its rate, and each unwraps into a token that has
+    /// pools of its own.
+    #[test]
+    fn registry_unwraps_load_unread() {
+        let (intern, reg) = committed();
+        let load = load_index(&root().join("config"), &intern, &reg);
+        let want = reg.tokens.values().filter(|t| t.unwrap.is_some()).count();
+        assert!(want > 0, "registry has unwraps");
+        let got: Vec<_> = load.book.unwraps().collect();
+        assert_eq!(got.len(), want, "every registry unwrap is in the book");
+        for u in got {
+            assert!(
+                !u.is_live(),
+                "{:#x} routed before its rate is read",
+                u.wrapper_token
+            );
+            assert!(
+                load.book.pairs().any(|(a, _)| a == u.into),
+                "{:#x} unwraps into {:#x}, which has no pool",
+                u.wrapper_token,
+                u.into_token
+            );
+            assert!(u.gas > 0, "unwrap gas measured");
+        }
     }
 }

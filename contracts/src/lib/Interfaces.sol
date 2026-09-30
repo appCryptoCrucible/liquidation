@@ -162,6 +162,37 @@ interface ICurveCryptoPool {
     function exchange(uint256 i, uint256 j, uint256 dx, uint256 min_dy) external;
 }
 
+/// ERC-4626 vault, as an unwrap step: redeem shares for `asset()`.
+/// Pendle principal token (`PendlePrincipalToken`).
+interface IPendlePT {
+    function YT() external view returns (address);
+}
+
+/// Pendle yield token (`PendleYieldToken`): PT (+YT before expiry) sent to it
+/// first, then `redeemPY` pays SY. After expiry PT alone redeems.
+interface IPendleYT {
+    function PT() external view returns (address);
+    function SY() external view returns (address);
+    function isExpired() external view returns (bool);
+    function redeemPY(address receiver) external returns (uint256 amountSyOut);
+}
+
+/// Pendle standardized yield (`SYBase.redeem`): burns the caller's shares.
+interface IPendleSY {
+    function redeem(
+        address receiver,
+        uint256 amountSharesToRedeem,
+        address tokenOut,
+        uint256 minTokenOut,
+        bool burnFromInternalBalance
+    ) external returns (uint256 amountTokenOut);
+}
+
+interface IERC4626Unwrap {
+    function asset() external view returns (address);
+    function redeem(uint256 shares, address receiver, address owner) external returns (uint256);
+}
+
 /// Curve MetaRegistry. `is_registered` reverts ("no registry") for an
 /// unknown pool, so an unregistered pool fails closed either way.
 interface ICurveMetaRegistry {

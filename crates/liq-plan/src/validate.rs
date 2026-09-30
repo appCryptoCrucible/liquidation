@@ -7,7 +7,8 @@ use liq_protocol::ExecutorAdapter;
 use liq_types::fixed::{mul_div, Rounding, WAD};
 use liq_wire::wire::{
     LegTail, LEG_EXACT_OUT, LEG_TAKE_BALANCE, V2_FACTORY_SUSHI, VENUE_CURVE_CRYPTO_POOL,
-    VENUE_CURVE_POOL, VENUE_ROUTER, VENUE_UNIV2_POOL, VENUE_UNIV3_POOL,
+    VENUE_CURVE_POOL, VENUE_PENDLE_PT_REDEEM, VENUE_ROUTER, VENUE_UNIV2_POOL, VENUE_UNIV3_POOL,
+    VENUE_UNWRAP_4626,
 };
 
 use crate::error::{EncodeError, Result};
@@ -138,11 +139,16 @@ pub fn validate(p: &BatchPlan, ctx: &ValidateCtx) -> Result<()> {
             check_swap(s)?;
         }
         assert_exact_out_first(&g.repay_swaps)?;
-        if g.repay_swaps.iter().any(|s| s.token_out != g.debt_asset) {
+        unwraps_first(&g.repay_swaps)?;
+        if g.repay_swaps
+            .iter()
+            .any(|s| s.token_out != g.debt_asset && !crate::types::is_unwrap_venue(s.venue))
+        {
             return Err(EncodeError::RepayTargetMismatch {
                 group: g.debt_asset,
             });
         }
+        unwrap_outputs_closed(p, g, ctx.weth)?;
         size_repay_to_pull(g)?;
         surplus_debt_routed(p, g, ctx.weth)?;
     }
@@ -365,7 +371,66 @@ fn check_swap(s: &SwapLeg) -> Result<()> {
                 return Err(EncodeError::CurveExactOut);
             }
         }
+        VENUE_UNWRAP_4626 => {
+            if s.data.len() != 20 || s.data != s.token_in.as_slice() {
+                return Err(EncodeError::BadUnwrapData(s.data.len()));
+            }
+            if s.flags & LEG_EXACT_OUT != 0 {
+                return Err(EncodeError::UnwrapExactOut);
+            }
+        }
+        // The YT is checked against the PT on chain (they must name each
+        // other); here only its shape.
+        VENUE_PENDLE_PT_REDEEM => {
+            if s.data.len() != 20 || s.data.iter().all(|b| *b == 0) {
+                return Err(EncodeError::BadUnwrapData(s.data.len()));
+            }
+            if s.flags & LEG_EXACT_OUT != 0 {
+                return Err(EncodeError::UnwrapExactOut);
+            }
+        }
         v => return Err(EncodeError::UnknownVenue(v)),
+    }
+    Ok(())
+}
+
+/// Unwrap legs convert the seized collateral before anything sells it.
+fn unwraps_first(blob: &[SwapLeg]) -> Result<()> {
+    let mut seen_other = false;
+    for s in blob {
+        if crate::types::is_unwrap_venue(s.venue) {
+            if seen_other {
+                return Err(EncodeError::UnwrapNotFirst);
+            }
+        } else {
+            seen_other = true;
+        }
+    }
+    Ok(())
+}
+
+/// What an unwrap produces must leave the Executor: it is the debt asset
+/// (spent by the repay, surplus swept), WETH (swept), or closed to WETH by a
+/// TAKE_BALANCE leg.
+fn unwrap_outputs_closed(p: &BatchPlan, g: &FlashGroup, weth: Address) -> Result<()> {
+    for u in g
+        .repay_swaps
+        .iter()
+        .filter(|s| crate::types::is_unwrap_venue(s.venue))
+    {
+        let out = u.token_out;
+        if out == g.debt_asset || out == weth {
+            continue;
+        }
+        let closed = all_swaps(p).any(|s| {
+            s.token_in == out
+                && s.token_out == weth
+                && s.flags & LEG_TAKE_BALANCE != 0
+                && !crate::types::is_unwrap_venue(s.venue)
+        });
+        if !closed {
+            return Err(EncodeError::UnwrapOutputUnclosed { asset: out });
+        }
     }
     Ok(())
 }
@@ -373,6 +438,11 @@ fn check_swap(s: &SwapLeg) -> Result<()> {
 fn assert_exact_out_first(blob: &[SwapLeg]) -> Result<()> {
     let mut seen_tb = false;
     for s in blob {
+        // An unwrap converts the collateral before the legs that sell it;
+        // it is not a closer.
+        if crate::types::is_unwrap_venue(s.venue) {
+            continue;
+        }
         let tb = s.flags & LEG_TAKE_BALANCE != 0;
         let eo = s.flags & LEG_EXACT_OUT != 0;
         if eo && seen_tb {
@@ -459,9 +529,13 @@ fn size_repay_to_pull(g: &FlashGroup) -> Result<()> {
 
 /// A repay leg that sells a fixed amount into the debt asset.
 fn has_exact_in_repay(g: &FlashGroup) -> bool {
-    g.repay_swaps
-        .iter()
-        .any(|s| s.token_out == g.debt_asset && s.flags & (LEG_EXACT_OUT | LEG_TAKE_BALANCE) == 0)
+    g.repay_swaps.iter().any(|s| {
+        s.token_out == g.debt_asset
+            && (s.flags & (LEG_EXACT_OUT | LEG_TAKE_BALANCE) == 0
+                // Unwrapping straight into the debt asset covers the pull
+                // like an exact-input leg; the surplus is swept.
+                || crate::types::is_unwrap_venue(s.venue))
+    })
 }
 
 fn surplus_debt_routed(p: &BatchPlan, g: &FlashGroup, weth: Address) -> Result<()> {

@@ -4,7 +4,9 @@ pragma solidity 0.8.28;
 import {Executor} from "../../src/Executor.sol";
 import {ExecutorTestBase} from "./Base.sol";
 import {PlanBuilder as PB} from "./PlanBuilder.sol";
-import {MockV2Pair, MockCurvePool, MockCurveCryptoPool} from "./Mocks.sol";
+import {
+    MockV2Pair, MockCurvePool, MockCurveCryptoPool, MockVault4626, MockPendlePT, MockPendleYT, MockPendleSY
+} from "./Mocks.sol";
 
 /// Pool-direct UniswapV2 / SushiSwap and Curve legs. The success paths run
 /// the reference liquidation with the repay swap on the new venue; the
@@ -217,6 +219,115 @@ contract ExecutorVenuesTest is ExecutorTestBase {
             PB.curveSwap(address(c), 0, 1, address(coll), address(debt), 0, 0.51e8),
             1, _collProfit()
         ));
+    }
+
+    // ── ERC-4626 unwrap ───────────────────────────────────────────────────
+
+    /// Seized vault shares are redeemed into the asset first; the repay and
+    /// closer legs then spend the asset as usual.
+    function _vaultPlan(MockVault4626 v, bytes memory unwrapLeg) internal view returns (bytes memory) {
+        return bytes.concat(
+            PB.header(PB.F_SWEEP, 0, GAS_COST, MIN_PROFIT, 1),
+            PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 2),
+            PB.legV3(address(pool), borrower, address(v), REPAY),
+            unwrapLeg,
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.profit(1, _collProfit())
+        );
+    }
+
+    function _vault() internal returns (MockVault4626 v) {
+        v = new MockVault4626(address(coll), 8);
+        v.mint(address(pool), 1e12);
+        coll.mint(address(v), 1e12);
+    }
+
+    function test_unwrap_4626_then_repay_from_the_asset() public {
+        MockVault4626 v = _vault();
+        uint256 sinkBefore = weth.balanceOf(sink);
+        _exec(_vaultPlan(v, PB.unwrap4626(address(v), address(coll))));
+        assertGt(weth.balanceOf(sink), sinkBefore, "no profit");
+        assertEq(v.balanceOf(address(ex)), 0, "shares all redeemed");
+        _assertClean();
+    }
+
+    function test_unwrap_4626_wrong_asset_is_refused() public {
+        MockVault4626 v = _vault();
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(5), address(v)));
+        _exec(_vaultPlan(v, PB.unwrap4626(address(v), address(debt))));
+    }
+
+    function test_unwrap_4626_vault_must_be_the_spent_token() public {
+        MockVault4626 v = _vault();
+        MockVault4626 other = _vault();
+        bytes memory leg = PB.swap(5, address(v), address(coll), PB.L_TAKE_BALANCE, 0, abi.encodePacked(address(other)));
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(5), address(other)));
+        _exec(_vaultPlan(v, leg));
+    }
+
+    // ── Pendle PT redeem (expired) ────────────────────────────────────────
+
+    /// PT at index 1.25 (1 PT = 0.8 SY), SY at 1.25 of the collateral token:
+    /// 1 PT redeems to 1 COLL.
+    function _pendle() internal returns (MockPendlePT pt, MockPendleYT yt, MockPendleSY sy) {
+        pt = new MockPendlePT();
+        sy = new MockPendleSY(address(coll));
+        yt = new MockPendleYT(address(pt), address(sy));
+        pt.setYT(address(yt));
+        yt.setIndex(1.25e18);
+        sy.setRate(5, 4);
+        yt.setExpired(true);
+        pt.mint(address(pool), 1e12);
+        coll.mint(address(sy), 1e12);
+    }
+
+    function _ptPlan(address pt, bytes memory redeemLeg) internal view returns (bytes memory) {
+        return bytes.concat(
+            PB.header(PB.F_SWEEP, 0, GAS_COST, MIN_PROFIT, 1),
+            PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 2),
+            PB.legV3(address(pool), borrower, pt, REPAY),
+            redeemLeg,
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.profit(1, _collProfit())
+        );
+    }
+
+    function test_pendle_pt_redeems_through_yt_and_sy_then_repays() public {
+        (MockPendlePT pt, MockPendleYT yt, MockPendleSY sy) = _pendle();
+        uint256 sinkBefore = weth.balanceOf(sink);
+        _exec(_ptPlan(address(pt), PB.pendlePtRedeem(address(pt), address(yt), address(coll))));
+        assertGt(weth.balanceOf(sink), sinkBefore, "no profit");
+        assertEq(pt.balanceOf(address(ex)), 0, "PT all redeemed");
+        assertEq(sy.balanceOf(address(ex)), 0, "SY all redeemed");
+        _assertClean();
+    }
+
+    function test_pendle_pt_before_expiry_is_refused() public {
+        (MockPendlePT pt, MockPendleYT yt,) = _pendle();
+        yt.setExpired(false);
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(6), address(yt)));
+        _exec(_ptPlan(address(pt), PB.pendlePtRedeem(address(pt), address(yt), address(coll))));
+    }
+
+    /// A YT that does not name the PT back (or a PT naming another YT) never
+    /// receives the PT.
+    function test_pendle_yt_must_pair_with_the_pt() public {
+        (MockPendlePT pt, MockPendleYT yt, MockPendleSY sy) = _pendle();
+        MockPendleYT rogue = new MockPendleYT(address(pt), address(sy));
+        rogue.setExpired(true);
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(6), address(rogue)));
+        _exec(_ptPlan(address(pt), PB.pendlePtRedeem(address(pt), address(rogue), address(coll))));
+        MockPendlePT otherPt = new MockPendlePT();
+        otherPt.setYT(address(yt));
+        otherPt.mint(address(pool), 1e12);
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(6), address(yt)));
+        _exec(_ptPlan(address(otherPt), PB.pendlePtRedeem(address(otherPt), address(yt), address(coll))));
+    }
+
+    function test_pendle_sy_refuses_a_token_it_cannot_pay() public {
+        (MockPendlePT pt, MockPendleYT yt,) = _pendle();
+        vm.expectRevert(bytes("sy: token out"));
+        _exec(_ptPlan(address(pt), PB.pendlePtRedeem(address(pt), address(yt), address(debt))));
     }
 
     // ── constructor ───────────────────────────────────────────────────────

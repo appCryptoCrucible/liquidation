@@ -45,6 +45,7 @@ use crate::solver::{
     curve_rho, mul_div_512, narrow, next_tick_within_word, CurveState, Leg, Pool, PoolBook, PoolId,
     PoolState, RouteError, V3State, PIPS, Q192, Q96,
 };
+use crate::solver::{ExitSource, Unwrap};
 
 /// `1e18` wei per ETH.
 const WEI_PER_ETH: U256 = U256::from_limbs([1_000_000_000_000_000_000, 0, 0, 0]);
@@ -116,17 +117,32 @@ pub struct Allocation {
     pub amount_out: U256,
 }
 
+/// The unwrap step ahead of an exit's pools.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct UnwrapUse {
+    pub kind: crate::solver::UnwrapKind,
+    pub wrapper: AssetId,
+    pub into: AssetId,
+    /// What the unwrap pays (conservative), in `into` units: the input the
+    /// pools share.
+    pub amount_out: U256,
+}
+
 /// Result of one collateral → debt exit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExitQuote {
-    /// Best-`ρ₀` pool first. Sums exactly to `amount_in`.
+    /// Best-`ρ₀` pool first. Sums exactly to `amount_in`, or with an
+    /// unwrap to `unwrap.amount_out`.
     pub allocs: SmallVec<[Allocation; 6]>,
+    /// Collateral in (the wrapper when there is an unwrap).
     pub amount_in: U256,
     pub amount_out: U256,
     /// Σ `hop_gas` over pools with a non-zero allocation.
     pub hop_gas: u64,
     /// Best marginal at zero size across candidates, Q96 sqrt.
     pub rho0: U256,
+    /// Unwrap the collateral first (ERC-4626 redeem) when it has no pool.
+    pub unwrap: Option<UnwrapUse>,
 }
 
 /// Ordered K-collateral exit (GUIDE 12 §4c).
@@ -925,12 +941,60 @@ pub fn solve_on(
             amount_out: out,
             hop_gas,
             rho0,
+            unwrap: None,
         });
     }
     best.ok_or(RouteError::InsufficientLiquidity)
 }
 
-/// [`solve_on`] over the book's live pools for one pair.
+/// [`solve_on`] through `unwrap` when set: the unwrap's output is what the
+/// pools sell (nothing to sell when it is already `debt`).
+fn solve_via(
+    pools: &[Pool],
+    legs: &[Leg],
+    unwrap: Option<&Unwrap>,
+    debt: AssetId,
+    total: U256,
+    gas: &GasTerms,
+    budget: &SolveBudget,
+) -> Result<ExitQuote, RouteError> {
+    let Some(u) = unwrap else {
+        return solve_on(pools, legs, total, gas, budget);
+    };
+    let inner = u.convert(total)?;
+    if inner.is_zero() {
+        return Err(RouteError::InsufficientLiquidity);
+    }
+    let mut q = if u.into == debt {
+        ExitQuote {
+            allocs: SmallVec::new(),
+            amount_in: inner,
+            amount_out: inner,
+            hop_gas: 0,
+            rho0: U256::ZERO,
+            unwrap: None,
+        }
+    } else {
+        solve_on(pools, legs, inner, gas, budget)?
+    };
+    q.rho0 = if u.into == debt {
+        u.rho()?
+    } else {
+        u.scale_rho(q.rho0)?
+    };
+    q.amount_in = total;
+    q.hop_gas = q.hop_gas.checked_add(u.gas).ok_or(RouteError::Math)?;
+    q.unwrap = Some(UnwrapUse {
+        kind: u.kind,
+        wrapper: u.wrapper,
+        into: u.into,
+        amount_out: inner,
+    });
+    Ok(q)
+}
+
+/// [`solve_on`] over the book's live pools for one pair, unwrapping the
+/// collateral first when it has no pool of its own ([`PoolBook::exit_source`]).
 pub fn solve_pair(
     book: &PoolBook,
     asset_in: AssetId,
@@ -939,13 +1003,12 @@ pub fn solve_pair(
     gas: &GasTerms,
     budget: &SolveBudget,
 ) -> Result<ExitQuote, RouteError> {
-    solve_on(
-        book.pools(),
-        book.legs(asset_in, asset_out),
-        total,
-        gas,
-        budget,
-    )
+    match book.exit_source(asset_in, asset_out) {
+        ExitSource::Direct(legs) => solve_on(book.pools(), legs, total, gas, budget),
+        ExitSource::Unwrap(u, legs) => {
+            solve_via(book.pools(), legs, Some(u), asset_out, total, gas, budget)
+        }
+    }
 }
 
 // ───────────────────────────── K collaterals ─────────────────────────────
@@ -967,9 +1030,14 @@ pub fn solve_batch(
     let mut base: Vec<Pool> = Vec::new();
     let mut ids: SmallVec<[PoolId; 16]> = SmallVec::new();
     let mut legs_per: SmallVec<[SmallVec<[Leg; 8]>; EXHAUSTIVE_K]> = SmallVec::new();
+    let mut unwrap_per: SmallVec<[Option<Unwrap>; EXHAUSTIVE_K]> = SmallVec::new();
     for &(coll, _) in colls {
         let mut remapped = SmallVec::new();
-        for leg in book.legs(coll, debt) {
+        unwrap_per.push(match book.exit_source(coll, debt) {
+            ExitSource::Unwrap(u, _) => Some(u.clone()),
+            ExitSource::Direct(_) => None,
+        });
+        for leg in book.exit_legs(coll, debt) {
             let idx = match ids.iter().position(|&p| p == leg.pool) {
                 Some(i) => i,
                 None => {
@@ -995,7 +1063,8 @@ pub fn solve_batch(
             let ci_us = usize::from(ci);
             let &(_, amount) = colls.get(ci_us).ok_or(RouteError::BadLeg)?;
             let legs = legs_per.get(ci_us).ok_or(RouteError::BadLeg)?;
-            let q = solve_on(scratch, legs, amount, gas, budget)?;
+            let uw = unwrap_per.get(ci_us).ok_or(RouteError::BadLeg)?.as_ref();
+            let q = solve_via(scratch, legs, uw, debt, amount, gas, budget)?;
             for a in &q.allocs {
                 if a.amount_in.is_zero() {
                     continue;
@@ -1021,12 +1090,17 @@ pub fn solve_batch(
         // Largest notional first: amount · ρ₀² in debt units.
         let mut order: Vec<(U256, u8)> = Vec::with_capacity(k);
         for (ci, &(coll, amount)) in colls.iter().enumerate() {
-            let rho0 = book
-                .legs(coll, debt)
+            let pool_rho = book
+                .exit_legs(coll, debt)
                 .iter()
                 .filter_map(|l| book.get(l.pool).and_then(|p| p.rho_at_zero(l.i, l.j).ok()))
-                .max()
-                .ok_or(RouteError::InsufficientLiquidity)?;
+                .max();
+            let rho0 = match (unwrap_per.get(ci).and_then(Option::as_ref), pool_rho) {
+                (None, Some(r)) => r,
+                (Some(u), Some(r)) => u.scale_rho(r)?,
+                (Some(u), None) if u.into == debt => u.rho()?,
+                _ => return Err(RouteError::InsufficientLiquidity),
+            };
             let notional = mul_div_512(mul_div_512(amount, rho0, Q96)?, rho0, Q96)?;
             order.push((notional, u8::try_from(ci).map_err(|_| RouteError::BadLeg)?));
         }

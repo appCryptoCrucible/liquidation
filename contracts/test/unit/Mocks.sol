@@ -1141,6 +1141,133 @@ contract MockCurveCryptoPool {
     }
 }
 
+/// ERC-4626 double: the vault is its own share token; `redeem` burns the
+/// owner's shares and pays `shares · num / den` of the asset.
+contract MockVault4626 {
+    address public asset;
+    uint8 public immutable decimals;
+    uint256 public num = 1;
+    uint256 public den = 1;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    constructor(address a, uint8 d) { asset = a; decimals = d; }
+
+    function mint(address to, uint256 x) external { balanceOf[to] += x; }
+
+    function setRate(uint256 n, uint256 d) external { num = n; den = d; }
+
+    function transfer(address to, uint256 x) external returns (bool) {
+        balanceOf[msg.sender] -= x;
+        balanceOf[to] += x;
+        return true;
+    }
+
+    function transferFrom(address f, address to, uint256 x) external returns (bool) {
+        allowance[f][msg.sender] -= x;
+        balanceOf[f] -= x;
+        balanceOf[to] += x;
+        return true;
+    }
+
+    function approve(address sp, uint256 x) external returns (bool) {
+        allowance[msg.sender][sp] = x;
+        return true;
+    }
+
+    function redeem(uint256 shares, address receiver, address owner) external returns (uint256 assets) {
+        require(owner == msg.sender, "vault: owner");
+        balanceOf[owner] -= shares;
+        assets = shares * num / den;
+        Tok.push(asset, receiver, assets);
+    }
+}
+
+/// Minimal share token for the Pendle doubles.
+contract MockShareToken {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    function mint(address to, uint256 x) public { balanceOf[to] += x; }
+
+    function _burnFrom(address f, uint256 x) internal { balanceOf[f] -= x; }
+
+    function transfer(address to, uint256 x) external returns (bool) {
+        balanceOf[msg.sender] -= x;
+        balanceOf[to] += x;
+        return true;
+    }
+
+    function transferFrom(address f, address to, uint256 x) external returns (bool) {
+        allowance[f][msg.sender] -= x;
+        balanceOf[f] -= x;
+        balanceOf[to] += x;
+        return true;
+    }
+
+    function approve(address sp, uint256 x) external returns (bool) {
+        allowance[msg.sender][sp] = x;
+        return true;
+    }
+}
+
+/// Pendle PT double: points at its YT, which burns what it was sent.
+contract MockPendlePT is MockShareToken {
+    address public YT;
+
+    function setYT(address yt) external { YT = yt; }
+
+    function burnByYT(address f, uint256 x) external {
+        require(msg.sender == YT, "pt: only yt");
+        _burnFrom(f, x);
+    }
+}
+
+/// Pendle SY double: `redeem` burns the caller's shares and pays
+/// `shares · num / den` of its one valid output token.
+contract MockPendleSY is MockShareToken {
+    address public tokenOut;
+    uint256 public num = 1;
+    uint256 public den = 1;
+
+    constructor(address t) { tokenOut = t; }
+
+    function setRate(uint256 n, uint256 d) external { num = n; den = d; }
+
+    function redeem(address receiver, uint256 shares, address out, uint256 minOut, bool burnInternal)
+        external returns (uint256 amount)
+    {
+        require(out == tokenOut, "sy: token out");
+        _burnFrom(burnInternal ? address(this) : msg.sender, shares);
+        amount = shares * num / den;
+        require(amount >= minOut, "sy: min out");
+        Tok.push(tokenOut, receiver, amount);
+    }
+}
+
+/// Pendle YT double: after expiry, `redeemPY` burns the PT it holds and pays
+/// SY at `1e18 / index` per PT.
+contract MockPendleYT {
+    address public PT;
+    address public SY;
+    bool public isExpired;
+    uint256 public index = 1e18;
+
+    constructor(address pt, address sy) { PT = pt; SY = sy; }
+
+    function setExpired(bool e) external { isExpired = e; }
+
+    function setIndex(uint256 i) external { index = i; }
+
+    function redeemPY(address receiver) external returns (uint256 syOut) {
+        require(isExpired, "yt: not expired");
+        uint256 amt = MockPendlePT(PT).balanceOf(address(this));
+        MockPendlePT(PT).burnByYT(address(this), amt);
+        syOut = amt * 1e18 / index;
+        MockPendleSY(SY).mint(receiver, syOut);
+    }
+}
+
 /// MetaRegistry double: an unregistered pool reverts, as the real one does.
 contract MockCurveRegistry {
     mapping(address => bool) internal registered;

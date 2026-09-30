@@ -20,6 +20,8 @@ library PlanBuilder {
     uint8 internal constant S_POOL = 0; uint8 internal constant S_ROUTER = 1;
     uint8 internal constant S_V2 = 2; uint8 internal constant S_CURVE = 3;
     uint8 internal constant S_CURVE_CRYPTO = 4;
+    uint8 internal constant S_UNWRAP_4626 = 5;
+    uint8 internal constant S_PENDLE_PT_REDEEM = 6;
 
     function header(uint8 flags, uint16 bidBps, uint128 gasCostWei, uint128 minProfit, uint8 groups)
         internal pure returns (bytes memory)
@@ -131,6 +133,16 @@ library PlanBuilder {
         internal pure returns (bytes memory)
     {
         return swap(S_CURVE_CRYPTO, tIn, tOut, flags, amount, abi.encodePacked(pool, i, j));
+    }
+
+    /// Redeem all held `vault` shares into its asset.
+    function unwrap4626(address vault, address asset) internal pure returns (bytes memory) {
+        return swap(S_UNWRAP_4626, vault, asset, L_TAKE_BALANCE, 0, abi.encodePacked(vault));
+    }
+
+    /// Redeem an expired Pendle PT through its YT and SY into `tokenOut`.
+    function pendlePtRedeem(address pt, address yt, address tokenOut) internal pure returns (bytes memory) {
+        return swap(S_PENDLE_PT_REDEEM, pt, tokenOut, L_TAKE_BALANCE, 0, abi.encodePacked(yt));
     }
 
     function routerSwap(address router, address tIn, address tOut, uint8 flags, uint128 amount, bytes memory call)
