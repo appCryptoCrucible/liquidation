@@ -1267,6 +1267,9 @@ pub struct Unwrap {
     pub read_block: u64,
     /// Gas of the unwrap step inside the Executor.
     pub gas: u64,
+    /// Live Pendle PT only: the gas of the post-expiry redeem (venue 6) it
+    /// switches to at expiry ([`PoolBook::expire_pendle_market`]); 0 else.
+    pub expiry_gas: u64,
 }
 
 impl Unwrap {
@@ -1510,6 +1513,28 @@ impl PoolBook {
         if changed {
             self.generation = self.generation.wrapping_add(1);
         }
+        true
+    }
+
+    /// A live PT's market has reached expiry (the market refuses to trade
+    /// from then on): the PT now exits by redeeming through its YT (venue 6)
+    /// into the same token, as any expired PT does. The rate starts unread —
+    /// the next reseed reads it as a linear redeem at a thousand PT — so the
+    /// PT is not routed on the market's last price in between. `true` when
+    /// it switched.
+    pub fn expire_pendle_market(&mut self, wrapper: AssetId) -> bool {
+        let Some(u) = self.unwraps.get_mut(&wrapper) else {
+            return false;
+        };
+        let UnwrapKind::PendleMarket { yt, sy, .. } = u.kind else {
+            return false;
+        };
+        u.kind = UnwrapKind::PendlePt { yt, sy };
+        u.rate = UnwrapRate::Unread;
+        u.read_block = 0;
+        u.scale = u.scale.saturating_mul(U256::from(1_000u64));
+        u.gas = u.expiry_gas;
+        self.generation = self.generation.wrapping_add(1);
         true
     }
 

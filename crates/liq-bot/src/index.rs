@@ -959,6 +959,11 @@ fn add_unwraps(
                 liq_router::UnwrapKind::CurveLp { .. } => hops.curve_lp,
                 liq_router::UnwrapKind::PendleMarket { .. } => hops.pendle_market,
             },
+            // At expiry a market PT switches to the post-expiry redeem.
+            expiry_gas: match kind {
+                liq_router::UnwrapKind::PendleMarket { .. } => hops.pendle_pt,
+                _ => 0,
+            },
         });
     }
 }

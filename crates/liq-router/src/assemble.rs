@@ -1619,6 +1619,7 @@ mod tests {
             scale: e18(1),
             read_block: 1,
             gas: 60_000,
+            expiry_gas: 0,
         }
     }
 
@@ -1902,6 +1903,50 @@ mod tests {
         assert_eq!(repay[0].venue, VENUE_PENDLE_MARKET_SELL);
         assert_eq!((repay[0].token_in, repay[0].token_out), (tok(2), tok(0)));
         assert_eq!(repay[0].data, market.to_vec());
+    }
+
+    /// At expiry a live PT switches from its market (venue 8) to the
+    /// post-expiry redeem (venue 6) through the same YT and SY into the same
+    /// token: not routed until the redeem rate is read, then assembled as
+    /// venue 6 with the redeem's gas.
+    #[test]
+    fn expired_market_pt_switches_to_the_redeem() {
+        use liq_plan::VENUE_PENDLE_PT_REDEEM;
+        let (yt, sy) = (addr(0x7777), addr(0x5555));
+        let mut bk = book(vec![deep()]);
+        let mut pt = unwrap_a2(A0);
+        pt.kind = crate::solver::UnwrapKind::PendleMarket {
+            market: addr(0x8888),
+            yt,
+            sy,
+        };
+        pt.scale = e18(1);
+        pt.gas = 445_782;
+        pt.expiry_gas = 141_280;
+        bk.add_unwrap(pt);
+        assert!(bk.expire_pendle_market(A2));
+        assert!(!bk.expire_pendle_market(A2), "switches once");
+        let u = bk.unwrap_of(A2).unwrap();
+        assert_eq!(u.kind, crate::solver::UnwrapKind::PendlePt { yt, sy });
+        assert_eq!((u.gas, u.scale), (141_280, e18(1000)));
+        assert!(
+            solve_pair(&bk, A2, A1, e18(10), &GAS, &B).is_err(),
+            "not routed on the market's last price"
+        );
+        assert!(bk.set_unwrap_rate(
+            A2,
+            crate::solver::UnwrapRate::Linear {
+                assets_per_scale: e18(1100)
+            },
+            2
+        ));
+        let via = solve_pair(&bk, A2, A1, e18(10), &GAS, &B).unwrap();
+        let inner = solve_pair(&bk, A0, A1, via.unwrap.unwrap().amount_out, &GAS, &B).unwrap();
+        assert_eq!(via.hop_gas, inner.hop_gas + 141_280);
+        let (_, plan) = assemble_a2_exit(&bk);
+        let repay = &plan.groups[0].repay_swaps;
+        assert_eq!(repay[0].venue, VENUE_PENDLE_PT_REDEEM);
+        assert_eq!(repay[0].data, yt.to_vec());
     }
 
     /// A wrapper of the debt asset itself needs no pool: the unwrap pays the

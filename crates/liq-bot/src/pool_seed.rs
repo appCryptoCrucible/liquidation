@@ -892,6 +892,13 @@ async fn read_pendle_markets(
     out
 }
 
+/// The market is expired at the time its snapshot is quoted for (the next
+/// block): `PendleMarketV6` refuses every trade once `expiry <= now`, and
+/// the YT's post-expiry redeem opens at the same moment.
+fn market_expired(s: &liq_router::pendle::MarketSnapshot) -> bool {
+    s.expiry <= s.quote_ts
+}
+
 /// Read `previewRedeem(scale)` for the targets at `block` and record it.
 /// A failed or zero read leaves the old rate, which ages out of routing
 /// only by being old — the conversion's haircut covers a few blocks' drift,
@@ -926,6 +933,22 @@ async fn refresh_unwraps(
             tracing::debug!(token = %t.token, block, "unwrap rate read failed");
             continue;
         };
+        // A live PT whose market is expired by the next block: from then on
+        // the market refuses to trade, and the PT redeems through its YT.
+        if let liq_router::UnwrapRate::Pendle(s) = rate {
+            if market_expired(&s) {
+                if w.expire_pendle_market(t.wrapper) {
+                    tracing::info!(
+                        token = %t.token,
+                        expiry = s.expiry,
+                        block,
+                        "Pendle PT reached expiry: market sale → post-expiry redeem"
+                    );
+                    applied = applied.saturating_add(1);
+                }
+                continue;
+            }
+        }
         if w.set_unwrap_rate(t.wrapper, rate, block) {
             applied = applied.saturating_add(1);
         }
@@ -1359,6 +1382,91 @@ mod tests {
             "unwrap conversion off:\n{}",
             wrong.join("\n")
         );
+    }
+
+    /// A market is expired for the block its snapshot quotes: the switch to
+    /// the redeem happens once the next block is at or past expiry, and not
+    /// a block earlier.
+    #[test]
+    fn market_expires_at_the_quoted_block() {
+        let mut s = liq_router::pendle::MarketSnapshot {
+            total_pt: alloy_primitives::I256::ONE,
+            total_sy: alloy_primitives::I256::ONE,
+            scalar_root: alloy_primitives::I256::ONE,
+            expiry: 1_000,
+            ln_fee_rate_root: U256::ZERO,
+            reserve_fee_percent: U256::ZERO,
+            last_ln_implied_rate: U256::ZERO,
+            index: U256::ONE,
+            quote_ts: 999,
+            out_per_sy_scale: U256::ONE,
+            sy_scale: U256::ONE,
+        };
+        assert!(!market_expired(&s));
+        s.quote_ts = 1_000;
+        assert!(market_expired(&s));
+    }
+
+    /// Live check (`MAINNET_RPC_URL`): a PT registered as a live-market PT
+    /// whose market has expired (PT-sUSDE-26DEC2024) is switched by the
+    /// reseed to the post-expiry redeem, then read and quoted as one.
+    #[tokio::test]
+    #[ignore = "needs MAINNET_RPC_URL"]
+    async fn expired_market_pt_switches_to_the_redeem_live() {
+        use liq_config::{Intern, Registry};
+        let pt = address!("0xee9085fc268f6727d5d4293dbabccf901ffdcc29");
+        let susde = address!("0x9d39a5de30e57443bff2a8307a4256c8797a3497");
+        let url = std::env::var("MAINNET_RPC_URL").expect("MAINNET_RPC_URL");
+        let rpc = HttpRpc::connect(&url).unwrap();
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let reg = Registry::from_path(&root.join("registry/registry.json")).unwrap();
+        let intern = Intern::from_registry(&reg).unwrap();
+        let mut book = crate::index::load_index(&root.join("config"), &intern, &reg).book;
+        let wrapper = intern.asset(pt).unwrap();
+        book.add_unwrap(liq_router::Unwrap {
+            kind: liq_router::UnwrapKind::PendleMarket {
+                market: address!("0xa0ab94debb3cc9a7ea77f3205ba4ab23276fed08"),
+                yt: address!("0xbe05538f48d76504953c5d1068898c6642937427"),
+                sy: address!("0xd288755556c235afffb6316702719c32bd8706e8"),
+            },
+            wrapper,
+            wrapper_token: pt,
+            into: intern.asset(susde).unwrap(),
+            into_token: susde,
+            rate: liq_router::UnwrapRate::Unread,
+            scale: U256::from(1_000_000_000_000_000_000u64),
+            read_block: 0,
+            gas: 445_782,
+            expiry_gas: 141_280,
+        });
+        let block = rpc.block_number().await.unwrap();
+        let lock = RwLock::new(book);
+        let first: Vec<_> = unwrap_targets(&lock.read(), block)
+            .into_iter()
+            .filter(|t| t.wrapper == wrapper)
+            .collect();
+        let (_, applied) = refresh_unwraps(&lock, &rpc, &first, block).await;
+        assert_eq!(applied, 1, "the expired market switched");
+        let kind = lock.read().unwrap_of(wrapper).unwrap().kind;
+        assert!(
+            matches!(kind, liq_router::UnwrapKind::PendlePt { .. }),
+            "{kind:?}"
+        );
+        let second: Vec<_> = unwrap_targets(&lock.read(), block)
+            .into_iter()
+            .filter(|t| t.wrapper == wrapper)
+            .collect();
+        let (read, applied) = refresh_unwraps(&lock, &rpc, &second, block).await;
+        assert_eq!((read, applied), (1, 1), "the redeem rate reads");
+        let book = lock.into_inner();
+        let u = book.unwrap_of(wrapper).unwrap();
+        assert!(matches!(u.rate, liq_router::UnwrapRate::Linear { .. }));
+        assert_eq!(u.gas, 141_280);
+        let one = U256::from(1_000_000_000_000_000_000u64);
+        let out = u.convert(one, &book).unwrap();
+        // One expired PT redeems for one USDe of sUSDe: less than 1 sUSDe.
+        assert!(!out.is_zero() && out < one, "{out}");
+        eprintln!("PT-sUSDE-26DEC2024: 1 PT → {out} sUSDe via the redeem at {block}");
     }
 
     /// Live check (`MAINNET_RPC_URL`): every committed live-PT market reads
