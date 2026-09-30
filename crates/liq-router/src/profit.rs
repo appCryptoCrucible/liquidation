@@ -17,9 +17,10 @@
 
 use alloy_primitives::U256;
 use liq_flash::{fee_amount, FlashIndex, Haircut, SourceEntry};
-use liq_protocol::{FlashRoute, LegChoice, Quote};
+use liq_protocol::{CallbackShape, FlashRoute, LegChoice, Quote};
 use liq_types::fixed::{mul_div, Rounding, RAY};
 use liq_types::{AssetId, ProtocolId};
+use smallvec::SmallVec;
 
 use crate::band::{PairTerms, ViabilityBand};
 use crate::exact::{solve_pair, ExitQuote, GasTerms, SolveBudget};
@@ -90,6 +91,19 @@ pub struct SizedLeg {
     pub route: FlashRoute,
     pub exit: ExitQuote,
     pub terms: PairTerms,
+    /// Reward-only leg ([`reward_plan`]): every asset the protocol pays and
+    /// how much. Empty for a flash-funded leg.
+    pub rewards: SmallVec<[(AssetId, U256); 2]>,
+}
+
+impl SizedLeg {
+    /// Nothing borrowed or repaid: the protocol pays the liquidator
+    /// (`contribution` is then WETH wei, not debt units).
+    #[inline]
+    #[must_use]
+    pub fn is_reward_only(&self) -> bool {
+        !self.rewards.is_empty()
+    }
 }
 
 /// `min` of four ceilings. Every argument is a real ceiling; passing
@@ -310,6 +324,111 @@ pub fn evaluate(
         route,
         exit,
         terms,
+        rewards: SmallVec::new(),
+    }))
+}
+
+/// A quote whose every repay option is zero: the protocol pays the liquidator
+/// without taking any of its money (Liquity V2 gas compensation, Sky keeper
+/// incentives). Such a quote's seize options are all paid, not alternatives.
+#[must_use]
+pub fn is_reward_only(q: &Quote) -> bool {
+    !q.repay_options.is_empty() && q.repay_options.iter().all(|r| r.max_repay.is_zero())
+}
+
+/// Size a reward-only quote: no flash, nothing repaid; each paid asset is
+/// valued by its exit to WETH (WETH itself as is). An asset with no route is
+/// worth nothing here — it still arrives and is swept, but is not counted.
+/// `contribution` and `swap_out` are WETH wei; `coll` / `exit` name the
+/// largest reward and `rewards` every paid one.
+pub fn reward_plan(
+    ctx: &ProfitCtx<'_>,
+    q: &Quote,
+    weth: AssetId,
+) -> Result<Option<SizedLeg>, ProfitError> {
+    let Some(repay) = q.repay_options.first() else {
+        return Ok(None);
+    };
+    let mut total = U256::ZERO;
+    let mut hop_gas = 0u64;
+    let mut rewards: SmallVec<[(AssetId, U256); 2]> = SmallVec::new();
+    let mut best: Option<(U256, u8, AssetId, U256, ExitQuote)> = None;
+    for (si, seize) in q.seize_options.iter().enumerate() {
+        let Ok(si) = u8::try_from(si) else {
+            continue;
+        };
+        if seize.max_seize.is_zero() {
+            continue;
+        }
+        let exit = if seize.asset == weth {
+            ExitQuote {
+                allocs: SmallVec::new(),
+                amount_in: seize.max_seize,
+                amount_out: seize.max_seize,
+                hop_gas: 0,
+                rho0: U256::ZERO,
+                unwrap: None,
+            }
+        } else {
+            match solve_pair(
+                ctx.book,
+                seize.asset,
+                weth,
+                seize.max_seize,
+                ctx.gas,
+                ctx.budget,
+            ) {
+                Ok(e) => e,
+                Err(RouteError::InsufficientLiquidity | RouteError::StalePool) => {
+                    rewards.push((seize.asset, seize.max_seize));
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        };
+        total = total.checked_add(exit.amount_out).ok_or(RouteError::Math)?;
+        hop_gas = hop_gas.saturating_add(exit.hop_gas);
+        rewards.push((seize.asset, seize.max_seize));
+        if best.as_ref().is_none_or(|b| exit.amount_out > b.0) {
+            best = Some((exit.amount_out, si, seize.asset, seize.max_seize, exit));
+        }
+    }
+    let Some((_, si, coll, seized, exit)) = best else {
+        return Ok(None);
+    };
+    if total.is_zero() {
+        return Ok(None);
+    }
+    Ok(Some(SizedLeg {
+        choice: LegChoice {
+            repay: 0,
+            seize: si,
+        },
+        debt: repay.asset,
+        coll,
+        s: U256::ZERO,
+        seized,
+        swap_out: total,
+        flash_fee: U256::ZERO,
+        flash_owed: U256::ZERO,
+        contribution: total,
+        hop_gas,
+        route: FlashRoute {
+            provider: liq_types::FlashProvider::None,
+            source: alloy_primitives::Address::ZERO,
+            asset: repay.asset,
+            amount: U256::ZERO,
+            fee_bps: 0,
+            callback: CallbackShape::Direct,
+        },
+        exit,
+        terms: PairTerms {
+            bonus: liq_types::Ray::ZERO,
+            coll_per_debt: liq_types::Ray::from_raw(RAY),
+            flash_fee_bps: 0,
+            fixed_gas: 0,
+        },
+        rewards,
     }))
 }
 

@@ -415,9 +415,13 @@ pub fn min_profit_floor(
 ) -> Result<u128, AssembleError> {
     let mut worst: Option<U256> = None;
     for g in &plan.groups {
-        let per_eth = view
-            .per_eth(g.debt)
-            .ok_or(AssembleError::Missing("per_eth"))?;
+        // A reward-only group's contribution is already WETH wei.
+        let per_eth = if g.reward_only {
+            WEI
+        } else {
+            view.per_eth(g.debt)
+                .ok_or(AssembleError::Missing("per_eth"))?
+        };
         if per_eth.is_zero() {
             return Err(AssembleError::Missing("per_eth"));
         }
@@ -849,8 +853,12 @@ fn assemble_one(
                 // size legs off `protocol_pull`, and sizing a gas-comp-only
                 // leg off `seize.max_seize` instead is separately scoped, per
                 // the spec, from this fail-closed-gate fix.
-                if pull == 0 && meta.adapter != ExecutorAdapter::LiquityV2 {
+                if pull == 0 && meta.adapter != ExecutorAdapter::LiquityV2 && !g.reward_only {
                     return Err(AssembleError::Missing("protocol_pull"));
+                }
+                // A reward-only group borrows nothing, so nothing may be pulled.
+                if g.reward_only && pull != 0 {
+                    return Err(AssembleError::Missing("reward-only leg with a pull"));
                 }
                 liqs.push(LiqLeg {
                     adapter: meta.adapter,
@@ -861,6 +869,29 @@ fn assemble_one(
                     tail: meta.tail,
                     protocol_pull: pull,
                 });
+                if g.reward_only {
+                    // Nothing to repay: every paid asset closes to WETH.
+                    for &(asset, _) in &s.leg.rewards {
+                        let addr = token(view, asset)?;
+                        if addr == weth
+                            || profit_swaps
+                                .iter()
+                                .any(|x| x.token_in == addr && x.flags & LEG_TAKE_BALANCE != 0)
+                        {
+                            continue;
+                        }
+                        let (venue, data) = closer_pair(book, addr, weth)?;
+                        profit_swaps.push(SwapLeg {
+                            venue,
+                            token_in: addr,
+                            token_out: weth,
+                            flags: LEG_TAKE_BALANCE,
+                            amount: 0,
+                            data,
+                        });
+                    }
+                    continue;
+                }
                 let overshoot = cfg.min_out_tolerance_bps.saturating_add(cg.fee_bps);
                 // A wrapper with no pool of its own is unwrapped first (the
                 // whole balance, ahead of every selling leg) and what it
@@ -945,6 +976,10 @@ fn assemble_one(
                 repay_swaps,
             });
             group_fee_bps.push(cg.fee_bps);
+            if g.reward_only {
+                fallbacks.push(SmallVec::new());
+                continue;
+            }
             let chain = fallback_chain(flash, g.debt, cg.amount, haircut, &cfg.cost);
             let rest: SmallVec<[FlashRoute; 6]> = chain
                 .into_iter()
@@ -1288,6 +1323,7 @@ mod tests {
             min_out_tolerance_bps: crate::select::MIN_OUT_TOLERANCE_BPS,
             budget: B,
             bids: None,
+            weth: Some(A1),
         }
     }
 
@@ -1667,6 +1703,80 @@ mod tests {
             && s.token_out == tok(1)
             && s.flags & LEG_TAKE_BALANCE != 0));
         assert!(!plan.profit_swaps.iter().any(|s| s.token_in == tok(2)));
+    }
+
+    /// Liquity-shaped quote: nothing to repay; the protocol pays a WETH
+    /// reward and a collateral reward. It is sized as one reward-only leg
+    /// counting both, and assembled into a flash-less group whose non-WETH
+    /// reward closes to WETH.
+    #[test]
+    fn reward_only_quote_assembles_a_flash_less_group() {
+        let bk = book(vec![deep()]);
+        let (_s, flash) = idx();
+        let mut quote = q(1);
+        quote.repay_options[0].asset = A2; // paid by the protocol, not by us
+        quote.repay_options[0].max_repay = U256::ZERO;
+        let mut weth_reward = quote.seize_options[0];
+        weth_reward.asset = A1;
+        weth_reward.max_seize = e18(1) / U256::from(20u64);
+        let mut coll_reward = quote.seize_options[0];
+        coll_reward.max_seize = e18(1) / U256::from(10u64);
+        quote.seize_options = smallvec::SmallVec::from_vec(vec![weth_reward, coll_reward]);
+        let world = world_one(&quote);
+        let plans = select(
+            &[input_of(&quote)],
+            &cfg(),
+            &flash,
+            H,
+            &bk,
+            None,
+            &world,
+            &GAS,
+        )
+        .unwrap();
+        assert_eq!(plans.len(), 1);
+        let g = &plans[0].groups[0];
+        assert!(g.reward_only);
+        assert_eq!(g.cascade.groups[0].provider, liq_types::FlashProvider::None);
+        let leg = &g.legs[0].leg;
+        assert!(leg.is_reward_only());
+        assert_eq!(leg.s, U256::ZERO);
+        assert!(
+            leg.contribution > e18(1) / U256::from(20u64),
+            "both rewards counted: {}",
+            leg.contribution
+        );
+
+        let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
+        let price = gas_price_in_debt(&GAS).unwrap();
+        let assembled = assemble(
+            &plans,
+            &cfg(),
+            &bk,
+            &world,
+            &vctx(tok(1)),
+            &bd,
+            price,
+            &GAS,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let plan = &assembled[0].plan;
+        validate(plan, &vctx(tok(1))).unwrap();
+        let fg = &plan.groups[0];
+        assert_eq!(fg.provider, liq_types::FlashProvider::None);
+        assert_eq!((fg.flash_amount, fg.flash_source), (0, Address::ZERO));
+        assert!(fg.repay_swaps.is_empty());
+        assert_eq!(fg.liqs[0].protocol_pull, 0);
+        assert!(plan.profit_swaps.iter().any(|s| s.token_in == tok(0)
+            && s.token_out == tok(1)
+            && s.flags & LEG_TAKE_BALANCE != 0));
+        assert!(
+            assembled[0].fallbacks[0].is_empty(),
+            "no flash to fall back from"
+        );
     }
 
     /// An expired Pendle PT exits through venue 6 with its YT as the data;

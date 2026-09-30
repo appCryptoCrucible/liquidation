@@ -136,6 +136,12 @@ pub enum EncodeError {
     BadUnwrapData(usize),
     #[error("unwrap legs are exact input only")]
     UnwrapExactOut,
+    #[error("a reward-only group (provider None) must borrow nothing: zero flash amount, source and fee")]
+    RewardGroupBorrows,
+    #[error("a reward-only group has nothing to repay, so no repay swaps")]
+    RewardGroupRepays,
+    #[error("a reward-only group's legs pull nothing, got {pull}")]
+    RewardGroupPulls { pull: u128 },
     #[error("an unwrap leg must come before every other repay leg")]
     UnwrapNotFirst,
     #[error("unwrapped {asset} is not closed to WETH by a TAKE_BALANCE leg")]

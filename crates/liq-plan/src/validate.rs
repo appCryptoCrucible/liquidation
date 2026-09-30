@@ -5,6 +5,7 @@ use alloy_sol_types::sol;
 use liq_flash::fee_amount;
 use liq_protocol::ExecutorAdapter;
 use liq_types::fixed::{mul_div, Rounding, WAD};
+use liq_types::FlashProvider;
 use liq_wire::wire::{
     LegTail, LEG_EXACT_OUT, LEG_TAKE_BALANCE, V2_FACTORY_SUSHI, VENUE_CURVE_CRYPTO_POOL,
     VENUE_CURVE_POOL, VENUE_PENDLE_PT_REDEEM, VENUE_ROUTER, VENUE_UNIV2_POOL, VENUE_UNIV3_POOL,
@@ -35,7 +36,12 @@ pub fn validate(p: &BatchPlan, ctx: &ValidateCtx) -> Result<()> {
         return Err(EncodeError::ZeroMinProfit);
     }
     for g in &p.groups {
-        nonzero(g.flash_source, "flashSource")?;
+        let reward_only = g.provider == FlashProvider::None;
+        if reward_only {
+            reward_group(g)?;
+        } else {
+            nonzero(g.flash_source, "flashSource")?;
+        }
         nonzero(g.debt_asset, "debtAsset")?;
         if g.liqs.is_empty() {
             return Err(EncodeError::NoLegs);
@@ -51,7 +57,7 @@ pub fn validate(p: &BatchPlan, ctx: &ValidateCtx) -> Result<()> {
             // 0` for this adapter is the TRUTHFUL size of the repay leg, not
             // a sizing bug; every other adapter's `0` really does mean
             // nothing to fund.
-            if l.protocol_pull == 0 && l.adapter != ExecutorAdapter::LiquityV2 {
+            if l.protocol_pull == 0 && l.adapter != ExecutorAdapter::LiquityV2 && !reward_only {
                 return Err(EncodeError::ZeroPull {
                     pull: l.protocol_pull,
                 });
@@ -161,6 +167,24 @@ pub fn validate(p: &BatchPlan, ctx: &ValidateCtx) -> Result<()> {
     assert_exact_out_first(&p.profit_swaps)?;
     close_collaterals(p, ctx.weth)?;
     cascade_ok(&p.groups)?;
+    Ok(())
+}
+
+/// A reward-only group (`FlashProvider::None`, Executor `P_NONE`): nothing
+/// borrowed, nothing pulled, nothing to repay. Its legs' rewards close to
+/// WETH through the profit legs like any seized collateral.
+fn reward_group(g: &FlashGroup) -> Result<()> {
+    if g.flash_amount != 0 || g.flash_source != Address::ZERO || g.fee_bps != 0 {
+        return Err(EncodeError::RewardGroupBorrows);
+    }
+    if !g.repay_swaps.is_empty() {
+        return Err(EncodeError::RewardGroupRepays);
+    }
+    if let Some(l) = g.liqs.iter().find(|l| l.protocol_pull != 0) {
+        return Err(EncodeError::RewardGroupPulls {
+            pull: l.protocol_pull,
+        });
+    }
     Ok(())
 }
 

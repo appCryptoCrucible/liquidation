@@ -20,7 +20,8 @@ use crate::bid::{beta_of, BidSchedule};
 use crate::exact::{solve_batch, GasTerms, SolveBudget};
 use crate::profit::{
     best_plan, delta_net, expected_contrib_per_gas, expected_gas, gas_price_in_debt,
-    repay_for_seized, MarketView, ProfitCtx, ProfitError, SizedLeg, LEARNING_P_RAY,
+    is_reward_only, repay_for_seized, reward_plan, MarketView, ProfitCtx, ProfitError, SizedLeg,
+    LEARNING_P_RAY,
 };
 use crate::solver::{PoolBook, PoolId, RouteError};
 use crate::warm::RouteTable;
@@ -220,6 +221,9 @@ pub struct SelectCfg {
     /// Committed four-cell schedule. `None` does not split plans (tests
     /// that inject one bid). Production sets this from `bid.toml`.
     pub bids: Option<BidSchedule>,
+    /// WETH's asset id: reward-only legs are valued in it. `None` leaves
+    /// reward-only quotes unsized.
+    pub weth: Option<AssetId>,
 }
 
 /// One scored, exact-solved leg ready to batch.
@@ -257,6 +261,9 @@ pub struct DebtGroup {
     pub cascade: Cascade,
     /// Σ `s` across legs (flash principal before over-borrow).
     pub need: U256,
+    /// Reward-only legs ([`crate::profit::reward_plan`]): no flash, run as
+    /// one `FlashProvider::None` group. Never mixed with funded legs.
+    pub reward_only: bool,
 }
 
 fn wrap_gas(
@@ -264,6 +271,10 @@ fn wrap_gas(
     provider: liq_types::FlashProvider,
     protocol: ProtocolId,
 ) -> Result<u64, SelectError> {
+    // Nothing borrowed: no flash callback to wrap the legs in.
+    if provider == liq_types::FlashProvider::None {
+        return Ok(0);
+    }
     if provider == liq_types::FlashProvider::Aave {
         if let Some(id) = cfg.aave_v4 {
             if protocol == id {
@@ -368,7 +379,16 @@ fn rank(
             gas,
             budget: &cfg.budget,
         };
-        let Some(leg) = best_plan(&pctx, el.quote())? else {
+        let leg = if is_reward_only(el.quote()) {
+            let Some(weth) = cfg.weth else {
+                tracing::error!("WETH id unset — reward-only leg not sized");
+                continue;
+            };
+            reward_plan(&pctx, el.quote(), weth)?
+        } else {
+            best_plan(&pctx, el.quote())?
+        };
+        let Some(leg) = leg else {
             continue;
         };
         let gs = match el.pos.gas_success {
@@ -390,9 +410,15 @@ fn rank(
             continue;
         }
         let eg = expected_gas(p_raw, gs, el.pos.gas_failed).ok_or(SelectError::BadP)?;
-        let Some(per) = market.per_eth(leg.debt).filter(|p| !p.is_zero()) else {
-            tracing::error!("per_eth missing — leg not ranked");
-            continue;
+        // A reward-only leg's contribution is already WETH wei.
+        let per = if leg.is_reward_only() {
+            crate::exact::OUT_PER_ETH_WETH
+        } else {
+            let Some(per) = market.per_eth(leg.debt).filter(|p| !p.is_zero()) else {
+                tracing::error!("per_eth missing — leg not ranked");
+                continue;
+            };
+            per
         };
         let contribution_wei =
             crate::solver::mul_div_512(leg.contribution, crate::exact::OUT_PER_ETH_WETH, per)
@@ -561,7 +587,10 @@ fn pack(
                 s.leg.hop_gas.saturating_add(liq).saturating_add(wrap)
             }
         };
-        let same = cur.groups.iter().any(|g| g.debt == s.leg.debt);
+        let same = cur
+            .groups
+            .iter()
+            .any(|g| g.debt == s.leg.debt && g.reward_only == s.leg.is_reward_only());
         let mut incr = incr_for(same);
         let new_gas = cur.hop_and_wrap_gas.saturating_add(incr);
         if new_gas > cfg.header_gas_limit {
@@ -619,7 +648,12 @@ fn plan_leg_count(plan: &SelectedPlan) -> usize {
 
 fn push_leg(plan: &mut SelectedPlan, s: Scored, incr: u64) {
     plan.hop_and_wrap_gas = plan.hop_and_wrap_gas.saturating_add(incr);
-    if let Some(g) = plan.groups.iter_mut().find(|g| g.debt == s.leg.debt) {
+    let reward_only = s.leg.is_reward_only();
+    if let Some(g) = plan
+        .groups
+        .iter_mut()
+        .find(|g| g.debt == s.leg.debt && g.reward_only == reward_only)
+    {
         g.need = g.need.saturating_add(s.leg.s);
         g.legs.push(s);
         return;
@@ -635,6 +669,7 @@ fn push_leg(plan: &mut SelectedPlan, s: Scored, incr: u64) {
             cost: U256::ZERO,
         },
         need,
+        reward_only,
     });
 }
 
@@ -646,6 +681,16 @@ fn seal_cascades(
     gas: &GasTerms,
 ) -> Result<(), SelectError> {
     for g in &mut plan.groups {
+        if g.reward_only {
+            // Nothing to borrow: one inline group. Each leg's reward exits
+            // on its own (rewards are small; no joint displacement solve).
+            g.cascade = Cascade {
+                groups: SmallVec::from_elem(direct_route(g.debt), 1),
+                funded: U256::ZERO,
+                cost: U256::ZERO,
+            };
+            continue;
+        }
         // GUIDE 12 §4c: K collaterals sharing output pools are sequential
         // on a displaced book. Independent `best_plan` quotes inflate net.
         apply_displaced(g, book, gas, &cfg.budget)?;
@@ -675,8 +720,20 @@ fn seal_cascades(
         g.cascade = c;
     }
     plan.groups
-        .retain(|g| !g.legs.is_empty() && !g.need.is_zero());
+        .retain(|g| !g.legs.is_empty() && (g.reward_only || !g.need.is_zero()));
     Ok(())
+}
+
+/// The cascade entry of a reward-only group: provider `None`, nothing lent.
+fn direct_route(debt: AssetId) -> liq_protocol::FlashRoute {
+    liq_protocol::FlashRoute {
+        provider: liq_types::FlashProvider::None,
+        source: alloy_primitives::Address::ZERO,
+        asset: debt,
+        amount: U256::ZERO,
+        fee_bps: 0,
+        callback: liq_protocol::CallbackShape::Direct,
+    }
 }
 
 /// Re-quote a packed group with 12A-1 [`solve_batch`]. Scratch pool ids
@@ -958,6 +1015,7 @@ mod tests {
             min_out_tolerance_bps: crate::select::MIN_OUT_TOLERANCE_BPS,
             budget: B,
             bids: None,
+            weth: Some(A1),
         }
     }
 

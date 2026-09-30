@@ -894,6 +894,7 @@ impl DrainJoin {
                 min_out_tolerance_bps: liq_router::select::MIN_OUT_TOLERANCE_BPS,
                 budget: SolveBudget::default(),
                 bids: Some(bid_cfg),
+                weth: self.prices.weth,
             },
             gas: GasTerms {
                 base_fee_wei: fee.next_base_fee,
@@ -2421,6 +2422,7 @@ mod tests {
                 min_out_tolerance_bps: liq_router::select::MIN_OUT_TOLERANCE_BPS,
                 budget: SolveBudget::default(),
                 bids: None,
+                weth: None,
             },
             gas: GasTerms {
                 base_fee_wei: 1,

@@ -71,6 +71,32 @@ pub fn is_eligible(
     routes: &dyn RouteCache,
     haircut: Haircut,
 ) -> Option<(LegChoice, FlashRoute)> {
+    // Reward-only (Liquity V2 gas compensation, Sky keeper incentives):
+    // the protocol pays and takes nothing, so there is nothing to fund —
+    // eligible as soon as anything is paid, on the flash-less route. What
+    // the rewards are worth is GUIDE 12's to value.
+    if !q.repay_options.is_empty() && q.repay_options.iter().all(|r| r.max_repay.is_zero()) {
+        let repay = q.repay_options.first()?;
+        let si = q
+            .seize_options
+            .iter()
+            .position(|s| !s.max_seize.is_zero())?;
+        let route = FlashRoute {
+            provider: liq_types::FlashProvider::None,
+            source: alloy_primitives::Address::ZERO,
+            asset: repay.asset,
+            amount: U256::ZERO,
+            fee_bps: 0,
+            callback: liq_protocol::CallbackShape::Direct,
+        };
+        return Some((
+            LegChoice {
+                repay: 0,
+                seize: u8::try_from(si).ok()?,
+            },
+            route,
+        ));
+    }
     // The debt route does not depend on the seize leg: price each repay
     // option once, not once per pair.
     let routed: SmallVec<[(usize, FlashRoute); 4]> = q
@@ -257,6 +283,46 @@ mod tests {
         assert!(!rc.has_exit(ID_WETH, depth + U256::from(1u64)));
         assert!(!rc.has_exit(NO_DEPTH, U256::from(1u64)));
         assert!(!rc.has_exit(ID_NATIVE, U256::from(1u64)));
+    }
+
+    /// A reward-only quote (Liquity gas compensation: nothing repaid) is
+    /// eligible on the flash-less route even for a debt no lender holds; a
+    /// quote paying nothing is not, and one real repay makes it a funded
+    /// quote again.
+    #[test]
+    fn reward_only_quote_needs_no_lender() {
+        let idx = index_of(&five());
+        let rc = DepthOnlyRouteCache(&idx);
+        let q = quote(
+            1,
+            &[repay(NO_DEPTH, U256::ZERO)],
+            &[seize(NO_DEPTH, U256::ZERO, 0), seize(ID_WETH, weth(1), 0)],
+        );
+        let (legs, route) = is_eligible(&q, &idx, &rc, H90).expect("reward-only is eligible");
+        assert_eq!(legs, LegChoice { repay: 0, seize: 1 });
+        assert_eq!(route.provider, FlashProvider::None);
+        assert_eq!(
+            (route.amount, route.source, route.fee_bps),
+            (U256::ZERO, Address::ZERO, 0)
+        );
+        assert_eq!(route.asset, NO_DEPTH);
+
+        let nothing = quote(
+            1,
+            &[repay(NO_DEPTH, U256::ZERO)],
+            &[seize(ID_WETH, U256::ZERO, 0)],
+        );
+        assert!(is_eligible(&nothing, &idx, &rc, H90).is_none());
+
+        let funded = quote(
+            1,
+            &[repay(NO_DEPTH, U256::ZERO), repay(NO_DEPTH, usdc(1))],
+            &[seize(ID_WETH, weth(1), 500)],
+        );
+        assert!(
+            is_eligible(&funded, &idx, &rc, H90).is_none(),
+            "a real repay needs a lender"
+        );
     }
 
     /// Oracle: GUIDE 07 §3 — the DSS `max` is a governance ceiling, not
