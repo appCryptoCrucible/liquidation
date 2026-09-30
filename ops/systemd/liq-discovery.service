@@ -8,10 +8,13 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/liq
 # MAINNET_RPC_URL must be an endpoint with Alchemy's transfer index: the
-# unwrap gates find real holders with alchemy_getAssetTransfers. Keep it out
-# of git:
-#   install -m 600 /dev/null /opt/liq/discovery.env
-#   echo 'MAINNET_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/<key>' > /opt/liq/discovery.env
+# unwrap gates find real holders with alchemy_getAssetTransfers. The free tier
+# works (a run takes about an hour under its throttling). The bot itself uses
+# the local node, never this key.
+#
+# The file is `discovery.env` at the repo root (gitignored, so `git pull`
+# does not bring it): copy it to the box once, mode 600.
+#   scp discovery.env box:/opt/liq/discovery.env && ssh box chmod 600 /opt/liq/discovery.env
 EnvironmentFile=/opt/liq/discovery.env
 # The Pendle probes are read from contracts/out: run `forge build` in
 # /opt/liq/contracts once (and after pulling contract changes).

@@ -39,3 +39,6 @@ tools/gas-measure/fork-trace*.txt
 
 # Registry refresh reports and the watch review log (ops/systemd/liq-discovery)
 data/review/
+
+# Discovery job secrets (ops/systemd/liq-discovery.service EnvironmentFile)
+discovery.env
