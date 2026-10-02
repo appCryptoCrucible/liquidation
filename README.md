@@ -37,42 +37,45 @@ Production is one process: Reth with the liquidation loop installed as an ExEx (
 ```mermaid
 flowchart LR
     subgraph eth["Ethereum"]
-        P2P(("p2p network"))
+        P2P["p2p network"]
         CHAIN["Executor contract →<br/>lending protocols · flash sources · DEX pools"]
     end
 
-    subgraph host["Bot host"]
+    subgraph proc["reth process · liq-reth"]
+        RETH["Reth execution client<br/>keeps receipts only for addresses<br/>in ops/reth/reth.toml's log filter"]
+        EXEX["liquidator ExEx"]
+        BOT["Liquidation bot · liq-bot"]
+    end
+
+    subgraph host["Also on the bot host"]
         LH["Lighthouse<br/>consensus client"]
-        subgraph proc["reth process · liq-reth"]
-            RETH["Reth execution client<br/>keeps receipts only for addresses<br/>in ops/reth/reth.toml's log filter"]
-            EXEX["liquidator ExEx"]
-            BOT["Liquidation bot · liq-bot"]
-        end
         STATE[("State dir<br/>snapshot · head · WAL · shadow JSONL")]
-        CFG[/"config/*.toml<br/>registry/registry.json"/]
+        CFG[("config/*.toml<br/>registry/registry.json")]
         DISC["liq-discovery<br/>daily 04:30 UTC"]
-        COMP["Companion processes<br/>liq-watch · liq-books<br/>(section 8)"]
+        COMP["Companion processes<br/>liq-watch · liq-books<br/>see section 8"]
     end
 
     subgraph flow["Order flow"]
         MEVS["MEV-Share"]
         BUILDERS["Block builders"]
     end
+
     HOSTED["Hosted RPC<br/>discovery only"]
 
-    P2P <--> RETH
-    LH <-->|Engine API| RETH
+    P2P -->|"blocks and transactions"| RETH
+    LH -->|"Engine API"| RETH
     RETH -->|"committed, reverted, reorged chains"| EXEX
-    EXEX <-->|"blocks in · FinishedHeight out"| BOT
-    BOT <-->|"localhost JSON-RPC<br/>views · eth_call · eth_simulateV1"| RETH
-    BOT <--> STATE
-    CFG --> BOT
+    EXEX -->|"owned blocks and logs"| BOT
+    BOT -->|"FinishedHeight, once folded"| EXEX
+    BOT -->|"localhost JSON-RPC<br/>views · eth_call · eth_simulateV1"| RETH
+    STATE -->|"snapshot at start"| BOT
+    BOT -->|"snapshots · shadow records"| STATE
+    CFG -->|"at start, and registry exits live"| BOT
     MEVS -->|"Chainlink SVR hints"| BOT
     BOT -->|"backrun bundles"| MEVS
     BOT -->|"eth_sendBundle"| BUILDERS
     MEVS --> BUILDERS
-    BUILDERS -->|"blocks"| P2P
-    P2P --- CHAIN
+    BUILDERS -->|"blocks carrying our bundles"| P2P
     HOSTED --> DISC
     DISC -->|"exits applied · markets to review"| CFG
     COMP -->|"reads the node"| RETH
