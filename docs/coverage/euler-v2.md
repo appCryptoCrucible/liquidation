@@ -28,8 +28,7 @@ Last-healthy `liquidation_price` uses the same predicate as `health()`: liquidat
 `StateStore.market_index` is intern-global (`MarketId → row`, no `ProtocolId`). Allocator:
 
 1. Bind each euler-v2 vault `OnChainId::Addr` to `Intern::from_registry` `MarketRec.id` (`registry.protocols` iteration order). Registry has ~884 euler-v2 rows (26 admitted). Bind every interned vault the adapter may intern from logs. Production path: `Config::load(registry_root)` or `Config::from_toml` then `bind_from_intern(&Intern)`. `from_toml` alone leaves `interned` empty; `EulerV2::new` / `validate` refuse that when `vaults` is non-empty. W `WatchDecoder` already maps `Liquidate` to those intern ids.
-2. Catalog (vault→MarketId index, not a vault) is **not** interned: **3511**.
-3. Vaults not in intern (new `ProxyCreated`) take sequential ids from **3512**. Never 3481–3510 (Liquity rework owns 3508–3510).
+2. Only interned vaults get rows, at their intern id; a `ProxyCreated` for any other vault folds to `None` (its logs are not routed here). **3511** and **3512**.. stay reserved: they held a one-row-per-vault catalog and discovered ids until the catalog outgrew a market's 128 rows. Never 3481–3510 (Liquity rework owns 3508–3510).
 
 Fail-closed gaps: `maxLiquidationDiscount` is per-vault (Initialize storage default 0 is recorded as known, not a protocol cap). Unpinned Euler oracles in `registry.oracles` → vault rows `UNPRICED`. Collateral vault ERC-20s are absent from `registry.tokens` → `UNMAPPED` / `OracleSourceMismatch` until interned. New `ProxyCreated` vaults after the pin are interned in-store but are not in the union filter until `config.vaults` refresh. Owed that does not fit `u128` is refused (EVK max is 143-bit).
 

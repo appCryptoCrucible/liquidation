@@ -1,18 +1,31 @@
-//! Drift detector scaffold (GUIDE 02 §8).
+//! Drift detector (GUIDE 02 §8): stratified sampling, `health()` against an
+//! executed `health_probe()` on a published snapshot, and a per-protocol
+//! integer EWMA of the mismatch for telemetry.
 //!
-//! Lives here because it needs raw snapshot access. Calibration (thresholds,
-//! sample rate) is WP 05C; this WP wires stratified sampling, per-protocol
-//! integer EWMA, `health_probe()` issuance against a published snapshot, and
-//! [`HaltReason::DriftMismatch`] into [`HaltSink`].
+//! It measures; it does not act. [`DriftDetector::tick`] reports every
+//! compared position's mismatch, and re-probes the positions the caller
+//! names (a resync's second look). What a mismatch triggers — resync,
+//! quarantine, a protocol-wide resync — is the caller's policy
+//! (`liq-bot`'s drift thread). Halting a protocol stops the liquidations it
+//! gets right along with any it gets wrong, so nothing here halts.
+//!
+//! Lives here because it needs raw snapshot access.
 //!
 //! `tick` is called **off** the hot thread (GUIDE 16: drift sampler is
 //! background). It never fsyncs and never takes a lock the writer holds.
+//!
+//! A comparison is only fair on the same inputs the chain uses: local health
+//! takes the canonical vector with the position's market overlay laid on
+//! ([`DriftTick::patch`] — the protocol's own prices, as the engine prices
+//! it), and a position whose local state is known to be pending a chain read
+//! (`Blocked { Unread }`), has no debt, or cannot be evaluated or probed is
+//! skipped, not scored.
 
 use std::collections::HashMap;
 
-use liq_protocol::{ProbeCall, Protocol, Timestamp};
+use liq_protocol::{BlockReason, Health, HealthState, ProbeCall, Protocol, Timestamp};
 use liq_types::fixed::RAY;
-use liq_types::{Band, HaltReason, HaltScope, HaltSink, PositionId, ProtocolId, Ray};
+use liq_types::{AssetId, Band, MarketId, PositionId, PriceVector, ProtocolId, Ray};
 
 use crate::error::StateError;
 use crate::snapshot::StoreSnapshot;
@@ -76,21 +89,25 @@ pub enum DriftError {
 
 /// What one [`DriftDetector::tick`] did. Telemetry for 09A; 05C reads the
 /// EWMA, not this.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TickReport {
     pub sampled: u32,
     pub compared: u32,
     pub skipped: u32,
+    /// `(position, |local − probe| bps)` for every compared position.
+    pub results: Vec<(PositionId, u64)>,
 }
 
-/// Stratified sampler + per-protocol EWMA. `max_mismatch_bps` is a
-/// placeholder 05C will calibrate; passing it in is the mechanism.
+/// Stratified sampler + per-protocol EWMA.
 pub struct DriftDetector {
     /// `(band, take)` — over-sample Hot/Warm by passing a larger `take`.
     strata: [(Band, u32); 4],
     mismatch: HashMap<ProtocolId, Ewma>,
-    max_mismatch_bps: u32,
 }
+
+/// The protocol's own prices for one market: `(asset, price)` to lay over
+/// the canonical vector.
+pub type MarketPatch<'a> = dyn Fn(ProtocolId, MarketId) -> Vec<(AssetId, Ray)> + 'a;
 
 /// Inputs for one off-thread [`DriftDetector::tick`]. Bundled so the
 /// method stays under clippy's argument cap; every field is read.
@@ -99,17 +116,18 @@ pub struct DriftTick<'a> {
     pub bands: &'a [Band],
     pub timestamp: Timestamp,
     pub px: &'a liq_types::PriceVector,
+    /// The protocol's own prices for one market, laid over `px` for its
+    /// positions (the engine's per-market overlay). `None`: `px` alone.
+    pub patch: Option<&'a MarketPatch<'a>>,
     pub protocol: &'a dyn Protocol,
-    pub sink: &'a dyn HaltSink,
 }
 
 impl DriftDetector {
     #[must_use]
-    pub fn new(strata: [(Band, u32); 4], max_mismatch_bps: u32) -> Self {
+    pub fn new(strata: [(Band, u32); 4]) -> Self {
         Self {
             strata,
             mismatch: HashMap::new(),
-            max_mismatch_bps,
         }
     }
 
@@ -159,56 +177,76 @@ impl DriftDetector {
         Ok(out)
     }
 
-    /// Record one observed `|local − probe|` in bps. Emits
-    /// [`HaltReason::DriftMismatch`] on [`HaltScope::Protocol`] when the
-    /// EWMA exceeds `max_mismatch_bps`.
-    pub fn observe(&mut self, protocol: ProtocolId, delta_bps: u64, sink: &dyn HaltSink) {
-        let ewma = self.mismatch.entry(protocol).or_default();
-        ewma.push(delta_bps);
-        if ewma.value() > u64::from(self.max_mismatch_bps) {
-            sink.halt(HaltScope::Protocol(protocol), HaltReason::DriftMismatch);
-        }
+    /// Record one observed `|local − probe|` in bps into the protocol's EWMA.
+    pub fn observe(&mut self, protocol: ProtocolId, delta_bps: u64) {
+        self.mismatch.entry(protocol).or_default().push(delta_bps);
     }
 
-    /// Off-thread tick: sample, `health()` vs executed `health_probe()`,
-    /// EWMA, maybe halt. `exec_probe` is the eth_call (node/17A); this crate
-    /// does not own an RPC client.
+    /// Off-thread tick: the stratified sample plus `recheck` (positions the
+    /// caller wants looked at again), each `health()` vs its executed
+    /// `health_probe()`. `exec_probe` is the eth_call; this crate does not
+    /// own an RPC client.
     pub fn tick(
         &mut self,
         ctx: DriftTick<'_>,
+        recheck: &[PositionId],
         exec_probe: impl Fn(&ProbeCall) -> Result<Ray, DriftError>,
     ) -> Result<TickReport, DriftError> {
-        let ids = self.sample_ids(ctx.snap, ctx.bands, ctx.protocol.id())?;
+        let mut ids = self.sample_ids(ctx.snap, ctx.bands, ctx.protocol.id())?;
+        for id in recheck {
+            if !ids.contains(id) && (id.0 as usize) < ctx.snap.len() {
+                ids.push(*id);
+            }
+        }
         let mut report = TickReport {
             sampled: u32::try_from(ids.len()).unwrap_or(u32::MAX),
-            compared: 0,
-            skipped: 0,
+            ..TickReport::default()
         };
+        let mut px: PriceVector = ctx.px.clone();
         for id in ids {
             let pos = ctx.snap.position(id, ctx.timestamp)?;
             if pos.key.protocol != ctx.protocol.id() {
                 report.skipped = report.skipped.saturating_add(1);
                 continue;
             }
-            let local = match ctx.protocol.health(pos, ctx.px) {
-                Ok(h) => h.hf,
-                Err(liq_protocol::ProtocolError::MissingPrice(_)) => {
-                    report.skipped = report.skipped.saturating_add(1);
-                    continue;
+            px.clone_from(ctx.px);
+            if let Some(patch) = ctx.patch {
+                for (asset, price) in patch(pos.key.protocol, pos.key.market) {
+                    if let Some(cell) = px.0.get_mut(usize::from(asset.0)) {
+                        cell.price = price;
+                    }
                 }
-                Err(e) => return Err(DriftError::Protocol(e)),
+            }
+            // Health the engine could not compute is not drift; neither is a
+            // position whose state awaits its chain read, or one with no debt.
+            let local = match ctx.protocol.health(pos, &px) {
+                Ok(Health {
+                    state:
+                        HealthState::Blocked {
+                            reason: BlockReason::Unread,
+                        },
+                    ..
+                }) => None,
+                Ok(h) if h.hf == Health::NO_DEBT_HF => None,
+                Ok(h) => Some(h.hf),
+                Err(_) => None,
             };
-            let probe = match ctx.protocol.health_probe(pos) {
-                Ok(c) => c,
-                Err(liq_protocol::ProtocolError::ProbeUnavailable) => {
-                    report.skipped = report.skipped.saturating_add(1);
-                    continue;
-                }
-                Err(e) => return Err(DriftError::Protocol(e)),
+            let Some(local) = local else {
+                report.skipped = report.skipped.saturating_add(1);
+                continue;
             };
-            let remote = exec_probe(&probe)?;
+            let Ok(probe) = ctx.protocol.health_probe(pos) else {
+                report.skipped = report.skipped.saturating_add(1);
+                continue;
+            };
+            // A probe that fails to execute is I/O, not a mismatch.
+            let Ok(remote) = exec_probe(&probe) else {
+                report.skipped = report.skipped.saturating_add(1);
+                continue;
+            };
             let delta = delta_bps(local, remote)?;
-            self.observe(ctx.protocol.id(), delta, ctx.sink);
+            self.observe(ctx.protocol.id(), delta);
+            report.results.push((id, delta));
             report.compared = report.compared.saturating_add(1);
         }
         Ok(report)
@@ -262,18 +300,7 @@ mod tests {
     use crate::undo::UndoCapacity;
     use alloy_primitives::Address;
     use liq_protocol::{MarketRow, StateWriter};
-    use liq_types::{
-        AssetId, Band, HaltReason, HaltScope, HaltSink, MarketId, PositionKey, ProtocolId, Ray,
-    };
-    use std::sync::Mutex;
-
-    struct Rec(Mutex<Vec<(HaltScope, HaltReason)>>);
-
-    impl HaltSink for Rec {
-        fn halt(&self, scope: HaltScope, reason: HaltReason) {
-            self.0.lock().unwrap().push((scope, reason));
-        }
-    }
+    use liq_types::{AssetId, Band, MarketId, PositionKey, ProtocolId, Ray};
 
     fn row() -> MarketRow {
         MarketRow::blank(AssetId(0), 18)
@@ -297,96 +324,52 @@ mod tests {
         assert_eq!(delta_bps(one, plus).unwrap(), 1);
     }
 
-    /// Property: after a healthy period, a sustained mismatch above the
-    /// threshold eventually halts; a sustained mismatch below it does not.
-    /// Convergence table: fixed point of a constant series is the constant
-    /// (definition of the scaled accumulator), not `sustained - 15`.
-    /// Boundary: EWMA exactly on `max_mismatch_bps` must not halt (`>`, not `>=`).
-    #[test]
-    fn ewma_sustained_above_threshold_halts_below_does_not() {
-        const T: u32 = 10;
-        const STEPS: u32 = 128;
-        let strata = [
-            (Band::Hot, 2),
-            (Band::Warm, 2),
-            (Band::Cool, 1),
-            (Band::Cold, 1),
-        ];
 
+
+    /// Property: after a healthy period, a sustained mismatch above a level
+    /// eventually lifts the EWMA past it; one below it converges to itself.
+    /// Fixed point of a constant series is the constant (the window-scale
+    /// accumulator keeps the remainder).
+    #[test]
+    fn ewma_tracks_sustained_mismatch() {
+        const T: u64 = 10;
+        const STEPS: u32 = 128;
         for s in [1u64, 5, 11, 16, 100, 1000] {
             let mut e = Ewma::default();
             e.push(s);
             assert_eq!(e.value(), s, "first sample is the value ({s})");
             for _ in 0..STEPS {
                 e.push(s);
-                assert_eq!(
-                    e.value(),
-                    s,
-                    "fixed point of sustained {s} bps is {s}, not {s}-15"
-                );
+                assert_eq!(e.value(), s, "fixed point of sustained {s} bps is {s}");
             }
         }
-
-        let mut above = DriftDetector::new(strata, T);
-        let rec_above = Rec(Mutex::new(Vec::new()));
-        let id_above = ProtocolId(1);
+        let strata = [
+            (Band::Hot, 2),
+            (Band::Warm, 2),
+            (Band::Cool, 1),
+            (Band::Cold, 1),
+        ];
+        let mut d = DriftDetector::new(strata);
+        let id = ProtocolId(1);
         for _ in 0..STEPS {
-            above.observe(id_above, 0, &rec_above);
+            d.observe(id, 0);
         }
-        assert!(
-            rec_above.0.lock().unwrap().is_empty(),
-            "healthy period must not halt"
-        );
-        assert_eq!(above.ewma(id_above).unwrap().value(), 0);
-
-        let mut halted = false;
+        assert_eq!(d.ewma(id).unwrap().value(), 0);
+        let mut crossed = false;
         for _ in 0..STEPS {
-            above.observe(id_above, 11, &rec_above);
-            if !rec_above.0.lock().unwrap().is_empty() {
-                halted = true;
-                break;
-            }
+            d.observe(id, 11);
+            crossed |= d.ewma(id).unwrap().value() > T;
         }
-        assert!(
-            halted,
-            "sustained 11 bps after healthy zeros must eventually exceed T={T}"
-        );
-        assert!(above.ewma(id_above).unwrap().value() > u64::from(T));
-        let hits = rec_above.0.lock().unwrap();
-        assert_eq!(
-            hits[0],
-            (HaltScope::Protocol(id_above), HaltReason::DriftMismatch)
-        );
-        drop(hits);
-
-        let mut below = DriftDetector::new(strata, T);
-        let rec_below = Rec(Mutex::new(Vec::new()));
-        let id_below = ProtocolId(3);
+        assert!(crossed, "sustained 11 bps after zeros exceeds {T}");
+        let mut below = DriftDetector::new(strata);
+        let id = ProtocolId(3);
         for _ in 0..STEPS {
-            below.observe(id_below, 0, &rec_below);
+            below.observe(id, 0);
         }
         for _ in 0..STEPS {
-            below.observe(id_below, 9, &rec_below);
+            below.observe(id, 9);
         }
-        assert!(
-            rec_below.0.lock().unwrap().is_empty(),
-            "sustained 9 bps < T={T} must not halt"
-        );
-        assert_eq!(
-            below.ewma(id_below).unwrap().value(),
-            9,
-            "converged to the sustained sample, not pinned at 0"
-        );
-
-        let edge = ProtocolId(2);
-        let rec_edge = Rec(Mutex::new(Vec::new()));
-        let mut on_threshold = DriftDetector::new(strata, T);
-        on_threshold.observe(edge, 10, &rec_edge);
-        assert_eq!(on_threshold.ewma(edge).unwrap().value(), 10);
-        assert!(
-            rec_edge.0.lock().unwrap().is_empty(),
-            "EWMA == max_mismatch_bps must not halt"
-        );
+        assert_eq!(below.ewma(id).unwrap().value(), 9, "converged, not pinned at 0");
     }
 
     /// Oracle: the band slice we pass. Hot is over-sampled vs Cold.
@@ -423,15 +406,12 @@ mod tests {
             Band::Cold,
             Band::Cold,
         ];
-        let d = DriftDetector::new(
-            [
+        let d = DriftDetector::new([
                 (Band::Hot, 3),
                 (Band::Warm, 0),
                 (Band::Cool, 0),
                 (Band::Cold, 1),
-            ],
-            100,
-        );
+            ]);
         let ids = d.sample_ids(&snap, &bands, ProtocolId(7)).unwrap();
         assert_eq!(ids.len(), 4, "3 hot + 1 cold");
         let mut hot = 0;
@@ -445,15 +425,12 @@ mod tests {
         }
         assert_eq!(hot, 3);
         assert_eq!(cold, 1);
-        let d2 = DriftDetector::new(
-            [
+        let d2 = DriftDetector::new([
                 (Band::Hot, 1),
                 (Band::Warm, 0),
                 (Band::Cool, 0),
                 (Band::Cold, 1),
-            ],
-            100,
-        );
+            ]);
         assert!(d2.sample_ids(&snap, &bands[..3], ProtocolId(7)).is_err());
     }
 
@@ -464,5 +441,189 @@ mod tests {
         e.push(40);
         assert_eq!(e.value(), 40);
         assert_eq!(e.count(), 1);
+    }
+
+    /// A protocol whose health is its one asset's price and whose probe
+    /// answers 2.0 — enough to see which prices `tick` compares.
+    struct PriceIsHealth;
+
+    impl liq_types::LogSubscriber for PriceIsHealth {
+        fn subscriptions(&self) -> Vec<liq_types::LogFilter> {
+            Vec::new()
+        }
+    }
+
+    const UNREAD: Address = Address::repeat_byte(9);
+
+    fn two() -> Ray {
+        Ray::from_raw(liq_types::fixed::RAY * alloy_primitives::U256::from(2u8))
+    }
+
+    fn decode_two(_: &[u8]) -> liq_protocol::Result<Ray> {
+        Ok(two())
+    }
+
+    impl liq_protocol::Protocol for PriceIsHealth {
+        fn id(&self) -> ProtocolId {
+            ProtocolId(7)
+        }
+        fn apply_log(
+            &self,
+            _: &mut dyn StateWriter,
+            _: &liq_protocol::DecodedLog<'_>,
+        ) -> liq_protocol::Result<liq_protocol::DirtySet> {
+            Ok(liq_protocol::DirtySet::None)
+        }
+        fn backfill(
+            &self,
+            _: &mut dyn StateWriter,
+            _: &dyn liq_protocol::Archive,
+            _: liq_protocol::BlockNum,
+        ) -> liq_protocol::Result<()> {
+            Ok(())
+        }
+        fn health(
+            &self,
+            pos: liq_protocol::PositionRef<'_>,
+            px: &liq_types::PriceVector,
+        ) -> liq_protocol::Result<liq_protocol::Health> {
+            let state = if pos.key.user == UNREAD {
+                liq_protocol::HealthState::Blocked {
+                    reason: liq_protocol::BlockReason::Unread,
+                }
+            } else {
+                liq_protocol::HealthState::Healthy
+            };
+            Ok(liq_protocol::Health {
+                hf: px.0[0].price,
+                debt_value: liq_types::Wad::from_raw(alloy_primitives::U256::from(1u8)),
+                collateral_value: liq_types::Wad::from_raw(alloy_primitives::U256::from(1u8)),
+                price_sensitivity: liq_protocol::AssetMask::EMPTY,
+                state,
+            })
+        }
+        fn liquidation_price(
+            &self,
+            _: liq_protocol::PositionRef<'_>,
+            _: &liq_types::PriceVector,
+            _: AssetId,
+        ) -> liq_protocol::Result<Option<liq_types::Price>> {
+            Ok(None)
+        }
+        fn time_to_cross(
+            &self,
+            _: liq_protocol::PositionRef<'_>,
+            _: &liq_types::PriceVector,
+        ) -> liq_protocol::Result<Option<liq_protocol::Timestamp>> {
+            Ok(None)
+        }
+        fn quote(
+            &self,
+            _: liq_protocol::PositionRef<'_>,
+            _: &liq_types::PriceVector,
+        ) -> liq_protocol::Result<Option<liq_protocol::Quote>> {
+            Ok(None)
+        }
+        fn encode(
+            &self,
+            _: &liq_protocol::Quote,
+            _: liq_protocol::LegChoice,
+            _: &liq_protocol::FlashRoute,
+            _: Address,
+        ) -> liq_protocol::Result<liq_protocol::LiquidationPlan> {
+            Err(liq_protocol::ProtocolError::Internal)
+        }
+        fn health_probe(
+            &self,
+            _: liq_protocol::PositionRef<'_>,
+        ) -> liq_protocol::Result<liq_protocol::ProbeCall> {
+            Ok(liq_protocol::ProbeCall {
+                to: Address::ZERO,
+                data: alloy_primitives::Bytes::new(),
+                decode: decode_two,
+            })
+        }
+    }
+
+    /// Oracle: health compared to the probe is health at the prices the
+    /// protocol uses — the canonical vector with the market's overlay laid
+    /// on (2.0, equal to the probe: 0 bps); without it, canonical 1.0 vs 2.0
+    /// is 10_000 bps. A position pending its chain read (`Blocked { Unread }`)
+    /// is skipped; a `recheck` id outside the sample is compared. Negative:
+    /// nothing is reported for a position that was not compared.
+    #[test]
+    fn tick_reports_mismatch_at_overlay_prices_and_rechecks() {
+        let mut st = StateStore::new(StoreConfig {
+            base: 1,
+            positions: 4,
+            markets: 1,
+            undo: UndoCapacity {
+                ops: 32,
+                extras: 4,
+                rows: 4,
+            },
+        });
+        let m = MarketId(0);
+        st.push_market(m, row()).unwrap();
+        for user in [Address::repeat_byte(1), UNREAD, Address::repeat_byte(2)] {
+            st.intern(&PositionKey {
+                protocol: ProtocolId(7),
+                market: m,
+                user,
+            })
+            .unwrap();
+        }
+        let snap = st.snapshot();
+        // Position 2 is Cold, outside the Hot-only sample.
+        let bands = [Band::Hot, Band::Hot, Band::Cold];
+        let px = liq_types::PriceVector(vec![liq_types::Price {
+            asset: AssetId(0),
+            price: Ray::ONE,
+            source: liq_types::SourceKind::Canonical,
+            block: 1,
+            ts: 1,
+        }]);
+        let overlay = |_: ProtocolId, _: MarketId| vec![(AssetId(0), two())];
+        let strata = [
+            (Band::Hot, 2),
+            (Band::Warm, 0),
+            (Band::Cool, 0),
+            (Band::Cold, 0),
+        ];
+        let p = PriceIsHealth;
+        let exec = |c: &liq_protocol::ProbeCall| (c.decode)(&[]).map_err(super::DriftError::Protocol);
+        fn tick<'a>(
+            snap: &'a crate::snapshot::StoreSnapshot,
+            bands: &'a [Band],
+            px: &'a liq_types::PriceVector,
+            patch: Option<&'a super::MarketPatch<'a>>,
+            protocol: &'a PriceIsHealth,
+        ) -> super::DriftTick<'a> {
+            super::DriftTick {
+                snap,
+                bands,
+                timestamp: 1,
+                px,
+                patch,
+                protocol,
+            }
+        }
+
+        let mut d = DriftDetector::new(strata);
+        let r = d.tick(tick(&snap, &bands, &px, Some(&overlay), &p), &[], exec).unwrap();
+        assert_eq!((r.compared, r.skipped), (1, 1), "unread position skipped");
+        assert_eq!(r.results, vec![(liq_types::PositionId(0), 0)]);
+
+        let r = d.tick(tick(&snap, &bands, &px, None, &p), &[], exec).unwrap();
+        assert_eq!(r.results, vec![(liq_types::PositionId(0), 10_000)]);
+
+        let r = d
+            .tick(tick(&snap, &bands, &px, Some(&overlay), &p), &[liq_types::PositionId(2)], exec)
+            .unwrap();
+        assert_eq!(
+            r.results,
+            vec![(liq_types::PositionId(0), 0), (liq_types::PositionId(2), 0)],
+            "recheck compared outside the sample"
+        );
     }
 }

@@ -29,6 +29,10 @@ pub const HOT_THREAD_NAME: &str = "liq-node-hot";
 pub struct AfterBlockCtx<'a> {
     pub store: &'a StateStore,
     pub dirty: &'a CollapsedDirty,
+    /// Every position the block's logs touched, including those `dirty`
+    /// folded into a market-wide entry ([`DirtyAccumulator::touched`]).
+    /// Covers the last block of the notification only, like `dirty`.
+    pub touched: &'a liq_protocol::DirtyPositions,
     pub block: BlockNum,
     /// Hash of that block (the consistent tip Reth confirmed).
     pub hash: alloy_primitives::B256,
@@ -102,6 +106,7 @@ pub fn drain(
                     hook.after_block(AfterBlockCtx {
                         store: ctx.store,
                         dirty: ctx.dirty.collapsed(),
+                        touched: ctx.dirty.touched(),
                         block: done.num_hash.number,
                         hash: done.num_hash.hash,
                         timestamp: ts,

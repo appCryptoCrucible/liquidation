@@ -274,7 +274,13 @@ fn enable_bit(ex: &mut AccountExtra, slot: u16) -> Result<()> {
     Ok(())
 }
 
-fn zero_account(st: &mut dyn StateWriter, pos: PositionId, token_count: u8) -> Result<()> {
+fn mark_stale(st: &mut dyn StateWriter, pos: PositionId) -> Result<()> {
+    let mut ex = extra(st, pos)?;
+    ex.flags |= AccountExtra::STALE;
+    set_extra(st, pos, ex)
+}
+
+pub(crate) fn zero_account(st: &mut dyn StateWriter, pos: PositionId, token_count: u8) -> Result<()> {
     let n = u16::from(token_count.max(1));
     for slot in 0u16..n {
         st.set_supply(pos, slot, 0)?;
@@ -359,6 +365,9 @@ fn facade_log(
         st.set_debt(pos, UNDERLYING_SLOT, add_u128(d, ev.repaidDebt, false)?)?;
         let s = st.supply(pos, tok.slot)?;
         st.set_supply(pos, tok.slot, add_u128(s, ev.seizedCollateral, false)?)?;
+        // The fee leaves the account in underlying and the manager settles
+        // interest and quotas on the repaid debt; none of it is in the log.
+        mark_stale(st, pos)?;
         return Ok(positions(&[pos]));
     }
     if topic0 == facade::AddCollateral::SIGNATURE_HASH {
@@ -404,8 +413,16 @@ fn facade_log(
         })?;
         return Ok(DirtySet::MarketReprice(rows));
     }
-    if topic0 == facade::StartMultiCall::SIGNATURE_HASH
-        || topic0 == facade::FinishMultiCall::SIGNATURE_HASH
+    if topic0 == facade::StartMultiCall::SIGNATURE_HASH {
+        // Adapter calls swap the account's tokens and `decreaseDebt` repays
+        // through pool `Repay`, which names no account: the multicall's
+        // effect is read from chain after the block (`crate::reads`).
+        let ev = decode::<facade::StartMultiCall>(log)?;
+        let pos = intern(cfg, st, m.market, ev.creditAccount)?;
+        mark_stale(st, pos)?;
+        return Ok(positions(&[pos]));
+    }
+    if topic0 == facade::FinishMultiCall::SIGNATURE_HASH
         || topic0 == facade::Execute::SIGNATURE_HASH
     {
         return Ok(DirtySet::None);

@@ -46,6 +46,50 @@ pub fn asset_unit(decimals: u8) -> Result<U256> {
         .ok_or(ProtocolError::Fixed(FixedError::Overflow))
 }
 
+/// `Constants.sol` `SECONDS_PER_YEAR = 365 days`.
+pub const SECONDS_PER_YEAR: U256 = uint!(31_536_000_U256);
+
+/// `PoolV3.baseInterestIndex()` at `now`: `indexLU * (RAY +
+/// calcLinearGrowth(rate, tLU)) / RAY`, `calcLinearGrowth(v, t) = v * (now -
+/// t) / SECONDS_PER_YEAR` (`PoolV3._calcBaseInterestIndex`,
+/// `CreditLogic.calcLinearGrowth`). `now <= tLU` is the stored index.
+pub fn base_interest_index(index_lu: U256, rate: U256, last_update: u64, now: u64) -> Result<U256> {
+    let Some(dt) = now.checked_sub(last_update).filter(|d| *d != 0) else {
+        return Ok(index_lu);
+    };
+    let growth = mul_div_down(rate, U256::from(dt), SECONDS_PER_YEAR)?;
+    let factor = RAY
+        .checked_add(growth)
+        .ok_or(ProtocolError::Fixed(FixedError::Overflow))?;
+    mul_div_down(index_lu, factor, RAY)
+}
+
+/// `QuotasLogic.cumulativeIndexSince`: `indexLU + RAY / PERCENTAGE_FACTOR *
+/// (now - tLU) * rate / SECONDS_PER_YEAR`, multiplied left to right.
+pub fn quota_index_since(index_lu: U256, rate: u16, last_update: u64, now: u64) -> Result<U256> {
+    let dt = U256::from(now.saturating_sub(last_update));
+    let per_bps = RAY
+        .checked_div(PERCENTAGE_FACTOR)
+        .ok_or(ProtocolError::Fixed(FixedError::DivisionByZero))?;
+    let grown = per_bps
+        .checked_mul(dt)
+        .and_then(|v| v.checked_mul(U256::from(rate)))
+        .ok_or(ProtocolError::Fixed(FixedError::Overflow))?
+        .checked_div(SECONDS_PER_YEAR)
+        .ok_or(ProtocolError::Fixed(FixedError::DivisionByZero))?;
+    index_lu
+        .checked_add(grown)
+        .ok_or(ProtocolError::Fixed(FixedError::Overflow))
+}
+
+/// `QuotasLogic.calcAccruedQuotaInterest`: `quoted * (indexNow - indexLU) / RAY`.
+pub fn accrued_quota_interest(quoted: U256, index_now: U256, index_lu: U256) -> Result<U256> {
+    let d = index_now
+        .checked_sub(index_lu)
+        .ok_or(ProtocolError::Fixed(FixedError::Underflow))?;
+    mul_div_down(quoted, d, RAY)
+}
+
 /// `CreditLogic.calcAccruedInterest`: `(amount * indexNow) / indexLast - amount`.
 #[inline]
 pub fn calc_accrued_interest(amount: U256, index_last: U256, index_now: U256) -> Result<U256> {

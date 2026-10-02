@@ -39,19 +39,18 @@ Then `Err(ExecutorUnwired)`:
 ## Carry-forwards (do not invent)
 
 - `FeedId(0)` is the first interned Aave oracle, not unset. Gearbox oracles are absent from `registry.oracles`. Do not invent `FeedId::NONE`. `row.price_feed` must not be joined to ticks; health prices via AssetId / PriceVector. `feed=0` is a documented collision.
-- No invented IRM: pool `SetInterestRateModel` has no rate in the event. Accrual uses stored `cumulativeIndexLastUpdate` as `indexNow` (zero growth) unless an index is stored. Wei gap vs `calcDebtAndCollateral` is a probe/drift gap.
-- Pool `Repay(creditManager, borrowedAmount, profit, loss)` has **no credit account**. `decreaseDebt` without `PartiallyLiquidateCreditAccount` is not journaled. Debt can be overstated. Fail closed (may skip a now-healthy account or mis-size a quote) — do not guess a split across accounts.
-- Facade `Execute` has no amounts; on-account adapter swaps are untracked. Full close `MultiCall` fills are **not** invented.
+- Interest is read, not invented: no log carries the pool's base index or a token's quota index, so every block the bot reads each pool's `baseInterestIndexLU` / `baseInterestRate` / `lastBaseInterestUpdate`, each keeper's `lastQuotaRateUpdate` and each quoted token's `getTokenQuotaParams` (`src/reads.rs`). Health projects both to its evaluation time with the pin's `PoolV3._calcBaseInterestIndex` and `QuotasLogic.cumulativeIndexSince`, and adds each enabled token's outstanding quota interest from the account's `getQuota` checkpoint, as `_calcDebtAndCollateral` does. Until the first read lands, debt does not grow. The stored `cumulativeQuotaInterest` carries a 1-wei sentinel, removed on read.
+- Pool `Repay(creditManager, borrowedAmount, profit, loss)` has **no credit account**, and facade `Execute` has no amounts, so neither a multicall's `decreaseDebt` nor its adapter swaps can be folded from logs. `StartMultiCall` (and `PartiallyLiquidateCreditAccount`, whose fee and interest settlement the log omits) marks the account `STALE`; health is `Blocked { Unread }` until the bot's per-position chain reads (`src/reads.rs`: `creditAccountInfo`, then `balanceOf` per enabled token, at the tip block) replace its debt, interest checkpoints, enabled mask and balances. Safe to hold out of quoting: every non-liquidation multicall ends in `_fullCollateralCheck` (`CreditFacadeV3.sol` @ `510fc654`, `_multicall`). Full close `MultiCall` fills are **not** invented.
 - `ILossPolicy.isLiquidatableWithLoss` is not evaluated off-chain. Full path is unpriced regardless.
 - Phantom tokens: `WithdrawPhantomToken` subtracts when the token is listed; unlisted phantom is intern-only.
 - Forbidden tokens still count toward value on-chain; adapter does not model `forbiddenTokenMask`.
 - W has no Gearbox decoder. Leave W alone.
-- MarketId **71000** is the ContractsRegister catalog (reserved, not a credit manager). Managers are **71001..=71999** in discovery order. The state snapshot records a fingerprint of every bound subscription, so a new or removed manager (which shifts the ids after it) rebuilds the state instead of reusing a snapshot under moved ids.
+- MarketId **64000** is the ContractsRegister catalog (reserved, not a credit manager). Managers are **64001..=64999** in discovery order. The state snapshot records a fingerprint of every bound subscription, so a new or removed manager (which shifts the ids after it) rebuilds the state instead of reusing a snapshot under moved ids.
 - D15 manager count 34 is a cardinality check on `getCreditManagers()`, not a hand-list universe.
 
 | DirtySet | when |
 |---|---|
-| Positions | open/close/liquidate/partial/add/withdraw collateral, pool Borrow, UpdateQuota, factory take/deploy |
+| Positions | open/close/liquidate/partial/add/withdraw collateral, StartMultiCall (marks the account for a chain read), pool Borrow, UpdateQuota, factory take/deploy |
 | MarketReprice | factory AddCreditManager (listing), UpdateFees, LT / ramp / expiration, facade pause/unpause |
 | None | Execute / MultiCall bookends, pool Repay (no account), matching SetCreditFacade, IRM, limits, adapters, forbid/allow token |
 | halt | proxy upgrade / admin / init after pin; SetPriceOracle; CreditConfiguratorUpgraded; SetCreditFacade mismatch; factory Rescue; unknown manager after pin |
@@ -66,9 +65,9 @@ Then `Err(ExecutorUnwired)`:
 | facade.partial | PartiallyLiquidateCreditAccount | 0x04d7a59a828995563eaa48eb65f11b681f7fec2fb7d6bc1a5426243882f9d249 | Positions | repaidDebt / seizedCollateral wei |
 | facade.addCollateral | AddCollateral | 0xa32435755c235de2976ed44a75a2f85cb01faf0c894f639fe0c32bb9455fea8f | Positions | enables token bit |
 | facade.withdrawCollateral | WithdrawCollateral | 0xe7655dfddd0226889710c711da4e725dd44525fb5717b2321017a97d32793ab8 | Positions | |
-| facade.startMultiCall | StartMultiCall | 0x6637691e02875fb5c598316278034ab86d133a75ab6d76491287290e03979284 | None | |
+| facade.startMultiCall | StartMultiCall | 0x6637691e02875fb5c598316278034ab86d133a75ab6d76491287290e03979284 | Positions | marks STALE; settled by chain reads |
 | facade.withdrawPhantom | WithdrawPhantomToken | 0xfb2a92d9536987a99026b9f077b3f5bc11912c1acc475a93d6dcbed8cf26b260 | Positions | listed token only |
-| facade.execute | Execute | 0x1b835de7d84f000a333cdc5822ae62eb63b38d4c622ef96ac50f27db56d7c768 | None | no amounts — internal swaps untracked |
+| facade.execute | Execute | 0x1b835de7d84f000a333cdc5822ae62eb63b38d4c622ef96ac50f27db56d7c768 | None | no amounts — covered by StartMultiCall's chain read |
 | facade.finishMultiCall | FinishMultiCall | 0x9fe19f2060e67aed557c7d1bc297d4bd2d8a8b952e3545c658ec4bc00be7d6c4 | None | |
 | facade.paused | Paused | 0x62e78cea01bee320cd4e420270b5ea74000d11b0c9f74754ebdbfc544b05a258 | MarketReprice | Blocked |
 | facade.unpaused | Unpaused | 0x5db9ee0a495bf2e6ff9c91a7834c1ba4fdd244a5e8aa4e537bd38aeae4b073aa | MarketReprice | |

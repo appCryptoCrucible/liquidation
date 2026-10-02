@@ -1,7 +1,7 @@
 //! Store layout for one Gearbox V3 `CreditManagerV3`
 //! (`Gearbox-protocol/core-v3` @ `510fc6541c3767ce825929b4c311826fe81d6fa5`).
 //!
-//! One interned [`liq_types::MarketId`] per credit manager (71001..=71999).
+//! One interned [`liq_types::MarketId`] per credit manager (64001..=64999).
 //! Slot 0 is the manager underlying (`UNDERLYING_TOKEN_MASK = 1`). Later
 //! slots follow `getTokenByMask(1 << slot)` order.
 
@@ -32,6 +32,14 @@ pub struct ManagerRow {
     /// stays 128 bytes). A partial liquidation must leave at least this.
     pub min_debt: [u8; 16],
     pub _pad: [u8; 5],
+    /// `PoolV3._baseInterestIndexLU` (RAY), read each block (`crate::reads`).
+    pub base_index_lu: u128,
+    /// `PoolV3.baseInterestRate()` (RAY per year).
+    pub base_rate: u128,
+    /// `PoolV3.lastBaseInterestUpdate` (unix seconds).
+    pub base_last_update: u64,
+    /// `PoolQuotaKeeperV3.lastQuotaRateUpdate` (unix seconds).
+    pub quota_last_update: u64,
 }
 
 impl ManagerRow {
@@ -41,6 +49,10 @@ impl ManagerRow {
     pub const PRICED: u8 = 1 << 1;
     /// Facade `Paused`.
     pub const PAUSED: u8 = 1 << 2;
+    /// `base_*` hold a read of the pool; until then debt accrues nothing.
+    pub const BASE_KNOWN: u8 = 1 << 3;
+    /// `quota_last_update` holds a read of the quota keeper.
+    pub const QUOTA_TIME_KNOWN: u8 = 1 << 4;
 }
 
 /// Slots 1.. : one collateral token's LT ramp (`CreditLogic.getLiquidationThreshold`).
@@ -53,12 +65,19 @@ pub struct TokenRow {
     pub ramp_start: u64,
     pub ramp_duration: u32,
     pub flags: u8,
-    pub _pad: [u8; 11],
+    pub _pad0: u8,
+    /// `getTokenQuotaParams(token).rate` (bps per year).
+    pub quota_rate: u16,
+    pub _pad: [u8; 8],
+    /// `getTokenQuotaParams(token).cumulativeIndexLU` (RAY).
+    pub quota_index_lu: u128,
 }
 
 impl TokenRow {
     pub const LISTED: u8 = 1 << 0;
     pub const PRICED: u8 = 1 << 1;
+    /// `quota_rate` / `quota_index_lu` hold a read of the quota keeper.
+    pub const QUOTA_KNOWN: u8 = 1 << 2;
 }
 
 /// Per-account extra (`CreditAccountInfo` minus principal, which is `debt[0]`).
@@ -76,6 +95,10 @@ pub struct AccountExtra {
 
 impl AccountExtra {
     pub const OPEN: u8 = 1 << 0;
+    /// A multicall (or partial liquidation) ran on the account: its token
+    /// balances and debt moved without amounts in any log. Health is
+    /// `Blocked { Unread }` until `crate::reads` folds the chain's answer.
+    pub const STALE: u8 = 1 << 1;
 }
 
 /// Per-slot quota (`IPoolQuotaKeeperV3.getQuota`).
@@ -83,9 +106,11 @@ impl AccountExtra {
 #[repr(C)]
 pub struct QuotaExtra {
     pub quota: u128,
+    /// The account's `getQuota(account, token).cumulativeIndexLU` (RAY);
+    /// zero until read after a multicall.
+    pub index_lu: u128,
     pub flags: u8,
-    pub _pad0: [u8; 32],
-    pub _pad1: [u8; 15],
+    pub _pad: [u8; 31],
 }
 
 impl QuotaExtra {
@@ -102,9 +127,9 @@ pub const UNMAPPED_ASSET: AssetId = AssetId(u16::MAX);
 pub const MAX_TOKENS: u8 = 20;
 
 const _: () = {
-    assert!(core::mem::size_of::<ManagerRow>() == 128);
+    assert!(core::mem::size_of::<ManagerRow>() == 176);
     assert!(core::mem::align_of::<ManagerRow>() <= 16);
-    assert!(core::mem::size_of::<TokenRow>() == 48);
+    assert!(core::mem::size_of::<TokenRow>() == 64);
     assert!(core::mem::size_of::<AccountExtra>() == 64);
     assert!(core::mem::size_of::<AccountExtra>() <= liq_protocol::PositionExtraRepr::SIZE);
     assert!(core::mem::size_of::<QuotaExtra>() == 64);

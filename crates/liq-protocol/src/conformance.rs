@@ -1341,6 +1341,11 @@ impl StateWriter for JournalStore {
     }
 
     fn push_market(&mut self, market: MarketId, row: MarketRow) -> Result<MarketSlot> {
+        // The same refusal as `liq-state`'s store, so an adapter whose
+        // MarketId range does not fit fails here and not first on mainnet.
+        if market.0 >= crate::market::MARKET_ID_LIMIT {
+            return Err(ProtocolError::Internal);
+        }
         let rows = match self.markets.iter_mut().position(|(m, _)| *m == market) {
             Some(i) => {
                 &mut self

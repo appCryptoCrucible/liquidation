@@ -667,8 +667,12 @@ fn intern_binds_all_euler_vaults_from_registry() {
     EulerV2::new(loaded).unwrap();
 }
 
+/// Oracle: a vault's MarketId is its registry intern id; a `ProxyCreated`
+/// for a vault the config does not intern is skipped (none of its logs are
+/// routed to this adapter, so no state for it could be kept). Negative:
+/// before, it took discovered id 3512 and a catalog row.
 #[test]
-fn proxy_created_uses_intern_ids_then_3512() {
+fn proxy_created_lists_interned_vaults_and_skips_others() {
     let d = Deploy::new();
     let p = intern_bound_adapter(&d);
     let extra = Address::repeat_byte(0xd2);
@@ -684,9 +688,11 @@ fn proxy_created_uses_intern_ids_then_3512() {
         DEPLOY_BLOCK,
         T0,
     ));
-    let st = store_after(&p, &logs);
-    let cat = st.markets(CATALOG_MARKET).expect("catalog 3511");
-    assert_eq!(cat.len(), 3);
+    let mut st = store_after(&p, &logs[..logs.len() - 1]);
+    assert_eq!(
+        p.apply_log(&mut st, &logs[logs.len() - 1].view()),
+        Ok(DirtySet::None)
+    );
     let debt = st
         .market(MarketSlot {
             market: MarketId(42),
@@ -703,20 +709,50 @@ fn proxy_created_uses_intern_ids_then_3512() {
         .expect("interned coll vault");
     let c: &liq_adapters_euler_v2::layout::VaultRow = coll.body().unwrap();
     assert_eq!(math::addr_from(c.vault), d.coll_vault);
-    let discovered = st
-        .market(MarketSlot {
-            market: FIRST_DISCOVERED_MARKET,
-            slot: 0,
-        })
-        .expect("uninterned ProxyCreated is 3512");
-    let x: &liq_adapters_euler_v2::layout::VaultRow = discovered.body().unwrap();
-    assert_eq!(math::addr_from(x.vault), extra);
-    assert!(st
-        .market(MarketSlot {
-            market: MarketId(3513),
-            slot: 0
-        })
-        .is_err());
+    assert!(st.markets(CATALOG_MARKET).is_err(), "no catalog rows");
+    assert!(st.markets(FIRST_DISCOVERED_MARKET).is_err(), "uninterned vault skipped");
+}
+
+/// Oracle: the registry interns ~880 Euler vaults and one store market
+/// holds at most `AssetMask::MAX_SLOTS` (128) rows. Negative: the old
+/// one-row-per-vault catalog failed the 129th `ProxyCreated` with
+/// `SlotOutOfRange`.
+#[test]
+fn more_vaults_than_one_market_has_rows() {
+    use liq_protocol::AssetMask;
+    let d = Deploy::new();
+    let mut cfg = d.config();
+    cfg.catalog = CATALOG_MARKET;
+    cfg.first_market = FIRST_DISCOVERED_MARKET;
+    let n = u32::from(AssetMask::MAX_SLOTS) * 2;
+    let vault = |i: u32| Address::from_word(alloy_primitives::B256::from(U256::from(0x10_000 + i)));
+    cfg.interned = (0..n).map(|i| (vault(i), MarketId(1_000 + i))).collect();
+    cfg.interned.extend([(d.debt_vault, MarketId(42)), (d.coll_vault, MarketId(99))]);
+    let p = EulerV2::new(cfg).unwrap();
+    let mut st = liq_protocol::conformance::JournalStore::new();
+    for i in 0..n {
+        let l = log(
+            d.factory,
+            &ev::ProxyCreated {
+                proxy: vault(i),
+                upgradeable: true,
+                implementation: d.impl_,
+                trailingData: d.trailing(d.usdc),
+            },
+            DEPLOY_BLOCK,
+            T0,
+        );
+        assert!(
+            matches!(p.apply_log(&mut st, &l.view()), Ok(DirtySet::MarketReprice(_))),
+            "vault {i} listed"
+        );
+    }
+    let last = st.market(MarketSlot {
+        market: MarketId(1_000 + n - 1),
+        slot: 0,
+    });
+    let v: &liq_adapters_euler_v2::layout::VaultRow = last.unwrap().body().unwrap();
+    assert_eq!(math::addr_from(v.vault), vault(n - 1));
 }
 
 #[test]
@@ -936,4 +972,80 @@ fn quote_pairs_repay_to_preferred_collateral() {
     );
     assert_ne!(repay_pref, repay_small);
     assert!(repay_pref > repay_small);
+}
+
+/// Oracle: EVK @ `bfb325a6` and the EVC — `debtOfExact` is the owed amount
+/// in internal precision at the read's block and `interestAccumulator` the
+/// vault's accumulator then (stored together, health grows the debt from
+/// there), collateral shares are the collateral vault's `balanceOf`, the
+/// enable bit is `EVC.isCollateralEnabled`. A corrupted account is restored
+/// to the log fold's values and health. Negative: with one answer missing
+/// the account is not touched and stays for the next read.
+#[test]
+fn resync_restores_a_corrupted_account() {
+    use alloy_sol_types::SolCall;
+    use liq_adapters_euler_v2::layout::UserExtra;
+    use liq_adapters_euler_v2::resync::{IEVCAccount, IEVaultAccount};
+    use liq_protocol::{Protocol, StateAnswer, StateWriter};
+    let d = Deploy::new();
+    let (p, reference) = full_store(&d);
+    let (_, mut st) = full_store(&d);
+    let px = prices(WETH_P8, USDC_P8);
+    let want = p.health(reference.view(ALICE_ID, T0).unwrap(), &px).unwrap();
+    let owed = reference.debt(ALICE_ID, 0).unwrap();
+    let rx: UserExtra = *reference.extra(ALICE_ID).unwrap().view().unwrap();
+    let acc = math::u256_from_limbs(rx.user_accumulator_lo, rx.user_accumulator_hi);
+    let coll_slot: u16 = (1..16)
+        .find(|s| reference.supply(ALICE_ID, *s).is_ok_and(|v| v > 0))
+        .expect("alice holds collateral");
+    let shares = reference.supply(ALICE_ID, coll_slot).unwrap();
+    assert!(owed > 0 && rx.enabled_mask & (1u128 << coll_slot) != 0);
+
+    st.set_debt(ALICE_ID, 0, 0).unwrap();
+    st.set_supply(ALICE_ID, coll_slot, 0).unwrap();
+    let mut extra = *st.extra(ALICE_ID).unwrap();
+    extra.view_mut::<UserExtra>().unwrap().enabled_mask = 0;
+    st.set_extra(ALICE_ID, extra).unwrap();
+
+    let reads = p.resync_reads(st.view(ALICE_ID, T0).unwrap());
+    let chain = |r: &liq_protocol::StateRead| -> Vec<u8> {
+        let c = &r.calldata;
+        if IEVaultAccount::debtOfExactCall::abi_decode(c).is_ok() {
+            assert_eq!(r.target, d.debt_vault);
+            IEVaultAccount::debtOfExactCall::abi_encode_returns(&U256::from(owed))
+        } else if IEVaultAccount::interestAccumulatorCall::abi_decode(c).is_ok() {
+            IEVaultAccount::interestAccumulatorCall::abi_encode_returns(&acc)
+        } else if IEVaultAccount::balanceOfCall::abi_decode(c).is_ok() {
+            assert_eq!(r.target, d.coll_vault);
+            IEVaultAccount::balanceOfCall::abi_encode_returns(&U256::from(shares))
+        } else if let Ok(q) = IEVCAccount::isCollateralEnabledCall::abi_decode(c) {
+            assert_eq!((r.target, q.vault), (d.evc, d.coll_vault));
+            IEVCAccount::isCollateralEnabledCall::abi_encode_returns(&true)
+        } else {
+            panic!("unexpected read {r:?}")
+        }
+    };
+    let answered: Vec<(liq_protocol::StateRead, Vec<u8>)> =
+        reads.iter().map(|r| (r.clone(), chain(r))).collect();
+    let all: Vec<StateAnswer<'_>> = answered
+        .iter()
+        .map(|(r, a)| StateAnswer {
+            read: r,
+            success: true,
+            data: a,
+        })
+        .collect();
+
+    let short = &all[..all.len() - 1];
+    assert_eq!(p.apply_state_reads(&mut st, T0, short).unwrap(), vec![]);
+    assert_eq!(st.debt(ALICE_ID, 0).unwrap(), 0, "incomplete: untouched");
+
+    assert_eq!(
+        p.apply_state_reads(&mut st, T0, &all).unwrap(),
+        vec![DirtySet::Positions(liq_protocol::DirtyPositions::from_slice(&[ALICE_ID]))]
+    );
+    let got = p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap();
+    assert_eq!(got.hf, want.hf);
+    assert_eq!(got.collateral_value, want.collateral_value);
+    assert_eq!(got.debt_value, want.debt_value);
 }

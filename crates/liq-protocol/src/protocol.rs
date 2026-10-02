@@ -146,6 +146,32 @@ pub trait Protocol: LogSubscriber + Send + Sync + 'static {
         Vec::new()
     }
 
+    /// First-stage reads for one position whose state its logs cannot
+    /// settle — a Gearbox multicall moves debt and token balances without
+    /// emitting amounts. The bot asks after every block for the positions
+    /// that block touched, and for every position at startup and on each
+    /// read-set rebuild; an adapter returns reads only while the position
+    /// needs them (and keeps it out of quoting meanwhile). Answers, and
+    /// their [`Self::state_follow_ups`], arrive through
+    /// [`Self::apply_state_reads`] with the other reads. Empty by default.
+    fn position_reads(&self, pos: PositionRef<'_>) -> Vec<StateRead> {
+        let _ = pos;
+        Vec::new()
+    }
+
+    /// First-stage reads that replace one position's stored state with the
+    /// chain's, whatever that state is — the drift check's resync, when a
+    /// position's `health()` disagrees with its `health_probe()`. Answers and
+    /// their [`Self::state_follow_ups`] arrive through
+    /// [`Self::apply_state_reads`], which reports the position in a
+    /// `DirtySet::Positions` once settled; until then the bot asks again
+    /// each block. Empty: this adapter cannot resync (a drifting position is
+    /// then only quarantined).
+    fn resync_reads(&self, pos: PositionRef<'_>) -> Vec<StateRead> {
+        let _ = pos;
+        Vec::new()
+    }
+
     /// Second-stage reads at the same block, derived from one first-stage
     /// answer (Fluid converts a simulated share amount into one token).
     fn state_follow_ups(&self, answer: StateAnswer<'_>) -> Vec<StateRead> {
@@ -155,15 +181,17 @@ pub trait Protocol: LogSubscriber + Send + Sync + 'static {
 
     /// Fold one block's answers — first stage then follow-ups, in the order
     /// read — into the store. Runs on the ingest thread after the block's
-    /// logs, inside the same block (`timestamp` is its time). Returns the
-    /// positions whose state changed.
+    /// logs, inside the same block (`timestamp` is its time). Returns what
+    /// changed — one set per kind, since a batch can settle positions *and*
+    /// move market rows (Gearbox: accounts read after a multicall, and every
+    /// pool's interest index).
     fn apply_state_reads(
         &self,
         st: &mut dyn StateWriter,
         timestamp: Timestamp,
         answers: &[StateAnswer<'_>],
-    ) -> Result<DirtySet> {
+    ) -> Result<Vec<DirtySet>> {
         let _ = (st, timestamp, answers);
-        Ok(DirtySet::None)
+        Ok(Vec::new())
     }
 }

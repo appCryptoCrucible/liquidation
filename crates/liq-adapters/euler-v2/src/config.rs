@@ -7,9 +7,10 @@
 //! `StateStore.market_index` is `MarketId → row` with no `ProtocolId`. Euler
 //! vaults use the interned [`MarketId`] `Intern::from_registry` assigned to
 //! that vault's `OnChainId::Addr` (`registry.protocols` iteration order).
-//! Catalog is an index market, not a vault, and is **not** interned:
-//! [`CATALOG_MARKET`]. Vaults absent from intern (new `ProxyCreated`) take
-//! sequential ids from [`FIRST_DISCOVERED_MARKET`]. Never 3481..=3510
+//! Only interned vaults get rows; a `ProxyCreated` for any other vault is
+//! skipped (its logs are not routed here, so its state could not be kept).
+//! [`CATALOG_MARKET`] and [`FIRST_DISCOVERED_MARKET`].. stay reserved: the
+//! catalog index they held outgrew a market's 128 rows. Never 3481..=3510
 //! (Liquity V2 rework owns 3508..=3510).
 //!
 //! Production load is [`Config::load`] / [`Config::from_toml`] then
@@ -23,9 +24,9 @@ use liq_config::{Intern, OnChainId, Registry};
 use liq_protocol::{BlockNum, FeedId};
 use liq_types::{AssetId, MarketId, ProtocolId};
 
-/// Catalog `vault → MarketId` index. Not interned.
+/// Reserved (formerly the `vault → MarketId` catalog). Not interned.
 pub const CATALOG_MARKET: MarketId = MarketId(3511);
-/// First sequential id for vaults not in intern.
+/// Reserved (formerly sequential ids for vaults not in intern).
 pub const FIRST_DISCOVERED_MARKET: MarketId = MarketId(3512);
 /// Inclusive range reserved for other adapters (Liquity 3508..=3510).
 pub const FOREIGN_MARKET_MIN: u32 = 3481;
@@ -52,9 +53,9 @@ pub struct Config {
     /// Ethereum Vault Connector. Collateral/controller enablement is EVC state;
     /// zero is refused at `validate`.
     pub evc: Address,
-    /// `vault → MarketId` index market (one row per created proxy).
+    /// Reserved MarketId; nothing is written to it (see the module docs).
     pub catalog: MarketId,
-    /// First sequential id for vaults **not** in [`Self::interned`].
+    /// Reserved MarketId range start; nothing is written there.
     pub first_market: MarketId,
     /// Admitted vault addresses at the pin block (subscriptions + backfill).
     /// Discovery of the live set is `ProxyCreated` / `getProxyListSlice`.

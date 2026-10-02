@@ -1,8 +1,8 @@
 //! Gearbox V3 adapter (WP 15C-gearbox).
 //!
 //! Pin: `Gearbox-protocol/core-v3` @ `510fc6541c3767ce825929b4c311826fe81d6fa5`.
-//! ProtocolId **11**. MarketIds **71000..=71999** (catalog 71000 reserved;
-//! credit managers 71001..=71999).
+//! ProtocolId **11**. MarketIds **64000..=64999** (catalog 64000 reserved;
+//! credit managers 64001..=64999).
 //!
 //! Liquidator entry is **CreditFacadeV3**, never the manager
 //! (`creditFacadeOnly`). Partial `encode` emits [`ExecutorAdapter::Gearbox`]
@@ -21,6 +21,7 @@ pub mod health;
 pub mod layout;
 pub mod math;
 pub mod quote;
+pub mod reads;
 pub mod solve;
 
 use alloy_primitives::{Address, U256};
@@ -407,6 +408,35 @@ impl Protocol for GearboxV3 {
         };
         out.push((*asset, Ray::from_raw(ray)));
         Ok(())
+    }
+
+    /// A credit account after a multicall: its debt and balances are read
+    /// from chain (`reads`), since the facade logs carry no amounts.
+    fn position_reads(&self, pos: PositionRef<'_>) -> Vec<liq_protocol::StateRead> {
+        reads::position_reads(&self.cfg, pos)
+    }
+
+    fn resync_reads(&self, pos: PositionRef<'_>) -> Vec<liq_protocol::StateRead> {
+        reads::resync_reads(&self.cfg, pos)
+    }
+
+    fn state_follow_ups(&self, answer: liq_protocol::StateAnswer<'_>) -> Vec<liq_protocol::StateRead> {
+        reads::follow_ups(&self.cfg, answer)
+    }
+
+    /// Every pool's base-interest state and every quoted token's quota
+    /// index, each block: no log carries either (`reads`).
+    fn state_reads(&self, _rows: &dyn liq_protocol::MarketRows) -> Vec<liq_protocol::StateRead> {
+        reads::interest_reads(&self.cfg)
+    }
+
+    fn apply_state_reads(
+        &self,
+        st: &mut dyn StateWriter,
+        _timestamp: Timestamp,
+        answers: &[liq_protocol::StateAnswer<'_>],
+    ) -> Result<Vec<DirtySet>> {
+        reads::apply(&self.cfg, st, answers)
     }
 
     fn health_probe(&self, pos: PositionRef<'_>) -> Result<ProbeCall> {

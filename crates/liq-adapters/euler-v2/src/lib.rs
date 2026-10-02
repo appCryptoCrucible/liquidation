@@ -13,6 +13,7 @@ pub mod health;
 pub mod layout;
 pub mod math;
 pub mod quote;
+pub mod resync;
 pub mod solve;
 
 use alloy_primitives::{address, Address, Bytes, U256};
@@ -287,19 +288,6 @@ impl Protocol for EulerV2 {
                 markets.push(*m);
             }
         }
-        // Discovered vaults sit in 3512..=3999. Fluid owns 4000+.
-        let mut id = FIRST_DISCOVERED_MARKET.0;
-        const LAST_EULER_MARKET: u32 = 3999;
-        while id <= LAST_EULER_MARKET {
-            let m = MarketId(id);
-            if rows.rows(m).is_some() && !markets.contains(&m) {
-                markets.push(m);
-            }
-            id = match id.checked_add(1) {
-                Some(v) => v,
-                None => break,
-            };
-        }
         let mut out = Vec::new();
         for m in markets {
             let Some(market_rows) = rows.rows(m) else {
@@ -326,6 +314,21 @@ impl Protocol for EulerV2 {
         };
         out.push((*asset, Ray::from_raw(ray)));
         Ok(())
+    }
+
+    /// The account's debt, collateral shares and EVC enables, read back for
+    /// the drift check (`resync`).
+    fn resync_reads(&self, pos: PositionRef<'_>) -> Vec<liq_protocol::StateRead> {
+        resync::resync_reads(&self.cfg, pos)
+    }
+
+    fn apply_state_reads(
+        &self,
+        st: &mut dyn StateWriter,
+        _timestamp: liq_protocol::Timestamp,
+        answers: &[liq_protocol::StateAnswer<'_>],
+    ) -> Result<Vec<DirtySet>> {
+        resync::apply(&self.cfg, st, answers)
     }
 
     fn health_probe(&self, pos: PositionRef<'_>) -> Result<ProbeCall> {

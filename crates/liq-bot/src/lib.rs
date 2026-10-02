@@ -17,6 +17,7 @@ pub mod assemble_view;
 pub mod bands;
 pub mod bind;
 pub mod drain;
+pub mod drift;
 pub mod exec_bind;
 pub mod exec_worker;
 pub mod exex_install;

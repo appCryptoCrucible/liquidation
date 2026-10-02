@@ -4,7 +4,7 @@
 #
 # Pin: Gearbox-protocol/core-v3 @ 510fc6541c3767ce825929b4c311826fe81d6fa5
 # (v3.1, facade/manager `version() == 310`).
-# Intern: ProtocolId 11; catalog MarketId 71000; managers 71001..=71999.
+# Intern: ProtocolId 11; catalog MarketId 64000; managers 64001..=64999.
 # Underlyings are on-chain. Do not invent a USDC/WETH list.
 # FeedId(0) is the first interned Aave oracle, not unset. Gearbox oracles are
 # not joined via row.price_feed; health prices via AssetId / PriceVector.
@@ -18,6 +18,6 @@ protocol = 11
 # 0xA50d4E7D8946a7c90652339CDBd262c375d54D99 lists 34 managers (v1..v3.0),
 # every v3.0 one with zero debt — not enumerated.
 address_provider = "0xF7f0a609BfAb9a0A98786951ef10e5FE26cC1E38"
-catalog = 71000
-first_market = 71001
+catalog = 64000
+first_market = 64001
 pinned_through = 26048000

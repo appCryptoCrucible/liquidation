@@ -34,9 +34,12 @@ pub struct SourcePin {
 pub struct Config {
     pub protocol: ProtocolId,
     pub morpho: Address,
-    /// `Id → MarketId` index market (one row per created market).
+    /// Reserved MarketId. It held a one-row-per-market `Id` index until that
+    /// index outgrew a market's 128 rows; nothing is written to it now (the
+    /// loan rows carry the `Id`). Kept so the id stays out of every range.
     pub catalog: MarketId,
-    /// First interned Morpho market; subsequent are `first_market.0 + n`.
+    /// First admitted Morpho market; the n-th admitted is `first_market.0 + n`,
+    /// up to [`crate::layout::LAST_MARKET`].
     pub first_market: MarketId,
     pub assets: Vec<AssetConfig>,
     pub price_sources: Vec<SourcePin>,
@@ -54,6 +57,8 @@ pub enum ConfigError {
     ZeroMorpho,
     #[error("catalog and first_market collide")]
     MarketCollision,
+    #[error("first_market is past the Morpho MarketId range")]
+    MarketRange,
     #[error("address {0} configured twice")]
     DuplicateAddress(Address),
     #[error("asset id {0:?} or underlying configured twice")]
@@ -67,6 +72,9 @@ impl Config {
         }
         if self.catalog == self.first_market {
             return Err(ConfigError::MarketCollision);
+        }
+        if self.first_market.0 > crate::layout::LAST_MARKET.0 {
+            return Err(ConfigError::MarketRange);
         }
         // T16. The same oracle CONTRACT can legitimately back several
         // markets on the same pair (different LLTVs sharing one price feed),
@@ -119,11 +127,6 @@ impl Config {
         self.price_sources
             .iter()
             .any(|p| p.oracle == oracle && p.collateral == collateral && p.loan == loan)
-    }
-
-    #[inline]
-    pub(crate) fn assigned_market(&self, catalog_slot: u16) -> MarketId {
-        MarketId(self.first_market.0.saturating_add(u32::from(catalog_slot)))
     }
 }
 

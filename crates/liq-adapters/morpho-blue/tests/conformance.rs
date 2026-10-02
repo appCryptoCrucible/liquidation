@@ -12,7 +12,7 @@
 
 mod common;
 
-use alloy_primitives::{uint, Address, U256};
+use alloy_primitives::{uint, Address, B256, U256};
 use alloy_sol_types::SolEvent;
 use common::*;
 use liq_adapters_morpho_blue::events::{self as ev, halt};
@@ -605,4 +605,106 @@ fn bad_debt_shares_leave_the_totals_even_with_zero_bad_debt_assets() {
     let loan: &LoanRow = rows[usize::from(LOAN_SLOT)].body().unwrap();
     assert_eq!(loan.total_borrow_shares, 0);
     assert_eq!(loan.total_borrow_assets, 0);
+}
+
+/// Oracle: `Morpho.createMarket` is permissionless (any `MarketParams` with
+/// an enabled IRM and LLTV), so mainnet carries markets on tokens the
+/// registry never interned and idle markets with collateral `address(0)`.
+/// Those are skipped, their later logs fold to nothing, and admitted markets
+/// stay contiguous from `first_market`. Negative: before the fix the junk
+/// market's `CreateMarket` was `Err(OracleSourceMismatch)`, which unwinds
+/// the block and halts ingest.
+#[test]
+fn unlisted_token_markets_are_skipped_not_fatal() {
+    use liq_protocol::StateWriter;
+    let d = Deploy::new();
+    let p = d.adapter();
+    let mut st = liq_protocol::conformance::JournalStore::new();
+    let junk = B256::repeat_byte(0x99);
+    let idle = B256::repeat_byte(0x98);
+    let mut junk_params = d.params();
+    junk_params.loanToken = Address::repeat_byte(0xee);
+    let mut idle_params = d.params();
+    idle_params.collateralToken = Address::ZERO;
+    idle_params.oracle = Address::ZERO;
+    for (id, params) in [(junk, junk_params), (idle, idle_params)] {
+        let l = log(d.morpho, &ev::CreateMarket { id, marketParams: params }, DEPLOY_BLOCK, T0);
+        assert_eq!(p.apply_log(&mut st, &l.view()), Ok(DirtySet::None));
+    }
+    let on_junk = log(
+        d.morpho,
+        &ev::Supply {
+            id: junk,
+            caller: d.bob,
+            onBehalf: d.bob,
+            assets: BOB_DAI,
+            shares: BOB_DAI,
+        },
+        DEPLOY_BLOCK + 1,
+        T0,
+    );
+    assert_eq!(p.apply_log(&mut st, &on_junk.view()), Ok(DirtySet::None));
+    assert_eq!(st.positions_len(), 0, "no position on an untracked market");
+    assert!(st.markets(FIRST).is_err(), "skipped markets take no MarketId");
+
+    for l in listing_logs(&d).iter().chain(activity_logs(&d).iter()) {
+        p.apply_log(&mut st, &l.view()).expect("tracked market folds");
+    }
+    let loan: &liq_adapters_morpho_blue::layout::LoanRow =
+        st.markets(FIRST).unwrap()[0].body().unwrap();
+    assert_eq!(loan.morpho_id, MARKET_ID.0, "first admitted market is first_market");
+    let px = prices(WETH_P8, DAI_P8);
+    let h = p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap();
+    assert_eq!(h.state, HealthState::Healthy);
+}
+
+/// Oracle: mainnet has well over 128 Morpho markets on interned tokens
+/// (1620 pinned in `config/protocols/morpho-blue.toml`), and one store
+/// market holds at most `AssetMask::MAX_SLOTS` (128) rows. Negative: the
+/// old one-row-per-market catalog failed the 129th `CreateMarket` with
+/// `SlotOutOfRange`.
+#[test]
+fn more_markets_than_one_market_has_rows() {
+    use liq_protocol::{AssetMask, StateWriter};
+    let d = Deploy::new();
+    let p = d.adapter();
+    let mut st = liq_protocol::conformance::JournalStore::new();
+    let n = u32::from(AssetMask::MAX_SLOTS) * 2 + 3;
+    let id = |i: u32| B256::from(U256::from(i) + U256::from(1));
+    for i in 0..n {
+        let l = log(
+            d.morpho,
+            &ev::CreateMarket {
+                id: id(i),
+                marketParams: d.params(),
+            },
+            DEPLOY_BLOCK,
+            T0,
+        );
+        assert!(
+            matches!(p.apply_log(&mut st, &l.view()), Ok(DirtySet::MarketReprice(_))),
+            "market {i} admitted"
+        );
+    }
+    let last = liq_types::MarketId(FIRST.0 + n - 1);
+    let loan: &liq_adapters_morpho_blue::layout::LoanRow =
+        st.markets(last).unwrap()[0].body().unwrap();
+    assert_eq!(loan.morpho_id, id(n - 1).0);
+    let supply = log(
+        d.morpho,
+        &ev::Supply {
+            id: id(n - 1),
+            caller: d.bob,
+            onBehalf: d.bob,
+            assets: BOB_DAI,
+            shares: BOB_DAI,
+        },
+        DEPLOY_BLOCK + 1,
+        T0,
+    );
+    assert!(matches!(
+        p.apply_log(&mut st, &supply.view()),
+        Ok(DirtySet::Positions(_))
+    ));
+    assert_eq!(st.position_key(liq_types::PositionId(0)).unwrap().market, last);
 }

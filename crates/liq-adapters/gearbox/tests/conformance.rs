@@ -500,14 +500,19 @@ fn missing_price_is_missing_price() {
     );
 }
 
+/// Oracle: the band is 64000..=64999 and sits below the store's `u16`
+/// market table (`liq_protocol::MARKET_ID_LIMIT`). Negative: the old
+/// 71000.. band passed this test's own range check but every
+/// `push_market` on the real store (and now on `JournalStore`) refused it.
 #[test]
 fn market_ids_stay_in_band() {
     let d = Deploy::new();
     let cfg = d.config();
-    assert_eq!(cfg.catalog.0, 71_000);
+    assert_eq!(cfg.catalog.0, 64_000);
+    const { assert!(liq_adapters_gearbox::LAST_MANAGER_MARKET.0 < liq_protocol::MARKET_ID_LIMIT) };
     for m in &cfg.managers {
-        assert!(m.market.0 >= 71_001 && m.market.0 <= 71_999);
-        assert_ne!(m.market.0, 71_000);
+        assert!(m.market.0 >= 64_001 && m.market.0 <= 64_999);
+        assert_ne!(m.market.0, 64_000);
     }
 }
 
@@ -575,7 +580,7 @@ fn assert_live_registry_fees_then_new() {
     assert!(cfg.live_fees_asserted);
     assert_eq!(cfg.managers.len(), 1);
     assert_eq!(cfg.managers[0].fees.liquidation_discount, DISCOUNT);
-    assert_eq!(cfg.managers[0].market.0, 71_001);
+    assert_eq!(cfg.managers[0].market.0, 64_001);
     // G2. `ltParams(underlying)` reads an unwritten storage slot on the real
     // contract and the mock now returns 0 for it (see the comment at the
     // call site in `common/mod.rs`), so a correct `lt_underlying` here proves
@@ -785,4 +790,328 @@ fn live_contracts_register_fees() {
         .expect("live getCreditManagers cardinality and fees() must succeed");
     assert_eq!(cfg.managers.len(), 34);
     GearboxV3::new(cfg).expect("live-asserted config boots");
+}
+
+/// Answers for one stale account: `creditAccountInfo` (`borrower`, `debt`,
+/// enabled `mask`) then the follow-ups the adapter asks for, each answered
+/// from `balances` by token address. `skip` drops that token's answer.
+fn settle_reads(
+    p: &GearboxV3,
+    st: &liq_protocol::conformance::JournalStore,
+    borrower: Address,
+    debt: U256,
+    mask: U256,
+    balances: &[(Address, U256)],
+    skip: Option<Address>,
+) -> (Vec<liq_protocol::StateRead>, Vec<(liq_protocol::StateRead, Vec<u8>)>) {
+    use alloy_sol_types::SolCall;
+    use liq_adapters_gearbox::events::views::{ICreditManagerV3, IPoolQuotaKeeperV3, IERC20};
+    let first = p.position_reads(st.view(ALICE_ID, T0).unwrap());
+    let mut answered = Vec::new();
+    for r in &first {
+        let info = ICreditManagerV3::creditAccountInfoCall::abi_encode_returns(
+            &ICreditManagerV3::creditAccountInfoReturn {
+                debt,
+                cumulativeIndexLastUpdate: RAY_ONE,
+                cumulativeQuotaInterest: 0,
+                quotaFees: 0,
+                enabledTokensMask: mask,
+                flags: 0,
+                lastDebtUpdate: DEPLOY_BLOCK + 2,
+                borrower,
+            },
+        );
+        let follow = p.state_follow_ups(liq_protocol::StateAnswer {
+            read: r,
+            success: true,
+            data: &info,
+        });
+        answered.push((r.clone(), info));
+        for f in follow {
+            if IPoolQuotaKeeperV3::getQuotaCall::abi_decode(&f.calldata).is_ok() {
+                let ret = IPoolQuotaKeeperV3::getQuotaCall::abi_encode_returns(
+                    &IPoolQuotaKeeperV3::getQuotaReturn {
+                        quota: alloy_primitives::aliases::U96::from(QUOTA as u128),
+                        cumulativeIndexLU: alloy_primitives::aliases::U192::from(RAY_ONE),
+                    },
+                );
+                assert_eq!(f.target, Deploy::new().quota_keeper);
+                answered.push((f, ret));
+                continue;
+            }
+            if Some(f.target) == skip {
+                continue;
+            }
+            let bal = balances
+                .iter()
+                .find(|(t, _)| *t == f.target)
+                .map_or(U256::ZERO, |(_, b)| *b);
+            answered.push((f, IERC20::balanceOfCall::abi_encode_returns(&bal)));
+        }
+    }
+    (first, answered)
+}
+
+fn fold_answers(
+    p: &GearboxV3,
+    st: &mut liq_protocol::conformance::JournalStore,
+    answered: &[(liq_protocol::StateRead, Vec<u8>)],
+) -> Vec<DirtySet> {
+    let answers: Vec<liq_protocol::StateAnswer<'_>> = answered
+        .iter()
+        .map(|(r, d)| liq_protocol::StateAnswer {
+            read: r,
+            success: true,
+            data: d,
+        })
+        .collect();
+    p.apply_state_reads(st, T0, &answers).unwrap()
+}
+
+/// Oracle: `CreditFacadeV3._multicall` @ `510fc654` emits only
+/// `StartMultiCall`/`Execute`/`FinishMultiCall`; adapter swaps and
+/// `decreaseDebt` (pool `Repay` names no account) leave no amounts. The
+/// account's state after the multicall is the chain's `creditAccountInfo`
+/// plus `balanceOf` per enabled token — and with those values health must
+/// equal what the log-only fixture computes for the same balances and debt.
+/// Negative: before the fix `StartMultiCall` was `DirtySet::None` and health
+/// kept the pre-multicall collateral (Healthy) for an account the chain
+/// holds liquidatable.
+#[test]
+fn multicall_is_settled_by_chain_reads() {
+    let d = Deploy::new();
+    let px = prices(RAY_ONE, RAY_ONE);
+    let (p, mut st) = full_store(&d, ALICE_COLL, ALICE_DEBT_OK);
+    assert!(p.position_reads(st.view(ALICE_ID, T0).unwrap()).is_empty());
+
+    let start = log(
+        d.facade,
+        &facade::StartMultiCall {
+            creditAccount: d.alice,
+            caller: d.alice,
+        },
+        DEPLOY_BLOCK + 2,
+        T0,
+    );
+    assert_eq!(
+        p.apply_log(&mut st, &start.view()),
+        Ok(DirtySet::Positions(liq_protocol::DirtyPositions::from_slice(&[ALICE_ID])))
+    );
+    let h = p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap();
+    assert_eq!(
+        h.state,
+        HealthState::Blocked {
+            reason: liq_protocol::BlockReason::Unread
+        }
+    );
+    assert_eq!(p.quote(st.view(ALICE_ID, T0).unwrap(), &px).unwrap(), None);
+
+    // The multicall swapped half the collateral away and borrowed more.
+    let bals = [(d.underlying, U256::ZERO), (d.coll, ALICE_COLL_LIQ)];
+    let (first, answered) = settle_reads(
+        &p,
+        &st,
+        d.alice,
+        ALICE_DEBT_LIQ,
+        U256::from(0b11),
+        &bals,
+        Some(d.coll),
+    );
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].target, d.manager);
+    assert_eq!(answered.len(), 3, "info + underlying + coll quota; coll balance dropped");
+    assert_eq!(fold_answers(&p, &mut st, &answered), vec![]);
+    assert!(
+        !p.position_reads(st.view(ALICE_ID, T0).unwrap()).is_empty(),
+        "incomplete reads leave the account stale"
+    );
+
+    let (_, answered) = settle_reads(
+        &p,
+        &st,
+        d.alice,
+        ALICE_DEBT_LIQ,
+        U256::from(0b11),
+        &bals,
+        None,
+    );
+    assert_eq!(answered.len(), 4);
+    assert_eq!(
+        fold_answers(&p, &mut st, &answered),
+        vec![DirtySet::Positions(liq_protocol::DirtyPositions::from_slice(&[ALICE_ID]))]
+    );
+    assert!(p.position_reads(st.view(ALICE_ID, T0).unwrap()).is_empty());
+    let settled = p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap();
+    let (p_ref, st_ref) = full_store(&d, ALICE_COLL_LIQ, ALICE_DEBT_LIQ);
+    let reference = p_ref.health(st_ref.view(ALICE_ID, T0).unwrap(), &px).unwrap();
+    assert_eq!(settled.state, HealthState::Liquidatable);
+    assert_eq!(settled.hf, reference.hf);
+    assert_eq!(settled.debt_value, reference.debt_value);
+    assert_eq!(settled.collateral_value, reference.collateral_value);
+}
+
+/// Oracle: a closed account's `creditAccountInfo.borrower` is zero
+/// (`CreditManagerV3.closeCreditAccount` deletes the borrower). Negative: the
+/// account must not keep its stale balances.
+#[test]
+fn closed_account_reads_zero_the_position() {
+    let d = Deploy::new();
+    let px = prices(RAY_ONE, RAY_ONE);
+    let (p, mut st) = full_store(&d, ALICE_COLL, ALICE_DEBT_OK);
+    let start = log(
+        d.facade,
+        &facade::StartMultiCall {
+            creditAccount: d.alice,
+            caller: d.alice,
+        },
+        DEPLOY_BLOCK + 2,
+        T0,
+    );
+    p.apply_log(&mut st, &start.view()).unwrap();
+    let (_, answered) = settle_reads(&p, &st, Address::ZERO, U256::ZERO, U256::ZERO, &[], None);
+    assert_eq!(answered.len(), 1, "no balance reads for a closed account");
+    fold_answers(&p, &mut st, &answered);
+    let h = p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap();
+    assert_eq!(h.state, HealthState::Healthy);
+    assert_eq!(st.supply(ALICE_ID, 1).unwrap(), 0);
+    assert_eq!(st.debt(ALICE_ID, UNDERLYING_SLOT).unwrap(), 0);
+    assert!(p.position_reads(st.view(ALICE_ID, T0).unwrap()).is_empty());
+}
+
+/// Oracle: a reorg can unwind a position's creation and the store hands the
+/// id to the next account interned. A read issued for the old account must
+/// not settle the new one. Negative: matching on the tag's id alone writes
+/// account A's debt and balances into account B.
+#[test]
+fn reads_for_another_account_are_not_folded() {
+    use alloy_sol_types::SolCall;
+    use liq_adapters_gearbox::events::views::ICreditManagerV3;
+    let d = Deploy::new();
+    let (p, mut st) = full_store(&d, ALICE_COLL, ALICE_DEBT_OK);
+    let start = log(
+        d.facade,
+        &facade::StartMultiCall {
+            creditAccount: d.alice,
+            caller: d.alice,
+        },
+        DEPLOY_BLOCK + 2,
+        T0,
+    );
+    p.apply_log(&mut st, &start.view()).unwrap();
+    let bals = [(d.underlying, U256::ZERO), (d.coll, ALICE_COLL_LIQ)];
+    let (_, mut answered) = settle_reads(
+        &p,
+        &st,
+        d.alice,
+        ALICE_DEBT_LIQ,
+        U256::from(0b11),
+        &bals,
+        None,
+    );
+    answered[0].0.calldata = ICreditManagerV3::creditAccountInfoCall {
+        creditAccount: Address::repeat_byte(0x77),
+    }
+    .abi_encode()
+    .into();
+    assert_eq!(fold_answers(&p, &mut st, &answered), vec![]);
+    assert_eq!(st.supply(ALICE_ID, 1).unwrap(), u128::try_from(ALICE_COLL).unwrap());
+    assert!(!p.position_reads(st.view(ALICE_ID, T0).unwrap()).is_empty());
+}
+
+/// Answers for the per-block interest reads, from fixed pool / keeper state.
+fn interest_answers(p: &GearboxV3) -> Vec<(liq_protocol::StateRead, Vec<u8>)> {
+    use alloy_primitives::aliases::{U192, U40, U96};
+    use alloy_sol_types::SolCall;
+    use liq_adapters_gearbox::events::views::{IPoolQuotaKeeperV3, IPoolV3};
+    struct NoRows;
+    impl liq_protocol::MarketRows for NoRows {
+        fn rows(&self, _: liq_types::MarketId) -> Option<&[liq_protocol::MarketRow]> {
+            None
+        }
+    }
+    p.state_reads(&NoRows)
+        .into_iter()
+        .map(|r| {
+            let c = &r.calldata;
+            let ret = if IPoolV3::baseInterestIndexLUCall::abi_decode(c).is_ok() {
+                IPoolV3::baseInterestIndexLUCall::abi_encode_returns(&POOL_INDEX_LU)
+            } else if IPoolV3::baseInterestRateCall::abi_decode(c).is_ok() {
+                IPoolV3::baseInterestRateCall::abi_encode_returns(&POOL_RATE)
+            } else if IPoolV3::lastBaseInterestUpdateCall::abi_decode(c).is_ok() {
+                IPoolV3::lastBaseInterestUpdateCall::abi_encode_returns(&U40::from(T0 - 1_000))
+            } else if IPoolQuotaKeeperV3::lastQuotaRateUpdateCall::abi_decode(c).is_ok() {
+                IPoolQuotaKeeperV3::lastQuotaRateUpdateCall::abi_encode_returns(&U40::from(
+                    T0 - 2_000,
+                ))
+            } else if IPoolQuotaKeeperV3::getTokenQuotaParamsCall::abi_decode(c).is_ok() {
+                IPoolQuotaKeeperV3::getTokenQuotaParamsCall::abi_encode_returns(
+                    &IPoolQuotaKeeperV3::getTokenQuotaParamsReturn {
+                        rate: 100,
+                        cumulativeIndexLU: U192::from(TOKEN_INDEX_LU),
+                        quotaIncreaseFee: 0,
+                        totalQuoted: U96::ZERO,
+                        limit: U96::MAX,
+                        isActive: true,
+                    },
+                )
+            } else {
+                panic!("unexpected interest read {r:?}")
+            };
+            (r, ret)
+        })
+        .collect()
+}
+
+const POOL_INDEX_LU: U256 = uint!(1_020_000_000_000_000_000_000_000_000_U256);
+const POOL_RATE: U256 = uint!(50_000_000_000_000_000_000_000_000_U256);
+const TOKEN_INDEX_LU: U256 = uint!(1_001_000_000_000_000_000_000_000_000_U256);
+
+/// Oracle: the total debt `CreditManagerV3._calcDebtAndCollateral` @
+/// `510fc654` reports a day after the reads, computed outside this crate in
+/// exact integers from the pin's formulas: `PoolV3._calcBaseInterestIndex`
+/// (`indexLU * (RAY + rate * dt / YEAR) / RAY`), `QuotasLogic.cumulativeIndexSince`
+/// (`LU + RAY/1e4 * dt * rate / YEAR`), `calcAccruedQuotaInterest`, and
+/// `accruedFees = quotaFees + base * feeInterest / 1e4 + quota * feeInterest / 1e4`.
+/// Debt 50e6 at account index RAY; pool LU 1.02 RAY at 5%/yr updated
+/// `T0-1000`; coll quota 1e15 at 100 bps from 1.001 RAY updated `T0-2000`,
+/// account quota index RAY; `cumulativeQuotaInterest` the 1-wei sentinel.
+/// Total 1_130_885_709_497. Negative: before this change the adapter held
+/// the index fixed and reported the bare 50e6 forever.
+#[test]
+fn debt_accrues_base_and_quota_interest_from_reads() {
+    let d = Deploy::new();
+    let px = prices(RAY_ONE, RAY_ONE);
+    let (p, mut st) = full_store(&d, ALICE_COLL, ALICE_DEBT_OK);
+    let start = log(
+        d.facade,
+        &facade::StartMultiCall {
+            creditAccount: d.alice,
+            caller: d.alice,
+        },
+        DEPLOY_BLOCK + 2,
+        T0,
+    );
+    p.apply_log(&mut st, &start.view()).unwrap();
+    let bals = [(d.underlying, U256::ZERO), (d.coll, ALICE_COLL)];
+    let (_, mut answered) = settle_reads(
+        &p,
+        &st,
+        d.alice,
+        ALICE_DEBT_OK,
+        U256::from(0b11),
+        &bals,
+        None,
+    );
+    let reads = interest_answers(&p);
+    assert_eq!(reads.len(), 5, "pool x3, keeper, one quoted token");
+    answered.extend(reads);
+    let sets = fold_answers(&p, &mut st, &answered);
+    assert_eq!(sets.len(), 2, "interest rows and the settled account: {sets:?}");
+    assert!(matches!(sets[0], DirtySet::MarketAccrual(_)));
+
+    let at_read = p.health(st.view(ALICE_ID, T0 - 1_000).unwrap(), &px).unwrap();
+    let day = p.health(st.view(ALICE_ID, T0 + 86_400).unwrap(), &px).unwrap();
+    let want = math::value_wad(uint!(1_130_885_709_497_U256), RAY_ONE, 6).unwrap();
+    assert_eq!(day.debt_value.raw(), want);
+    assert!(day.debt_value > at_read.debt_value, "debt grows with time");
 }

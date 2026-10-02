@@ -36,6 +36,23 @@ use crate::assemble_view::{require_meta, require_token, ProcessAssembleView};
 use crate::bind::{BoundProtocol, SelectBind};
 use crate::index::{BoundIndex, FlashSources};
 
+/// Sweep order: Hot, Warm, Cool, Cold, then the rest.
+fn sweep_rank(band: Option<liq_types::Band>) -> u8 {
+    match band {
+        Some(liq_types::Band::Hot) => 0,
+        Some(liq_types::Band::Warm) => 1,
+        Some(liq_types::Band::Cool) => 2,
+        Some(liq_types::Band::Cold) => 3,
+        _ => 4,
+    }
+}
+
+/// Blocks a drift resync stays in the read set without settling.
+const RESYNC_TTL_BLOCKS: u64 = 64;
+/// First-stage reads a protocol-wide resync puts in flight per block (an
+/// Aave account is ~2 per reserve, so this is a few dozen accounts).
+const SWEEP_READS_PER_BLOCK: usize = 2048;
+
 /// Gas budget of one SVR backrun. The parent header is the whole block.
 /// This transaction lands behind the oracle update, so the plan stops at
 /// 12M. Every account that fits shares that one transaction. A second
@@ -140,11 +157,29 @@ pub struct DrainJoin {
     state_reader: Option<Arc<crate::state_reads::StateReaderShared>>,
     /// Block the state read set was last rebuilt (`0` = never).
     state_reads_at: u64,
-    /// Block of the last state batch folded into the store.
+    /// Adapter-wide reads from that rebuild (Fluid vaults).
+    adapter_state_reads: crate::state_reads::StateReadSet,
+    /// Reads positions still want (Gearbox accounts after a multicall).
+    position_reads: HashMap<liq_types::PositionId, crate::state_reads::StateReadSet>,
+    /// Block of the last [`Self::refresh_state_reads`] (`0` = never): a gap
+    /// means blocks were folded without their own `after_block`.
+    position_reads_block: u64,
+    /// `seq` of the last state batch folded into the store.
     state_applied: u64,
     /// Periodic snapshots of the store (the restart point). `None` in tests
     /// and when the writer could not start.
     snapshots: Option<crate::state_build::SnapshotWriter>,
+    /// Drift check, fed each snapshot. `None` when not started.
+    drift: Option<crate::drift::DriftHandle>,
+    /// Resyncs in flight: a position's `resync_reads` and the block they
+    /// were asked at. Published with the other reads until a batch settles
+    /// the position (or [`RESYNC_TTL_BLOCKS`] pass).
+    resync: HashMap<liq_types::PositionId, (crate::state_reads::StateReadSet, u64)>,
+    /// Positions of protocols being resynced whole, a slice per block.
+    sweep: std::collections::VecDeque<liq_types::PositionId>,
+    /// Kept out of quoting: their health disagrees with the chain even after
+    /// a resync.
+    quarantine: std::collections::HashSet<liq_types::PositionId>,
     /// MEV-Share hints. Popped on the hot thread. `None` when the reader
     /// was not started.
     svr_rx: Option<rtrb::Consumer<liq_types::MevShareHint>>,
@@ -489,8 +524,15 @@ impl DrainJoin {
             reads_at: 0,
             state_reader: None,
             state_reads_at: 0,
+            adapter_state_reads: Vec::new(),
+            position_reads: HashMap::new(),
+            position_reads_block: 0,
             state_applied: 0,
             snapshots: None,
+            drift: None,
+            resync: HashMap::new(),
+            sweep: std::collections::VecDeque::new(),
+            quarantine: std::collections::HashSet::new(),
             svr_rx: None,
             svr_targets: Vec::new(),
             gov_rx: None,
@@ -551,19 +593,170 @@ impl DrainJoin {
         self
     }
 
-    /// Rebuild the state reader's read set when due.
-    fn refresh_state_reads(&mut self, block: u64, view: StateView<'_>) {
+    /// Check each snapshot for drift against the protocols' own views.
+    #[must_use]
+    pub fn with_drift(mut self, drift: crate::drift::DriftHandle) -> Self {
+        self.drift = Some(drift);
+        self
+    }
+
+    /// Rebuild the state reader's read set when due; between rebuilds, re-ask
+    /// the positions `touched` and republish if their reads moved.
+    fn refresh_state_reads(
+        &mut self,
+        block: u64,
+        view: StateView<'_>,
+        touched: &[liq_types::PositionId],
+    ) {
+        if self.state_reader.is_none() {
+            return;
+        }
+        let gap = self.position_reads_block != 0
+            && block != self.position_reads_block.saturating_add(1);
+        self.position_reads_block = block;
+        let rebuild = self.state_reads_at == 0
+            || block.saturating_sub(self.state_reads_at)
+                >= crate::protocol_prices::READS_REFRESH_BLOCKS;
+        let changed = if rebuild || gap {
+            if rebuild {
+                self.adapter_state_reads =
+                    crate::state_reads::collect_state_reads(self.protocols, view);
+                self.state_reads_at = block.max(1);
+            }
+            self.position_reads = crate::state_reads::collect_position_reads(self.protocols, &view);
+            tracing::info!(
+                reads = self.adapter_state_reads.len(),
+                positions = self.position_reads.len(),
+                block,
+                "protocol state reads rebuilt"
+            );
+            true
+        } else {
+            self.reask_positions(&view, touched)
+        };
+        if changed {
+            self.publish_state_reads();
+        }
+    }
+
+    /// Re-ask `ids` for their reads. `true` when the set changed.
+    fn reask_positions(&mut self, view: &StateView<'_>, ids: &[liq_types::PositionId]) -> bool {
+        let mut changed = false;
+        for &id in ids {
+            let reads = crate::state_reads::position_reads_for(self.protocols, view, id);
+            if reads.is_empty() {
+                changed |= self.position_reads.remove(&id).is_some();
+            } else if self.position_reads.get(&id) != Some(&reads) {
+                self.position_reads.insert(id, reads);
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn publish_state_reads(&self) {
         let Some(shared) = self.state_reader.as_ref() else {
             return;
         };
-        if self.state_reads_at == 0
-            || block.saturating_sub(self.state_reads_at)
-                >= crate::protocol_prices::READS_REFRESH_BLOCKS
-        {
-            let reads = crate::state_reads::collect_state_reads(self.protocols, view);
-            tracing::info!(reads = reads.len(), block, "protocol state reads rebuilt");
-            shared.reads.store(Arc::new(reads));
-            self.state_reads_at = block.max(1);
+        let mut reads =
+            crate::state_reads::merged_reads(&self.adapter_state_reads, &self.position_reads);
+        let mut ids: Vec<&liq_types::PositionId> = self.resync.keys().collect();
+        ids.sort_unstable();
+        for id in ids {
+            if let Some((r, _)) = self.resync.get(id) {
+                reads.extend(r.iter().cloned());
+            }
+        }
+        shared.reads.store(Arc::new(reads));
+    }
+
+    /// Ask for `id`'s state from chain. `false` when its adapter cannot.
+    fn request_resync(&mut self, view: &StateView<'_>, id: liq_types::PositionId, block: u64) -> bool {
+        let reads = crate::state_reads::resync_reads_for(self.protocols, view, id);
+        if reads.is_empty() {
+            return false;
+        }
+        self.resync.insert(id, (reads, block));
+        true
+    }
+
+    /// Apply the drift thread's actions. Non-blocking.
+    fn poll_drift(&mut self, store: &liq_state::StateStore) {
+        let Some(drift) = self.drift.as_ref() else {
+            return;
+        };
+        let actions = drift.take_actions();
+        if actions.is_empty() {
+            return;
+        }
+        let view = store.view(self.last_ts);
+        let block = store.tip();
+        let mut changed = false;
+        for a in actions {
+            match a {
+                crate::drift::DriftAction::Resync(id) => {
+                    if self.request_resync(&view, id, block) {
+                        changed = true;
+                    } else {
+                        tracing::warn!(target: "drift", position = id.0, "drifting position's adapter cannot resync — it will be quarantined if it keeps drifting");
+                    }
+                }
+                crate::drift::DriftAction::ResyncProtocol(pid) => {
+                    let before = self.sweep.len();
+                    let queued: std::collections::HashSet<liq_types::PositionId> =
+                        self.sweep.iter().copied().collect();
+                    let n = u32::try_from(view.len()).unwrap_or(u32::MAX);
+                    let mut ids: Vec<(u8, liq_types::PositionId)> = (0..n)
+                        .map(liq_types::PositionId)
+                        .filter(|id| {
+                            view.position(*id).is_ok_and(|p| p.key.protocol == pid)
+                                && !queued.contains(id)
+                        })
+                        .map(|id| (sweep_rank(self.engine.band(id)), id))
+                        .collect();
+                    // Nearest to liquidation first.
+                    ids.sort_unstable();
+                    self.sweep.extend(ids.into_iter().map(|(_, id)| id));
+                    tracing::warn!(target: "drift", protocol = pid.0, queued = self.sweep.len().saturating_sub(before), "protocol-wide resync queued");
+                }
+                crate::drift::DriftAction::Quarantine(id) => {
+                    self.quarantine.insert(id);
+                }
+                crate::drift::DriftAction::Release(id) => {
+                    self.quarantine.remove(&id);
+                }
+            }
+        }
+        if changed {
+            self.publish_state_reads();
+        }
+    }
+
+    /// Move the next slice of a protocol-wide resync into flight and drop
+    /// resyncs that never settled.
+    fn advance_resync(&mut self, view: &StateView<'_>, block: u64) {
+        let mut changed = false;
+        let before = self.resync.len();
+        self.resync.retain(|id, (_, at)| {
+            let keep = block.saturating_sub(*at) < RESYNC_TTL_BLOCKS;
+            if !keep {
+                tracing::warn!(target: "drift", position = id.0, "resync never settled — dropped");
+            }
+            keep
+        });
+        changed |= self.resync.len() != before;
+        let mut reads = 0usize;
+        while reads < SWEEP_READS_PER_BLOCK {
+            let Some(id) = self.sweep.pop_front() else {
+                break;
+            };
+            if self.request_resync(view, id, block) {
+                reads = reads.saturating_add(self.resync.get(&id).map_or(0, |(r, _)| r.len()));
+                changed = true;
+            }
+        }
+        if changed {
+            self.publish_state_reads();
         }
     }
 
@@ -582,27 +775,44 @@ impl DrainJoin {
         let Some(batch) = latest.as_ref().as_ref() else {
             return;
         };
-        if batch.block <= self.state_applied
+        if batch.seq <= self.state_applied
             || !self.block_seen
             || batch.block != self.last_block
             || batch.block != store.tip()
         {
             return;
         }
-        self.state_applied = batch.block;
+        self.state_applied = batch.seq;
         let ts = self.last_ts;
         dirty.clear();
+        let mut settled: Vec<liq_types::PositionId> = Vec::new();
         for (i, p) in self.protocols.iter().enumerate() {
             let answers = batch.answers_for(i);
             if answers.is_empty() {
                 continue;
             }
             match p.as_dyn().apply_state_reads(store, ts, &answers) {
-                Ok(set) => dirty.merge(set),
+                Ok(sets) => {
+                    for set in sets {
+                        if let DirtySet::Positions(ids) = &set {
+                            settled.extend_from_slice(ids);
+                        }
+                        dirty.merge(set);
+                    }
+                }
                 Err(e) => {
                     tracing::error!(error = %e, protocol = p.id().0, block = batch.block, "state reads refused")
                 }
             }
+        }
+        // Positions a batch settled drop their reads; any still unsettled
+        // keep theirs for the next head.
+        let mut resynced = false;
+        for id in &settled {
+            resynced |= self.resync.remove(id).is_some();
+        }
+        if !settled.is_empty() && (self.reask_positions(&store.view(ts), &settled) || resynced) {
+            self.publish_state_reads();
         }
         let collapsed = match dirty.collapse(store, ts) {
             Ok(c) => c,
@@ -611,7 +821,15 @@ impl DrainJoin {
                 return;
             }
         };
-        let sets: Vec<DirtySet> = as_dirty_sets(collapsed).collect();
+        let mut sets: Vec<DirtySet> = as_dirty_sets(collapsed).collect();
+        // The collapse drops positions whose market also accrued, and the
+        // engine walks only banded positions for an accrual: a settled
+        // account is refolded by name.
+        if !settled.is_empty() {
+            settled.sort_unstable();
+            settled.dedup();
+            sets.push(DirtySet::Positions(settled.iter().copied().collect()));
+        }
         if sets.iter().all(|s| matches!(s, DirtySet::None)) {
             return;
         }
@@ -950,7 +1168,8 @@ impl DrainJoin {
     }
 
     fn feed_engine(&mut self, ctx: AfterBlockCtx<'_>) {
-        self.refresh_state_reads(ctx.block, ctx.store.view(ctx.timestamp));
+        self.refresh_state_reads(ctx.block, ctx.store.view(ctx.timestamp), ctx.touched);
+        self.advance_resync(&ctx.store.view(ctx.timestamp), ctx.block);
         let first_protocol_prices =
             self.take_protocol_prices(ctx.block, ctx.store.view(ctx.timestamp));
         // The overlay needs a vector to lay onto even before any canonical
@@ -1057,6 +1276,17 @@ impl DrainJoin {
             return stats;
         }
         let mode = if svr { Mode::Svr } else { Mode::Ordinary };
+        let kept: Vec<Candidate>;
+        let cands = if self.quarantine.is_empty() {
+            cands
+        } else {
+            kept = cands
+                .iter()
+                .filter(|c| !self.quarantine.contains(&c.position))
+                .cloned()
+                .collect();
+            &kept[..]
+        };
         for b in self.build(cands, tip, view, mode, &mut stats) {
             match self.finish_job(
                 b.lead,
@@ -1766,10 +1996,24 @@ impl AfterBlock for DrainJoin {
         let tip = ctx.store.tip();
         let ts = ctx.timestamp;
         let store = ctx.store;
-        if let Some(w) = self.snapshots.as_mut() {
-            w.after_block(store, ctx.block, ctx.hash);
-        }
+        let snap = self
+            .snapshots
+            .as_mut()
+            .and_then(|w| w.after_block(store, ctx.block, ctx.hash));
+        let block = ctx.block;
         self.feed_engine(ctx);
+        // After the engine took this block: its bands and prices match the
+        // snapshot's block.
+        if let (Some(snap), Some(drift)) = (snap, self.drift.as_ref()) {
+            let bands = crate::drift::bands_for(&snap, |id| self.engine.band(id));
+            drift.offer(crate::drift::DriftJob {
+                snap,
+                bands,
+                px: self.engine.prices().clone(),
+                block,
+                timestamp: ts,
+            });
+        }
         let cands: Vec<Candidate> = self.engine.candidates().collect();
         if cands.is_empty() {
             return;
@@ -1781,6 +2025,7 @@ impl AfterBlock for DrainJoin {
     fn poll(&mut self, store: &liq_state::StateStore) {
         self.poll_svr(store);
         self.poll_gov(store);
+        self.poll_drift(store);
     }
 
     fn amend(&mut self, store: &mut liq_state::StateStore, dirty: &mut liq_node::DirtyAccumulator) {
@@ -3007,6 +3252,7 @@ mod tests {
         AfterBlockCtx {
             store,
             dirty,
+            touched: &dirty.positions,
             block: 1,
             hash: alloy_primitives::B256::ZERO,
             timestamp: 1,

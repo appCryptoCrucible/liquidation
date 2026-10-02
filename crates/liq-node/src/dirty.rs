@@ -189,6 +189,15 @@ impl DirtyAccumulator {
         Ok(&self.out)
     }
 
+    /// Every position any log of the block reported, before the collapse
+    /// drops those whose market also accrued or repriced. Empty when a
+    /// log was `ProtocolWide`.
+    #[inline]
+    #[must_use]
+    pub fn touched(&self) -> &DirtyPositions {
+        &self.positions
+    }
+
     /// The last [`Self::collapse`] output. [`crate::apply_block`] collapses at
     /// the end of every block, so the engine (GUIDE 03 §4 `flush_to_engine`)
     /// reads the result here instead of paying for a second collapse.

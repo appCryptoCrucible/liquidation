@@ -5,7 +5,7 @@
 # 733 assets. Not pinned: 54 idle (no oracle/collateral),
 # 7 with a token outside the registry, 0 unreadable.
 # Registry copy disagreed with the chain on 0 market(s); chain wins.
-# MarketIds: catalog 5000, markets from 5001 (after Fluid 4000..=4999; Gearbox is 71000+).
+# MarketIds: catalog 5000 (reserved), markets 5001..=63999 (after Fluid 4000..=4999; Gearbox 64000+).
 # feed = 0 is informational only (Morpho prices through each market oracle).
 
 protocol = 5

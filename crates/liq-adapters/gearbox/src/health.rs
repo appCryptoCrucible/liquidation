@@ -14,8 +14,9 @@ use crate::layout::{
     AccountExtra, ManagerRow, QuotaExtra, TokenRow, UNDERLYING_SLOT, UNMAPPED_ASSET,
 };
 use crate::math::{
-    calc_accrued_interest, calc_total_debt, get_liquidation_threshold, hf_ray, interest_fee,
-    is_expired, is_unhealthy, token_twv, value_wad,
+    accrued_quota_interest, base_interest_index, calc_accrued_interest, calc_total_debt,
+    get_liquidation_threshold, hf_ray, interest_fee, is_expired, is_unhealthy, quota_index_since,
+    token_twv, value_wad,
 };
 
 #[derive(Copy, Clone, Debug)]
@@ -140,6 +141,62 @@ pub(crate) fn token_lt(row: &MarketRow, slot: u16, now: u64, mgr: &ManagerRow) -
     get_liquidation_threshold(t.lt_initial, t.lt_final, t.ramp_start, t.ramp_duration, now)
 }
 
+/// `Σ getQuotaAndOutstandingInterest(account, token).outstandingInterest`
+/// over the account's enabled non-underlying tokens, each token's index
+/// projected from the keeper's last read. A token or account checkpoint not
+/// read yet contributes nothing.
+fn outstanding_quota_interest(
+    pos: PositionRef<'_>,
+    manager: &ManagerRow,
+    extra: &AccountExtra,
+) -> Result<U256> {
+    if manager.flags & ManagerRow::QUOTA_TIME_KNOWN == 0 {
+        return Ok(U256::ZERO);
+    }
+    let mut sum = U256::ZERO;
+    for slot in 1u16..u16::from(manager.token_count) {
+        let bit = 1u64
+            .checked_shl(u32::from(slot))
+            .ok_or(FixedError::Overflow)?;
+        if extra.enabled_tokens_mask & bit == 0 {
+            continue;
+        }
+        let q: &QuotaExtra = pos
+            .slot_extra
+            .get(usize::from(slot))
+            .ok_or(ProtocolError::SlotOutOfRange(MarketSlot {
+                market: pos.key.market,
+                slot,
+            }))?
+            .view()?;
+        let row = pos
+            .markets
+            .get(usize::from(slot))
+            .ok_or(ProtocolError::SlotOutOfRange(MarketSlot {
+                market: pos.key.market,
+                slot,
+            }))?;
+        let t: &TokenRow = row.body()?;
+        if q.quota == 0 || q.index_lu == 0 || t.flags & TokenRow::QUOTA_KNOWN == 0 {
+            continue;
+        }
+        let now = quota_index_since(
+            U256::from(t.quota_index_lu),
+            t.quota_rate,
+            manager.quota_last_update,
+            pos.timestamp,
+        )?;
+        let lu = U256::from(q.index_lu);
+        if now <= lu {
+            continue;
+        }
+        sum = sum
+            .checked_add(accrued_quota_interest(U256::from(q.quota), now, lu)?)
+            .ok_or(FixedError::Overflow)?;
+    }
+    Ok(sum)
+}
+
 pub(crate) fn terms<'a>(
     pos: PositionRef<'a>,
     px: &PriceVector,
@@ -149,10 +206,18 @@ pub(crate) fn terms<'a>(
     let (debt_row, manager) = manager_row(pos)?;
     let debt = U256::from(cell(pos.debt, UNDERLYING_SLOT));
     let index_last = U256::from(extra.cumulative_index_last_update);
-    // No invented IRM: if the account never stored an index, treat now == last
-    // (zero accrued). Drift vs `baseInterestIndex()` is a probe gap.
-    let index_now = if index_last.is_zero() {
-        U256::ZERO
+    // `PoolV3.baseInterestIndex()` projected to the evaluation time from the
+    // pool's last read. No read yet, or no stored account index: no growth
+    // (no invented IRM). A read older than the account's checkpoint cannot
+    // pull the index below it.
+    let index_now = if manager.flags & ManagerRow::BASE_KNOWN != 0 && !index_last.is_zero() {
+        base_interest_index(
+            U256::from(manager.base_index_lu),
+            U256::from(manager.base_rate),
+            manager.base_last_update,
+            pos.timestamp,
+        )?
+        .max(index_last)
     } else {
         index_last
     };
@@ -162,7 +227,11 @@ pub(crate) fn terms<'a>(
         calc_accrued_interest(debt, index_last, index_now)?
     };
     let base_fee = interest_fee(accrued_interest, U256::from(manager.fee_interest))?;
-    let quota_interest = U256::from(extra.cumulative_quota_interest);
+    // `_calcDebtAndCollateral`: settled quota interest plus every enabled
+    // non-underlying token's outstanding interest since its checkpoint.
+    let quota_interest = U256::from(extra.cumulative_quota_interest)
+        .checked_add(outstanding_quota_interest(pos, manager, extra)?)
+        .ok_or(FixedError::Overflow)?;
     let quota_fee = interest_fee(quota_interest, U256::from(manager.fee_interest))?;
     let accrued_interest = accrued_interest
         .checked_add(quota_interest)
@@ -266,6 +335,12 @@ pub(crate) fn finish(t: &Terms<'_>, pos: PositionRef<'_>) -> Result<Health> {
         .is_some_and(|r| r.flags.contains(MarketFlags::PAUSED));
     let state = if t.debt.is_zero() {
         HealthState::Healthy
+    } else if extra.flags & AccountExtra::STALE != 0 {
+        // Balances are pre-multicall. The multicall ended in a full
+        // collateral check, so the account was healthy at that block.
+        HealthState::Blocked {
+            reason: BlockReason::Unread,
+        }
     } else if paused {
         HealthState::Blocked {
             reason: BlockReason::Paused,

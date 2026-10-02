@@ -10,6 +10,7 @@ pub mod health;
 pub mod layout;
 pub mod math;
 pub mod quote;
+pub mod resync;
 pub mod solve;
 
 use alloy_primitives::{Address, Bytes, U256};
@@ -290,6 +291,30 @@ impl Protocol for AaveV3 {
                 repay_amount: wire(repay.max_repay)?,
             },
         })
+    }
+
+    /// Reserve ids the configuration bitmap needs, until each is known.
+    fn state_reads(&self, rows: &dyn liq_protocol::MarketRows) -> Vec<liq_protocol::StateRead> {
+        resync::id_reads(&self.cfg, rows)
+    }
+
+    fn state_follow_ups(&self, answer: liq_protocol::StateAnswer<'_>) -> Vec<liq_protocol::StateRead> {
+        resync::follow_ups(&self.cfg, answer)
+    }
+
+    /// The account's balances, collateral flags and e-mode, read back for
+    /// the drift check (`resync`).
+    fn resync_reads(&self, pos: PositionRef<'_>) -> Vec<liq_protocol::StateRead> {
+        resync::resync_reads(&self.cfg, pos)
+    }
+
+    fn apply_state_reads(
+        &self,
+        st: &mut dyn StateWriter,
+        _timestamp: liq_protocol::Timestamp,
+        answers: &[liq_protocol::StateAnswer<'_>],
+    ) -> Result<Vec<DirtySet>> {
+        resync::apply(&self.cfg, st, answers)
     }
 
     fn health_probe(&self, pos: PositionRef<'_>) -> Result<ProbeCall> {

@@ -13,11 +13,13 @@
 //! `StateStore.market_index` is `MarketId → row` with no `ProtocolId`.
 //! Gearbox is not in `registry.json`. Locked range:
 //! - ProtocolId **11**
-//! - Catalog (register index, not a manager): [`CATALOG_MARKET`] = 71000
-//! - Credit managers sequential from [`FIRST_MANAGER_MARKET`] = 71001
-//! - Inclusive last: [`LAST_MANAGER_MARKET`] = 71999
+//! - Catalog (register index, not a manager): [`CATALOG_MARKET`] = 64000
+//! - Credit managers sequential from [`FIRST_MANAGER_MARKET`] = 64001
+//! - Inclusive last: [`LAST_MANAGER_MARKET`] = 64999
 //!
-//! Above Morpho's 5000..=70536 (first market plus a `u16` slot). Ids follow
+//! Above Morpho's 5000..=63999 and below `liq_protocol::MARKET_ID_LIMIT`
+//! (the store's `u16` market table; it was 71000.., which the store
+//! refuses, so no Gearbox log could fold). Ids follow
 //! discovery order; the state snapshot's bindings fingerprint rebuilds the
 //! state when the manager set changes, so an id never moves under a snapshot.
 
@@ -38,11 +40,12 @@ use crate::math::PERCENTAGE_FACTOR;
 /// Locked protocol id (allocator).
 pub const PROTOCOL: ProtocolId = ProtocolId(11);
 /// ContractsRegister catalog. Not a credit manager.
-pub const CATALOG_MARKET: MarketId = MarketId(71_000);
+pub const CATALOG_MARKET: MarketId = MarketId(64_000);
 /// First credit-manager MarketId.
-pub const FIRST_MANAGER_MARKET: MarketId = MarketId(71_001);
+pub const FIRST_MANAGER_MARKET: MarketId = MarketId(64_001);
 /// Inclusive end of the Gearbox band.
-pub const LAST_MANAGER_MARKET: MarketId = MarketId(71_999);
+pub const LAST_MANAGER_MARKET: MarketId = MarketId(64_999);
+const _: () = assert!(LAST_MANAGER_MARKET.0 < liq_protocol::MARKET_ID_LIMIT);
 /// D15 cardinality on the v3.0 register (historical; v3.0 holds no debt).
 pub const D15_MANAGER_COUNT: u32 = 34;
 /// Manager versions discovered through the v3.1 address provider.
@@ -149,7 +152,7 @@ pub enum ConfigError {
     ZeroRegister,
     #[error("protocol id is not 11")]
     ProtocolMismatch,
-    #[error("catalog / first_market outside 71000..=71999")]
+    #[error("catalog / first_market outside 64000..=64999")]
     MarketOutOfRange,
     #[error("address {0} configured twice")]
     DuplicateAddress(Address),
@@ -159,7 +162,7 @@ pub enum ConfigError {
     DuplicateAsset(AssetId),
     #[error("live getCreditManagers len {found} != expected {expected}")]
     ManagerCount { expected: u32, found: u32 },
-    #[error("too many credit managers for 71001..=71999")]
+    #[error("too many credit managers for 64001..=64999")]
     TooManyManagers,
     #[error("fees() discount is zero or above PERCENTAGE_FACTOR")]
     FeesBounds,

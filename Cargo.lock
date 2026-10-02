@@ -5547,6 +5547,7 @@ dependencies = [
  "liq-types",
  "smallvec",
  "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]
@@ -5658,6 +5659,7 @@ dependencies = [
  "liq-types",
  "smallvec",
  "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]

@@ -106,7 +106,10 @@ pub struct Reserve {
     pub liq_bonus: u16,
     pub liq_protocol_fee: u16,
     pub flags: u8,
-    pub _pad1: [u8; 3],
+    /// `reserve_id` holds the pool's id for this reserve (read by
+    /// `crate::resync`, not derived from the slot).
+    pub id_known: u8,
+    pub _pad1: [u8; 2],
     /// Bitmaps over e-mode TABLE POSITIONS (see [`PoolMeta::emode_index`]),
     /// not over category ids and not over reserve ids. `u32` so all
     /// [`PoolMeta::EMODE_CAP`] positions are addressable — as `u8` they
@@ -116,7 +119,10 @@ pub struct Reserve {
     pub emode_ltv0: EModeBits,
     /// `StableDebtToken` from `ReserveInitialized` (zero on 3.2+ pools).
     pub s_token: [u8; 20],
-    pub _pad: [u8; 8],
+    /// `ReserveData.id`: this reserve's bit pair in a user's configuration
+    /// bitmap. Valid only when `id_known != 0`.
+    pub reserve_id: u16,
+    pub _pad: [u8; 6],
 }
 
 impl Reserve {

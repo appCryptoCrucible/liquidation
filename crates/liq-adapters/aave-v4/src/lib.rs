@@ -37,6 +37,7 @@ pub mod health;
 pub mod layout;
 pub mod math;
 pub mod quote;
+pub mod resync;
 pub mod solve;
 
 use alloy_primitives::{Address, Bytes, U256};
@@ -306,6 +307,25 @@ impl Protocol for AaveV4 {
     /// `Spoke.getUserAccountData(user)` on the position's spoke; the decoder
     /// lifts `healthFactor` (WAD) to RAY. `ProbeUnavailable` when the
     /// position's market is not one of this adapter's spokes.
+    /// The account's spoke positions, collateral flags, dynamic configs
+    /// and risk premium, read back for the drift check (`resync`).
+    fn resync_reads(&self, pos: PositionRef<'_>) -> Vec<liq_protocol::StateRead> {
+        resync::resync_reads(&self.cfg, pos)
+    }
+
+    fn state_follow_ups(&self, answer: liq_protocol::StateAnswer<'_>) -> Vec<liq_protocol::StateRead> {
+        resync::follow_ups(answer)
+    }
+
+    fn apply_state_reads(
+        &self,
+        st: &mut dyn StateWriter,
+        _timestamp: liq_protocol::Timestamp,
+        answers: &[liq_protocol::StateAnswer<'_>],
+    ) -> Result<Vec<DirtySet>> {
+        resync::apply(&self.cfg, st, answers)
+    }
+
     fn health_probe(&self, pos: PositionRef<'_>) -> Result<ProbeCall> {
         let spoke = self
             .cfg

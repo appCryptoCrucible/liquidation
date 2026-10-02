@@ -40,7 +40,8 @@ use crate::view::{Overlay, StateView};
 /// Sentinel in `market_index`: no market at that id.
 pub(crate) const NO_MARKET: u16 = u16::MAX;
 /// Addressable market ids and market count: the index table is `u16`.
-const MAX_MARKETS: usize = NO_MARKET as usize;
+const MAX_MARKETS: usize = liq_protocol::MARKET_ID_LIMIT as usize;
+const _: () = assert!(MAX_MARKETS == NO_MARKET as usize);
 /// `u128` cells per cache line; strides are rounded up to this.
 pub(crate) const LINE_CELLS: usize = 4;
 

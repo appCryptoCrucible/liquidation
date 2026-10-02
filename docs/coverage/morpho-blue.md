@@ -1,7 +1,7 @@
 <!-- coverage-audit protocol=morpho-blue repo=morpho-org/morpho-blue commit=8e26ca6a8dbc5089edcd67fb576248810fd2870a date=2026-09-09 -->
 # Morpho Blue event coverage
 
-Source: `morpho-org/morpho-blue` @ `8e26ca6a8dbc5089edcd67fb576248810fd2870a` (`main`, 2026-09-09). Singleton `Morpho.sol`; markets discovered from `CreateMarket`, never a hand list.
+Source: `morpho-org/morpho-blue` @ `8e26ca6a8dbc5089edcd67fb576248810fd2870a` (`main`, 2026-09-09). Singleton `Morpho.sol`; markets discovered from `CreateMarket`, never a hand list. Creation is permissionless: a market whose loan or collateral token is outside the config's `assets` (an idle market, or a token the registry never interned) is skipped and its later logs fold to `None`. Admitted markets take contiguous MarketIds 5001..=63999; the loan row's `morpho_id` is the `Id → MarketId` index (no catalog rows — a market holds at most 128).
 
 DirtySet lives in `liq-protocol` (D46). `halt` is GUIDE-03 HaltSink, not a DirtySet variant.
 
@@ -19,7 +19,7 @@ topic0 = keccak256(canonical ABI signature). `Id` → `bytes32`.
 
 | path | function/event | log topic(s) | DirtySet | notes |
 |---|---|---|---|---|
-| morpho.createMarket | Morpho.createMarket → CreateMarket | 0xac4b2400f169220b0c0afdde7a0b32e775ba727ea1cb30b35f935cdaab8683ac | MarketReprice | discovers interned MarketId |
+| morpho.createMarket | Morpho.createMarket → CreateMarket | 0xac4b2400f169220b0c0afdde7a0b32e775ba727ea1cb30b35f935cdaab8683ac | MarketReprice | discovers interned MarketId; `None` when skipped |
 | morpho.supply | Morpho.supply → Supply | 0xedf8870433c83823eb071d3df1caa8d008f12f6440918c20d75a3602cda30fe0 | Positions | loan-token shares |
 | morpho.withdraw | Morpho.withdraw → Withdraw | 0xa56fc0ad5702ec05ce63666221f796fb62437c32db1aa1aa075fc6484cf58fbf | Positions | |
 | morpho.borrow | Morpho.borrow → Borrow | 0x570954540bed6b1304a87dfe815a5eda4a648f7097a16240dcd85c9b5fd42a43 | Positions | |

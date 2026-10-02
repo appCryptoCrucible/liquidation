@@ -1,4 +1,10 @@
 //! `Protocol::apply_log` for Euler V2 EVK. Journal-before-write is the writer.
+//!
+//! A vault has rows only when the config interns it (`Config::interned`,
+//! from the registry): its MarketId is that intern id, so no in-store index
+//! is needed. The factory's `ProxyCreated` for any other vault (thousands on
+//! mainnet, none of whose logs are routed here) is `DirtySet::None`. The old
+//! one-row-per-vault catalog market overflowed a market's 128 rows.
 
 use alloy_primitives::{Address, B256, U256};
 use alloy_sol_types::SolEvent;
@@ -12,8 +18,7 @@ use liq_types::{MarketId, PositionId, PositionKey};
 use crate::config::{Config, Emitter};
 use crate::events::{self, evc, halt};
 use crate::layout::{
-    CatalogEntry, CollRow, UserExtra, VaultRow, CATALOG_ASSET, DEBT_SLOT, INITIAL_HOOKED_OPS,
-    OP_LIQUIDATE, UNMAPPED_ASSET,
+    CollRow, UserExtra, VaultRow, DEBT_SLOT, INITIAL_HOOKED_OPS, OP_LIQUIDATE, UNMAPPED_ASSET,
 };
 use crate::math::{
     accrue_accumulator, addr20, addr_from, assets_to_owed, current_owed, last_update,
@@ -58,44 +63,17 @@ fn intern(
     })
 }
 
+/// The listed market of `vault`: its intern id once `ProxyCreated` /
+/// `EVaultCreated` has written its rows.
 fn lookup_vault(cfg: &Config, st: &dyn StateWriter, vault: Address) -> Result<Option<MarketId>> {
-    let rows = match st.markets(cfg.catalog) {
-        Ok(r) => r,
-        Err(ProtocolError::UnknownMarket(_)) => return Ok(None),
-        Err(e) => return Err(e),
+    let Some(market) = cfg.interned_id(vault) else {
+        return Ok(None);
     };
-    for row in rows {
-        let e: &CatalogEntry = row.body()?;
-        if addr_from(e.vault) == vault {
-            return Ok(Some(MarketId(e.market)));
-        }
+    match st.markets(market) {
+        Ok(rows) if !rows.is_empty() => Ok(Some(market)),
+        Ok(_) | Err(ProtocolError::UnknownMarket(_)) => Ok(None),
+        Err(e) => Err(e),
     }
-    Ok(None)
-}
-
-fn discovered_market(cfg: &Config, st: &dyn StateWriter, vault: Address) -> Result<MarketId> {
-    if let Some(id) = cfg.interned_id(vault) {
-        return Ok(id);
-    }
-    let mut n = 0u32;
-    match st.markets(cfg.catalog) {
-        Ok(rows) => {
-            for row in rows {
-                let e: &CatalogEntry = row.body()?;
-                if cfg.interned_id(addr_from(e.vault)).is_none() {
-                    n = n.checked_add(1).ok_or(FixedError::Overflow)?;
-                }
-            }
-        }
-        Err(ProtocolError::UnknownMarket(_)) => {}
-        Err(e) => return Err(e),
-    }
-    Ok(MarketId(
-        cfg.first_market
-            .0
-            .checked_add(n)
-            .ok_or(FixedError::Overflow)?,
-    ))
 }
 
 fn emitter(cfg: &Config, st: &dyn StateWriter, address: Address) -> Result<Option<Emitter>> {
@@ -141,6 +119,8 @@ fn trailing3(data: &[u8]) -> Result<(Address, Address, Address)> {
     Ok((Address::from(a), Address::from(o), Address::from(u)))
 }
 
+/// List `vault` (or refresh its metadata). `None` for a vault the config
+/// does not intern.
 fn ensure_vault(
     cfg: &Config,
     st: &mut dyn StateWriter,
@@ -149,7 +129,7 @@ fn ensure_vault(
     oracle: Address,
     unit: Address,
     ts: u32,
-) -> Result<(MarketId, DirtyRows)> {
+) -> Result<Option<(MarketId, DirtyRows)>> {
     if let Some(m) = lookup_vault(cfg, st, vault)? {
         let at = MarketSlot {
             market: m,
@@ -183,22 +163,11 @@ fn ensure_vault(
         let v: &VaultRow = row.body()?;
         row.flags = derive_flags(v);
         st.set_market(at, row)?;
-        return Ok((m, dirty_slot(m, DEBT_SLOT)));
+        return Ok(Some((m, dirty_slot(m, DEBT_SLOT))));
     }
-    let n = match st.markets(cfg.catalog) {
-        Ok(r) => r.len(),
-        Err(ProtocolError::UnknownMarket(_)) => 0,
-        Err(e) => return Err(e),
+    let Some(market) = cfg.interned_id(vault) else {
+        return Ok(None);
     };
-    let cat_slot = u16::try_from(n).map_err(|_| ProtocolError::MalformedLog)?;
-    let market = discovered_market(cfg, st, vault)?;
-    let mut cat = MarketRow::blank(CATALOG_ASSET, 0);
-    {
-        let e: &mut CatalogEntry = cat.body_mut()?;
-        e.vault = addr20(vault);
-        e.market = market.0;
-    }
-    st.push_market(cfg.catalog, cat)?;
 
     let tok = cfg.token(underlying);
     let priced = tok.is_some() && oracle != Address::ZERO && cfg.oracle_pinned(oracle);
@@ -231,9 +200,7 @@ fn ensure_vault(
     let v: &VaultRow = row.body()?;
     row.flags = derive_flags(v);
     st.push_market(market, row)?;
-    let mut d = dirty_slot(cfg.catalog, cat_slot);
-    d.extend(dirty_slot(market, DEBT_SLOT));
-    Ok((market, d))
+    Ok(Some((market, dirty_slot(market, DEBT_SLOT))))
 }
 
 fn patch_vault(
@@ -301,14 +268,7 @@ fn coll_slots(
     coll_vault: Address,
 ) -> Result<SmallVec8<(MarketId, u16)>> {
     let mut out = SmallVec8::new();
-    let cat = match st.markets(cfg.catalog) {
-        Ok(r) => r,
-        Err(ProtocolError::UnknownMarket(_)) => return Ok(out),
-        Err(e) => return Err(e),
-    };
-    for crow in cat {
-        let e: &CatalogEntry = crow.body()?;
-        let market = MarketId(e.market);
+    for &(_, market) in &cfg.interned {
         let rows = match st.markets(market) {
             Ok(r) => r,
             Err(ProtocolError::UnknownMarket(_)) => continue,
@@ -387,8 +347,10 @@ fn apply_factory(
         let ev: events::ProxyCreated = decode(log)?;
         let (asset, oracle, unit) = trailing3(ev.trailingData.as_ref())?;
         let ts = last_update(log.timestamp)?;
-        let (_, rows) = ensure_vault(cfg, st, ev.proxy, asset, oracle, unit, ts)?;
-        return Ok(DirtySet::MarketReprice(rows));
+        return Ok(match ensure_vault(cfg, st, ev.proxy, asset, oracle, unit, ts)? {
+            Some((_, rows)) => DirtySet::MarketReprice(rows),
+            None => DirtySet::None,
+        });
     }
     if topic0 == events::Genesis::SIGNATURE_HASH {
         return Ok(DirtySet::None);
@@ -463,16 +425,12 @@ fn apply_pending(
     if topic0 == events::EVaultCreated::SIGNATURE_HASH {
         let ev: events::EVaultCreated = decode(log)?;
         let ts = last_update(log.timestamp)?;
-        let (_, rows) = ensure_vault(
-            cfg,
-            st,
-            log.address,
-            ev.asset,
-            Address::ZERO,
-            Address::ZERO,
-            ts,
-        )?;
-        return Ok(DirtySet::MarketReprice(rows));
+        return Ok(
+            match ensure_vault(cfg, st, log.address, ev.asset, Address::ZERO, Address::ZERO, ts)? {
+                Some((_, rows)) => DirtySet::MarketReprice(rows),
+                None => DirtySet::None,
+            },
+        );
     }
     Err(ProtocolError::UnexpectedLog)
 }
@@ -487,16 +445,12 @@ fn apply_vault(
     if topic0 == events::EVaultCreated::SIGNATURE_HASH {
         let ev: events::EVaultCreated = decode(log)?;
         let ts = last_update(log.timestamp)?;
-        let (_, rows) = ensure_vault(
-            cfg,
-            st,
-            log.address,
-            ev.asset,
-            Address::ZERO,
-            Address::ZERO,
-            ts,
-        )?;
-        return Ok(DirtySet::MarketReprice(rows));
+        return Ok(
+            match ensure_vault(cfg, st, log.address, ev.asset, Address::ZERO, Address::ZERO, ts)? {
+                Some((_, rows)) => DirtySet::MarketReprice(rows),
+                None => DirtySet::None,
+            },
+        );
     }
     if topic0 == events::VaultStatus::SIGNATURE_HASH {
         return vault_status(st, market, log);

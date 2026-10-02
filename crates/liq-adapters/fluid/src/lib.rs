@@ -190,7 +190,7 @@ impl Protocol for Fluid {
         st: &mut dyn StateWriter,
         timestamp: Timestamp,
         answers: &[StateAnswer<'_>],
-    ) -> Result<DirtySet> {
-        apply::apply_state_reads(&self.cfg, st, timestamp, answers)
+    ) -> Result<Vec<DirtySet>> {
+        apply::apply_state_reads(&self.cfg, st, timestamp, answers).map(|s| vec![s])
     }
 }

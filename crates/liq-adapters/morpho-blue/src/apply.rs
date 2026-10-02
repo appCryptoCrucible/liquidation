@@ -1,4 +1,12 @@
 //! `Protocol::apply_log` for Morpho Blue. Journal-before-write is the writer.
+//!
+//! Market creation is permissionless, so most on-chain markets are not ours
+//! to track: a `CreateMarket` whose loan or collateral token is outside
+//! `cfg.assets` is skipped, and every later log for that `Id` is
+//! `DirtySet::None`. Admitted markets take contiguous MarketIds from
+//! `first_market` in creation order; the store's rows are the `Id →
+//! MarketId` index (`LoanRow::morpho_id`), so it has no size cap beyond the
+//! id range.
 
 use alloy_primitives::{Address, B256, U256};
 use alloy_sol_types::SolEvent;
@@ -11,7 +19,7 @@ use liq_types::{MarketId, PositionId, PositionKey};
 
 use crate::config::Config;
 use crate::events::{self, halt, MarketParams};
-use crate::layout::{CatalogEntry, LoanRow, CATALOG_ASSET, COLL_SLOT, LOAN_SLOT, UNMAPPED_ASSET};
+use crate::layout::{LoanRow, COLL_SLOT, LAST_MARKET, LOAN_SLOT};
 
 #[inline]
 fn decode<E: SolEvent>(log: &DecodedLog<'_>) -> Result<E> {
@@ -60,15 +68,40 @@ fn intern(
     })
 }
 
-fn lookup(cfg: &Config, st: &dyn StateWriter, id: B256) -> Result<MarketId> {
-    let cat = st.markets(cfg.catalog)?;
-    for row in cat {
-        let e: &CatalogEntry = row.body()?;
-        if e.morpho_id == *id {
-            return Ok(MarketId(e.market));
+/// Walk the admitted markets from `first_market` to the first id with no
+/// rows. `visit` returning `true` stops the walk at that market. Returns the
+/// market it stopped at, or the first free id.
+fn walk(
+    cfg: &Config,
+    st: &dyn StateWriter,
+    mut visit: impl FnMut(&LoanRow) -> bool,
+) -> Result<(MarketId, bool)> {
+    let mut n = cfg.first_market.0;
+    loop {
+        let market = MarketId(n);
+        let rows = match st.markets(market) {
+            Ok(r) => r,
+            Err(ProtocolError::UnknownMarket(_)) => return Ok((market, false)),
+            Err(e) => return Err(e),
+        };
+        let loan = rows
+            .get(usize::from(LOAN_SLOT))
+            .ok_or(ProtocolError::SlotOutOfRange(MarketSlot {
+                market,
+                slot: LOAN_SLOT,
+            }))?;
+        if visit(loan.body::<LoanRow>()?) {
+            return Ok((market, true));
         }
+        n = n.checked_add(1).ok_or(ProtocolError::Internal)?;
     }
-    Err(ProtocolError::UnknownMarket(cfg.catalog))
+}
+
+/// The MarketId of Morpho `id`; `None` when its `CreateMarket` was skipped.
+/// Linear in admitted markets (one 32-byte compare each).
+fn lookup(cfg: &Config, st: &dyn StateWriter, id: B256) -> Result<Option<MarketId>> {
+    let (market, found) = walk(cfg, st, |loan| loan.morpho_id == *id)?;
+    Ok(found.then_some(market))
 }
 
 fn add_u128(cur: u128, d: U256, add: bool) -> Result<u128> {
@@ -173,27 +206,25 @@ pub(crate) fn apply_log(
 
 fn create_market(cfg: &Config, st: &mut dyn StateWriter, log: &DecodedLog<'_>) -> Result<DirtySet> {
     let ev = decode::<events::CreateMarket>(log)?;
-    let n = match st.markets(cfg.catalog) {
-        Ok(r) => r.len(),
-        Err(ProtocolError::UnknownMarket(_)) => 0,
-        Err(e) => return Err(e),
+    // Anyone can create a market on any pair. One outside the interned
+    // tokens (or an idle market, collateral `address(0)`) has nothing to
+    // price or liquidate: skip it rather than fail the block.
+    let (Some(loan_tok), Some(coll_tok)) = (
+        cfg.asset_by_underlying(ev.marketParams.loanToken),
+        cfg.asset_by_underlying(ev.marketParams.collateralToken),
+    ) else {
+        return Ok(DirtySet::None);
     };
-    let slot = u16::try_from(n).map_err(|_| ProtocolError::MalformedLog)?;
-    let market = cfg.assigned_market(slot);
-    let loan_tok = cfg
-        .asset_by_underlying(ev.marketParams.loanToken)
-        .ok_or(ProtocolError::OracleSourceMismatch)?;
-    let coll_tok = cfg
-        .asset_by_underlying(ev.marketParams.collateralToken)
-        .ok_or(ProtocolError::OracleSourceMismatch)?;
-    let priced = cfg.oracle_pinned(ev.marketParams.oracle, coll_tok.asset, loan_tok.asset);
-    let mut cat = MarketRow::blank(CATALOG_ASSET, 0);
-    {
-        let e: &mut CatalogEntry = cat.body_mut()?;
-        e.morpho_id = *ev.id;
-        e.market = market.0;
+    let (market, _) = walk(cfg, st, |_| false)?;
+    if market.0 > LAST_MARKET.0 {
+        tracing::error!(
+            target: "coverage",
+            morpho_id = %ev.id,
+            "morpho MarketId range exhausted — market not tracked"
+        );
+        return Ok(DirtySet::None);
     }
-    st.push_market(cfg.catalog, cat)?;
+    let priced = cfg.oracle_pinned(ev.marketParams.oracle, coll_tok.asset, loan_tok.asset);
 
     let mut loan = MarketRow::blank(loan_tok.asset, loan_tok.decimals);
     loan.price_feed = loan_tok.feed;
@@ -241,7 +272,9 @@ fn create_market(cfg: &Config, st: &mut dyn StateWriter, log: &DecodedLog<'_>) -
 
 fn accrue(cfg: &Config, st: &mut dyn StateWriter, log: &DecodedLog<'_>) -> Result<DirtySet> {
     let ev = decode::<events::AccrueInterest>(log)?;
-    let market = lookup(cfg, st, ev.id)?;
+    let Some(market) = lookup(cfg, st, ev.id)? else {
+        return Ok(DirtySet::None);
+    };
     patch_loan(st, market, Some(last_update(log.timestamp)?), |b| {
         b.last_borrow_rate = narrow(ev.prevBorrowRate)?;
         b.total_borrow_assets = add_u128(b.total_borrow_assets, ev.interest, true)?;
@@ -254,7 +287,9 @@ fn accrue(cfg: &Config, st: &mut dyn StateWriter, log: &DecodedLog<'_>) -> Resul
 
 fn set_fee(cfg: &Config, st: &mut dyn StateWriter, log: &DecodedLog<'_>) -> Result<DirtySet> {
     let ev = decode::<events::SetFee>(log)?;
-    let market = lookup(cfg, st, ev.id)?;
+    let Some(market) = lookup(cfg, st, ev.id)? else {
+        return Ok(DirtySet::None);
+    };
     patch_loan(st, market, None, |b| {
         b.fee = narrow(ev.newFee)?;
         Ok(())
@@ -275,7 +310,9 @@ fn supply(
         let ev = decode::<events::Withdraw>(log)?;
         (ev.id, ev.onBehalf, ev.assets, ev.shares)
     };
-    let market = lookup(cfg, st, id)?;
+    let Some(market) = lookup(cfg, st, id)? else {
+        return Ok(DirtySet::None);
+    };
     let pos = intern(cfg, st, market, on_behalf)?;
     let cur = st.supply(pos, LOAN_SLOT)?;
     st.set_supply(pos, LOAN_SLOT, add_u128(cur, shares, add)?)?;
@@ -300,7 +337,9 @@ fn borrow(
         let ev = decode::<events::Repay>(log)?;
         (ev.id, ev.onBehalf, ev.assets, ev.shares)
     };
-    let market = lookup(cfg, st, id)?;
+    let Some(market) = lookup(cfg, st, id)? else {
+        return Ok(DirtySet::None);
+    };
     let pos = intern(cfg, st, market, on_behalf)?;
     let cur = st.debt(pos, LOAN_SLOT)?;
     st.set_debt(pos, LOAN_SLOT, add_u128(cur, shares, add)?)?;
@@ -331,7 +370,9 @@ fn coll(
         let ev = decode::<events::WithdrawCollateral>(log)?;
         (ev.id, ev.onBehalf, ev.assets)
     };
-    let market = lookup(cfg, st, id)?;
+    let Some(market) = lookup(cfg, st, id)? else {
+        return Ok(DirtySet::None);
+    };
     let pos = intern(cfg, st, market, on_behalf)?;
     let cur = st.supply(pos, COLL_SLOT)?;
     st.set_supply(pos, COLL_SLOT, add_u128(cur, assets, add)?)?;
@@ -340,7 +381,9 @@ fn coll(
 
 fn liquidate(cfg: &Config, st: &mut dyn StateWriter, log: &DecodedLog<'_>) -> Result<DirtySet> {
     let ev = decode::<events::Liquidate>(log)?;
-    let market = lookup(cfg, st, ev.id)?;
+    let Some(market) = lookup(cfg, st, ev.id)? else {
+        return Ok(DirtySet::None);
+    };
     let pos = intern(cfg, st, market, ev.borrower)?;
     let debt = st.debt(pos, LOAN_SLOT)?;
     st.set_debt(pos, LOAN_SLOT, add_u128(debt, ev.repaidShares, false)?)?;
@@ -362,6 +405,5 @@ fn liquidate(cfg: &Config, st: &mut dyn StateWriter, log: &DecodedLog<'_>) -> Re
         b.total_borrow_shares = add_u128(b.total_borrow_shares, ev.badDebtShares, false)?;
         Ok(())
     })?;
-    let _ = UNMAPPED_ASSET;
     Ok(positions(&[pos]))
 }

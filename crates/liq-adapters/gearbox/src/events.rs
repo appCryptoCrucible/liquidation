@@ -208,6 +208,22 @@ pub mod views {
                 external
                 view
                 returns (CollateralDebtData memory cdd);
+            /// Public `mapping(address => CreditAccountInfo)` getter
+            /// (`CreditManagerV3.sol:123`); member order of
+            /// `ICreditManagerV3.CreditAccountInfo`.
+            function creditAccountInfo(address creditAccount)
+                external
+                view
+                returns (
+                    uint256 debt,
+                    uint256 cumulativeIndexLastUpdate,
+                    uint128 cumulativeQuotaInterest,
+                    uint128 quotaFees,
+                    uint256 enabledTokensMask,
+                    uint16 flags,
+                    uint64 lastDebtUpdate,
+                    address borrower
+                );
         }
 
         interface ICreditFacadeV3 {
@@ -218,10 +234,34 @@ pub mod views {
 
         interface IPoolV3 {
             function poolQuotaKeeper() external view returns (address);
+            function baseInterestIndexLU() external view returns (uint256);
+            function baseInterestRate() external view returns (uint256);
+            function lastBaseInterestUpdate() external view returns (uint40);
+        }
+
+        /// `PoolQuotaKeeperV3` @ `510fc654`.
+        interface IPoolQuotaKeeperV3 {
+            function lastQuotaRateUpdate() external view returns (uint40);
+            function getQuota(address creditAccount, address token)
+                external
+                view
+                returns (uint96 quota, uint192 cumulativeIndexLU);
+            function getTokenQuotaParams(address token)
+                external
+                view
+                returns (
+                    uint16 rate,
+                    uint192 cumulativeIndexLU,
+                    uint16 quotaIncreaseFee,
+                    uint96 totalQuoted,
+                    uint96 limit,
+                    bool isActive
+                );
         }
 
         interface IERC20 {
             function decimals() external view returns (uint8);
+            function balanceOf(address account) external view returns (uint256);
         }
 
         interface IPriceOracleV3 {

@@ -886,3 +886,132 @@ fn config_rejects_malformed_deployments() {
     c.hubs.clear();
     assert_eq!(c.validate(), Err(ConfigError::NoHubs));
 }
+
+/// Oracle: `Spoke.sol` @ `40232a0a` — `getUserPosition` returns the stored
+/// `UserPosition` (drawn, premium and supplied shares, premium offset,
+/// dynamic-config key), `getUserReserveStatus(..).0` the collateral bit,
+/// `getDynamicReserveConfig(reserveId, key)` the values behind the key,
+/// `getUserLastRiskPremium` the risk premium. A corrupted account is
+/// restored to the log fold's values and health, with the dynamic config
+/// fetched as a follow-up from the key read in the first stage. Negative:
+/// without the follow-up answers the account is not touched.
+#[test]
+fn resync_restores_a_corrupted_account() {
+    use alloy_primitives::I256;
+    use alloy_sol_types::SolCall;
+    use liq_adapters_aave_v4::layout::{UserExtra, UserReserve};
+    use liq_adapters_aave_v4::resync::{DynamicConfigWords, ISpokeAccount, UserPositionWords};
+    use liq_protocol::{Protocol, StateAnswer, StateRead, StateWriter};
+    let d = Deploy::new();
+    let (p, reference) = full_store(&d);
+    let (_, mut st) = full_store(&d);
+    let px = prices(1800_0000_0000, DAI_P8);
+    let want = p.health(reference.view(ALICE_ID, T0).unwrap(), &px).unwrap();
+    let n_slots = reference.markets(SPOKE_MARKET).unwrap().len();
+    let user_at = |slot: u16| -> UserReserve {
+        *reference.slot_extra(ALICE_ID, slot).unwrap().view().unwrap()
+    };
+    let risk = reference.extra(ALICE_ID).unwrap().view::<UserExtra>().unwrap().risk_premium;
+    assert!((1..n_slots).any(|s| reference.debt(ALICE_ID, s as u16).unwrap() > 0));
+
+    for slot in 1..n_slots as u16 {
+        st.set_supply(ALICE_ID, slot, 0).unwrap();
+        st.set_debt(ALICE_ID, slot, 0).unwrap();
+        st.set_slot_extra(ALICE_ID, slot, liq_protocol::PositionExtraRepr::default()).unwrap();
+    }
+
+    let chain = |r: &StateRead| -> Vec<u8> {
+        assert_eq!(r.target, d.spoke);
+        let c = &r.calldata;
+        if let Ok(q) = ISpokeAccount::getUserPositionCall::abi_decode(c) {
+            let slot = u16::try_from(q.reserveId).unwrap() + 1;
+            let u = user_at(slot);
+            let offset = I256::from_raw(math::join(u.premium_offset_lo, u.premium_offset_hi));
+            return ISpokeAccount::getUserPositionCall::abi_encode_returns(&UserPositionWords {
+                drawnShares: U256::from(reference.debt(ALICE_ID, slot).unwrap()),
+                premiumShares: U256::from(u.premium_shares),
+                premiumOffsetRay: offset,
+                suppliedShares: U256::from(reference.supply(ALICE_ID, slot).unwrap()),
+                dynamicConfigKey: U256::from(u.dyn_key),
+            });
+        }
+        if let Ok(q) = ISpokeAccount::getUserReserveStatusCall::abi_decode(c) {
+            let slot = u16::try_from(q.reserveId).unwrap() + 1;
+            let on = user_at(slot).flags & UserReserve::USING_AS_COLLATERAL != 0;
+            return ISpokeAccount::getUserReserveStatusCall::abi_encode_returns(
+                &ISpokeAccount::getUserReserveStatusReturn {
+                    collateral: on,
+                    borrowing: reference.debt(ALICE_ID, slot).unwrap() > 0,
+                },
+            );
+        }
+        if let Ok(q) = ISpokeAccount::getDynamicReserveConfigCall::abi_decode(c) {
+            let u = user_at(u16::try_from(q.reserveId).unwrap() + 1);
+            assert_eq!(q.dynamicConfigKey, u.dyn_key, "follow-up uses the key read");
+            return ISpokeAccount::getDynamicReserveConfigCall::abi_encode_returns(
+                &DynamicConfigWords {
+                    collateralFactor: U256::from(u.collateral_factor),
+                    maxLiquidationBonus: U256::from(u.max_liquidation_bonus),
+                    liquidationFee: U256::from(u.liquidation_fee),
+                },
+            );
+        }
+        if ISpokeAccount::getUserLastRiskPremiumCall::abi_decode(c).is_ok() {
+            return ISpokeAccount::getUserLastRiskPremiumCall::abi_encode_returns(&U256::from(risk));
+        }
+        panic!("unexpected read {r:?}")
+    };
+
+    let first: Vec<(StateRead, Vec<u8>)> = p
+        .resync_reads(st.view(ALICE_ID, T0).unwrap())
+        .into_iter()
+        .map(|r| {
+            let a = chain(&r);
+            (r, a)
+        })
+        .collect();
+    let mut all = first.clone();
+    for (r, a) in &first {
+        for f in p.state_follow_ups(StateAnswer {
+            read: r,
+            success: true,
+            data: a,
+        }) {
+            let a = chain(&f);
+            all.push((f, a));
+        }
+    }
+    let short_ans: Vec<StateAnswer<'_>> = first
+        .iter()
+        .map(|(r, a)| StateAnswer {
+            read: r,
+            success: true,
+            data: a,
+        })
+        .collect();
+    assert_eq!(p.apply_state_reads(&mut st, T0, &short_ans).unwrap(), vec![]);
+    assert_eq!(st.debt(ALICE_ID, 1).unwrap(), 0, "incomplete: untouched");
+
+    let all_ans: Vec<StateAnswer<'_>> = all
+        .iter()
+        .map(|(r, a)| StateAnswer {
+            read: r,
+            success: true,
+            data: a,
+        })
+        .collect();
+    assert_eq!(
+        p.apply_state_reads(&mut st, T0, &all_ans).unwrap(),
+        vec![DirtySet::Positions(liq_protocol::DirtyPositions::from_slice(&[ALICE_ID]))]
+    );
+    for slot in 1..n_slots as u16 {
+        assert_eq!(st.supply(ALICE_ID, slot).unwrap(), reference.supply(ALICE_ID, slot).unwrap());
+        assert_eq!(st.debt(ALICE_ID, slot).unwrap(), reference.debt(ALICE_ID, slot).unwrap());
+        let got: UserReserve = *st.slot_extra(ALICE_ID, slot).unwrap().view().unwrap();
+        assert_eq!(got, user_at(slot), "slot {slot}");
+    }
+    let got = p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap();
+    assert_eq!(got.hf, want.hf);
+    assert_eq!(got.debt_value, want.debt_value);
+    assert_eq!(got.collateral_value, want.collateral_value);
+}

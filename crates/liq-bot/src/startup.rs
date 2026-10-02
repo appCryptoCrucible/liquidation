@@ -624,6 +624,24 @@ pub async fn run(
             hook
         }
     };
+    // Drift: each snapshot's sampled health against the protocols' own
+    // views; a drifting position is resynced from chain, then quarantined if
+    // it still disagrees (`crate::drift`).
+    let drift_cfg = crate::drift::DriftConfig::from_env();
+    let hook = match crate::drift::spawn(adapters, loaded.config.rpc_url.clone(), drift_cfg) {
+        Ok(d) => {
+            tracing::info!(
+                max_bps = drift_cfg.max_bps,
+                every_blocks = loaded.config.snapshot_every_blocks,
+                "drift check started"
+            );
+            hook.with_drift(d)
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "drift thread not started — drift is not checked");
+            hook
+        }
+    };
     let (hook, svr_thread) = match svr {
         Some((rx, targets, handle)) => (hook.with_svr(rx, targets), Some(handle)),
         None => (hook, None),

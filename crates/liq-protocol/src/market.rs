@@ -59,6 +59,12 @@ impl MarketFlags {
     }
 }
 
+/// Exclusive upper bound on [`MarketId`] values a store can hold. `liq-state`
+/// addresses markets through a `u16`-indexed table whose top value is its
+/// empty sentinel, so `MarketId(MARKET_ID_LIMIT)` and above are refused by
+/// `push_market`. Every adapter's MarketId range must sit below it.
+pub const MARKET_ID_LIMIT: u32 = u16::MAX as u32;
+
 /// Address of one [`MarketRow`]: a slot inside a protocol-scoped market. This
 /// is the unit `DirtySet::MarketAccrual`/`MarketReprice` and `StateWriter`
 /// address — one row is one column of balances (GUIDE 02 §2).

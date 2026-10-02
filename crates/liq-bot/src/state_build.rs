@@ -53,7 +53,9 @@ pub struct SnapshotHead {
 
 /// Bump when a fold changes what a stored row means without changing any
 /// subscription, so every snapshot written before it is rebuilt.
-pub const STATE_EPOCH: u32 = 1;
+/// 2: Gearbox MarketIds moved to 64000.., Morpho dropped its catalog rows
+/// and skips markets on unlisted tokens, Gearbox accounts carry `STALE`.
+pub const STATE_EPOCH: u32 = 2;
 
 /// Hash of [`STATE_EPOCH`] and every `(protocol, address, topic0)` the bound
 /// adapters subscribe to, sorted. Equal fingerprints mean the same contracts
@@ -413,25 +415,33 @@ impl SnapshotWriter {
     }
 
     /// Called after each consistent block with the store at `number`/`hash`.
-    pub fn after_block(&mut self, store: &StateStore, number: u64, hash: B256) {
+    /// Returns the snapshot when one was taken (a cheap `Arc` clone of what
+    /// is being written), so the drift check reuses the copy.
+    pub fn after_block(&mut self, store: &StateStore, number: u64, hash: B256) -> Option<StoreSnapshot> {
         let head = SnapshotHead {
             number,
             hash,
             bindings: self.bindings,
         };
         if self.last != 0 && head.number < self.last.saturating_add(self.every) {
-            return;
+            return None;
         }
-        match self.tx.try_send((store.snapshot(), head)) {
-            Ok(()) => self.last = head.number,
+        let snap = store.snapshot();
+        match self.tx.try_send((snap.clone(), head)) {
+            Ok(()) => {
+                self.last = head.number;
+                Some(snap)
+            }
             Err(TrySendError::Full(_)) => {
                 tracing::warn!(
                     block = head.number,
                     "previous snapshot still writing — skipped"
                 );
+                None
             }
             Err(TrySendError::Disconnected(_)) => {
                 tracing::error!("snapshot writer thread is gone — state is no longer persisted");
+                None
             }
         }
     }

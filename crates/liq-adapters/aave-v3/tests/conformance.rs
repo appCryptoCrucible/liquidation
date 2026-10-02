@@ -405,3 +405,151 @@ fn encode_rejects_cross_protocol_quote() {
 }
 
 use common::OwnedLog;
+
+/// [`JournalStore`] as the adapters' `MarketRows`.
+struct Rows<'a>(&'a liq_protocol::conformance::JournalStore);
+
+impl liq_protocol::MarketRows for Rows<'_> {
+    fn rows(&self, market: liq_types::MarketId) -> Option<&[liq_protocol::MarketRow]> {
+        use liq_protocol::StateWriter;
+        self.0.markets(market).ok()
+    }
+}
+
+/// Fold `reads` and their follow-ups, each answered by `answer`.
+fn answer_and_fold(
+    p: &liq_adapters_aave_v3::AaveV3,
+    st: &mut liq_protocol::conformance::JournalStore,
+    reads: Vec<liq_protocol::StateRead>,
+    answer: &dyn Fn(&liq_protocol::StateRead) -> Vec<u8>,
+) -> Vec<liq_protocol::DirtySet> {
+    use liq_protocol::Protocol;
+    let mut all: Vec<(liq_protocol::StateRead, Vec<u8>)> =
+        reads.into_iter().map(|r| { let a = answer(&r); (r, a) }).collect();
+    let mut follow = Vec::new();
+    for (r, a) in &all {
+        follow.extend(p.state_follow_ups(liq_protocol::StateAnswer {
+            read: r,
+            success: true,
+            data: a,
+        }));
+    }
+    all.extend(follow.into_iter().map(|r| { let a = answer(&r); (r, a) }));
+    let answers: Vec<liq_protocol::StateAnswer<'_>> = all
+        .iter()
+        .map(|(r, a)| liq_protocol::StateAnswer {
+            read: r,
+            success: true,
+            data: a,
+        })
+        .collect();
+    p.apply_state_reads(st, T0, &answers).unwrap()
+}
+
+/// Oracle: the pool's own views at `8305565ae` — `scaledBalanceOf` is what
+/// the store holds per slot, `getUserConfiguration` bit `2·id + 1` is the
+/// collateral flag for reserve **id** (`UserConfiguration.isUsingAsCollateral`),
+/// `getUserEMode` the category. An account whose state was corrupted is
+/// restored to the log fold's values and health. The reserve ids are
+/// deliberately not `slot - 1` (WETH id 5, DAI id 2, as after a dropped
+/// reserve's id is reused), so the bitmap must go through the ids read
+/// back from `getReserveData`. Negative: before the ids are read the resync
+/// stays unsettled; with `slot - 1` the WETH collateral bit (11) would be
+/// read at bit 1 and Alice would lose her collateral.
+#[test]
+fn resync_restores_a_corrupted_account_through_reserve_ids() {
+    use alloy_sol_types::SolCall;
+    use liq_adapters_aave_v3::layout::{UserExtra, UserReserve};
+    use liq_adapters_aave_v3::resync::{IPoolAccount, IReserveToken, ReserveDataLegacy};
+    use liq_protocol::{Protocol, StateWriter};
+    let d = Deploy::new();
+    let (p, reference) = full_store(&d);
+    let (_, mut st) = full_store(&d);
+    let px = prices(WETH_P8, DAI_P8);
+    let want = p.health(reference.view(ALICE_ID, T0).unwrap(), &px).unwrap();
+    let alice_weth = reference.supply(ALICE_ID, WETH_SLOT).unwrap();
+    let alice_debt = reference.debt(ALICE_ID, DAI_SLOT).unwrap();
+    assert!(alice_weth > 0 && alice_debt > 0);
+
+    // Corrupt: lost supply, lost debt, collateral flag off, wrong e-mode.
+    st.set_supply(ALICE_ID, WETH_SLOT, 1).unwrap();
+    st.set_debt(ALICE_ID, DAI_SLOT, 0).unwrap();
+    st.set_slot_extra(ALICE_ID, WETH_SLOT, liq_protocol::PositionExtraRepr::default()).unwrap();
+    let mut extra = *st.extra(ALICE_ID).unwrap();
+    extra.view_mut::<UserExtra>().unwrap().emode = 7;
+    st.set_extra(ALICE_ID, extra).unwrap();
+
+    let (weth_id, dai_id) = (5u16, 2u16);
+    let config = (U256::from(1u8) << (2 * weth_id + 1)) | (U256::from(1u8) << (2 * dai_id));
+    let chain = |r: &liq_protocol::StateRead| -> Vec<u8> {
+        let c = &r.calldata;
+        if IReserveToken::UNDERLYING_ASSET_ADDRESSCall::abi_decode(c).is_ok() {
+            let u = if r.target == d.a_weth { d.weth } else { d.dai };
+            return IReserveToken::UNDERLYING_ASSET_ADDRESSCall::abi_encode_returns(&u);
+        }
+        if let Ok(q) = IPoolAccount::getReserveDataCall::abi_decode(c) {
+            let (id, a) = if q.asset == d.weth { (weth_id, d.a_weth) } else { (dai_id, d.a_dai) };
+            return IPoolAccount::getReserveDataCall::abi_encode_returns(&ReserveDataLegacy {
+                configuration: U256::ZERO,
+                liquidityIndex: 0,
+                currentLiquidityRate: 0,
+                variableBorrowIndex: 0,
+                currentVariableBorrowRate: 0,
+                currentStableBorrowRate: 0,
+                lastUpdateTimestamp: alloy_primitives::aliases::U40::ZERO,
+                id,
+                aTokenAddress: a,
+                stableDebtTokenAddress: Address::ZERO,
+                variableDebtTokenAddress: Address::ZERO,
+                interestRateStrategyAddress: Address::ZERO,
+                accruedToTreasury: 0,
+                unbacked: 0,
+                isolationModeTotalDebt: 0,
+            });
+        }
+        if IPoolAccount::getUserConfigurationCall::abi_decode(c).is_ok() {
+            return IPoolAccount::getUserConfigurationCall::abi_encode_returns(&config);
+        }
+        if IPoolAccount::getUserEModeCall::abi_decode(c).is_ok() {
+            return IPoolAccount::getUserEModeCall::abi_encode_returns(&U256::ZERO);
+        }
+        if IReserveToken::scaledBalanceOfCall::abi_decode(c).is_ok() {
+            let v = if r.target == d.a_weth {
+                alice_weth
+            } else if r.target == d.v_dai {
+                alice_debt
+            } else {
+                0
+            };
+            return IReserveToken::scaledBalanceOfCall::abi_encode_returns(&U256::from(v));
+        }
+        panic!("unexpected read {r:?}");
+    };
+
+    let accounts = p.resync_reads(st.view(ALICE_ID, T0).unwrap());
+    assert_eq!(accounts.len(), 6, "configuration, e-mode, aToken + debt token per reserve");
+    assert_eq!(
+        answer_and_fold(&p, &mut st, accounts.clone(), &chain),
+        vec![],
+        "collateral needs WETH's id, not read yet"
+    );
+
+    let ids = p.state_reads(&Rows(&st));
+    assert_eq!(ids.len(), 2, "one id read per reserve");
+    assert_eq!(answer_and_fold(&p, &mut st, ids, &chain), vec![]);
+    assert!(p.state_reads(&Rows(&st)).is_empty(), "ids known: no more id reads");
+
+    assert_eq!(
+        answer_and_fold(&p, &mut st, accounts, &chain),
+        vec![DirtySet::Positions(liq_protocol::DirtyPositions::from_slice(&[ALICE_ID]))]
+    );
+    assert_eq!(st.supply(ALICE_ID, WETH_SLOT).unwrap(), alice_weth);
+    assert_eq!(st.debt(ALICE_ID, DAI_SLOT).unwrap(), alice_debt);
+    let flags = st.slot_extra(ALICE_ID, WETH_SLOT).unwrap().view::<UserReserve>().unwrap().flags;
+    assert_ne!(flags & UserReserve::USING_AS_COLLATERAL, 0);
+    assert_eq!(st.extra(ALICE_ID).unwrap().view::<UserExtra>().unwrap().emode, 0);
+    let got = p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap();
+    assert_eq!(got.hf, want.hf);
+    assert_eq!(got.collateral_value, want.collateral_value);
+    assert_eq!(got.debt_value, want.debt_value);
+}

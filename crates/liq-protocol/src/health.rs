@@ -73,4 +73,8 @@ pub enum BlockReason {
     GracePeriod,
     /// Debt below the protocol's dust floor; liquidation would revert.
     Dust,
+    /// The position's balances moved in a way its logs do not show (a
+    /// Gearbox multicall) and the chain read that settles them
+    /// ([`crate::Protocol::position_reads`]) has not been folded yet.
+    Unread,
 }

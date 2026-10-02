@@ -50,7 +50,7 @@ pub use extra::PositionExtraRepr;
 pub use flash::{CallbackShape, FlashRoute};
 pub use health::{BlockReason, Health, HealthState};
 pub use log::DecodedLog;
-pub use market::{FeedId, MarketFlags, MarketRow, MarketSlot};
+pub use market::{FeedId, MarketFlags, MarketRow, MarketSlot, MARKET_ID_LIMIT};
 pub use mask::{AssetMask, SetSlots};
 pub use plan::{ExecutorAdapter, LiquidationLeg, LiquidationPlan, ProbeCall};
 pub use posref::PositionRef;

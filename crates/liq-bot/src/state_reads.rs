@@ -9,16 +9,27 @@
 //!
 //! * The hot thread collects the read set (startup and every
 //!   [`crate::protocol_prices::READS_REFRESH_BLOCKS`]) and publishes it.
+//! * Per-position reads ([`Protocol::position_reads`]: a Gearbox account
+//!   after a multicall) join that set. The hot thread re-asks every position
+//!   a block touched and every position its state batch changed, and
+//!   republishes when the set moved; a full scan runs with each rebuild and
+//!   whenever blocks arrived without their own `after_block` (one
+//!   notification can carry several).
 //! * The reader thread, once per new head, runs both stages pinned to that
-//!   head and publishes the answers — latest wins.
+//!   head and publishes the answers — latest wins. When the read set gains
+//!   reads at the same head (an account needs a read after this block's
+//!   multicall), it runs just those and republishes the head's batch with
+//!   their answers added, so the account settles this block, not next.
 //! * The ingest thread folds a batch only while its block is still the tip
 //!   (`AfterBlock::amend`): the writes land in that block's undo record, so
 //!   a reorg unwinds them with the block.
 //!
 //! [`Protocol::state_reads`]: liq_protocol::Protocol::state_reads
 //! [`Protocol::state_follow_ups`]: liq_protocol::Protocol::state_follow_ups
+//! [`Protocol::position_reads`]: liq_protocol::Protocol::position_reads
 //! [`Protocol::apply_state_reads`]: liq_protocol::Protocol::apply_state_reads
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,6 +39,7 @@ use arc_swap::ArcSwap;
 use liq_config::rpc::{ChainRpc, HttpRpc};
 use liq_protocol::{StateAnswer, StateRead};
 use liq_state::StateView;
+use liq_types::PositionId;
 
 use crate::bind::BoundProtocol;
 use crate::pool_seed::{aggregate, call};
@@ -56,6 +68,9 @@ pub struct Answered {
 #[derive(Debug, Default)]
 pub struct StateBatch {
     pub block: u64,
+    /// Publication order. A head can be published twice (its reads, then
+    /// with reads added at the same head); the ingest thread folds each once.
+    pub seq: u64,
     pub answers: Vec<Answered>,
     /// Reads whose multicall failed outright (their vaults get no update
     /// this block, and go stale).
@@ -102,6 +117,104 @@ pub fn collect_state_reads(protocols: &[BoundProtocol], view: StateView<'_>) -> 
     for (i, p) in protocols.iter().enumerate() {
         for r in p.as_dyn().state_reads(&rows) {
             out.push((i, r));
+        }
+    }
+    out
+}
+
+/// What [`Protocol::position_reads`] wants for one position now, tagged
+/// with its protocol's index. Empty for an unknown id or protocol.
+///
+/// [`Protocol::position_reads`]: liq_protocol::Protocol::position_reads
+#[must_use]
+pub fn position_reads_for(
+    protocols: &[BoundProtocol],
+    view: &StateView<'_>,
+    id: PositionId,
+) -> Vec<(usize, StateRead)> {
+    let Ok(pos) = view.position(id) else {
+        return Vec::new();
+    };
+    let Some(i) = protocols.iter().position(|p| p.id() == pos.key.protocol) else {
+        return Vec::new();
+    };
+    let Some(p) = protocols.get(i) else {
+        return Vec::new();
+    };
+    p.as_dyn()
+        .position_reads(pos)
+        .into_iter()
+        .map(|r| (i, r))
+        .collect()
+}
+
+/// [`Protocol::resync_reads`] for one position, tagged with its protocol's
+/// index. Empty for an unknown id, or an adapter that cannot resync.
+///
+/// [`Protocol::resync_reads`]: liq_protocol::Protocol::resync_reads
+#[must_use]
+pub fn resync_reads_for(
+    protocols: &[BoundProtocol],
+    view: &StateView<'_>,
+    id: PositionId,
+) -> StateReadSet {
+    let Ok(pos) = view.position(id) else {
+        return Vec::new();
+    };
+    let Some((i, p)) = protocols
+        .iter()
+        .enumerate()
+        .find(|(_, p)| p.id() == pos.key.protocol)
+    else {
+        return Vec::new();
+    };
+    p.as_dyn()
+        .resync_reads(pos)
+        .into_iter()
+        .map(|r| (i, r))
+        .collect()
+}
+
+/// Every position's [`position_reads_for`], keyed by position. One pass over
+/// the store.
+#[must_use]
+pub fn collect_position_reads(
+    protocols: &[BoundProtocol],
+    view: &StateView<'_>,
+) -> HashMap<PositionId, StateReadSet> {
+    let mut out = HashMap::new();
+    let n = u32::try_from(view.len()).unwrap_or(u32::MAX);
+    for id in (0..n).map(PositionId) {
+        let reads = position_reads_for(protocols, view, id);
+        if !reads.is_empty() {
+            out.insert(id, reads);
+        }
+    }
+    out
+}
+
+/// Reads in `now` that `before` did not have (first stage only; their
+/// follow-ups come from their answers).
+#[must_use]
+pub fn added_reads(before: &StateReadSet, now: &StateReadSet) -> StateReadSet {
+    now.iter()
+        .filter(|r| !before.contains(r))
+        .cloned()
+        .collect()
+}
+
+/// The set the reader runs: adapter-wide reads, then every position's.
+#[must_use]
+pub fn merged_reads(
+    adapter: &StateReadSet,
+    positions: &HashMap<PositionId, StateReadSet>,
+) -> StateReadSet {
+    let mut ids: Vec<&PositionId> = positions.keys().collect();
+    ids.sort_unstable();
+    let mut out = adapter.clone();
+    for id in ids {
+        if let Some(r) = positions.get(id) {
+            out.extend(r.iter().cloned());
         }
     }
     out
@@ -188,6 +301,8 @@ pub fn spawn_state_reader(
                 }
             };
             let mut last = 0u64;
+            let mut last_reads: Arc<StateReadSet> = Arc::new(Vec::new());
+            let mut seq = 0u64;
             while !stop.load(Ordering::Relaxed) {
                 std::thread::sleep(POLL);
                 let reads = shared.reads.load_full();
@@ -201,14 +316,34 @@ pub fn spawn_state_reader(
                         continue;
                     }
                 };
-                if head <= last {
+                let mut batch = if head > last {
+                    rt.block_on(read_state_block(protocols, &rpc, &reads, head))
+                } else if Arc::ptr_eq(&reads, &last_reads) {
                     continue;
-                }
-                let batch = rt.block_on(read_state_block(protocols, &rpc, &reads, head));
+                } else {
+                    let added = added_reads(&last_reads, &reads);
+                    last_reads = Arc::clone(&reads);
+                    if added.is_empty() {
+                        continue;
+                    }
+                    let mut b = rt.block_on(read_state_block(protocols, &rpc, &added, last));
+                    if let Some(prev) = shared.latest.load_full().as_ref().as_ref() {
+                        if prev.block == last {
+                            let mut answers = prev.answers.clone();
+                            answers.append(&mut b.answers);
+                            b.answers = answers;
+                            b.failed = b.failed.saturating_add(prev.failed);
+                        }
+                    }
+                    b
+                };
                 if batch.failed != 0 {
-                    tracing::warn!(block = head, failed = batch.failed, reads = reads.len(), "protocol state reads failed");
+                    tracing::warn!(block = batch.block, failed = batch.failed, reads = reads.len(), "protocol state reads failed");
                 }
-                last = head;
+                seq = seq.saturating_add(1);
+                batch.seq = seq;
+                last = last.max(head);
+                last_reads = reads;
                 shared.latest.store(Arc::new(Some(Arc::new(batch))));
             }
         })
@@ -223,7 +358,7 @@ pub fn spawn_state_reader(
 )]
 mod tests {
     use super::*;
-    use alloy_primitives::{address, Address, U256};
+    use alloy_primitives::{address, Address, B256, U256};
     use alloy_sol_types::{sol, SolCall};
     use liq_protocol::conformance::JournalStore;
     use liq_protocol::{MarketRows, StateWriter};
@@ -380,5 +515,196 @@ mod tests {
             reads.len() / 2
         );
         assert!(cfg.vault_pins.len() >= 150);
+    }
+
+    /// Live, one block: open credit accounts of the bound v3.1 managers are
+    /// marked stale through the adapter's own `StartMultiCall` fold, read
+    /// through both stages here, and folded. Each settled account's debt,
+    /// interest checkpoint and enabled mask equal the manager's own
+    /// `calcDebtAndCollateral(account, DEBT_COLLATERAL)` at the same block —
+    /// a different view than the `creditAccountInfo` getter the reads use —
+    /// and every account leaves `STALE`. With the per-block interest reads
+    /// folded too, each account with debt is valued at the block's
+    /// timestamp: its total debt equals the manager's `debt + accruedInterest
+    /// + accruedFees` to the wei.
+    #[test]
+    #[ignore = "needs MAINNET_RPC_URL"]
+    fn live_gearbox_accounts_settle_from_chain() {
+        use alloy_sol_types::SolEvent;
+        use liq_adapters_gearbox::events::views::ICreditManagerV3;
+        use liq_adapters_gearbox::events::{facade, factory, DEBT_COLLATERAL_TASK};
+        use liq_adapters_gearbox::layout::AccountExtra;
+        use liq_protocol::{DecodedLog, Protocol};
+        sol! { function creditAccounts() external view returns (address[] memory); }
+        let url = std::env::var("MAINNET_RPC_URL").unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let rpc = HttpRpc::connect(&url).unwrap();
+        let block = rt.block_on(rpc.block_number()).unwrap();
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let intern = liq_config::Intern::from_registry(
+            &liq_config::Registry::from_path(&root.join("registry/registry.json")).unwrap(),
+        )
+        .unwrap();
+        // `push_gearbox`'s steps, through an RPC that paces and retries
+        // non-revert errors: a hosted endpoint rate-limits the bind's call
+        // burst, and `LiveRpc`, built for the bot's own node, does not retry.
+        struct Retrying<'a>(&'a tokio::runtime::Runtime, &'a HttpRpc);
+        impl liq_adapters_gearbox::RegistryRpc for Retrying<'_> {
+            fn eth_call(
+                &self,
+                to: Address,
+                data: &[u8],
+                block: u64,
+            ) -> Result<Bytes, liq_adapters_gearbox::ConfigError> {
+                // Paced under the endpoint's per-second budget.
+                std::thread::sleep(std::time::Duration::from_millis(40));
+                for attempt in 0..6u32 {
+                    match self.0.block_on(self.1.call_at(to, Bytes::copy_from_slice(data), block)) {
+                        Ok(b) => return Ok(b),
+                        // A revert is an answer (the feed walk probes with
+                        // views most feeds do not have); retry the rest.
+                        Err(e) if e.to_string().contains("reverted") => break,
+                        Err(e) => {
+                            eprintln!("bind call {to} attempt {attempt}: {e}");
+                            std::thread::sleep(std::time::Duration::from_millis(1000));
+                        }
+                    }
+                }
+                Err(liq_adapters_gearbox::ConfigError::RegistryCall(to))
+            }
+        }
+        let raw = std::fs::read_to_string(root.join("config/protocols/gearbox.toml")).unwrap();
+        let mut cfg = liq_adapters_gearbox::Config::from_toml(&raw).unwrap();
+        let t0 = std::time::Instant::now();
+        cfg.assert_live_registry(&Retrying(&rt, &rpc), block).unwrap();
+        eprintln!(
+            "bound {} managers ({} skipped) in {:?}",
+            cfg.managers.len(),
+            cfg.skipped.len(),
+            t0.elapsed()
+        );
+        cfg.bind_assets_from_intern(&intern).unwrap();
+        let protocols: &'static [BoundProtocol] = Box::leak(Box::new([BoundProtocol::Gearbox(
+            liq_adapters_gearbox::GearboxV3::new(cfg).unwrap(),
+        )]));
+        let BoundProtocol::Gearbox(g) = &protocols[0] else {
+            panic!("gearbox not bound");
+        };
+        let call = |to: Address, data: Vec<u8>| rt.block_on(rpc.call_at(to, data.into(), block));
+        let fold = |st: &mut JournalStore, address: Address, topics: Vec<B256>, data: Vec<u8>| {
+            let log = DecodedLog {
+                address,
+                topics: &topics,
+                data: &data,
+                block,
+                timestamp: 1,
+            };
+            g.apply_log(st, &log).unwrap();
+        };
+        let mut st = JournalStore::default();
+        let mut accounts = Vec::new();
+        for m in &g.config().managers {
+            let ev = factory::AddCreditManager {
+                creditManager: m.manager,
+                masterCreditAccount: Address::ZERO,
+            };
+            fold(&mut st, m.factory, ev.encode_topics().into_iter().map(|t| t.0).collect(), ev.encode_data());
+            let raw = call(m.manager, creditAccountsCall {}.abi_encode()).unwrap();
+            for acc in creditAccountsCall::abi_decode_returns(&raw).unwrap().into_iter().take(5) {
+                let ev = facade::StartMultiCall {
+                    creditAccount: acc,
+                    caller: acc,
+                };
+                fold(&mut st, m.facade, ev.encode_topics().into_iter().map(|t| t.0).collect(), ev.encode_data());
+                let dec = m.tokens.iter().find(|t| t.slot == 0).map_or(0, |t| t.decimals);
+                accounts.push((m.manager, m.market, acc, dec));
+            }
+        }
+        assert!(accounts.len() >= 5, "only {} open accounts found", accounts.len());
+        let view_store = &st;
+        let reads: StateReadSet = (0..view_store.positions_len())
+            .map(PositionId)
+            .flat_map(|id| g.position_reads(view_store.view(id, 1).unwrap()))
+            .map(|r| (0, r))
+            .collect();
+        assert_eq!(reads.len(), accounts.len(), "one info read per stale account");
+        let mut reads = reads;
+        reads.extend(g.state_reads(&NoRows).into_iter().map(|r| (0, r)));
+        let batch = rt.block_on(read_state_block(protocols, &rpc, &reads, block));
+        assert_eq!(batch.failed, 0, "multicall batches failed");
+        assert!(batch.answers.len() > reads.len(), "balance follow-ups ran");
+        g.apply_state_reads(&mut st, 1, &batch.answers_for(0)).unwrap();
+        let ts = {
+            use alloy_provider::Provider;
+            let provider = alloy_provider::ProviderBuilder::new()
+                .disable_recommended_fillers()
+                .connect_http(url.parse().unwrap());
+            rt.block_on(async { provider.get_block_by_number(block.into()).await })
+                .unwrap()
+                .unwrap()
+                .header
+                .timestamp
+        };
+        // A flat 1.0 for every asset: health's debt value is then the total
+        // debt in underlying units, scaled to WAD.
+        let n = g.config().assets.iter().map(|a| a.asset.0).max().unwrap_or(0);
+        let flat = liq_types::PriceVector(
+            (0..=n)
+                .map(|a| liq_types::Price {
+                    asset: liq_types::AssetId(a),
+                    price: liq_types::Ray::ONE,
+                    source: liq_types::SourceKind::Canonical,
+                    block,
+                    ts,
+                })
+                .collect(),
+        );
+        let mut accrued = 0usize;
+        for (manager, market, acc, dec) in accounts {
+            let id = (0..st.positions_len())
+                .map(PositionId)
+                .find(|&id| {
+                    let k = st.position_key(id).unwrap();
+                    k.user == acc && k.market == market
+                })
+                .unwrap();
+            let x: AccountExtra = *st.extra(id).unwrap().view().unwrap();
+            assert_eq!(x.flags & AccountExtra::STALE, 0, "{acc} still stale");
+            let raw = call(
+                manager,
+                ICreditManagerV3::calcDebtAndCollateralCall {
+                    creditAccount: acc,
+                    task: DEBT_COLLATERAL_TASK,
+                }
+                .abi_encode(),
+            )
+            .unwrap();
+            let cdd = ICreditManagerV3::calcDebtAndCollateralCall::abi_decode_returns(&raw).unwrap();
+            assert_eq!(U256::from(st.debt(id, 0).unwrap()), cdd.debt, "{acc} debt");
+            // `_calcDebtAndCollateral` reports the checkpoint as 0 for a
+            // debt-free account (`CreditManagerV3.sol:719` @ `510fc654`);
+            // the getter keeps the stored one. Health reads it only with debt.
+            let index = if cdd.debt.is_zero() {
+                U256::ZERO
+            } else {
+                U256::from(x.cumulative_index_last_update)
+            };
+            assert_eq!(index, cdd.cumulativeIndexLastUpdate, "{acc} index");
+            assert_eq!(U256::from(x.enabled_tokens_mask), cdd.enabledTokensMask, "{acc} mask");
+            if cdd.debt.is_zero() {
+                continue;
+            }
+            // Accounts holding a token the registry never interned fail
+            // closed in health; they are not this check's subject.
+            let Ok(h) = g.health(st.view(id, ts).unwrap(), &flat) else {
+                continue;
+            };
+            let total = cdd.debt + cdd.accruedInterest + cdd.accruedFees;
+            let want =
+                liq_adapters_gearbox::math::value_wad(total, liq_types::fixed::RAY, dec).unwrap();
+            assert_eq!(h.debt_value.raw(), want, "{acc} total debt at block {block}");
+            accrued += 1;
+        }
+        assert!(accrued > 0, "no account with debt was compared");
     }
 }
