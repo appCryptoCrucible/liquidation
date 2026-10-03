@@ -294,8 +294,7 @@ fn apply_accounts(
                 continue;
             }
             let mut q = QuotaExtra::zeroed();
-            if let Some((_, quota, index_lu)) = s.quotas.iter().find(|(slot, ..)| *slot == t.slot)
-            {
+            if let Some((_, quota, index_lu)) = s.quotas.iter().find(|(slot, ..)| *slot == t.slot) {
                 q.quota = *quota;
                 q.index_lu = *index_lu;
                 q.flags = QuotaExtra::QUOTED;
@@ -402,7 +401,10 @@ fn apply_interest(
     let mut pools: HashMap<Address, PoolRead> = HashMap::new();
     let mut keepers: HashMap<Address, u64> = HashMap::new();
     let mut quotas: HashMap<(Address, Address), (u16, u128)> = HashMap::new();
-    for a in answers.iter().filter(|a| a.success && a.read.tag & INTEREST != 0) {
+    for a in answers
+        .iter()
+        .filter(|a| a.success && a.read.tag & INTEREST != 0)
+    {
         let Some((_, w)) = usize::try_from(a.read.tag & !INTEREST)
             .ok()
             .and_then(|i| plan.get(i))
@@ -411,29 +413,35 @@ fn apply_interest(
         };
         match *w {
             Want::PoolIndex(p) => {
-                pools.entry(p).or_default().index = IPoolV3::baseInterestIndexLUCall::abi_decode_returns(a.data)
-                    .ok()
-                    .and_then(|v| u128::try_from(v).ok());
+                pools.entry(p).or_default().index =
+                    IPoolV3::baseInterestIndexLUCall::abi_decode_returns(a.data)
+                        .ok()
+                        .and_then(|v| u128::try_from(v).ok());
             }
             Want::PoolRate(p) => {
-                pools.entry(p).or_default().rate = IPoolV3::baseInterestRateCall::abi_decode_returns(a.data)
-                    .ok()
-                    .and_then(|v| u128::try_from(v).ok());
+                pools.entry(p).or_default().rate =
+                    IPoolV3::baseInterestRateCall::abi_decode_returns(a.data)
+                        .ok()
+                        .and_then(|v| u128::try_from(v).ok());
             }
             Want::PoolTime(p) => {
-                pools.entry(p).or_default().time = IPoolV3::lastBaseInterestUpdateCall::abi_decode_returns(a.data)
-                    .ok()
-                    .map(|v| v.to::<u64>());
+                pools.entry(p).or_default().time =
+                    IPoolV3::lastBaseInterestUpdateCall::abi_decode_returns(a.data)
+                        .ok()
+                        .map(|v| v.to::<u64>());
             }
             Want::KeeperTime(k) => {
-                if let Ok(v) = IPoolQuotaKeeperV3::lastQuotaRateUpdateCall::abi_decode_returns(a.data) {
+                if let Ok(v) =
+                    IPoolQuotaKeeperV3::lastQuotaRateUpdateCall::abi_decode_returns(a.data)
+                {
                     keepers.insert(k, v.to::<u64>());
                 }
             }
             Want::TokenQuota { keeper, token } => {
-                if let Some(q) = IPoolQuotaKeeperV3::getTokenQuotaParamsCall::abi_decode_returns(a.data)
-                    .ok()
-                    .and_then(|q| Some((q.rate, u128::try_from(q.cumulativeIndexLU).ok()?)))
+                if let Some(q) =
+                    IPoolQuotaKeeperV3::getTokenQuotaParamsCall::abi_decode_returns(a.data)
+                        .ok()
+                        .and_then(|q| Some((q.rate, u128::try_from(q.cumulativeIndexLU).ok()?)))
                 {
                     quotas.insert((keeper, token), q);
                 }

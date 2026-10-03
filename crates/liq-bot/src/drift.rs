@@ -182,9 +182,7 @@ impl Policy {
                 );
             }
         }
-        if fixed >= cfg.sweep_min
-            && fixed.saturating_mul(cfg.sweep_share_inv) >= results.len()
-        {
+        if fixed >= cfg.sweep_min && fixed.saturating_mul(cfg.sweep_share_inv) >= results.len() {
             out.push(DriftAction::ResyncProtocol(protocol));
             tracing::error!(
                 target: "drift",
@@ -433,6 +431,10 @@ mod tests {
         q.judge(&cfg, P, 1, &bad);
         let mut wide = fixed;
         wide.extend((10..30).map(|i| (id(i), 0)));
-        assert_eq!(q.judge(&cfg, P, 2, &wide), vec![], "3 of 23 is under a quarter");
+        assert_eq!(
+            q.judge(&cfg, P, 2, &wide),
+            vec![],
+            "3 of 23 is under a quarter"
+        );
     }
 }

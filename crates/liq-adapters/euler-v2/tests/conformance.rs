@@ -710,7 +710,10 @@ fn proxy_created_lists_interned_vaults_and_skips_others() {
     let c: &liq_adapters_euler_v2::layout::VaultRow = coll.body().unwrap();
     assert_eq!(math::addr_from(c.vault), d.coll_vault);
     assert!(st.markets(CATALOG_MARKET).is_err(), "no catalog rows");
-    assert!(st.markets(FIRST_DISCOVERED_MARKET).is_err(), "uninterned vault skipped");
+    assert!(
+        st.markets(FIRST_DISCOVERED_MARKET).is_err(),
+        "uninterned vault skipped"
+    );
 }
 
 /// Oracle: the registry interns ~880 Euler vaults and one store market
@@ -727,7 +730,8 @@ fn more_vaults_than_one_market_has_rows() {
     let n = u32::from(AssetMask::MAX_SLOTS) * 2;
     let vault = |i: u32| Address::from_word(alloy_primitives::B256::from(U256::from(0x10_000 + i)));
     cfg.interned = (0..n).map(|i| (vault(i), MarketId(1_000 + i))).collect();
-    cfg.interned.extend([(d.debt_vault, MarketId(42)), (d.coll_vault, MarketId(99))]);
+    cfg.interned
+        .extend([(d.debt_vault, MarketId(42)), (d.coll_vault, MarketId(99))]);
     let p = EulerV2::new(cfg).unwrap();
     let mut st = liq_protocol::conformance::JournalStore::new();
     for i in 0..n {
@@ -743,7 +747,10 @@ fn more_vaults_than_one_market_has_rows() {
             T0,
         );
         assert!(
-            matches!(p.apply_log(&mut st, &l.view()), Ok(DirtySet::MarketReprice(_))),
+            matches!(
+                p.apply_log(&mut st, &l.view()),
+                Ok(DirtySet::MarketReprice(_))
+            ),
             "vault {i} listed"
         );
     }
@@ -991,7 +998,9 @@ fn resync_restores_a_corrupted_account() {
     let (p, reference) = full_store(&d);
     let (_, mut st) = full_store(&d);
     let px = prices(WETH_P8, USDC_P8);
-    let want = p.health(reference.view(ALICE_ID, T0).unwrap(), &px).unwrap();
+    let want = p
+        .health(reference.view(ALICE_ID, T0).unwrap(), &px)
+        .unwrap();
     let owed = reference.debt(ALICE_ID, 0).unwrap();
     let rx: UserExtra = *reference.extra(ALICE_ID).unwrap().view().unwrap();
     let acc = math::u256_from_limbs(rx.user_accumulator_lo, rx.user_accumulator_hi);
@@ -1042,7 +1051,9 @@ fn resync_restores_a_corrupted_account() {
 
     assert_eq!(
         p.apply_state_reads(&mut st, T0, &all).unwrap(),
-        vec![DirtySet::Positions(liq_protocol::DirtyPositions::from_slice(&[ALICE_ID]))]
+        vec![DirtySet::Positions(
+            liq_protocol::DirtyPositions::from_slice(&[ALICE_ID])
+        )]
     );
     let got = p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap();
     assert_eq!(got.hf, want.hf);

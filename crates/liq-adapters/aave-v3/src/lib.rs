@@ -298,7 +298,10 @@ impl Protocol for AaveV3 {
         resync::id_reads(&self.cfg, rows)
     }
 
-    fn state_follow_ups(&self, answer: liq_protocol::StateAnswer<'_>) -> Vec<liq_protocol::StateRead> {
+    fn state_follow_ups(
+        &self,
+        answer: liq_protocol::StateAnswer<'_>,
+    ) -> Vec<liq_protocol::StateRead> {
         resync::follow_ups(&self.cfg, answer)
     }
 

@@ -177,7 +177,8 @@ fn settle(
         let p = answer(answers, market, tag(pos, POS | k))?;
         let p = ISpokeAccount::getUserPositionCall::abi_decode_returns(p.data).ok()?;
         let status = answer(answers, market, tag(pos, STATUS | k))?;
-        let status = ISpokeAccount::getUserReserveStatusCall::abi_decode_returns(status.data).ok()?;
+        let status =
+            ISpokeAccount::getUserReserveStatusCall::abi_decode_returns(status.data).ok()?;
         let dyn_cfg = answer(answers, market, tag(pos, DYN | k))?;
         let dyn_cfg =
             ISpokeAccount::getDynamicReserveConfigCall::abi_decode_returns(dyn_cfg.data).ok()?;
@@ -223,7 +224,8 @@ pub(crate) fn apply(
             continue;
         };
         // The tag's id must still name the account the read asked about.
-        let Ok(call) = ISpokeAccount::getUserLastRiskPremiumCall::abi_decode(&a.read.calldata) else {
+        let Ok(call) = ISpokeAccount::getUserLastRiskPremiumCall::abi_decode(&a.read.calldata)
+        else {
             continue;
         };
         let Ok(key) = st.position_key(pos).copied() else {

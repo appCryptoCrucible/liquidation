@@ -313,7 +313,10 @@ impl Protocol for AaveV4 {
         resync::resync_reads(&self.cfg, pos)
     }
 
-    fn state_follow_ups(&self, answer: liq_protocol::StateAnswer<'_>) -> Vec<liq_protocol::StateRead> {
+    fn state_follow_ups(
+        &self,
+        answer: liq_protocol::StateAnswer<'_>,
+    ) -> Vec<liq_protocol::StateRead> {
         resync::follow_ups(answer)
     }
 

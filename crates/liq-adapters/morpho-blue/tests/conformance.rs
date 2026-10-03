@@ -628,7 +628,15 @@ fn unlisted_token_markets_are_skipped_not_fatal() {
     idle_params.collateralToken = Address::ZERO;
     idle_params.oracle = Address::ZERO;
     for (id, params) in [(junk, junk_params), (idle, idle_params)] {
-        let l = log(d.morpho, &ev::CreateMarket { id, marketParams: params }, DEPLOY_BLOCK, T0);
+        let l = log(
+            d.morpho,
+            &ev::CreateMarket {
+                id,
+                marketParams: params,
+            },
+            DEPLOY_BLOCK,
+            T0,
+        );
         assert_eq!(p.apply_log(&mut st, &l.view()), Ok(DirtySet::None));
     }
     let on_junk = log(
@@ -645,14 +653,21 @@ fn unlisted_token_markets_are_skipped_not_fatal() {
     );
     assert_eq!(p.apply_log(&mut st, &on_junk.view()), Ok(DirtySet::None));
     assert_eq!(st.positions_len(), 0, "no position on an untracked market");
-    assert!(st.markets(FIRST).is_err(), "skipped markets take no MarketId");
+    assert!(
+        st.markets(FIRST).is_err(),
+        "skipped markets take no MarketId"
+    );
 
     for l in listing_logs(&d).iter().chain(activity_logs(&d).iter()) {
-        p.apply_log(&mut st, &l.view()).expect("tracked market folds");
+        p.apply_log(&mut st, &l.view())
+            .expect("tracked market folds");
     }
     let loan: &liq_adapters_morpho_blue::layout::LoanRow =
         st.markets(FIRST).unwrap()[0].body().unwrap();
-    assert_eq!(loan.morpho_id, MARKET_ID.0, "first admitted market is first_market");
+    assert_eq!(
+        loan.morpho_id, MARKET_ID.0,
+        "first admitted market is first_market"
+    );
     let px = prices(WETH_P8, DAI_P8);
     let h = p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap();
     assert_eq!(h.state, HealthState::Healthy);
@@ -682,7 +697,10 @@ fn more_markets_than_one_market_has_rows() {
             T0,
         );
         assert!(
-            matches!(p.apply_log(&mut st, &l.view()), Ok(DirtySet::MarketReprice(_))),
+            matches!(
+                p.apply_log(&mut st, &l.view()),
+                Ok(DirtySet::MarketReprice(_))
+            ),
             "market {i} admitted"
         );
     }
@@ -706,5 +724,8 @@ fn more_markets_than_one_market_has_rows() {
         p.apply_log(&mut st, &supply.view()),
         Ok(DirtySet::Positions(_))
     ));
-    assert_eq!(st.position_key(liq_types::PositionId(0)).unwrap().market, last);
+    assert_eq!(
+        st.position_key(liq_types::PositionId(0)).unwrap().market,
+        last
+    );
 }

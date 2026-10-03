@@ -420,7 +420,10 @@ impl Protocol for GearboxV3 {
         reads::resync_reads(&self.cfg, pos)
     }
 
-    fn state_follow_ups(&self, answer: liq_protocol::StateAnswer<'_>) -> Vec<liq_protocol::StateRead> {
+    fn state_follow_ups(
+        &self,
+        answer: liq_protocol::StateAnswer<'_>,
+    ) -> Vec<liq_protocol::StateRead> {
         reads::follow_ups(&self.cfg, answer)
     }
 

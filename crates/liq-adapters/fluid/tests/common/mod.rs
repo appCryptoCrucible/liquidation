@@ -206,7 +206,9 @@ pub fn read_block(
         .collect();
     let sets = p.apply_state_reads(st, ts, &answers).expect("answers fold");
     assert!(sets.len() <= 1, "Fluid reports one set per batch");
-    sets.into_iter().next().unwrap_or(liq_protocol::DirtySet::None)
+    sets.into_iter()
+        .next()
+        .unwrap_or(liq_protocol::DirtySet::None)
 }
 
 #[derive(Clone, Debug)]

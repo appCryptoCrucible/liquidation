@@ -347,10 +347,12 @@ fn apply_factory(
         let ev: events::ProxyCreated = decode(log)?;
         let (asset, oracle, unit) = trailing3(ev.trailingData.as_ref())?;
         let ts = last_update(log.timestamp)?;
-        return Ok(match ensure_vault(cfg, st, ev.proxy, asset, oracle, unit, ts)? {
-            Some((_, rows)) => DirtySet::MarketReprice(rows),
-            None => DirtySet::None,
-        });
+        return Ok(
+            match ensure_vault(cfg, st, ev.proxy, asset, oracle, unit, ts)? {
+                Some((_, rows)) => DirtySet::MarketReprice(rows),
+                None => DirtySet::None,
+            },
+        );
     }
     if topic0 == events::Genesis::SIGNATURE_HASH {
         return Ok(DirtySet::None);
@@ -426,7 +428,15 @@ fn apply_pending(
         let ev: events::EVaultCreated = decode(log)?;
         let ts = last_update(log.timestamp)?;
         return Ok(
-            match ensure_vault(cfg, st, log.address, ev.asset, Address::ZERO, Address::ZERO, ts)? {
+            match ensure_vault(
+                cfg,
+                st,
+                log.address,
+                ev.asset,
+                Address::ZERO,
+                Address::ZERO,
+                ts,
+            )? {
                 Some((_, rows)) => DirtySet::MarketReprice(rows),
                 None => DirtySet::None,
             },
@@ -446,7 +456,15 @@ fn apply_vault(
         let ev: events::EVaultCreated = decode(log)?;
         let ts = last_update(log.timestamp)?;
         return Ok(
-            match ensure_vault(cfg, st, log.address, ev.asset, Address::ZERO, Address::ZERO, ts)? {
+            match ensure_vault(
+                cfg,
+                st,
+                log.address,
+                ev.asset,
+                Address::ZERO,
+                Address::ZERO,
+                ts,
+            )? {
                 Some((_, rows)) => DirtySet::MarketReprice(rows),
                 None => DirtySet::None,
             },

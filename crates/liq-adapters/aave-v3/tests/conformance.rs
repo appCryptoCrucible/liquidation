@@ -424,8 +424,13 @@ fn answer_and_fold(
     answer: &dyn Fn(&liq_protocol::StateRead) -> Vec<u8>,
 ) -> Vec<liq_protocol::DirtySet> {
     use liq_protocol::Protocol;
-    let mut all: Vec<(liq_protocol::StateRead, Vec<u8>)> =
-        reads.into_iter().map(|r| { let a = answer(&r); (r, a) }).collect();
+    let mut all: Vec<(liq_protocol::StateRead, Vec<u8>)> = reads
+        .into_iter()
+        .map(|r| {
+            let a = answer(&r);
+            (r, a)
+        })
+        .collect();
     let mut follow = Vec::new();
     for (r, a) in &all {
         follow.extend(p.state_follow_ups(liq_protocol::StateAnswer {
@@ -434,7 +439,10 @@ fn answer_and_fold(
             data: a,
         }));
     }
-    all.extend(follow.into_iter().map(|r| { let a = answer(&r); (r, a) }));
+    all.extend(follow.into_iter().map(|r| {
+        let a = answer(&r);
+        (r, a)
+    }));
     let answers: Vec<liq_protocol::StateAnswer<'_>> = all
         .iter()
         .map(|(r, a)| liq_protocol::StateAnswer {
@@ -466,7 +474,9 @@ fn resync_restores_a_corrupted_account_through_reserve_ids() {
     let (p, reference) = full_store(&d);
     let (_, mut st) = full_store(&d);
     let px = prices(WETH_P8, DAI_P8);
-    let want = p.health(reference.view(ALICE_ID, T0).unwrap(), &px).unwrap();
+    let want = p
+        .health(reference.view(ALICE_ID, T0).unwrap(), &px)
+        .unwrap();
     let alice_weth = reference.supply(ALICE_ID, WETH_SLOT).unwrap();
     let alice_debt = reference.debt(ALICE_ID, DAI_SLOT).unwrap();
     assert!(alice_weth > 0 && alice_debt > 0);
@@ -474,7 +484,12 @@ fn resync_restores_a_corrupted_account_through_reserve_ids() {
     // Corrupt: lost supply, lost debt, collateral flag off, wrong e-mode.
     st.set_supply(ALICE_ID, WETH_SLOT, 1).unwrap();
     st.set_debt(ALICE_ID, DAI_SLOT, 0).unwrap();
-    st.set_slot_extra(ALICE_ID, WETH_SLOT, liq_protocol::PositionExtraRepr::default()).unwrap();
+    st.set_slot_extra(
+        ALICE_ID,
+        WETH_SLOT,
+        liq_protocol::PositionExtraRepr::default(),
+    )
+    .unwrap();
     let mut extra = *st.extra(ALICE_ID).unwrap();
     extra.view_mut::<UserExtra>().unwrap().emode = 7;
     st.set_extra(ALICE_ID, extra).unwrap();
@@ -488,7 +503,11 @@ fn resync_restores_a_corrupted_account_through_reserve_ids() {
             return IReserveToken::UNDERLYING_ASSET_ADDRESSCall::abi_encode_returns(&u);
         }
         if let Ok(q) = IPoolAccount::getReserveDataCall::abi_decode(c) {
-            let (id, a) = if q.asset == d.weth { (weth_id, d.a_weth) } else { (dai_id, d.a_dai) };
+            let (id, a) = if q.asset == d.weth {
+                (weth_id, d.a_weth)
+            } else {
+                (dai_id, d.a_dai)
+            };
             return IPoolAccount::getReserveDataCall::abi_encode_returns(&ReserveDataLegacy {
                 configuration: U256::ZERO,
                 liquidityIndex: 0,
@@ -527,7 +546,11 @@ fn resync_restores_a_corrupted_account_through_reserve_ids() {
     };
 
     let accounts = p.resync_reads(st.view(ALICE_ID, T0).unwrap());
-    assert_eq!(accounts.len(), 6, "configuration, e-mode, aToken + debt token per reserve");
+    assert_eq!(
+        accounts.len(),
+        6,
+        "configuration, e-mode, aToken + debt token per reserve"
+    );
     assert_eq!(
         answer_and_fold(&p, &mut st, accounts.clone(), &chain),
         vec![],
@@ -537,17 +560,34 @@ fn resync_restores_a_corrupted_account_through_reserve_ids() {
     let ids = p.state_reads(&Rows(&st));
     assert_eq!(ids.len(), 2, "one id read per reserve");
     assert_eq!(answer_and_fold(&p, &mut st, ids, &chain), vec![]);
-    assert!(p.state_reads(&Rows(&st)).is_empty(), "ids known: no more id reads");
+    assert!(
+        p.state_reads(&Rows(&st)).is_empty(),
+        "ids known: no more id reads"
+    );
 
     assert_eq!(
         answer_and_fold(&p, &mut st, accounts, &chain),
-        vec![DirtySet::Positions(liq_protocol::DirtyPositions::from_slice(&[ALICE_ID]))]
+        vec![DirtySet::Positions(
+            liq_protocol::DirtyPositions::from_slice(&[ALICE_ID])
+        )]
     );
     assert_eq!(st.supply(ALICE_ID, WETH_SLOT).unwrap(), alice_weth);
     assert_eq!(st.debt(ALICE_ID, DAI_SLOT).unwrap(), alice_debt);
-    let flags = st.slot_extra(ALICE_ID, WETH_SLOT).unwrap().view::<UserReserve>().unwrap().flags;
+    let flags = st
+        .slot_extra(ALICE_ID, WETH_SLOT)
+        .unwrap()
+        .view::<UserReserve>()
+        .unwrap()
+        .flags;
     assert_ne!(flags & UserReserve::USING_AS_COLLATERAL, 0);
-    assert_eq!(st.extra(ALICE_ID).unwrap().view::<UserExtra>().unwrap().emode, 0);
+    assert_eq!(
+        st.extra(ALICE_ID)
+            .unwrap()
+            .view::<UserExtra>()
+            .unwrap()
+            .emode,
+        0
+    );
     let got = p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap();
     assert_eq!(got.hf, want.hf);
     assert_eq!(got.collateral_value, want.collateral_value);

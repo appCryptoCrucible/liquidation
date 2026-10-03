@@ -324,8 +324,6 @@ mod tests {
         assert_eq!(delta_bps(one, plus).unwrap(), 1);
     }
 
-
-
     /// Property: after a healthy period, a sustained mismatch above a level
     /// eventually lifts the EWMA past it; one below it converges to itself.
     /// Fixed point of a constant series is the constant (the window-scale
@@ -369,7 +367,11 @@ mod tests {
         for _ in 0..STEPS {
             below.observe(id, 9);
         }
-        assert_eq!(below.ewma(id).unwrap().value(), 9, "converged, not pinned at 0");
+        assert_eq!(
+            below.ewma(id).unwrap().value(),
+            9,
+            "converged, not pinned at 0"
+        );
     }
 
     /// Oracle: the band slice we pass. Hot is over-sampled vs Cold.
@@ -407,11 +409,11 @@ mod tests {
             Band::Cold,
         ];
         let d = DriftDetector::new([
-                (Band::Hot, 3),
-                (Band::Warm, 0),
-                (Band::Cool, 0),
-                (Band::Cold, 1),
-            ]);
+            (Band::Hot, 3),
+            (Band::Warm, 0),
+            (Band::Cool, 0),
+            (Band::Cold, 1),
+        ]);
         let ids = d.sample_ids(&snap, &bands, ProtocolId(7)).unwrap();
         assert_eq!(ids.len(), 4, "3 hot + 1 cold");
         let mut hot = 0;
@@ -426,11 +428,11 @@ mod tests {
         assert_eq!(hot, 3);
         assert_eq!(cold, 1);
         let d2 = DriftDetector::new([
-                (Band::Hot, 1),
-                (Band::Warm, 0),
-                (Band::Cool, 0),
-                (Band::Cold, 1),
-            ]);
+            (Band::Hot, 1),
+            (Band::Warm, 0),
+            (Band::Cool, 0),
+            (Band::Cold, 1),
+        ]);
         assert!(d2.sample_ids(&snap, &bands[..3], ProtocolId(7)).is_err());
     }
 
@@ -591,7 +593,8 @@ mod tests {
             (Band::Cold, 0),
         ];
         let p = PriceIsHealth;
-        let exec = |c: &liq_protocol::ProbeCall| (c.decode)(&[]).map_err(super::DriftError::Protocol);
+        let exec =
+            |c: &liq_protocol::ProbeCall| (c.decode)(&[]).map_err(super::DriftError::Protocol);
         fn tick<'a>(
             snap: &'a crate::snapshot::StoreSnapshot,
             bands: &'a [Band],
@@ -610,15 +613,23 @@ mod tests {
         }
 
         let mut d = DriftDetector::new(strata);
-        let r = d.tick(tick(&snap, &bands, &px, Some(&overlay), &p), &[], exec).unwrap();
+        let r = d
+            .tick(tick(&snap, &bands, &px, Some(&overlay), &p), &[], exec)
+            .unwrap();
         assert_eq!((r.compared, r.skipped), (1, 1), "unread position skipped");
         assert_eq!(r.results, vec![(liq_types::PositionId(0), 0)]);
 
-        let r = d.tick(tick(&snap, &bands, &px, None, &p), &[], exec).unwrap();
+        let r = d
+            .tick(tick(&snap, &bands, &px, None, &p), &[], exec)
+            .unwrap();
         assert_eq!(r.results, vec![(liq_types::PositionId(0), 10_000)]);
 
         let r = d
-            .tick(tick(&snap, &bands, &px, Some(&overlay), &p), &[liq_types::PositionId(2)], exec)
+            .tick(
+                tick(&snap, &bands, &px, Some(&overlay), &p),
+                &[liq_types::PositionId(2)],
+                exec,
+            )
             .unwrap();
         assert_eq!(
             r.results,

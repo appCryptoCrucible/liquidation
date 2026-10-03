@@ -212,7 +212,11 @@ pub(crate) fn resync_reads(cfg: &Config, pos: PositionRef<'_>) -> Vec<StateRead>
             IPoolAccount::getUserConfigurationCall { user }.abi_encode(),
             CFG,
         ),
-        read(pool.address, IPoolAccount::getUserEModeCall { user }.abi_encode(), EMODE),
+        read(
+            pool.address,
+            IPoolAccount::getUserEModeCall { user }.abi_encode(),
+            EMODE,
+        ),
     ];
     for (slot, row) in pos.markets.iter().enumerate().skip(1) {
         let (Ok(r), Ok(slot)) = (row.body::<Reserve>(), u64::try_from(slot)) else {
@@ -352,7 +356,9 @@ fn apply_accounts(
             }
             st.set_slot_extra(pos, s.slot, repr)?;
             if s.stable {
-                stable_slots |= 1u64.checked_shl(u32::from(s.slot.min(63))).unwrap_or(1 << 63);
+                stable_slots |= 1u64
+                    .checked_shl(u32::from(s.slot.min(63)))
+                    .unwrap_or(1 << 63);
             }
         }
         let mut extra = *st.extra(pos)?;

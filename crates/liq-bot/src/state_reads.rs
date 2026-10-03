@@ -559,7 +559,10 @@ mod tests {
                 // Paced under the endpoint's per-second budget.
                 std::thread::sleep(std::time::Duration::from_millis(40));
                 for attempt in 0..6u32 {
-                    match self.0.block_on(self.1.call_at(to, Bytes::copy_from_slice(data), block)) {
+                    match self
+                        .0
+                        .block_on(self.1.call_at(to, Bytes::copy_from_slice(data), block))
+                    {
                         Ok(b) => return Ok(b),
                         // A revert is an answer (the feed walk probes with
                         // views most feeds do not have); retry the rest.
@@ -576,7 +579,8 @@ mod tests {
         let raw = std::fs::read_to_string(root.join("config/protocols/gearbox.toml")).unwrap();
         let mut cfg = liq_adapters_gearbox::Config::from_toml(&raw).unwrap();
         let t0 = std::time::Instant::now();
-        cfg.assert_live_registry(&Retrying(&rt, &rpc), block).unwrap();
+        cfg.assert_live_registry(&Retrying(&rt, &rpc), block)
+            .unwrap();
         eprintln!(
             "bound {} managers ({} skipped) in {:?}",
             cfg.managers.len(),
@@ -608,32 +612,59 @@ mod tests {
                 creditManager: m.manager,
                 masterCreditAccount: Address::ZERO,
             };
-            fold(&mut st, m.factory, ev.encode_topics().into_iter().map(|t| t.0).collect(), ev.encode_data());
+            fold(
+                &mut st,
+                m.factory,
+                ev.encode_topics().into_iter().map(|t| t.0).collect(),
+                ev.encode_data(),
+            );
             let raw = call(m.manager, creditAccountsCall {}.abi_encode()).unwrap();
-            for acc in creditAccountsCall::abi_decode_returns(&raw).unwrap().into_iter().take(5) {
+            for acc in creditAccountsCall::abi_decode_returns(&raw)
+                .unwrap()
+                .into_iter()
+                .take(5)
+            {
                 let ev = facade::StartMultiCall {
                     creditAccount: acc,
                     caller: acc,
                 };
-                fold(&mut st, m.facade, ev.encode_topics().into_iter().map(|t| t.0).collect(), ev.encode_data());
-                let dec = m.tokens.iter().find(|t| t.slot == 0).map_or(0, |t| t.decimals);
+                fold(
+                    &mut st,
+                    m.facade,
+                    ev.encode_topics().into_iter().map(|t| t.0).collect(),
+                    ev.encode_data(),
+                );
+                let dec = m
+                    .tokens
+                    .iter()
+                    .find(|t| t.slot == 0)
+                    .map_or(0, |t| t.decimals);
                 accounts.push((m.manager, m.market, acc, dec));
             }
         }
-        assert!(accounts.len() >= 5, "only {} open accounts found", accounts.len());
+        assert!(
+            accounts.len() >= 5,
+            "only {} open accounts found",
+            accounts.len()
+        );
         let view_store = &st;
         let reads: StateReadSet = (0..view_store.positions_len())
             .map(PositionId)
             .flat_map(|id| g.position_reads(view_store.view(id, 1).unwrap()))
             .map(|r| (0, r))
             .collect();
-        assert_eq!(reads.len(), accounts.len(), "one info read per stale account");
+        assert_eq!(
+            reads.len(),
+            accounts.len(),
+            "one info read per stale account"
+        );
         let mut reads = reads;
         reads.extend(g.state_reads(&NoRows).into_iter().map(|r| (0, r)));
         let batch = rt.block_on(read_state_block(protocols, &rpc, &reads, block));
         assert_eq!(batch.failed, 0, "multicall batches failed");
         assert!(batch.answers.len() > reads.len(), "balance follow-ups ran");
-        g.apply_state_reads(&mut st, 1, &batch.answers_for(0)).unwrap();
+        g.apply_state_reads(&mut st, 1, &batch.answers_for(0))
+            .unwrap();
         let ts = {
             use alloy_provider::Provider;
             let provider = alloy_provider::ProviderBuilder::new()
@@ -647,7 +678,13 @@ mod tests {
         };
         // A flat 1.0 for every asset: health's debt value is then the total
         // debt in underlying units, scaled to WAD.
-        let n = g.config().assets.iter().map(|a| a.asset.0).max().unwrap_or(0);
+        let n = g
+            .config()
+            .assets
+            .iter()
+            .map(|a| a.asset.0)
+            .max()
+            .unwrap_or(0);
         let flat = liq_types::PriceVector(
             (0..=n)
                 .map(|a| liq_types::Price {
@@ -679,7 +716,8 @@ mod tests {
                 .abi_encode(),
             )
             .unwrap();
-            let cdd = ICreditManagerV3::calcDebtAndCollateralCall::abi_decode_returns(&raw).unwrap();
+            let cdd =
+                ICreditManagerV3::calcDebtAndCollateralCall::abi_decode_returns(&raw).unwrap();
             assert_eq!(U256::from(st.debt(id, 0).unwrap()), cdd.debt, "{acc} debt");
             // `_calcDebtAndCollateral` reports the checkpoint as 0 for a
             // debt-free account (`CreditManagerV3.sol:719` @ `510fc654`);
@@ -690,7 +728,11 @@ mod tests {
                 U256::from(x.cumulative_index_last_update)
             };
             assert_eq!(index, cdd.cumulativeIndexLastUpdate, "{acc} index");
-            assert_eq!(U256::from(x.enabled_tokens_mask), cdd.enabledTokensMask, "{acc} mask");
+            assert_eq!(
+                U256::from(x.enabled_tokens_mask),
+                cdd.enabledTokensMask,
+                "{acc} mask"
+            );
             if cdd.debt.is_zero() {
                 continue;
             }
@@ -702,7 +744,11 @@ mod tests {
             let total = cdd.debt + cdd.accruedInterest + cdd.accruedFees;
             let want =
                 liq_adapters_gearbox::math::value_wad(total, liq_types::fixed::RAY, dec).unwrap();
-            assert_eq!(h.debt_value.raw(), want, "{acc} total debt at block {block}");
+            assert_eq!(
+                h.debt_value.raw(),
+                want,
+                "{acc} total debt at block {block}"
+            );
             accrued += 1;
         }
         assert!(accrued > 0, "no account with debt was compared");

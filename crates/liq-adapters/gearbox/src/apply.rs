@@ -280,7 +280,11 @@ fn mark_stale(st: &mut dyn StateWriter, pos: PositionId) -> Result<()> {
     set_extra(st, pos, ex)
 }
 
-pub(crate) fn zero_account(st: &mut dyn StateWriter, pos: PositionId, token_count: u8) -> Result<()> {
+pub(crate) fn zero_account(
+    st: &mut dyn StateWriter,
+    pos: PositionId,
+    token_count: u8,
+) -> Result<()> {
     let n = u16::from(token_count.max(1));
     for slot in 0u16..n {
         st.set_supply(pos, slot, 0)?;

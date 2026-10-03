@@ -906,18 +906,30 @@ fn resync_restores_a_corrupted_account() {
     let (p, reference) = full_store(&d);
     let (_, mut st) = full_store(&d);
     let px = prices(1800_0000_0000, DAI_P8);
-    let want = p.health(reference.view(ALICE_ID, T0).unwrap(), &px).unwrap();
+    let want = p
+        .health(reference.view(ALICE_ID, T0).unwrap(), &px)
+        .unwrap();
     let n_slots = reference.markets(SPOKE_MARKET).unwrap().len();
     let user_at = |slot: u16| -> UserReserve {
-        *reference.slot_extra(ALICE_ID, slot).unwrap().view().unwrap()
+        *reference
+            .slot_extra(ALICE_ID, slot)
+            .unwrap()
+            .view()
+            .unwrap()
     };
-    let risk = reference.extra(ALICE_ID).unwrap().view::<UserExtra>().unwrap().risk_premium;
+    let risk = reference
+        .extra(ALICE_ID)
+        .unwrap()
+        .view::<UserExtra>()
+        .unwrap()
+        .risk_premium;
     assert!((1..n_slots).any(|s| reference.debt(ALICE_ID, s as u16).unwrap() > 0));
 
     for slot in 1..n_slots as u16 {
         st.set_supply(ALICE_ID, slot, 0).unwrap();
         st.set_debt(ALICE_ID, slot, 0).unwrap();
-        st.set_slot_extra(ALICE_ID, slot, liq_protocol::PositionExtraRepr::default()).unwrap();
+        st.set_slot_extra(ALICE_ID, slot, liq_protocol::PositionExtraRepr::default())
+            .unwrap();
     }
 
     let chain = |r: &StateRead| -> Vec<u8> {
@@ -957,7 +969,9 @@ fn resync_restores_a_corrupted_account() {
             );
         }
         if ISpokeAccount::getUserLastRiskPremiumCall::abi_decode(c).is_ok() {
-            return ISpokeAccount::getUserLastRiskPremiumCall::abi_encode_returns(&U256::from(risk));
+            return ISpokeAccount::getUserLastRiskPremiumCall::abi_encode_returns(&U256::from(
+                risk,
+            ));
         }
         panic!("unexpected read {r:?}")
     };
@@ -989,7 +1003,10 @@ fn resync_restores_a_corrupted_account() {
             data: a,
         })
         .collect();
-    assert_eq!(p.apply_state_reads(&mut st, T0, &short_ans).unwrap(), vec![]);
+    assert_eq!(
+        p.apply_state_reads(&mut st, T0, &short_ans).unwrap(),
+        vec![]
+    );
     assert_eq!(st.debt(ALICE_ID, 1).unwrap(), 0, "incomplete: untouched");
 
     let all_ans: Vec<StateAnswer<'_>> = all
@@ -1002,11 +1019,19 @@ fn resync_restores_a_corrupted_account() {
         .collect();
     assert_eq!(
         p.apply_state_reads(&mut st, T0, &all_ans).unwrap(),
-        vec![DirtySet::Positions(liq_protocol::DirtyPositions::from_slice(&[ALICE_ID]))]
+        vec![DirtySet::Positions(
+            liq_protocol::DirtyPositions::from_slice(&[ALICE_ID])
+        )]
     );
     for slot in 1..n_slots as u16 {
-        assert_eq!(st.supply(ALICE_ID, slot).unwrap(), reference.supply(ALICE_ID, slot).unwrap());
-        assert_eq!(st.debt(ALICE_ID, slot).unwrap(), reference.debt(ALICE_ID, slot).unwrap());
+        assert_eq!(
+            st.supply(ALICE_ID, slot).unwrap(),
+            reference.supply(ALICE_ID, slot).unwrap()
+        );
+        assert_eq!(
+            st.debt(ALICE_ID, slot).unwrap(),
+            reference.debt(ALICE_ID, slot).unwrap()
+        );
         let got: UserReserve = *st.slot_extra(ALICE_ID, slot).unwrap().view().unwrap();
         assert_eq!(got, user_at(slot), "slot {slot}");
     }

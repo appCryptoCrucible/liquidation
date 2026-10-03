@@ -803,7 +803,10 @@ fn settle_reads(
     mask: U256,
     balances: &[(Address, U256)],
     skip: Option<Address>,
-) -> (Vec<liq_protocol::StateRead>, Vec<(liq_protocol::StateRead, Vec<u8>)>) {
+) -> (
+    Vec<liq_protocol::StateRead>,
+    Vec<(liq_protocol::StateRead, Vec<u8>)>,
+) {
     use alloy_sol_types::SolCall;
     use liq_adapters_gearbox::events::views::{ICreditManagerV3, IPoolQuotaKeeperV3, IERC20};
     let first = p.position_reads(st.view(ALICE_ID, T0).unwrap());
@@ -895,7 +898,9 @@ fn multicall_is_settled_by_chain_reads() {
     );
     assert_eq!(
         p.apply_log(&mut st, &start.view()),
-        Ok(DirtySet::Positions(liq_protocol::DirtyPositions::from_slice(&[ALICE_ID])))
+        Ok(DirtySet::Positions(
+            liq_protocol::DirtyPositions::from_slice(&[ALICE_ID])
+        ))
     );
     let h = p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap();
     assert_eq!(
@@ -919,7 +924,11 @@ fn multicall_is_settled_by_chain_reads() {
     );
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].target, d.manager);
-    assert_eq!(answered.len(), 3, "info + underlying + coll quota; coll balance dropped");
+    assert_eq!(
+        answered.len(),
+        3,
+        "info + underlying + coll quota; coll balance dropped"
+    );
     assert_eq!(fold_answers(&p, &mut st, &answered), vec![]);
     assert!(
         !p.position_reads(st.view(ALICE_ID, T0).unwrap()).is_empty(),
@@ -938,12 +947,16 @@ fn multicall_is_settled_by_chain_reads() {
     assert_eq!(answered.len(), 4);
     assert_eq!(
         fold_answers(&p, &mut st, &answered),
-        vec![DirtySet::Positions(liq_protocol::DirtyPositions::from_slice(&[ALICE_ID]))]
+        vec![DirtySet::Positions(
+            liq_protocol::DirtyPositions::from_slice(&[ALICE_ID])
+        )]
     );
     assert!(p.position_reads(st.view(ALICE_ID, T0).unwrap()).is_empty());
     let settled = p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap();
     let (p_ref, st_ref) = full_store(&d, ALICE_COLL_LIQ, ALICE_DEBT_LIQ);
-    let reference = p_ref.health(st_ref.view(ALICE_ID, T0).unwrap(), &px).unwrap();
+    let reference = p_ref
+        .health(st_ref.view(ALICE_ID, T0).unwrap(), &px)
+        .unwrap();
     assert_eq!(settled.state, HealthState::Liquidatable);
     assert_eq!(settled.hf, reference.hf);
     assert_eq!(settled.debt_value, reference.debt_value);
@@ -1014,7 +1027,10 @@ fn reads_for_another_account_are_not_folded() {
     .abi_encode()
     .into();
     assert_eq!(fold_answers(&p, &mut st, &answered), vec![]);
-    assert_eq!(st.supply(ALICE_ID, 1).unwrap(), u128::try_from(ALICE_COLL).unwrap());
+    assert_eq!(
+        st.supply(ALICE_ID, 1).unwrap(),
+        u128::try_from(ALICE_COLL).unwrap()
+    );
     assert!(!p.position_reads(st.view(ALICE_ID, T0).unwrap()).is_empty());
 }
 
@@ -1106,11 +1122,19 @@ fn debt_accrues_base_and_quota_interest_from_reads() {
     assert_eq!(reads.len(), 5, "pool x3, keeper, one quoted token");
     answered.extend(reads);
     let sets = fold_answers(&p, &mut st, &answered);
-    assert_eq!(sets.len(), 2, "interest rows and the settled account: {sets:?}");
+    assert_eq!(
+        sets.len(),
+        2,
+        "interest rows and the settled account: {sets:?}"
+    );
     assert!(matches!(sets[0], DirtySet::MarketAccrual(_)));
 
-    let at_read = p.health(st.view(ALICE_ID, T0 - 1_000).unwrap(), &px).unwrap();
-    let day = p.health(st.view(ALICE_ID, T0 + 86_400).unwrap(), &px).unwrap();
+    let at_read = p
+        .health(st.view(ALICE_ID, T0 - 1_000).unwrap(), &px)
+        .unwrap();
+    let day = p
+        .health(st.view(ALICE_ID, T0 + 86_400).unwrap(), &px)
+        .unwrap();
     let want = math::value_wad(uint!(1_130_885_709_497_U256), RAY_ONE, 6).unwrap();
     assert_eq!(day.debt_value.raw(), want);
     assert!(day.debt_value > at_read.debt_value, "debt grows with time");
