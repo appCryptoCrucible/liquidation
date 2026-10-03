@@ -5,6 +5,12 @@
 //! `liq_sim::verify` or fail-closed skip → `ExecInbox::try_send`.
 //! Same path for shadow and live. Synchronous: never awaits, never
 //! blocks on a runtime.
+//!
+//! The simulator runs on the node's own state at the store's tip
+//! ([`LiveSim`]). Without one (the standalone binary), and until the store
+//! has caught up with the node, a job whose trigger is already committed is
+//! verified by the exec worker against the node over RPC instead, and a job
+//! that needs a parent transaction replayed is not sent.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,8 +31,9 @@ use liq_router::{
     NONCE_SLOTS, OUT_PER_ETH_WETH,
 };
 use liq_sim::{
-    block_env_at, execute_calldata, verify, Bundle, MemoryFactory, SimError, SimOutcome, SimTx,
-    Simulator, StateProviderFactory, Trigger, PLANNED_EXECUTOR,
+    execute_calldata, verify, BlockRef, Bundle, MemoryFactory, NextBlock, NodeSim, SimEnv,
+    SimError, SimOutcome, SimTx, Simulator, SpecId, StateProviderFactory, Trigger,
+    PLANNED_EXECUTOR,
 };
 use liq_state::StateView;
 use liq_types::{AssetId, FlashProvider, PriceTick, PriceVector, TriggerKind};
@@ -76,7 +83,15 @@ pub struct SelectReady {
 /// Sim seam. No provider → skip send. `StateUnavailable` /
 /// `ArchiveUnavailable` → skip send. Does not invent state.
 pub trait DrainSim: Send {
-    fn verify(&self, bundle: &Bundle, number: u64, timestamp: u64) -> Result<SimOutcome, SimError>;
+    /// Where the simulated calls go: the address the jobs are sent to.
+    fn executor(&self) -> Address;
+    /// `bundle` in the block after the store's tip.
+    fn verify(&self, bundle: &Bundle, at: &NextBlock) -> Result<SimOutcome, SimError>;
+    /// `false` while this simulator should not run. Jobs then take the path
+    /// they take without one.
+    fn ready(&self) -> bool {
+        true
+    }
 }
 
 /// In-memory factory wrapper. Overlay only — no invented balances.
@@ -92,12 +107,63 @@ impl MemoryDrainSim {
 }
 
 impl DrainSim for MemoryDrainSim {
-    fn verify(&self, bundle: &Bundle, number: u64, timestamp: u64) -> Result<SimOutcome, SimError> {
-        let provider = self.factory.latest()?;
-        let mut sim =
-            Simulator::from_provider(provider, PLANNED_EXECUTOR, Address::ZERO, Address::ZERO);
-        verify(&mut sim, bundle, block_env_at(number, timestamp))
+    fn executor(&self) -> Address {
+        PLANNED_EXECUTOR
     }
+
+    /// Under the newest mainnet rules: the in-memory state has no chain to
+    /// date it.
+    fn verify(&self, bundle: &Bundle, at: &NextBlock) -> Result<SimOutcome, SimError> {
+        let state = Arc::new(self.factory.state_at(at.parent)?);
+        let mut sim =
+            Simulator::from_provider(state, PLANNED_EXECUTOR, Address::ZERO, Address::ZERO);
+        verify(
+            &mut sim,
+            bundle,
+            &SimEnv::new(SpecId::OSAKA, at.block_env()?),
+        )
+    }
+}
+
+/// The production simulator: each job on the node's state at the store's
+/// tip (`liq_sim::NodeSim`). It runs once this process holds the submit
+/// lease, which the ExEx grants when the store reaches the node's head.
+/// Before that nothing can be sent, and simulating every catch-up block on
+/// the hot thread would only slow the catch-up.
+pub struct LiveSim {
+    sim: NodeSim,
+    lease: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl LiveSim {
+    #[must_use]
+    pub fn new(sim: NodeSim, lease: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Self { sim, lease }
+    }
+}
+
+impl DrainSim for LiveSim {
+    fn executor(&self) -> Address {
+        self.sim.executor()
+    }
+
+    fn verify(&self, bundle: &Bundle, at: &NextBlock) -> Result<SimOutcome, SimError> {
+        self.sim.verify(bundle, at)
+    }
+
+    fn ready(&self) -> bool {
+        self.lease.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// Gas limit for a simulated job: what its calls needed available plus a
+/// fifth (call depth forwards 63/64 of what is left), at most what the
+/// simulation itself ran with. `None` when nothing was spent.
+fn job_gas(spent: u64, ran_with: u64) -> Option<u64> {
+    if spent == 0 {
+        return None;
+    }
+    Some(spent.checked_mul(6)?.checked_div(5)?.min(ran_with))
 }
 
 /// Counters for tests and logs. Not decision inputs.
@@ -129,6 +195,9 @@ pub struct DrainJoin {
     pub inbox: Option<ExecInbox>,
     pub sim: Option<Box<dyn DrainSim>>,
     pub operator: Option<Address>,
+    /// The second operator: signs MEV-Share backruns on its own nonce slot.
+    /// `None`: the first operator signs them.
+    pub backrun_operator: Option<Address>,
     pub chain_id: u64,
     pub fee: Option<FeeQuote>,
     /// Kept for the process. `observe_parent` only when header base fee ≠ 0.
@@ -195,6 +264,8 @@ pub struct DrainJoin {
     /// Header `gasLimit` of the last observed parent. `0` = not yet seen.
     parent_gas_limit: u64,
     last_block: u64,
+    /// Hash of `last_block`: the state the simulator reads.
+    last_hash: B256,
     last_ts: u64,
     block_seen: bool,
 }
@@ -509,6 +580,7 @@ impl DrainJoin {
             inbox,
             sim: None,
             operator,
+            backrun_operator: None,
             chain_id,
             fee: None,
             oracle: None,
@@ -541,6 +613,7 @@ impl DrainJoin {
             gov_pending: Vec::new(),
             parent_gas_limit: 0,
             last_block: 0,
+            last_hash: B256::ZERO,
             last_ts: 0,
             block_seen: false,
         }
@@ -611,8 +684,8 @@ impl DrainJoin {
         if self.state_reader.is_none() {
             return;
         }
-        let gap = self.position_reads_block != 0
-            && block != self.position_reads_block.saturating_add(1);
+        let gap =
+            self.position_reads_block != 0 && block != self.position_reads_block.saturating_add(1);
         self.position_reads_block = block;
         let rebuild = self.state_reads_at == 0
             || block.saturating_sub(self.state_reads_at)
@@ -671,7 +744,12 @@ impl DrainJoin {
     }
 
     /// Ask for `id`'s state from chain. `false` when its adapter cannot.
-    fn request_resync(&mut self, view: &StateView<'_>, id: liq_types::PositionId, block: u64) -> bool {
+    fn request_resync(
+        &mut self,
+        view: &StateView<'_>,
+        id: liq_types::PositionId,
+        block: u64,
+    ) -> bool {
         let reads = crate::state_reads::resync_reads_for(self.protocols, view, id);
         if reads.is_empty() {
             return false;
@@ -1033,6 +1111,25 @@ impl DrainJoin {
     pub fn with_sim(mut self, sim: Box<dyn DrainSim>) -> Self {
         self.sim = Some(sim);
         self
+    }
+
+    /// The second operator key's address (`exec_bind::BACKRUN_SLOT`).
+    #[must_use]
+    pub fn with_backrun_operator(mut self, operator: Address) -> Self {
+        self.backrun_operator = Some(operator);
+        self
+    }
+
+    /// The key that signs a job of `kind`, and its nonce slot. MEV-Share
+    /// backruns go out under the second operator when there is one.
+    fn signer_for(&self, kind: TriggerKind) -> Option<(Address, usize)> {
+        let first = self.operator?;
+        match (kind, self.backrun_operator) {
+            (TriggerKind::SvrAuction, Some(second)) => {
+                Some((second, crate::exec_bind::BACKRUN_SLOT))
+            }
+            _ => Some((first, crate::exec_bind::OPERATOR_SLOT)),
+        }
     }
 
     #[must_use]
@@ -1556,7 +1653,7 @@ impl DrainJoin {
             tracing::error!("hop_and_wrap_gas is zero — skip (no invented gas)");
             return Finish::Job;
         }
-        let Some(operator) = self.operator else {
+        let Some((operator, slot)) = self.signer_for(cand.cause.kind()) else {
             tracing::error!("operator absent — skip (no invented key)");
             return Finish::Exec;
         };
@@ -1576,6 +1673,7 @@ impl DrainJoin {
                 hop_and_wrap_gas,
                 self.fee,
                 operator,
+                slot,
                 self.chain_id,
                 tip,
                 bid,
@@ -1590,12 +1688,15 @@ impl DrainJoin {
                 Finish::Full
             };
         }
-        let Some(sim) = self.sim.as_ref() else {
-            // No in-process simulator: a trigger already in committed state
-            // is verified by the exec worker against the node before it is
-            // signed. A parent transaction cannot be replayed there.
+        let Some(sim) = self.sim.as_ref().filter(|s| s.ready()) else {
+            // No in-process simulator (or the store has not caught up): a
+            // trigger already in committed state is verified by the exec
+            // worker against the node before it is signed. A parent
+            // transaction cannot be replayed there.
             if !matches!(trigger, Trigger::InterestDrift) {
-                tracing::error!("no StateProvider and a parent tx to replay — skip send");
+                tracing::error!(
+                    "in-process simulator not running and a parent tx to replay — skip send"
+                );
                 return Finish::Sim;
             }
             let Some(job) = exec_job(
@@ -1606,6 +1707,7 @@ impl DrainJoin {
                 hop_and_wrap_gas,
                 self.fee,
                 operator,
+                slot,
                 self.chain_id,
                 tip,
                 bid,
@@ -1620,19 +1722,26 @@ impl DrainJoin {
                 Finish::Full
             };
         };
+        let Some(at) = self.next_block(tip, timestamp) else {
+            return Finish::Sim;
+        };
+        // The simulation runs with the most gas the block allows a
+        // transaction, so the job's limit comes from what it measured.
         let bundle = Bundle {
             trigger,
             calls: vec![SimTx {
                 caller: operator,
-                to: PLANNED_EXECUTOR,
+                to: sim.executor(),
                 value: U256::ZERO,
                 data: calldata.clone(),
-                gas_limit: hop_and_wrap_gas,
+                gas_limit: at.max_tx_gas(),
+                // Signed without one (`liq_exec::template::sign_call`).
+                access_list: Vec::new(),
             }],
             min_profit: U256::from(assembled.plan.min_profit_wei),
             health: None,
         };
-        let outcome = match sim.verify(&bundle, tip, timestamp) {
+        let outcome = match sim.verify(&bundle, &at) {
             Ok(o) => o,
             Err(SimError::StateUnavailable) | Err(SimError::ArchiveUnavailable) => {
                 tracing::error!("sim state/archive unavailable — skip send");
@@ -1643,18 +1752,19 @@ impl DrainJoin {
                 return Finish::Sim;
             }
         };
-        if outcome.gas_used == 0 {
-            tracing::error!("sim gas_used is zero — skip");
+        let Some(gas) = job_gas(outcome.gas_spent, at.max_tx_gas()) else {
+            tracing::error!("sim spent no gas — skip");
             return Finish::Job;
-        }
+        };
         let Some(job) = exec_job(
             cand,
             assembled,
             &plan_bytes,
             &calldata,
-            outcome.gas_used,
+            gas,
             self.fee,
             operator,
+            slot,
             self.chain_id,
             tip,
             bid,
@@ -1668,6 +1778,28 @@ impl DrainJoin {
             tracing::error!("ExecInbox full — counted, not blocked");
             Finish::Full
         }
+    }
+
+    /// The block a job built on `tip` lands in. `None` when `tip` is not
+    /// the block this join last saw committed: its hash names the state the
+    /// simulator reads.
+    fn next_block(&self, tip: u64, timestamp: u64) -> Option<NextBlock> {
+        if tip != self.last_block {
+            tracing::error!(
+                tip,
+                last = self.last_block,
+                "store tip is not the last committed block — skip sim"
+            );
+            return None;
+        }
+        Some(NextBlock {
+            parent: BlockRef {
+                number: tip,
+                hash: self.last_hash,
+            },
+            parent_timestamp: timestamp,
+            parent_gas_limit: self.parent_gas_limit,
+        })
     }
 }
 
@@ -1989,6 +2121,7 @@ impl AfterBlock for DrainJoin {
     fn after_block(&mut self, ctx: AfterBlockCtx<'_>) {
         self.block_seen = true;
         self.last_block = ctx.block;
+        self.last_hash = ctx.hash;
         self.last_ts = ctx.timestamp;
         self.publish_flash();
         self.observe_parent_header(ctx.base_fee_per_gas, ctx.gas_used, ctx.gas_limit, ctx.block);
@@ -2282,6 +2415,7 @@ fn sim_trigger(c: &Candidate, trigger_gas: u64) -> Option<Trigger> {
                         value: U256::ZERO,
                         data: call_data.clone(),
                         gas_limit: trigger_gas,
+                        access_list: Vec::new(),
                     })),
                     predicted: None,
                 })
@@ -2317,6 +2451,7 @@ fn exec_job(
     gas_limit: u64,
     fee: Option<FeeQuote>,
     operator: Address,
+    slot: usize,
     chain_id: u64,
     tip: u64,
     bid: &Bid,
@@ -2399,7 +2534,7 @@ fn exec_job(
         calldata: calldata.clone(),
         gas_limit,
         chain_id,
-        slot: 0,
+        slot,
         rpc_verify,
     })
 }
@@ -2889,18 +3024,17 @@ mod tests {
     }
 
     impl DrainSim for OverlayGasSim {
-        fn verify(
-            &self,
-            bundle: &Bundle,
-            number: u64,
-            timestamp: u64,
-        ) -> Result<SimOutcome, SimError> {
-            match self.inner.verify(bundle, number, timestamp) {
+        fn executor(&self) -> Address {
+            self.inner.executor()
+        }
+
+        fn verify(&self, bundle: &Bundle, at: &NextBlock) -> Result<SimOutcome, SimError> {
+            match self.inner.verify(bundle, at) {
                 Ok(o) => Ok(o),
                 Err(SimError::ProfitBelowFloor { .. }) => {
                     let mut b = bundle.clone();
                     b.min_profit = U256::ZERO;
-                    self.inner.verify(&b, number, timestamp)
+                    self.inner.verify(&b, at)
                 }
                 Err(e) => Err(e),
             }
@@ -3044,6 +3178,198 @@ mod tests {
         let st = j.enqueue_candidates(&[c], 0, 1, None);
         assert_eq!(st.jobs_sent, 0);
         assert!(rx.try_recv().is_err());
+    }
+
+    type Asked = Arc<parking_lot::Mutex<Vec<(Bundle, NextBlock)>>>;
+
+    /// Records what it is asked and gives a fixed answer.
+    struct Recorded {
+        asked: Asked,
+        answer: Result<SimOutcome, SimError>,
+        ready: bool,
+    }
+
+    impl DrainSim for Recorded {
+        fn executor(&self) -> Address {
+            addr(0xE0)
+        }
+
+        fn verify(&self, bundle: &Bundle, at: &NextBlock) -> Result<SimOutcome, SimError> {
+            self.asked.lock().push((bundle.clone(), *at));
+            self.answer.clone()
+        }
+
+        fn ready(&self) -> bool {
+            self.ready
+        }
+    }
+
+    fn recorded(answer: Result<SimOutcome, SimError>, ready: bool) -> (Box<Recorded>, Asked) {
+        let asked = Asked::default();
+        let sim = Recorded {
+            asked: Arc::clone(&asked),
+            answer,
+            ready,
+        };
+        (Box::new(sim), asked)
+    }
+
+    fn spent(gas: u64) -> Result<SimOutcome, SimError> {
+        Ok(SimOutcome {
+            gas_used: gas / 2,
+            gas_spent: gas,
+            net_profit_wei: alloy_primitives::I256::ZERO,
+            confidence: Confidence::CERTAIN,
+            weth_after: U256::ZERO,
+        })
+    }
+
+    /// A committed-state job is simulated in the block after the store's
+    /// tip, on the tip's state (its hash), with the most gas a transaction
+    /// may carry, at the address jobs are sent to. Its gas limit is what the
+    /// simulation spent plus a fifth, and it skips the RPC check.
+    #[test]
+    fn simulated_job_is_sized_from_the_simulation() {
+        let (inbox, rx) = ExecInbox::pair(4);
+        let (sim, asked) = recorded(spent(500_000), true);
+        let mut j = join_base(Some(inbox), false).with_sim(sim);
+        j.last_hash = B256::repeat_byte(5);
+        j.parent_gas_limit = 60_000_000;
+        let st = j.enqueue_candidates(&[fireable(1)], 0, 1_790_000_000, None);
+        assert_eq!(st.jobs_sent, 1, "{st:?}");
+        let job = rx.try_recv().unwrap();
+        assert!(!job.rpc_verify);
+        assert_eq!(job.gas_limit, 600_000);
+        let asked = asked.lock();
+        assert_eq!(asked.len(), 1);
+        let (bundle, at) = &asked[0];
+        assert_eq!(
+            at.parent,
+            BlockRef {
+                number: 0,
+                hash: B256::repeat_byte(5)
+            }
+        );
+        assert_eq!(at.parent_timestamp, 1_790_000_000);
+        assert_eq!(at.parent_gas_limit, 60_000_000);
+        assert!(matches!(bundle.trigger, Trigger::InterestDrift));
+        assert_eq!(bundle.calls.len(), 1);
+        assert_eq!(bundle.calls[0].caller, OPERATOR);
+        assert_eq!(bundle.calls[0].to, addr(0xE0));
+        assert_eq!(bundle.calls[0].data, job.calldata);
+        assert_eq!(bundle.calls[0].gas_limit, liq_sim::MAX_TX_GAS);
+    }
+
+    /// Until the store reaches the node's head the simulator is not run:
+    /// the job takes the RPC check, as it does without a simulator.
+    #[test]
+    fn unready_simulator_leaves_jobs_to_the_rpc_check() {
+        let (inbox, rx) = ExecInbox::pair(4);
+        let (sim, asked) = recorded(spent(500_000), false);
+        let mut j = join_base(Some(inbox), false).with_sim(sim);
+        let st = j.enqueue_candidates(&[fireable(1)], 0, 1, None);
+        assert_eq!(st.jobs_sent, 1, "{st:?}");
+        assert!(rx.try_recv().unwrap().rpc_verify);
+        assert!(asked.lock().is_empty());
+    }
+
+    /// The tip's state is gone (reorged out): the job is not sent, and not
+    /// handed to the RPC check either.
+    #[test]
+    fn unavailable_state_skips_the_job() {
+        let (inbox, rx) = ExecInbox::pair(4);
+        let (sim, _) = recorded(Err(SimError::StateUnavailable), true);
+        let mut j = join_base(Some(inbox), false).with_sim(sim);
+        let st = j.enqueue_candidates(&[fireable(1)], 0, 1, None);
+        assert_eq!(st.jobs_sent, 0);
+        assert!(st.skipped_sim >= 1, "{st:?}");
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// A tip that is not the last committed block has no known hash: the
+    /// simulator is not asked about another block's state.
+    #[test]
+    fn tip_other_than_the_last_commit_is_not_simulated() {
+        let (inbox, rx) = ExecInbox::pair(4);
+        let (sim, asked) = recorded(spent(500_000), true);
+        let mut j = join_base(Some(inbox), false).with_sim(sim);
+        j.last_block = 1;
+        let st = j.enqueue_candidates(&[fireable(1)], 0, 1, None);
+        assert_eq!(st.jobs_sent, 0);
+        assert!(st.skipped_sim >= 1, "{st:?}");
+        assert!(asked.lock().is_empty());
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// Spent plus a fifth, never above what the simulation ran with.
+    #[test]
+    fn job_gas_is_spent_plus_a_fifth_within_the_cap() {
+        assert_eq!(job_gas(0, liq_sim::MAX_TX_GAS), None);
+        assert_eq!(job_gas(1_000_000, liq_sim::MAX_TX_GAS), Some(1_200_000));
+        assert_eq!(
+            job_gas(15_000_000, liq_sim::MAX_TX_GAS),
+            Some(liq_sim::MAX_TX_GAS)
+        );
+    }
+
+    fn backrun(pos: u32) -> Candidate {
+        candidate(
+            pos,
+            TriggerCause::SvrAuction {
+                hint: B256::repeat_byte(9),
+                deadline: std::time::Instant::now() + Duration::from_secs(30),
+                forwarder: addr(0xF0),
+                call_data: Bytes::from_static(&[0x6f, 0xad, 0xcf, 0x72]),
+                caller: None,
+            },
+        )
+    }
+
+    /// MEV-Share backruns go out under the second operator on its own nonce
+    /// slot; everything else under the first.
+    #[test]
+    fn backruns_are_signed_by_the_second_operator() {
+        let second = addr(0xE7);
+        let (inbox, rx) = ExecInbox::pair(4);
+        let mut j = join_base(Some(inbox), false).with_backrun_operator(second);
+        let st = j.enqueue_svr(&[backrun(1)], 0, 1, None);
+        assert_eq!(st.jobs_sent, 1, "{st:?}");
+        let job = rx.try_recv().unwrap();
+        assert_eq!(job.trigger, TriggerKind::SvrAuction);
+        assert_eq!(job.operator_key, second);
+        assert_eq!(job.slot, crate::exec_bind::BACKRUN_SLOT);
+
+        let st = j.enqueue_candidates(&[fireable(1)], 0, 1, None);
+        assert_eq!(st.jobs_sent, 1, "{st:?}");
+        let job = rx.try_recv().unwrap();
+        assert_eq!(job.operator_key, OPERATOR);
+        assert_eq!(job.slot, crate::exec_bind::OPERATOR_SLOT);
+    }
+
+    /// Without a second key the first one signs the backruns too.
+    #[test]
+    fn without_a_second_key_backruns_use_the_first() {
+        let (inbox, rx) = ExecInbox::pair(4);
+        let mut j = join_base(Some(inbox), false);
+        let st = j.enqueue_svr(&[backrun(1)], 0, 1, None);
+        assert_eq!(st.jobs_sent, 1, "{st:?}");
+        let job = rx.try_recv().unwrap();
+        assert_eq!(job.operator_key, OPERATOR);
+        assert_eq!(job.slot, crate::exec_bind::OPERATOR_SLOT);
+    }
+
+    /// The live simulator runs once the lease is held.
+    #[test]
+    fn live_sim_waits_for_the_lease() {
+        let lease = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sim = LiveSim::new(
+            NodeSim::deployed(Arc::new(MemoryFactory::empty()), addr(0xE1)),
+            Arc::clone(&lease),
+        );
+        assert!(!sim.ready());
+        lease.store(true, Ordering::Release);
+        assert!(sim.ready());
+        assert_eq!(sim.executor(), addr(0xE1));
     }
 
     #[test]

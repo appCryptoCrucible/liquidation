@@ -25,7 +25,7 @@ contract PlanDecodeTest is Test {
     address immutable COLL2    = _rep(0xC2);
 
     function setUp() public {
-        h = new ExecutorHarness(address(1), address(2), address(3), bytes32(0), address(4), address(5), WETH);
+        h = new ExecutorHarness();
     }
 
     function _fixture(string memory name) internal view returns (bytes memory) {

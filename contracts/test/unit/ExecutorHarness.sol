@@ -1,25 +1,14 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity 0.8.28;
 
-import {Executor} from "../../src/Executor.sol";
 import {Plan, FlashGroup, LiqLeg, SwapLeg, PlanDecoder} from "../../src/lib/PlanDecoder.sol";
 import {SafeTransfer} from "../../src/lib/SafeTransfer.sol";
 
 /// Test-only surface (PLAN-ENCODING §4): exposes the decoder walk so the
 /// Rust encoder can be checked field-for-field, including walked offsets.
 /// Never deployed — lives under `test/`.
-contract ExecutorHarness is Executor {
+contract ExecutorHarness {
     using PlanDecoder for bytes;
-
-    constructor(
-        address operator_, address profitSink_,
-        address univ3Factory_, bytes32 univ3InitHash_,
-        address routerA_, address routerB_, address weth_
-    ) Executor(
-        operator_, profitSink_, univ3Factory_, univ3InitHash_, routerA_, routerB_, weth_,
-        // Decode-only harness: the V2/Curve anchors are never exercised here.
-        address(0x21), bytes32(0), address(0x22), bytes32(0), address(0x23)
-    ) {}
 
     function debugHeader(bytes calldata plan) external pure returns (Plan memory) {
         return plan.header();

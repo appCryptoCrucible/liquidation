@@ -12,7 +12,7 @@ contract PlanEncodingRoundTrip is Test {
     address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
 
     function setUp() public {
-        h = new ExecutorHarness(address(1), address(2), address(3), bytes32(0), address(4), address(5), WETH);
+        h = new ExecutorHarness();
     }
 
     function test_generated_plans_decode_and_repack() public {

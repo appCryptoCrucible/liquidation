@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {Executor} from "../../src/Executor.sol";
+import {ExecutorStack} from "../unit/ExecutorStack.sol";
 import {MainnetVenues} from "../../src/lib/MainnetVenues.sol";
 import {IMorpho, MarketParams} from "../../src/lib/Interfaces.sol";
 import {PlanBuilder as PB} from "../unit/PlanBuilder.sol";
@@ -71,6 +72,7 @@ contract ForkPendleMarketTest is Test {
     address constant SY = 0xBe3d4ec488A0a042BB86F9176C24f8CD54018BA7;
 
     address operator = makeAddr("operator");
+    address backrunOperator = makeAddr("backrunOperator");
     address sink = makeAddr("sink");
     Executor ex;
     bool forked;
@@ -80,8 +82,9 @@ contract ForkPendleMarketTest is Test {
         if (bytes(url).length == 0) return;
         vm.createSelectFork(url, PINNED_BLOCK);
         forked = true;
-        ex = new Executor(
+        ex = ExecutorStack.deploy(
             operator,
+            backrunOperator,
             sink,
             UNIV3_FACTORY,
             UNIV3_INIT_HASH,

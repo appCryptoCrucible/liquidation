@@ -68,6 +68,7 @@ flowchart LR
     EXEX -->|"owned blocks and logs"| BOT
     BOT -->|"FinishedHeight, once folded"| EXEX
     BOT -->|"localhost JSON-RPC<br/>views · eth_call · eth_simulateV1"| RETH
+    RETH -->|"state at the store's tip,<br/>read in-process by revm"| BOT
     STATE -->|"snapshot at start"| BOT
     BOT -->|"snapshots · shadow records"| STATE
     CFG -->|"at start, and registry exits live"| BOT
@@ -85,17 +86,18 @@ flowchart LR
 
 ### 2. Inside the process: threads and what they share
 
-One pinned thread, `liq-node-hot`, owns all mutable state: it folds every block, runs the engine and plans liquidations, and never awaits or blocks. Everything slow (chain reads, signing, snapshots, the drift check) runs on its own thread and reaches the hot thread through lock-free rings, published `ArcSwap` values, or the pool book's one lock.
+One pinned thread, `liq-node-hot`, owns all mutable state: it folds every block, runs the engine, plans liquidations and simulates each one in revm, and never awaits. The only state it reads outside its own is Reth's, in-process, for those simulations. Everything slow (chain reads over RPC, signing, snapshots, the drift check) runs on its own thread and reaches the hot thread through lock-free rings, published `ArcSwap` values, or the pool book's one lock.
 
 ```mermaid
 flowchart LR
     EXEX["ExEx future<br/>on Reth's runtime"]
+    NSTATE["Reth state provider<br/>the store's tip, read by revm"]
 
     subgraph hot["liq-node-hot · pinned · the only writer"]
         direction TB
         ING["Ingest<br/>LogRouter sends each log to<br/>10 protocol adapters · 5 flash sources ·<br/>the DEX pool book · oracle feeds"]
         STORE[("Hot-thread state<br/>StateStore + undo ring · FlashIndex ·<br/>PoolBook · Chainlink and derived prices")]
-        DRAIN["DrainJoin<br/>drives the Engine · plans liquidations ·<br/>folds read batches · applies drift actions"]
+        DRAIN["DrainJoin<br/>drives the Engine · plans liquidations<br/>and simulates each one in revm ·<br/>folds read batches · applies drift actions"]
         ING --> STORE --> DRAIN
     end
 
@@ -130,6 +132,7 @@ flowchart LR
     end
 
     EXEX -->|"block ring"| ING
+    NSTATE -.-> DRAIN
     ING -.->|"FinishedUpTo ring"| EXEX
     MEVT -->|"hint ring"| DRAIN
     GOV -->|"sim ring"| DRAIN
@@ -183,12 +186,13 @@ sequenceDiagram
     D->>E: price sync, protocol prices, on_dirty, on_block
     E-->>D: candidates
     D->>D: eligibility, select, assemble, bid, encode
+    D->>R: simulate in revm on the tip's state, read in-process
     D->>W: ExecJob via try_send (never blocks)
     S->>N: multicall reads pinned to the head
     S-->>D: batch for that block
     D->>D: amend, folding the batch into the open block
     D->>E: on_dirty for settled accounts and accrual rows
-    W->>N: nonce resync, simulate at the target block
+    W->>N: nonce resync, and a node simulation for jobs not simulated in-process
     W->>W: record the intended submission (shadow, always)
     W->>B: signed bundle, only when submit_enabled, lease and nonce all hold
 ```
@@ -263,7 +267,7 @@ stateDiagram-v2
 
 ### 6. From candidate to transaction
 
-Every candidate passes a gate before it is ranked, is sized by the smallest of four ceilings, and, when it acts on committed state, is simulated on the node before it is signed. Sending needs three conditions at once; without them the same path runs and only records what it would have sent. Governance liquidations enter separately, from a simulated payload rather than an engine candidate.
+Every candidate passes a gate before it is ranked, is sized by the smallest of four ceilings, and is simulated before it is signed. Inside Reth, once the store has reached the node's head, the hot thread runs each job in revm on the node's own state at the store's tip, under the next block's fork rules, and sets its gas limit from what it spent. The standalone binary, and the catch-up after a restart, hand committed-state jobs to the exec worker, which simulates them on the node over RPC. Sending needs three conditions at once; without them the same path runs and only records what it would have sent. Governance liquidations enter separately, from a simulated payload rather than an engine candidate.
 
 ```mermaid
 flowchart TD
@@ -276,9 +280,12 @@ flowchart TD
     BID["bid from config/bid.toml"]
     ENC["encode and validate · liq-plan"]
     TRIG{"Trigger"}
+    INPROC{"Inside Reth and<br/>caught up with the node?"}
+    RSIM["revm on the tip's state, next block's rules<br/>gas limit = gas spent + a fifth"]
     VER["ExecJob marked rpc_verify<br/>simulated on the node at the target block"]
+    REPLAY["revm replays the oracle update as its sender,<br/>then our call · skipped without revm"]
     SVR["MEV-Share backrun<br/>lands right after the hint's oracle update"]
-    SKIP(["skipped: needs a pending tx replayed,<br/>no in-process simulator attached"])
+    SKIP(["skipped: no raw transaction to replay"])
     GSIM["liq-bot-gov<br/>queued Aave payload or Sky spell,<br/>simulated with eth_simulateV1"]
     GOV["handle_gov<br/>payload's logs laid over committed state<br/>→ accounts it makes liquidatable"]
     GJOB["GovJob<br/>one tx per account in one bundle,<br/>for the first block the payload can run"]
@@ -292,8 +299,11 @@ flowchart TD
     CAND --> ELIG
     ELIG -->|no| PARK
     ELIG -->|yes| SEL --> SIZE --> ASM --> BID --> ENC --> TRIG
-    TRIG -->|"state already committed"| VER --> WORK
-    TRIG -->|"SVR hint"| SVR --> WORK
+    TRIG -->|"state already committed"| INPROC
+    INPROC -->|yes| RSIM --> WORK
+    INPROC -->|no| VER --> WORK
+    TRIG -->|"SVR hint naming its sender"| REPLAY --> SVR
+    TRIG -->|"SVR hint, sender hidden"| SVR --> WORK
     TRIG -->|"pending oracle tx"| SKIP
     GSIM --> GOV --> GJOB --> WORK
     WORK --> REC
@@ -306,23 +316,25 @@ flowchart TD
 
 ### 7. On chain: `Executor.execute(plan)`
 
-The Executor holds funds only in transit. `OPERATOR` (a hot key) can only call `execute`; `PROFIT_SINK` is immutable, and every token leaving the contract other than flash repayments and liquidation repays goes there. The bid is a share of *realized* net, paid to the block's coinbase, so an optimistic quote shrinks the bid instead of the profit.
+The Executor holds funds only in transit. Two hot keys, `OPERATOR` and `BACKRUN_OPERATOR`, can only call `execute`: the first signs builder bundles, the second MEV-Share backruns, so the two never wait on each other's nonce. `PROFIT_SINK` is immutable, and every token leaving the contract other than flash repayments and liquidation repays goes there. The bid is a share of *realized* net, paid to the block's coinbase, so an optimistic quote shrinks the bid instead of the profit.
+
+It is three contracts at one address, because one contract does not fit mainnet's 24,576-byte code limit. The core (`Executor.sol`) is the only entry point. Inside `execute`, it delegatecalls two modules: `LiquidationModule` runs the liquidation legs and governance actions, and `SwapModule` runs the swaps and unwraps. A module runs as the core, on the core's balances, so no funds move between contracts. The module addresses are immutables in the core, checked when it is deployed. A module refuses any call that does not come from inside `execute`. Changing a module means deploying a new core (D55, [GUIDE 10 Step 6b](liquidator-guides/GUIDE-10-contracts.md#step-6b--three-contracts-one-address)). In the diagram below, a step marked *(liquidation module)* or *(swap module)* runs that module's code; every other step runs in the core.
 
 ```mermaid
 flowchart TD
-    OP["execute(plan)<br/>OPERATOR only"]
+    OP["execute(plan)<br/>OPERATOR or BACKRUN_OPERATOR only"]
     GOVF{"Plan carries a<br/>governance action?"}
-    GOVA["Apply the Aave payload or Sky spell<br/>skipped if another tx in the bundle already did"]
+    GOVA["Apply the Aave payload or Sky spell<br/>skipped if another tx in the bundle already did<br/>(liquidation module)"]
     subgraph grp["For each flash group"]
         direction TB
         FLASH["Borrow from the group's flash source<br/>Aave · Uniswap V3 · Uniswap V4 · Morpho · Sky DSS,<br/>or none for reward-only legs"]
         CB["Provider calls back<br/>caller checked against transient storage"]
-        LEG["Liquidate<br/>Aave V3 · Aave V4 · Morpho · Euler · Silo ·<br/>Liquity · Fluid · Gearbox · Compound"]
-        SWAP["Swap or unwrap the seized collateral<br/>Uniswap V3 pool · allowlisted router · Uniswap V2 / Sushi pair ·<br/>Curve plain · Curve crypto · ERC-4626 redeem · Pendle PT redeem ·<br/>Curve NG one-coin · Pendle market sell"]
+        LEG["Liquidate<br/>Aave V3 · Aave V4 · Morpho · Euler · Silo ·<br/>Liquity · Fluid · Gearbox · Compound<br/>(liquidation module)"]
+        SWAP["Swap or unwrap the seized collateral<br/>Uniswap V3 pool · allowlisted router · Uniswap V2 / Sushi pair ·<br/>Curve plain · Curve crypto · ERC-4626 redeem · Pendle PT redeem ·<br/>Curve NG one-coin · Pendle market sell<br/>(swap module)"]
         REPAY["Repay the flash loan"]
         FLASH --> CB --> LEG --> SWAP --> REPAY
     end
-    PSWAP["Swap everything left into WETH"]
+    PSWAP["Swap everything left into WETH<br/>(swap module)"]
     NET["net = WETH gained − gas cost − governance cost<br/>bid = net × bidBps · keep = net − bid"]
     CHECK{"keep ≥ minProfit?"}
     REV(["revert · the bundle drops"])
@@ -413,7 +425,7 @@ flowchart BT
     WIRE["liq-wire<br/>plan wire format"]
     FLASHC["liq-flash<br/>flash sources · index · selection"]
     CONFIG["liq-config<br/>config · registry · boot assertion"]
-    SIM["liq-sim<br/>in-process revm"]
+    SIM["liq-sim<br/>revm on the node's state"]
     ADAPT["9 adapter crates<br/>aave-v3 · aave-v4 · morpho-blue · euler-v2 · silo-v2 ·<br/>liquity-v2 · fluid · gearbox · compound-v2"]
     NODE["liq-node<br/>ingest · router · reorg · hot thread"]
     ENGINE["liq-engine<br/>health engine"]
@@ -461,6 +473,7 @@ flowchart BT
     BOTC --> OBS
     BOTC --> SIM
     RETHC --> BOTC
+    RETHC --> SIM
     REPLAYC --> BOTC
 ```
 
@@ -472,7 +485,6 @@ Present in the workspace and tested, but not part of the production process toda
 
 | Piece | Where | State |
 |---|---|---|
-| In-process revm simulator | `liq-sim`, `DrainJoin::with_sim` | Never attached at startup. Committed-state triggers are simulated on the node instead; triggers that need a pending parent transaction replayed are skipped. |
 | Public-mempool ingest | `liq-node` `MempoolProducer`, `liq-oracle` `mempool_oracle` | The rings are created at ExEx install and never fed or read. |
 | CEX prices, fusion, aggregator simulation | `liq-oracle` `cex`, `fusion`, `aggsim` | Not referenced by `liq-bot`. Chainlink and derived feeds plus MEV-Share hints price the engine. |
 | HTTP alarms (ntfy, Telegram) | `liq-obs` `alert` | Not connected. Alerts, including drift, are log lines. |

@@ -192,31 +192,39 @@ where
         self
     }
 
-    /// Resync slot 0 to the operator's confirmed nonce after `target - 1`,
-    /// once per target block. Every job and bundle for `target` then
-    /// allocates from it, so they never reuse a nonce, and a bundle that did
-    /// not land leaves no gap for the next block.
+    /// Resync every slot (one operator key each) to its confirmed nonce
+    /// after `target - 1`, once per target block. Every job and bundle for
+    /// `target` then allocates from it, so they never reuse a nonce, and a
+    /// bundle that did not land leaves no gap for the next block.
     ///
     /// `nonce_resync` (third bit of the
-    /// live-send conjunction) is stored true after a successful read and
-    /// false when the read fails, so a node that cannot be read stops POSTs.
+    /// live-send conjunction) is stored true after every slot's read
+    /// succeeded and false when one fails, so a node that cannot be read
+    /// stops POSTs.
     pub async fn sync_nonce(&self, chain: &crate::chain::ChainClient, target: u64) -> Result<()> {
         if *self.nonce_synced_for.lock() == target {
             return Ok(());
         }
         let base = target.checked_sub(1).ok_or(ExecError::FeeOverflow)?;
-        let addr = self.nonces.address(0)?;
-        let n = match chain.nonce_at(addr, base).await {
-            Ok(n) => n,
-            Err(e) => {
-                self.nonce_resync.store(false, Ordering::Release);
-                return Err(e);
-            }
-        };
-        self.nonces.set_next(0, n)?;
+        for slot in 0..self.nonces.len() {
+            let addr = self.nonces.address(slot)?;
+            let n = match chain.nonce_at(addr, base).await {
+                Ok(n) => n,
+                Err(e) => {
+                    self.nonce_resync.store(false, Ordering::Release);
+                    return Err(e);
+                }
+            };
+            self.nonces.set_next(slot, n)?;
+            tracing::debug!(
+                target,
+                slot,
+                nonce = n,
+                "operator nonce resynced from chain"
+            );
+        }
         *self.nonce_synced_for.lock() = target;
         self.nonce_resync.store(true, Ordering::Release);
-        tracing::debug!(target, nonce = n, "operator nonce resynced from chain");
         Ok(())
     }
 

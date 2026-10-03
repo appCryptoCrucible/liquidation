@@ -417,7 +417,12 @@ impl SnapshotWriter {
     /// Called after each consistent block with the store at `number`/`hash`.
     /// Returns the snapshot when one was taken (a cheap `Arc` clone of what
     /// is being written), so the drift check reuses the copy.
-    pub fn after_block(&mut self, store: &StateStore, number: u64, hash: B256) -> Option<StoreSnapshot> {
+    pub fn after_block(
+        &mut self,
+        store: &StateStore,
+        number: u64,
+        hash: B256,
+    ) -> Option<StoreSnapshot> {
         let head = SnapshotHead {
             number,
             hash,
@@ -477,8 +482,10 @@ mod tests {
         let dir = Path::new("config");
         let p = paths();
         is_send(&build_first_snapshot(dir, &p));
-        is_send(&crate::startup::run(dir, dir, &p, false));
-        is_send(&crate::startup::run_on_built_state(dir, dir, &p, false));
+        is_send(&crate::startup::run(dir, dir, &p, false, None));
+        is_send(&crate::startup::run_on_built_state(
+            dir, dir, &p, false, None,
+        ));
         fn started_is_send<T: Send>() {}
         started_is_send::<crate::startup::Started>();
         // The ExEx loop's own reads: `wait_for_rpc` and the catch-up check.

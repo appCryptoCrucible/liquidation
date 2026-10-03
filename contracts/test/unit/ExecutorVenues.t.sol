@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {Executor} from "../../src/Executor.sol";
+import {SwapModule} from "../../src/SwapModule.sol";
 import {ExecutorTestBase} from "./Base.sol";
 import {PlanBuilder as PB} from "./PlanBuilder.sol";
 import {
@@ -427,16 +428,16 @@ contract ExecutorVenuesTest is ExecutorTestBase {
 
     // ── constructor ───────────────────────────────────────────────────────
 
+    /// The venue anchors are the swap module's.
     function test_constructor_rejects_zero_venue_anchors() public {
-        bytes32 h = factory.initHash();
         vm.expectRevert(Executor.ZeroAddress.selector);
-        new Executor(operator, sink, address(factory), h, address(routerA), address(routerB), address(weth),
+        new SwapModule(address(weth), address(routerA), address(routerB),
             address(0), V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
         vm.expectRevert(Executor.ZeroAddress.selector);
-        new Executor(operator, sink, address(factory), h, address(routerA), address(routerB), address(weth),
+        new SwapModule(address(weth), address(routerA), address(routerB),
             v2Factory, V2_HASH, address(0), SUSHI_HASH, address(curveRegistry));
         vm.expectRevert(Executor.ZeroAddress.selector);
-        new Executor(operator, sink, address(factory), h, address(routerA), address(routerB), address(weth),
+        new SwapModule(address(weth), address(routerA), address(routerB),
             v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(0));
     }
 }

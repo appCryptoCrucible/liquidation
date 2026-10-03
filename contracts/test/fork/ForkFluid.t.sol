@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {Executor} from "../../src/Executor.sol";
+import {ExecutorStack} from "../unit/ExecutorStack.sol";
 import {MainnetVenues} from "../../src/lib/MainnetVenues.sol";
 import {PlanBuilder as PB} from "../unit/PlanBuilder.sol";
 
@@ -107,6 +108,7 @@ contract ForkFluidTest is Test {
     bytes4 constant DEX_ONE_TOKEN = bytes4(keccak256("FluidDexSingleTokenOutput(uint256)"));
 
     address operator = makeAddr("operator");
+    address backrunOperator = makeAddr("backrunOperator");
     address sink = makeAddr("sink");
     Executor ex;
     bool forked;
@@ -116,8 +118,8 @@ contract ForkFluidTest is Test {
         if (bytes(url).length == 0) return;
         vm.createSelectFork(url, PIN);
         forked = true;
-        ex = new Executor(
-            operator, sink, UNIV3_FACTORY, UNIV3_INIT_HASH, makeAddr("routerA"), makeAddr("routerB"), WETH,
+        ex = ExecutorStack.deploy(
+            operator, backrunOperator, sink, UNIV3_FACTORY, UNIV3_INIT_HASH, makeAddr("routerA"), makeAddr("routerB"), WETH,
             MainnetVenues.UNIV2_FACTORY, MainnetVenues.UNIV2_INIT_HASH, MainnetVenues.SUSHI_FACTORY,
             MainnetVenues.SUSHI_INIT_HASH, MainnetVenues.CURVE_META_REGISTRY
         );

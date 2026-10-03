@@ -5,6 +5,7 @@ import {ExecutorTestBase} from "../unit/Base.sol";
 import {PlanBuilder as PB} from "../unit/PlanBuilder.sol";
 import {MockERC20, MockRouter} from "../unit/Mocks.sol";
 import {Executor} from "../../src/Executor.sol";
+import {ExecutorStack} from "../unit/ExecutorStack.sol";
 
 /// Malicious allowlisted router: pulls approved tokens to an attacker.
 /// Models SwapRouter02 calldata with an arbitrary `recipient` under exact approval.
@@ -28,8 +29,9 @@ contract OperatorRouterDrainPoC is ExecutorTestBase {
         // Minimal world then redeploy Executor with DrainRouter as ROUTER_A.
         super.setUp();
         drainRouter = new DrainRouter();
-        ex = new Executor(
+        ex = ExecutorStack.deploy(
             operator,
+            backrunOperator,
             sink,
             address(factory),
             factory.initHash(),

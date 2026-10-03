@@ -273,6 +273,46 @@ of how well-gated it looks. This is the one item on the list that survives the
 removal of inventory, and it is the reason this guide still warrants independent
 review.
 
+## Step 6b — Three contracts, one address
+
+One contract did not fit. With every adapter and venue in it, the runtime was
+28,554 bytes, over EIP-170's 24,576 (the 64 KB limit arrives only with
+Amsterdam). The Executor is now a core plus two modules:
+
+| Contract | Holds | Runtime |
+|---|---|---|
+| `Executor.sol` (core) | `execute`, the operator check, flash sources and their callbacks, the profit check, the bid, `sweep` | 8,861 B |
+| `LiquidationModule.sol` | every protocol's liquidation leg; the Aave payload and Sky spell actions | 16,136 B |
+| `SwapModule.sol` | swaps and unwraps; the routers and venue anchors | 7,952 B |
+
+The core runs a module with `delegatecall` inside `execute`: the module's code
+on the core's address, balances, allowances and transient storage. No token
+moves between contracts. Logs come from the core's address, and the core's ABI
+declares every error and event the modules use, so reverts and receipts decode
+as they did before the split. What keeps it as safe as one contract:
+
+1. **Module addresses are core immutables** (D55: no setter, no proxy). The
+   constructor checks that each address holds code, answers with its own
+   `MODULE_ID`, and was built for the core's WETH. An EOA, a swapped pair or a
+   module built for other anchors fails the deploy. A new module means a new
+   core.
+2. **A module runs only inside `execute`.** A direct call reverts
+   `NotDelegated`, and so does another contract's delegatecall outside an
+   `execute`. A contract that fakes the transient flag gains nothing: the
+   module then runs on that contract's own funds.
+3. **Modules hold nothing.** They have no storage, no `receive` or `fallback`,
+   and no external function other than their guarded entry points and
+   read-only getters. The core has no function that reaches a module other
+   than `execute`.
+4. **Callbacks stay on the core.** Flash providers and V3 pools call back the
+   address that borrowed or swapped, which is the core, and the callback
+   checks are unchanged.
+
+Cost: two cold account accesses per transaction (+5,000 gas) and one more
+`delegatecall` per flash group (+4,800). Both are measured with the pinned
+Foundry and included in `config/liq-gas.toml`. `test/unit/ExecutorModules.t.sol`
+covers each rule above and the size limit.
+
 ## Step 7 — Gas
 
 Under flashloan-only, gas and the flash fee are the two unavoidable costs on
@@ -320,7 +360,8 @@ the drift detector.
 ## Step 9 — Review before mainnet
 
 Focused independent review of: who can call what, what approvals can persist,
-what external calls are reachable, what a compromised operator key can do, and
+what external calls are reachable, which code the core delegatecalls (its two
+immutable modules, Step 6b), what a compromised operator key can do, and
 whether every flash callback correctly validates its caller. That last one is
 specific to this design — **a callback that does not verify `msg.sender` is the
 expected provider is a free-money function for anyone who finds it.**
@@ -377,6 +418,10 @@ expected provider is a free-money function for anyone who finds it.**
 - [ ] `PROFIT_SINK` is immutable (or cold-multisig + timelock); no operator-
       reachable setter exists
 - [ ] No rescue function, no arbitrary external call, no operator-settable state
+- [ ] Each contract fits EIP-170's 24,576 bytes (`test_each_contract_fits_eip170`),
+      and the simulator's local build enforces the same limit
+- [ ] A module runs only as the core's delegatecall inside `execute`; the core
+      refuses a module address with the wrong code or another WETH (Step 6b)
 - [ ] `sweep()` is permissionless and can only send to `PROFIT_SINK`
 - [ ] Sweep threshold documented as a risk budget with an owner, not a constant
 - [ ] Plan encoding round-trip proptest (Rust encoder ⇄ Solidity decoder) passes
@@ -403,6 +448,7 @@ expected provider is a free-money function for anyone who finds it.**
 | Profitable in sim, unprofitable on chain | `minProfit` from best-case bonus; or flash fee omitted from the check |
 | Losing bids | Gas not golfed, or an expensive flash source chosen by default |
 | Combinatorial gaps | Fork tests hand-written, so some adapter × callback pairs never ran |
+| Every test passes but the deploy fails | Runtime over EIP-170's 24,576 bytes, with the limit lifted in the test or simulation EVM |
 
 ## Handoff
 

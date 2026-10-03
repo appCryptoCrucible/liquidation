@@ -247,6 +247,7 @@ pub async fn run_on_built_state(
     cores_path: &Path,
     state: &StatePaths,
     allow_unpinned: bool,
+    node_state: Option<Arc<dyn liq_sim::StateProviderFactory>>,
 ) -> Result<Started, StartupError> {
     let build = || async {
         crate::state_build::build_first_snapshot(config_dir, state)
@@ -257,24 +258,37 @@ pub async fn run_on_built_state(
         tracing::info!("no state snapshot — building it from the node's receipts first");
         build().await?;
     }
-    match run(config_dir, cores_path, state, allow_unpinned).await {
+    match run(
+        config_dir,
+        cores_path,
+        state,
+        allow_unpinned,
+        node_state.clone(),
+    )
+    .await
+    {
         Err(StartupError::StaleSnapshot { .. }) => {
             tracing::warn!("rebuilding the state for the new adapter bindings");
             crate::state_build::discard_head(state)
                 .map_err(|e| StartupError::Other(e.to_string()))?;
             build().await?;
-            run(config_dir, cores_path, state, allow_unpinned).await
+            run(config_dir, cores_path, state, allow_unpinned, node_state).await
         }
         other => other,
     }
 }
 
 /// Full production order. RPC/registry failure refuses. Lease gates submit.
+///
+/// `node_state` is the node's own state when this runs inside it (the
+/// ExEx): jobs are then simulated in-process on the store's tip. `None`
+/// (the standalone binary): the exec worker verifies them over RPC.
 pub async fn run(
     config_dir: &Path,
     cores_path: &Path,
     state: &StatePaths,
     allow_unpinned: bool,
+    node_state: Option<Arc<dyn liq_sim::StateProviderFactory>>,
 ) -> Result<Started, StartupError> {
     let loaded = boot_assert(config_dir).await?;
     // The snapshot's head record: the block the store is at, which the
@@ -498,6 +512,18 @@ pub async fn run(
     let operator = exec
         .as_ref()
         .and_then(|p| p.signers.first().map(|s| s.address()));
+    let backrun_operator = exec.as_ref().and_then(|p| {
+        p.signers
+            .get(crate::exec_bind::BACKRUN_SLOT)
+            .map(|s| s.address())
+    });
+    let sim = live_sim(
+        node_state,
+        loaded.config.venues.executor,
+        operator,
+        backrun_operator,
+        shared.lease,
+    );
     let (inbox, rx) = if exec.is_some() {
         let (tx, rx) = ExecInbox::pair(1024);
         (Some(tx), Some(rx))
@@ -613,6 +639,14 @@ pub async fn run(
     .with_header_clock(clock)
     .with_price_reader(price_reader)
     .with_state_reader(state_reader);
+    let hook = match sim {
+        Some(sim) => hook.with_sim(Box::new(sim)),
+        None => hook,
+    };
+    let hook = match backrun_operator {
+        Some(key) => hook.with_backrun_operator(key),
+        None => hook,
+    };
     let hook = match crate::state_build::SnapshotWriter::spawn(
         state.clone(),
         loaded.config.snapshot_every_blocks,
@@ -674,6 +708,55 @@ pub async fn run(
         _svr: svr_thread,
         _gov: gov_thread,
     })
+}
+
+/// The in-process simulator on the node's state. Jobs go to the deployed
+/// Executor (`venues.executor`), or else to the compiled one at the planned
+/// address, built for the operator and `PROFIT_SINK` — the Executor the
+/// exec worker's node check simulates. `None`: that check verifies jobs,
+/// and the ones that need a parent transaction replayed are not sent.
+fn live_sim(
+    node_state: Option<Arc<dyn liq_sim::StateProviderFactory>>,
+    deployed: Option<alloy_primitives::Address>,
+    operator: Option<alloy_primitives::Address>,
+    backrun_operator: Option<alloy_primitives::Address>,
+    lease: &SubmitLease,
+) -> Option<crate::drain::LiveSim> {
+    let Some(state) = node_state else {
+        tracing::warn!(
+            "no node state in this process — jobs are verified over RPC, and SVR replays are not sent"
+        );
+        return None;
+    };
+    let sim = match deployed {
+        Some(executor) => liq_sim::NodeSim::deployed(state, executor),
+        None => {
+            let (Some(operator), Some(sink)) = (operator, profit_sink_from_env()) else {
+                tracing::error!(
+                    "no deployed Executor, and no operator or PROFIT_SINK to build one — in-process simulator off"
+                );
+                return None;
+            };
+            // No second key: the compiled Executor gets the first one twice.
+            let spec = liq_sim::ExecutorSpec::mainnet(
+                operator,
+                backrun_operator.unwrap_or(operator),
+                sink,
+            );
+            match liq_sim::NodeSim::compiled(state, &spec) {
+                Ok(sim) => sim,
+                Err(e) => {
+                    tracing::error!(error = %e, "Executor artifact unreadable (run forge build) — in-process simulator off");
+                    return None;
+                }
+            }
+        }
+    };
+    tracing::info!(
+        executor = %sim.executor(),
+        "in-process simulator on the node's state; it runs once the store reaches the node's head"
+    );
+    Some(crate::drain::LiveSim::new(sim, lease.held_flag()))
 }
 
 /// MEV-Share reader for configured SVR aggregators. No targets, or a
@@ -809,6 +892,10 @@ mod tests {
         assert!(src.contains("intern_view"));
         assert!(src.contains("fee_from_oracle"));
         assert!(src.contains("DrainJoin::live"));
+        assert!(
+            src.contains("hook.with_sim(") && src.contains("NodeSim::deployed"),
+            "run() must attach the in-process simulator on the node's state"
+        );
         assert!(
             src.contains("leak_protocols"),
             "17F must leak the load once for ingest and drain"

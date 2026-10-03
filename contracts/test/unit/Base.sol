@@ -3,6 +3,9 @@ pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {Executor} from "../../src/Executor.sol";
+import {LiquidationModule} from "../../src/LiquidationModule.sol";
+import {SwapModule} from "../../src/SwapModule.sol";
+import {ExecutorStack} from "./ExecutorStack.sol";
 import {PlanBuilder as PB} from "./PlanBuilder.sol";
 import {
     MockERC20, MockWETH, MockAavePool, MockV4Spoke, MockMorpho, MockUniV3Factory, MockUniV3Pool,
@@ -37,6 +40,8 @@ abstract contract ExecutorTestBase is Test {
     uint128 constant NET        = GROSS_WETH - GAS_COST;
 
     address public operator = makeAddr("operator");
+    /// The second operator key (MEV-Share backruns). Same right as `operator`.
+    address public backrunOperator = makeAddr("backrunOperator");
     address public sink     = makeAddr("sink");
     address borrower = makeAddr("borrower");
     address stranger = makeAddr("stranger");
@@ -52,6 +57,9 @@ abstract contract ExecutorTestBase is Test {
     MockCurveRegistry public curveRegistry;
     ExpensiveCoinbase public coinbase;
     Executor public ex;
+    /// The modules `ex` delegatecalls.
+    LiquidationModule public liqModule;
+    SwapModule public swapModule;
 
     function setUp() public virtual {
         weth = new MockWETH();
@@ -72,10 +80,12 @@ abstract contract ExecutorTestBase is Test {
         vm.coinbase(address(coinbase));
         curveRegistry = new MockCurveRegistry();
 
-        ex = new Executor(
-            operator, sink, address(factory), factory.initHash(),
+        ex = ExecutorStack.deploy(
+            operator, backrunOperator, sink, address(factory), factory.initHash(),
             address(routerA), address(routerB), address(weth)
         , v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
+        liqModule = LiquidationModule(ex.LIQUIDATION_MODULE());
+        swapModule = SwapModule(ex.SWAP_MODULE());
 
         // Liquidity everywhere a counterparty must pay out.
         debt.mint(address(pool), 1e15); debt.mint(address(pCollDebt), 1e15); debt.mint(address(pDebtWeth), 1e15);

@@ -42,3 +42,6 @@ data/review/
 
 # Discovery job secrets (ops/systemd/liq-discovery.service EnvironmentFile)
 discovery.env
+
+# Operator keys (ops/systemd/reth-liq.service and liq-bot.service EnvironmentFile)
+operator.env

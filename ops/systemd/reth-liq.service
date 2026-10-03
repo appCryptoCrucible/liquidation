@@ -29,6 +29,10 @@ WorkingDirectory=/opt/liq
 #   /var/liq/bot       480 GB B   snapshot.bin + wal.log
 Environment=LIQ_RPC_URL=http://127.0.0.1:8545
 Environment=LIQ_STATE_DIR=/var/liq/bot
+# Operator keys and the searcher identity (LIQ_OPERATOR_SECRET,
+# LIQ_BACKRUN_OPERATOR_SECRET, LIQ_IDENTITY_SECRET, PROFIT_SINK), mode 0600,
+# not in git. Optional: without it the bot runs, records nothing, sends nothing.
+EnvironmentFile=-/opt/liq/operator.env
 MemorySwapMax=0
 ExecStart=/opt/liq/reth node \
   --chain mainnet \

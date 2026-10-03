@@ -7,6 +7,7 @@
 //! confirms the store.
 
 mod forward;
+mod sim_state;
 
 use reth_ethereum::node::EthereumNode;
 

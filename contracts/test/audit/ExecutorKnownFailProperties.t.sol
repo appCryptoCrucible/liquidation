@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {Executor} from "../../src/Executor.sol";
+import {ExecutorStack} from "../unit/ExecutorStack.sol";
 import {PlanBuilder as PB} from "../unit/PlanBuilder.sol";
 import {ExecutorTestBase} from "../unit/Base.sol";
 import {MockERC20} from "../unit/Mocks.sol";
@@ -51,8 +52,9 @@ contract ExecutorKnownFailINV09 is ExecutorTestBase {
     function setUp() public override {
         super.setUp();
         drainRouter = new KnownFailDrainRouter();
-        ex = new Executor(
+        ex = ExecutorStack.deploy(
             operator,
+            backrunOperator,
             sink,
             address(factory),
             factory.initHash(),

@@ -39,8 +39,9 @@ async fn entry() -> Result<(), startup::StartupError> {
         snapshot: data.join("snapshot.bin"),
         wal: data.join("wal.log"),
     };
+    // No node in this process: jobs are verified over RPC by the exec worker.
     let started =
-        startup::run_on_built_state(&config_dir, &cores, &state, PROD_ALLOW_UNPINNED).await?;
+        startup::run_on_built_state(&config_dir, &cores, &state, PROD_ALLOW_UNPINNED, None).await?;
     // No ExEx here: nothing further to catch up on.
     started.shared.lease.grant();
     let flag_file = config_dir.join("node.toml");

@@ -28,20 +28,27 @@
 [tx]
 # 21_000 intrinsic + ~6_000 calldata (plans measured at 333–385 bytes,
 # ~4.7–5.3k gas) + one profit swap ([swap].univ3).
-base = 109_100
+# + 5_000 since the Executor split into a core and two delegatecalled modules
+# (2026-10): the first touch of each module is a cold account (EIP-2929,
+# 2 × 2_500 over warm). Measured on the unit suite, Foundry v1.8.3, same plans
+# before and after: one flash group +9_783, two groups +14_566, i.e.
+# 5_000 per transaction + 4_800 per group (the [wrap] rows).
+base = 114_100
 
 [wrap]
-aave = 198_065
-morpho = 128_189
-univ3 = 132_672
-univ4 = 105_901
+# Each includes 4_800 since the split: per flash group, the delegatecalls into
+# the liquidation module (its legs) and the swap module (its repay swaps).
+aave = 202_865
+morpho = 132_989
+univ3 = 137_472
+univ4 = 110_701
 # DERIVED: Sky DSS was only measurable against Aave V3 (DAI debt):
 # 296_199 there, minus Aave V3's average guard excess over Morpho across the
-# providers measured on both (96_278).
-sky_dss = 199_921
+# providers measured on both (96_278); + 4_800 (split).
+sky_dss = 204_721
 # Aave V3 flash wrapping an Aave V4 leg: same wrap as `aave`; the V4 leg's
 # extra cost is in [liquidation].aave-v4.
-aave_v4 = 198_065
+aave_v4 = 202_865
 
 [liquidation]
 # mainnet frame p75 375_651 (median 273_221, n 14) + fork guard 105_091

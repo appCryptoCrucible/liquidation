@@ -1,10 +1,10 @@
 //! Thread-per-core sim workers. Pinning is WP 16A (`pin_to_core` deferred).
 //! Each worker owns revm + CacheDB; SPSC `rtrb` both ways (GUIDE 11 Step 4c).
 
+use crate::env::SimEnv;
 use crate::verify::{verify, Bundle};
 use crate::warm::Simulator;
 use crate::{SimError, SimId, SimOutcome};
-use revm::context::BlockEnv;
 use revm::database_interface::DatabaseRef;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -17,7 +17,7 @@ const RING: usize = 64;
 pub struct SimRequest {
     pub id: SimId,
     pub bundle: Bundle,
-    pub block: BlockEnv,
+    pub env: SimEnv,
 }
 
 /// Reply on the worker outbox.
@@ -39,7 +39,7 @@ impl<P: DatabaseRef<Error = SimError> + Send + Sync + 'static> SimWorker<P> {
             match self.inbox.pop() {
                 Ok(req) => {
                     let outcome = catch_unwind(AssertUnwindSafe(|| {
-                        verify(&mut self.sim, &req.bundle, req.block.clone())
+                        verify(&mut self.sim, &req.bundle, &req.env)
                     }))
                     .unwrap_or_else(|_| Err(SimError::WorkerPanic));
                     if self

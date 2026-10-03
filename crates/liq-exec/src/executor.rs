@@ -9,18 +9,20 @@ use alloy_primitives::{address, b256, Address, B256};
 use alloy_sol_types::{sol, SolCall};
 
 sol! {
-    /// `Executor.sol` external surface. Constructor order is the deploy order.
+    /// `Executor.sol` external surface: the core. Its modules run inside its
+    /// `execute` by delegatecall, so their errors are its own.
     interface IExecutor {
         function execute(bytes calldata plan) external payable;
         function sweep(address[] calldata assets) external;
 
         function OPERATOR() external view returns (address);
+        function BACKRUN_OPERATOR() external view returns (address);
         function PROFIT_SINK() external view returns (address);
         function UNIV3_FACTORY() external view returns (address);
         function UNIV3_POOL_INIT_HASH() external view returns (bytes32);
-        function ROUTER_A() external view returns (address);
-        function ROUTER_B() external view returns (address);
         function WETH() external view returns (address);
+        function LIQUIDATION_MODULE() external view returns (address);
+        function SWAP_MODULE() external view returns (address);
 
         error NotOperator();
         error BadCallback();
@@ -31,6 +33,8 @@ sol! {
         error UnknownVenue(uint8 v);
         error RouterNotAllowed(address target);
         error RouterCallFailed(address target);
+        error BadPool(uint8 venue, address pool);
+        error ExactOutUnsupported(uint8 venue);
         error BadSwapCallback();
         error NoLegs();
         error BidFailed(uint256 amount);
@@ -39,12 +43,24 @@ sol! {
         error FlashMismatch();
         error LegMismatch();
         error FlashLoanRejected();
+        error ZeroAddress();
+        error RedeemFailed(address token, uint256 code);
+        error SeizedBelowMin(uint256 got, uint256 minimum);
+        error BadModule(address module);
+        error NotDelegated();
         // PlanDecoder
         error NoGroups();
         error BadPlanLength(uint256 walked, uint256 actual);
         // SafeTransfer
         error TransferFailed(address token, address to, uint256 amount);
         error ApproveFailed(address token, address spender, uint256 amount);
+    }
+
+    /// What each module answers about itself: the Executor's constructor
+    /// refuses a module whose id or WETH is not the one it expects.
+    interface IExecutorModule {
+        function MODULE_ID() external view returns (bytes32);
+        function WETH() external view returns (address);
     }
 }
 
@@ -85,17 +101,20 @@ pub fn sweep_calldata(assets: &[Address]) -> Vec<u8> {
     .abi_encode()
 }
 
-/// Constructor arguments, in constructor order. Every one is an immutable;
-/// there is no setter for any of them (D55 = A).
+/// The core's constructor arguments, in constructor order. Every one is an
+/// immutable; there is no setter for any of them (D55 = A). The routers and
+/// venue anchors are the swap module's.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct ExecutorDeploy {
     pub operator: Address,
+    /// Second operator: MEV-Share backruns, on their own nonce sequence.
+    pub backrun_operator: Address,
     pub profit_sink: Address,
+    pub weth: Address,
     pub univ3_factory: Address,
     pub univ3_pool_init_hash: B256,
-    pub router_a: Address,
-    pub router_b: Address,
-    pub weth: Address,
+    pub liquidation_module: Address,
+    pub swap_module: Address,
 }
 
 /// Ethereum mainnet constants the Executor is constructed with. Real

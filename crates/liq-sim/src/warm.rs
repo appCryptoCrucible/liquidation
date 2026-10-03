@@ -1,26 +1,48 @@
 //! Warm account cache and pre-H3 Executor insertion (GUIDE 11 Step 2).
 
-use crate::{SimError, StateProviderFactory};
+use crate::{BlockRef, BlockState, SimError, StateProviderFactory};
 use alloy_primitives::{Address, Bytes, B256, U256};
 use alloy_sol_types::SolValue;
 use revm::database::{CacheDB, EmptyDB};
 use revm::database_interface::DatabaseRef;
 use revm::primitives::hardfork::SpecId;
 use revm::primitives::TxKind;
+use revm::state::Bytecode;
 use revm::{context::TxEnv, Context, DatabaseCommit, ExecuteEvm, MainBuilder, MainContext};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// Rules the compiled Executor is constructed under. Its constructor only
+/// checks and stores its arguments, so the runtime is the same under any
+/// fork it compiles for (Cancun opcodes).
+const CONSTRUCT_SPEC: SpecId = SpecId::OSAKA;
+/// Sender of the in-memory CREATE. The constructor does not read it.
+const RUNTIME_DEPLOYER: Address =
+    alloy_primitives::address!("00000000000000000000000000000000000de901");
+
 /// Documented pre-H3 insertion address. Replaced by `venues.executor` after
 /// the human deploy (H3). Not a mainnet claim.
 pub const PLANNED_EXECUTOR: Address =
     alloy_primitives::address!("e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0");
+/// Where the compiled `LiquidationModule` is placed beside the planned
+/// Executor, which is built to delegatecall it there. Not a mainnet claim.
+pub const PLANNED_LIQUIDATION_MODULE: Address =
+    alloy_primitives::address!("e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1");
+/// Where the compiled `SwapModule` is placed. Not a mainnet claim.
+pub const PLANNED_SWAP_MODULE: Address =
+    alloy_primitives::address!("e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2");
 
-/// Constructor immutables for a CacheDB-inserted Executor.
+/// Constructor arguments of a CacheDB-inserted Executor and its two
+/// modules: the core takes the keys, the sink, WETH and the V3 anchors; the
+/// swap module takes WETH, the routers and the V2/Sushi/Curve anchors; the
+/// liquidation module takes WETH.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct ExecutorSpec {
     pub operator: Address,
+    /// Second operator key, same right as `operator`: signs the MEV-Share
+    /// backruns on a nonce sequence of its own.
+    pub backrun_operator: Address,
     pub profit_sink: Address,
     pub univ3_factory: Address,
     pub univ3_init_hash: B256,
@@ -54,11 +76,12 @@ impl ExecutorSpec {
         alloy_primitives::address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45");
 
     /// The mainnet constructor arguments `DeployExecutor.s.sol` uses, for
-    /// `operator` and `profit_sink`.
+    /// the two operator keys and `profit_sink`.
     #[must_use]
-    pub fn mainnet(operator: Address, profit_sink: Address) -> Self {
+    pub fn mainnet(operator: Address, backrun_operator: Address, profit_sink: Address) -> Self {
         Self {
             operator,
+            backrun_operator,
             profit_sink,
             univ3_factory: UNIV3_FACTORY,
             univ3_init_hash: UNIV3_POOL_INIT_HASH,
@@ -134,10 +157,19 @@ pub fn clear_except<Ext: DatabaseRef>(
     }
 }
 
+/// Foundry artifact of `contract`: `contracts/out/<contract>.sol/<contract>.json`.
+#[must_use]
+pub fn artifact_path(contract: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../contracts/out")
+        .join(format!("{contract}.sol"))
+        .join(format!("{contract}.json"))
+}
+
 /// Foundry artifact: `contracts/out/Executor.sol/Executor.json`.
 #[must_use]
 pub fn executor_artifact_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../contracts/out/Executor.sol/Executor.json")
+    artifact_path("Executor")
 }
 
 /// Creation bytecode from the compiled Executor artifact. Fails closed if
@@ -203,18 +235,46 @@ impl FromStrRadixHex for Bytes {
     }
 }
 
-/// Creation bytecode from the compiled artifact followed by `spec`'s
-/// constructor arguments: the input of the deploy transaction.
-pub fn executor_initcode(spec: &ExecutorSpec) -> Result<Bytes, SimError> {
-    let creation = load_executor_creation_bytecode()?;
+/// `contract`'s creation code followed by ABI-encoded `args`: the input of
+/// its deploy transaction.
+fn initcode(contract: &str, args: &[u8]) -> Result<Bytes, SimError> {
+    let mut data = load_creation_from(&artifact_path(contract))?.to_vec();
+    data.extend_from_slice(args);
+    Ok(data.into())
+}
+
+/// The Executor's deploy input for `spec`, wired to the modules at
+/// `liquidation_module` and `swap_module`.
+pub fn executor_initcode(
+    spec: &ExecutorSpec,
+    liquidation_module: Address,
+    swap_module: Address,
+) -> Result<Bytes, SimError> {
     let args = (
         spec.operator,
+        spec.backrun_operator,
         spec.profit_sink,
+        spec.weth,
         spec.univ3_factory,
         spec.univ3_init_hash,
+        liquidation_module,
+        swap_module,
+    )
+        .abi_encode();
+    initcode("Executor", &args)
+}
+
+/// `LiquidationModule`'s deploy input for `spec`.
+pub fn liquidation_module_initcode(spec: &ExecutorSpec) -> Result<Bytes, SimError> {
+    initcode("LiquidationModule", &spec.weth.abi_encode())
+}
+
+/// `SwapModule`'s deploy input for `spec`.
+pub fn swap_module_initcode(spec: &ExecutorSpec) -> Result<Bytes, SimError> {
+    let args = (
+        spec.weth,
         spec.router_a,
         spec.router_b,
-        spec.weth,
         spec.univ2_factory,
         spec.univ2_init_hash,
         spec.sushi_factory,
@@ -222,34 +282,121 @@ pub fn executor_initcode(spec: &ExecutorSpec) -> Result<Bytes, SimError> {
         spec.curve_registry,
     )
         .abi_encode();
-    let mut data = creation.to_vec();
-    data.extend_from_slice(&args);
-    Ok(data.into())
+    initcode("SwapModule", &args)
 }
 
-/// Deploy Executor via CREATE using real creation bytecode + constructor
-/// args, then copy the resulting runtime into `at`.
+/// Runtime code of the compiled Executor and its two modules, built for
+/// `spec`. The core is wired to [`PLANNED_LIQUIDATION_MODULE`] and
+/// [`PLANNED_SWAP_MODULE`]: placed there with [`ExecutorCode::placements`],
+/// the three run as the deployed system would.
+#[derive(Clone, Debug)]
+pub struct ExecutorCode {
+    pub core: Bytecode,
+    pub liquidation: Bytecode,
+    pub swap: Bytecode,
+}
+
+impl ExecutorCode {
+    /// Each contract and the address it runs at: the core at `core_at`,
+    /// the modules where the core delegatecalls them.
+    #[must_use]
+    pub fn placements(&self, core_at: Address) -> [(Address, Bytecode); 3] {
+        [
+            (core_at, self.core.clone()),
+            (PLANNED_LIQUIDATION_MODULE, self.liquidation.clone()),
+            (PLANNED_SWAP_MODULE, self.swap.clone()),
+        ]
+    }
+
+    /// [`Self::placements`] as raw runtime bytes, for a node's state
+    /// override.
+    #[must_use]
+    pub fn runtimes(&self, core_at: Address) -> [(Address, Bytes); 3] {
+        self.placements(core_at)
+            .map(|(at, code)| (at, code.original_bytes()))
+    }
+}
+
+/// Build the compiled system for `spec`: each module run once as a CREATE
+/// in an empty state, then the core, whose constructor checks the modules
+/// where they will be placed. No chain state is read: the constructors
+/// only check and store their arguments.
+pub fn executor_stack(spec: &ExecutorSpec) -> Result<ExecutorCode, SimError> {
+    let mut world: CacheDB<EmptyDB> = CacheDB::new(EmptyDB::default());
+    let liquidation = deploy_runtime(
+        &world.cache,
+        liquidation_module_initcode(spec)?,
+        RUNTIME_DEPLOYER,
+    )?;
+    let swap = deploy_runtime(&world.cache, swap_module_initcode(spec)?, RUNTIME_DEPLOYER)?;
+    place_code(&mut world, PLANNED_LIQUIDATION_MODULE, liquidation.clone())?;
+    place_code(&mut world, PLANNED_SWAP_MODULE, swap.clone())?;
+    let core = deploy_runtime(
+        &world.cache,
+        executor_initcode(spec, PLANNED_LIQUIDATION_MODULE, PLANNED_SWAP_MODULE)?,
+        RUNTIME_DEPLOYER,
+    )?;
+    Ok(ExecutorCode {
+        core,
+        liquidation,
+        swap,
+    })
+}
+
+/// Deploy the compiled system for `spec` and place it: the core at `at`,
+/// the modules at their planned addresses.
 pub fn insert_executor<Ext: DatabaseRef<Error = SimError>>(
     db: &mut CacheDB<Ext>,
     at: Address,
     spec: &ExecutorSpec,
-    deployer: Address,
+    _deployer: Address,
 ) -> Result<(), SimError> {
-    let data = executor_initcode(spec)?.to_vec();
+    for (addr, code) in executor_stack(spec)?.placements(at) {
+        place_code(db, addr, code)?;
+    }
+    Ok(())
+}
 
+/// `code` as the code of `at`, keeping its balance; nothing else of the
+/// account changes. A contract account's nonce is at least 1 (EIP-161).
+pub fn place_code<Ext: DatabaseRef>(
+    db: &mut CacheDB<Ext>,
+    at: Address,
+    code: Bytecode,
+) -> Result<(), SimError> {
     let mut info = db
+        .basic_ref(at)
+        .map_err(|_| SimError::StateUnavailable)?
+        .unwrap_or_default();
+    info.code_hash = code.hash_slow();
+    info.code = Some(code);
+    info.nonce = info.nonce.max(1);
+    db.insert_account_info(at, info);
+    Ok(())
+}
+
+/// Run `initcode` as a CREATE from `deployer` over a copy of `cache` (the
+/// constructor sees those accounts and nothing else) and return the
+/// created account's code. Nothing is written back. Mainnet's size limits
+/// hold (EIP-170 runtime, EIP-3860 initcode): code the chain would refuse
+/// to deploy is refused here, not simulated as if it were deployable.
+pub(crate) fn deploy_runtime(
+    cache: &revm::database::Cache,
+    initcode: Bytes,
+    deployer: Address,
+) -> Result<Bytecode, SimError> {
+    let data = initcode.to_vec();
+    let mut owned: CacheDB<EmptyDB> = CacheDB::new(EmptyDB::default());
+    owned.cache = cache.clone();
+    let mut info = owned
         .basic_ref(deployer)
         .map_err(|_| SimError::StateUnavailable)?
         .unwrap_or_default();
     const TEN_ETH: u128 = 10_000_000_000_000_000_000;
     if info.balance < U256::from(TEN_ETH) {
         info.balance = U256::from(TEN_ETH);
-        db.insert_account_info(deployer, info);
+        owned.insert_account_info(deployer, info);
     }
-
-    let mut owned: CacheDB<EmptyDB> = CacheDB::new(EmptyDB::default());
-    // Copy current cache so CREATE sees inserted accounts.
-    owned.cache = db.cache.clone();
 
     let tx = TxEnv::builder()
         .caller(deployer)
@@ -262,11 +409,9 @@ pub fn insert_executor<Ext: DatabaseRef<Error = SimError>>(
     let mut evm = Context::mainnet()
         .with_db(&mut owned)
         .modify_cfg_chained(|cfg| {
-            cfg.spec = SpecId::CANCUN;
+            cfg.spec = CONSTRUCT_SPEC;
             cfg.disable_nonce_check = true;
             cfg.tx_gas_limit_cap = Some(100_000_000);
-            cfg.limit_contract_code_size = Some(0x60_000);
-            cfg.limit_contract_initcode_size = Some(0xC0_000);
         })
         .build_mainnet();
     let exec = evm.transact(tx).map_err(|e| {
@@ -287,24 +432,19 @@ pub fn insert_executor<Ext: DatabaseRef<Error = SimError>>(
         .result
         .created_address()
         .ok_or(SimError::Bytecode("CREATE returned no address"))?;
-
-    db.cache = owned.cache;
-    let runtime = db
+    let runtime = owned
         .basic_ref(created)
         .map_err(|_| SimError::StateUnavailable)?
         .ok_or(SimError::Bytecode("created account missing"))?;
-    if runtime.code_hash.is_zero() {
-        return Err(SimError::Bytecode("created code hash zero"));
+    if runtime.code_hash.is_zero() || runtime.code_hash == revm::primitives::KECCAK_EMPTY {
+        return Err(SimError::Bytecode("created account has no code"));
     }
-    let mut dest = runtime.clone();
-    if dest.code.is_none() {
-        dest.code = Some(
-            db.code_by_hash_ref(runtime.code_hash)
-                .map_err(|_| SimError::StateUnavailable)?,
-        );
+    match runtime.code {
+        Some(code) if !code.is_empty() => Ok(code),
+        _ => owned
+            .code_by_hash_ref(runtime.code_hash)
+            .map_err(|_| SimError::StateUnavailable),
     }
-    db.insert_account_info(at, dest);
-    Ok(())
 }
 
 /// Per-worker simulator: overlay `CacheDB` + frozen warm snapshot.
@@ -317,7 +457,7 @@ pub struct Simulator<P: DatabaseRef> {
     pub profit_account: Address,
 }
 
-impl<P: DatabaseRef<Error = SimError> + Send + Sync> Simulator<P> {
+impl<P: DatabaseRef<Error = SimError>> Simulator<P> {
     pub fn boot(
         provider: Arc<P>,
         mut warm: WarmSet,
@@ -328,9 +468,12 @@ impl<P: DatabaseRef<Error = SimError> + Send + Sync> Simulator<P> {
         let mut db = CacheDB::new(Arc::clone(&provider));
         insert_executor(&mut db, executor, spec, deployer)?;
         warm.insert(executor);
+        warm.insert(PLANNED_LIQUIDATION_MODULE);
+        warm.insert(PLANNED_SWAP_MODULE);
         warm.insert(spec.weth);
         warm.insert(spec.profit_sink);
         warm.insert(spec.operator);
+        warm.insert(spec.backrun_operator);
         let addrs: Vec<Address> = warm.addrs.iter().copied().collect();
         for addr in addrs {
             let _ = db.load_account(addr);
@@ -347,14 +490,35 @@ impl<P: DatabaseRef<Error = SimError> + Send + Sync> Simulator<P> {
         })
     }
 
-    pub fn from_factory<F: StateProviderFactory<Provider = P>>(
-        factory: &F,
-        warm: WarmSet,
+    /// Overlay on `provider` with the Executor the jobs are sent to: the
+    /// compiled system placed (`code`, the core and its modules) when it is
+    /// not deployed, the chain's accounts when it is (empty). Kept across
+    /// resets.
+    pub fn with_executor(
+        provider: Arc<P>,
         executor: Address,
-        spec: &ExecutorSpec,
-        deployer: Address,
+        code: &[(Address, Bytecode)],
+        weth: Address,
+        profit_account: Address,
     ) -> Result<Self, SimError> {
-        Self::boot(factory.latest()?, warm, executor, spec, deployer)
+        let mut db = CacheDB::new(provider);
+        let mut warm = WarmSet::new();
+        for (at, code) in code {
+            place_code(&mut db, *at, code.clone())?;
+            warm.insert(*at);
+        }
+        db.load_account(executor)?;
+        warm.insert(executor);
+        let mut snapshot = CacheDB::new(EmptyDB::default());
+        snapshot.cache = db.cache.clone();
+        Ok(Self {
+            db,
+            warm,
+            snapshot,
+            executor,
+            weth,
+            profit_account,
+        })
     }
 
     /// Overlay on an existing provider. Does not insert Executor bytecode
@@ -378,6 +542,26 @@ impl<P: DatabaseRef<Error = SimError> + Send + Sync> Simulator<P> {
     #[inline]
     pub fn reset(&mut self) {
         clear_except(&mut self.db, &self.warm, &self.snapshot);
+    }
+}
+
+impl Simulator<BlockState> {
+    /// [`Simulator::boot`] on the state after block `at`.
+    pub fn from_factory<F: StateProviderFactory + ?Sized>(
+        factory: &F,
+        at: BlockRef,
+        warm: WarmSet,
+        executor: Address,
+        spec: &ExecutorSpec,
+        deployer: Address,
+    ) -> Result<Self, SimError> {
+        Self::boot(
+            Arc::new(factory.state_at(at)?),
+            warm,
+            executor,
+            spec,
+            deployer,
+        )
     }
 }
 

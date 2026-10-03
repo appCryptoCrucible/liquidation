@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {Executor} from "../../src/Executor.sol";
+import {ExecutorStack} from "../unit/ExecutorStack.sol";
 import {MainnetVenues} from "../../src/lib/MainnetVenues.sol";
 import {IAavePool, IAaveV4Spoke, IMorpho, MarketParams} from "../../src/lib/Interfaces.sol";
 import {PlanBuilder as PB} from "../unit/PlanBuilder.sol";
@@ -45,6 +46,7 @@ contract ForkMatrixTest is Test {
     address constant NOBODY = 0x000000000000000000000000000000000000dEaD;
 
     address operator = makeAddr("operator");
+    address backrunOperator = makeAddr("backrunOperator");
     address sink     = makeAddr("sink");
     Executor ex;
     bool forked;
@@ -60,8 +62,8 @@ contract ForkMatrixTest is Test {
         if (bytes(url).length == 0) return;
         vm.createSelectFork(url, PINNED_BLOCK);
         forked = true;
-        ex = new Executor(
-            operator, sink, UNIV3_FACTORY, UNIV3_INIT_HASH,
+        ex = ExecutorStack.deploy(
+            operator, backrunOperator, sink, UNIV3_FACTORY, UNIV3_INIT_HASH,
             makeAddr("routerA"), makeAddr("routerB"), WETH
         , MainnetVenues.UNIV2_FACTORY, MainnetVenues.UNIV2_INIT_HASH, MainnetVenues.SUSHI_FACTORY, MainnetVenues.SUSHI_INIT_HASH, MainnetVenues.CURVE_META_REGISTRY);
     }

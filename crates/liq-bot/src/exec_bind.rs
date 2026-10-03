@@ -26,16 +26,27 @@ use crate::shared::Shared;
 const ANVIL_DEV_SECRET: B256 =
     b256!("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
 
+/// Nonce slot of the first operator: builder bundles and governance.
+pub const OPERATOR_SLOT: usize = 0;
+/// Nonce slot of the second operator: MEV-Share backruns, so they never wait
+/// on a builder bundle's nonce for the same block (or it on theirs).
+pub const BACKRUN_SLOT: usize = 1;
+
 /// 32-byte operator + identity secrets. Never invented; never committed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProcessSecrets {
     pub operator: B256,
     pub identity: B256,
+    /// The second operator (`LIQ_BACKRUN_OPERATOR_SECRET`). `None`: the first
+    /// operator signs the backruns too, on its one nonce sequence.
+    pub backrun_operator: Option<B256>,
 }
 
 impl ProcessSecrets {
-    /// Hex from `LIQ_OPERATOR_SECRET` / `LIQ_IDENTITY_SECRET`. Missing or
-    /// malformed → `None` (process still starts; ExecPath stays unbound).
+    /// Hex from `LIQ_OPERATOR_SECRET` / `LIQ_IDENTITY_SECRET`, and the
+    /// optional `LIQ_BACKRUN_OPERATOR_SECRET`. Missing or malformed first
+    /// two → `None` (process still starts; ExecPath stays unbound). A
+    /// malformed third is refused like the others.
     #[must_use]
     pub fn from_env() -> Option<Self> {
         let operator = match std::env::var("LIQ_OPERATOR_SECRET") {
@@ -52,7 +63,16 @@ impl ProcessSecrets {
                 return None;
             }
         };
-        Self::from_hex(&operator, &identity)
+        let secrets = Self::from_hex(&operator, &identity)?;
+        match std::env::var("LIQ_BACKRUN_OPERATOR_SECRET") {
+            Ok(s) if !s.trim().is_empty() => secrets.with_backrun_hex(&s),
+            _ => {
+                tracing::warn!(
+                    "LIQ_BACKRUN_OPERATOR_SECRET missing — MEV-Share backruns share the operator's nonce sequence"
+                );
+                Some(secrets)
+            }
+        }
     }
 
     /// Parse two 32-byte hex secrets. Zero / Anvil-outside-test / bad hex → None.
@@ -61,6 +81,22 @@ impl ProcessSecrets {
         Some(Self {
             operator: parse_secret(operator)?,
             identity: parse_secret(identity)?,
+            backrun_operator: None,
+        })
+    }
+
+    /// Add the second operator. The same key as the first is refused: one
+    /// key cannot give the backruns a nonce sequence of their own.
+    #[must_use]
+    pub fn with_backrun_hex(self, backrun: &str) -> Option<Self> {
+        let backrun = parse_secret(backrun)?;
+        if backrun == self.operator {
+            tracing::error!("second operator is the first operator's key — refused");
+            return None;
+        }
+        Some(Self {
+            backrun_operator: Some(backrun),
+            ..self
         })
     }
 }
@@ -182,6 +218,17 @@ pub fn try_bind_process(
             return None;
         }
     };
+    // Slot order is the signer order: OPERATOR_SLOT, then BACKRUN_SLOT.
+    let mut signers = vec![signer];
+    if let Some(secret) = secrets.backrun_operator {
+        match PrecomputedSigner::from_secret(secret) {
+            Ok(s) => signers.push(Arc::new(s)),
+            Err(e) => {
+                tracing::error!(error = %e, "second operator signer refused — ExecPath unbound");
+                return None;
+            }
+        }
+    }
     let identity = match SearcherKey::from_secret(secrets.identity) {
         Ok(k) => k,
         Err(e) => {
@@ -189,7 +236,8 @@ pub fn try_bind_process(
             return None;
         }
     };
-    let nonces = match NonceAllocator::from_addresses(vec![signer.address()]) {
+    let nonces = match NonceAllocator::from_addresses(signers.iter().map(|s| s.address()).collect())
+    {
         Ok(n) => n,
         Err(e) => {
             tracing::error!(error = %e, "nonce allocator refused — ExecPath unbound");
@@ -201,7 +249,7 @@ pub fn try_bind_process(
         gate,
         submit_enabled,
         nonces,
-        vec![signer],
+        signers,
         builders,
         identity,
         lease,
@@ -464,6 +512,46 @@ mod tests {
             "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
         )
         .expect("test hex")
+    }
+
+    /// Anvil account 1 as the second operator.
+    const SECOND_HEX: &str = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+    const SECOND: Address = address!("0x70997970C51812dc3A010C7d01b50e0d17dc79C8");
+
+    /// A second operator secret binds a second signer on its own nonce slot,
+    /// after the first.
+    #[test]
+    fn second_operator_is_a_signer_on_its_own_slot() {
+        let recorder = ShadowRecorder::open(shadow_dir()).unwrap();
+        let gate: &'static RiskGate = Box::leak(Box::new(RiskGate::new()));
+        let lease = SubmitLease::granted_shadow();
+        let secrets = test_secrets()
+            .with_backrun_hex(SECOND_HEX)
+            .expect("second key");
+        let path = try_bind_process(
+            recorder,
+            gate,
+            Arc::new(SubmitEnabled::new(false)),
+            builders_for("http://127.0.0.1:9"),
+            secrets,
+            &lease,
+        )
+        .expect("bound");
+        assert_eq!(path.signers.len(), 2);
+        assert_eq!(path.signers[OPERATOR_SLOT].address(), OPERATOR);
+        assert_eq!(path.signers[BACKRUN_SLOT].address(), SECOND);
+        assert_eq!(path.nonces.address(BACKRUN_SLOT).unwrap(), SECOND);
+    }
+
+    /// One key cannot be both operators: the backruns would be back on the
+    /// first key's nonce sequence.
+    #[test]
+    fn second_operator_cannot_be_the_first_key() {
+        assert!(test_secrets()
+            .with_backrun_hex("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")
+            .is_none());
+        assert!(test_secrets().with_backrun_hex("not-hex").is_none());
+        assert_eq!(test_secrets().backrun_operator, None);
     }
 
     /// Process bind with test secrets: same path as `run()`, exec Some,

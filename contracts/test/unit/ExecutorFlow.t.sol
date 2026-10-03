@@ -3,6 +3,8 @@ pragma solidity 0.8.28;
 
 import {stdError} from "forge-std/Test.sol";
 import {Executor} from "../../src/Executor.sol";
+import {LiquidationModule} from "../../src/LiquidationModule.sol";
+import {SwapModule} from "../../src/SwapModule.sol";
 import {PlanDecoder} from "../../src/lib/PlanDecoder.sol";
 import {SafeTransfer} from "../../src/lib/SafeTransfer.sol";
 import {PlanBuilder as PB} from "./PlanBuilder.sol";
@@ -18,35 +20,50 @@ contract ExecutorFlowTest is ExecutorTestBase {
 
     // ── happy path ────────────────────────────────────────────────────
 
+    /// The modules and init hash a valid core is built from, read before an
+    /// `expectRevert` (which watches the next call, a view included).
+    function _coreParts() internal view returns (address lm, address sm, bytes32 h) {
+        return (address(liqModule), address(swapModule), factory.initHash());
+    }
+
     function test_constructor_rejects_zero_operator() public {
-        bytes32 h = factory.initHash();
+        (address lm, address sm, bytes32 h) = _coreParts();
         vm.expectRevert(Executor.ZeroAddress.selector);
-        new Executor(address(0), sink, address(factory), h, address(routerA), address(routerB), address(weth), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
+        new Executor(address(0), backrunOperator, sink, address(weth), address(factory), h, lm, sm);
+    }
+    function test_constructor_rejects_zero_backrun_operator() public {
+        (address lm, address sm, bytes32 h) = _coreParts();
+        vm.expectRevert(Executor.ZeroAddress.selector);
+        new Executor(operator, address(0), sink, address(weth), address(factory), h, lm, sm);
     }
     function test_constructor_rejects_zero_sink() public {
-        bytes32 h = factory.initHash();
+        (address lm, address sm, bytes32 h) = _coreParts();
         vm.expectRevert(Executor.ZeroAddress.selector);
-        new Executor(operator, address(0), address(factory), h, address(routerA), address(routerB), address(weth), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
+        new Executor(operator, backrunOperator, address(0), address(weth), address(factory), h, lm, sm);
     }
     function test_constructor_rejects_zero_factory() public {
-        bytes32 h = factory.initHash();
+        (address lm, address sm, bytes32 h) = _coreParts();
         vm.expectRevert(Executor.ZeroAddress.selector);
-        new Executor(operator, sink, address(0), h, address(routerA), address(routerB), address(weth), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
+        new Executor(operator, backrunOperator, sink, address(weth), address(0), h, lm, sm);
     }
+    /// Routers are the swap module's anchors now.
     function test_constructor_rejects_zero_router_a() public {
-        bytes32 h = factory.initHash();
         vm.expectRevert(Executor.ZeroAddress.selector);
-        new Executor(operator, sink, address(factory), h, address(0), address(routerB), address(weth), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
+        new SwapModule(address(weth), address(0), address(routerB), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
     }
     function test_constructor_rejects_zero_router_b() public {
-        bytes32 h = factory.initHash();
         vm.expectRevert(Executor.ZeroAddress.selector);
-        new Executor(operator, sink, address(factory), h, address(routerA), address(0), address(weth), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
+        new SwapModule(address(weth), address(routerA), address(0), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
     }
+    /// WETH is in all three contracts; each refuses zero.
     function test_constructor_rejects_zero_weth() public {
-        bytes32 h = factory.initHash();
+        (address lm, address sm, bytes32 h) = _coreParts();
         vm.expectRevert(Executor.ZeroAddress.selector);
-        new Executor(operator, sink, address(factory), h, address(routerA), address(routerB), address(0), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
+        new Executor(operator, backrunOperator, sink, address(0), address(factory), h, lm, sm);
+        vm.expectRevert(Executor.ZeroAddress.selector);
+        new LiquidationModule(address(0));
+        vm.expectRevert(Executor.ZeroAddress.selector);
+        new SwapModule(address(0), address(routerA), address(routerB), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
     }
 
     function test_zero_address_router_target_reverts() public {
@@ -290,8 +307,9 @@ contract ExecutorFlowTest is ExecutorTestBase {
             // the Executor needs the relay as OPERATOR.
             address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
             relay = new OperatorRelay(Executor(payable(predicted)));
-            ex2 = new Executor(address(relay), sink, address(factory), factory.initHash(),
-                               address(routerA), address(routerB), address(weth), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
+            // The same modules serve any number of cores: they hold nothing.
+            ex2 = new Executor(address(relay), backrunOperator, sink, address(weth), address(factory),
+                               factory.initHash(), address(liqModule), address(swapModule));
             assertEq(address(ex2), predicted);
         }
         ReentrantFlashProvider re = new ReentrantFlashProvider(IRelay(address(relay)));
@@ -319,6 +337,32 @@ contract ExecutorFlowTest is ExecutorTestBase {
         vm.expectRevert(Executor.NotOperator.selector);
         vm.prank(stranger);
         ex.execute(_refPlan());
+    }
+
+    function test_both_operator_keys_are_exposed() public view {
+        assertEq(ex.OPERATOR(), operator);
+        assertEq(ex.BACKRUN_OPERATOR(), backrunOperator);
+    }
+
+    /// The second key has the first one's right: the reference liquidation
+    /// runs and pays the sink the same.
+    function test_backrun_operator_executes() public {
+        vm.prank(backrunOperator);
+        ex.execute(_refPlan());
+        assertEq(weth.balanceOf(sink), GROSS_WETH, "sink receives gross WETH");
+        assertEq(pool.lastDebtToCover(), REPAY);
+        _assertClean();
+    }
+
+    /// A wallet-funded bid's unspent ceiling goes back to the key that sent it.
+    function test_backrun_operator_wallet_bid_refunds_to_itself() public {
+        uint256 bid = uint256(NET) * 2500 / 10_000;
+        vm.deal(backrunOperator, 1 ether);
+        vm.prank(backrunOperator);
+        ex.execute{value: 1 ether}(_plan(PB.F_SWEEP, 2500, GAS_COST, 0.7e18, 1, PB.legV3(address(pool), borrower, address(coll), REPAY)));
+        assertEq(coinbase.received(), bid);
+        assertEq(backrunOperator.balance, 1 ether - bid, "unspent ceiling refunded to the sender");
+        assertEq(operator.balance, 0, "nothing goes to the other key");
     }
 
     function test_zero_groups_rejected_before_any_call() public {

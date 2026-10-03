@@ -290,7 +290,7 @@ pub async fn simulate_action(chain: &ChainClient, head: Head, action: GovAction)
         gas_price: None,
     };
     let r = match chain
-        .simulate(head.number, target_block, target_ts, None, &[call])
+        .simulate(head.number, target_block, target_ts, &[], &[call])
         .await
     {
         Ok(mut r) => r.pop()?,

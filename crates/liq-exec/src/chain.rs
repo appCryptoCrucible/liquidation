@@ -124,37 +124,15 @@ impl ChainClient {
         bytes(Some(&v), "eth_call return")
     }
 
-    /// Runtime code a contract creation with `initcode` would deploy, read
-    /// with `eth_call` (no `to`) at `block`. Immutables are filled exactly
-    /// as the constructor sets them.
-    pub async fn creation_runtime(
-        &self,
-        from: Address,
-        initcode: &Bytes,
-        block: u64,
-    ) -> Result<Bytes> {
-        let v = self
-            .request(
-                "eth_call",
-                json!([{"from": from, "input": initcode, "gas": hex_q(50_000_000)}, hex_q(block)]),
-            )
-            .await?;
-        let code = bytes(Some(&v), "runtime")?;
-        if code.is_empty() {
-            return Err(ExecError::Rpc("creation returned empty runtime".into()));
-        }
-        Ok(code)
-    }
-
     /// Run `calls` in order in one simulated block on top of `base_block`,
-    /// numbered `number` at `timestamp`. `code` places runtime code at an
-    /// address first (an Executor that is not deployed yet).
+    /// numbered `number` at `timestamp`. `code` places runtime code at each
+    /// address first (an Executor and its modules that are not deployed yet).
     pub async fn simulate(
         &self,
         base_block: u64,
         number: u64,
         timestamp: u64,
-        code: Option<(Address, &Bytes)>,
+        code: &[(Address, Bytes)],
         calls: &[SimCall],
     ) -> Result<Vec<SimResult>> {
         let calls_json: Vec<Value> = calls
@@ -176,9 +154,11 @@ impl ChainClient {
             "blockOverrides": {"number": hex_q(number), "time": hex_q(timestamp)},
             "calls": calls_json,
         });
-        if let (Some((addr, runtime)), Some(m)) = (code, block.as_object_mut()) {
+        if let (false, Some(m)) = (code.is_empty(), block.as_object_mut()) {
             let mut over = serde_json::Map::new();
-            over.insert(format!("{addr:#x}"), json!({"code": runtime}));
+            for (addr, runtime) in code {
+                over.insert(format!("{addr:#x}"), json!({"code": runtime}));
+            }
             m.insert("stateOverrides".into(), Value::Object(over));
         }
         let v = self
@@ -308,7 +288,7 @@ mod tests {
                 26_019_517,
                 26_019_518,
                 ts,
-                None,
+                &[],
                 &[SimCall {
                     from: address!("000000000000000000000000000000000000dEaD"),
                     to: CONTROLLER,

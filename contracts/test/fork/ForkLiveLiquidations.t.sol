@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {Executor} from "../../src/Executor.sol";
+import {ExecutorStack} from "../unit/ExecutorStack.sol";
 import {MainnetVenues} from "../../src/lib/MainnetVenues.sol";
 import {IAavePool, IAaveV4Spoke, IMorpho, IUniV3Pool, MarketParams} from "../../src/lib/Interfaces.sol";
 import {PlanBuilder as PB} from "../unit/PlanBuilder.sol";
@@ -132,6 +133,7 @@ contract ForkLiveLiquidationsTest is Test {
     bytes32 constant MORPHO_WSTETH_WETH = 0xC54D7ACF14DE29E0E5527CABD7A576506870346A78A11A6762E2CCA66322EC41;
 
     address operator = makeAddr("operator");
+    address backrunOperator = makeAddr("backrunOperator");
     address sink = makeAddr("sink");
     Executor ex;
     bool forked;
@@ -149,7 +151,7 @@ contract ForkLiveLiquidationsTest is Test {
         if (bytes(url).length == 0) return;
         vm.createSelectFork(url, PINNED_BLOCK);
         forked = true;
-        ex = new Executor(operator, sink, UNIV3_FACTORY, UNIV3_INIT_HASH, makeAddr("routerA"), makeAddr("routerB"), WETH, MainnetVenues.UNIV2_FACTORY, MainnetVenues.UNIV2_INIT_HASH, MainnetVenues.SUSHI_FACTORY, MainnetVenues.SUSHI_INIT_HASH, MainnetVenues.CURVE_META_REGISTRY);
+        ex = ExecutorStack.deploy(operator, backrunOperator, sink, UNIV3_FACTORY, UNIV3_INIT_HASH, makeAddr("routerA"), makeAddr("routerB"), WETH, MainnetVenues.UNIV2_FACTORY, MainnetVenues.UNIV2_INIT_HASH, MainnetVenues.SUSHI_FACTORY, MainnetVenues.SUSHI_INIT_HASH, MainnetVenues.CURVE_META_REGISTRY);
     }
 
     modifier onFork() {

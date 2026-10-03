@@ -25,7 +25,8 @@ pub struct ChainExec {
     /// Governance bundles from the hot thread. `None`: not planned.
     pub gov_rx: Option<Receiver<GovJob>>,
     /// `venues.executor` once deployed. `None`: simulate the compiled
-    /// Executor at the placeholder address the transactions are signed to.
+    /// Executor at the placeholder address the transactions are signed to,
+    /// with its modules where it delegatecalls them.
     pub deployed: Option<Address>,
     /// `PROFIT_SINK`, a constructor argument of the simulated Executor.
     pub profit_sink: Option<Address>,
@@ -67,7 +68,7 @@ pub fn spawn_exec_worker(
                 recv(gov_rx) -> msg => {
                     let (Ok(job), Some(c)) = (msg, chain.as_ref()) else { continue };
                     if target.is_none() {
-                        target = rt.block_on(sim_target(c, &path, job.base_block));
+                        target = sim_target(c, &path);
                     }
                     let Some(t) = target.as_ref() else {
                         tracing::error!(action = ?job.action, "no Executor to simulate — governance bundle not sent");
@@ -112,7 +113,7 @@ async fn prepare(
         return false;
     };
     if target.is_none() {
-        *target = sim_target(c, path, base).await;
+        *target = sim_target(c, path);
     }
     let Some(t) = target.as_ref() else {
         tracing::error!(
@@ -121,7 +122,8 @@ async fn prepare(
         );
         return false;
     };
-    let Some(operator) = path.signers.first().map(|s| s.address()) else {
+    // The key that signs this job, on its own slot.
+    let Some(operator) = path.signers.get(job.slot).map(|s| s.address()) else {
         return false;
     };
     match verify(job, &c.chain, t, operator, base).await {
@@ -152,13 +154,7 @@ async fn verify(
         gas_price: Some(price),
     };
     let r = match chain
-        .simulate(
-            base,
-            job.target_block,
-            ts,
-            t.code.as_ref().map(|c| (t.executor, c)),
-            &[call],
-        )
+        .simulate(base, job.target_block, ts, &t.code, &[call])
         .await
     {
         Ok(mut r) => r.pop()?,
@@ -174,35 +170,32 @@ async fn verify(
     r.gas_used.checked_mul(6)?.checked_div(5)
 }
 
-/// The deployed Executor, or the compiled one's runtime (constructor run by
-/// the node with `eth_call`) at the address transactions are signed to.
-async fn sim_target(c: &ChainExec, path: &Path, block: u64) -> Option<GovTarget> {
+/// The deployed Executor, or the compiled system: the core's runtime at the
+/// address transactions are signed to and its modules' where it
+/// delegatecalls them, built here from the forge artifacts (the
+/// constructors read no chain state).
+fn sim_target(c: &ChainExec, path: &Path) -> Option<GovTarget> {
     if let Some(executor) = c.deployed {
         return Some(GovTarget {
             executor,
-            code: None,
+            code: Vec::new(),
         });
     }
     let operator = path.signers.first()?.address();
+    // No second key: the compiled Executor gets the first one twice.
+    let backrun = path.signers.get(1).map_or(operator, |s| s.address());
     let Some(sink) = c.profit_sink else {
         tracing::error!("PROFIT_SINK unset — the undeployed Executor cannot be simulated");
         return None;
     };
-    let spec = liq_sim::ExecutorSpec::mainnet(operator, sink);
-    let initcode = match liq_sim::executor_initcode(&spec) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(error = %e, "Executor artifact unreadable — run forge build");
-            return None;
-        }
-    };
-    match c.chain.creation_runtime(operator, &initcode, block).await {
-        Ok(code) => Some(GovTarget {
+    let spec = liq_sim::ExecutorSpec::mainnet(operator, backrun, sink);
+    match liq_sim::executor_stack(&spec) {
+        Ok(stack) => Some(GovTarget {
             executor: path.executor,
-            code: Some(code),
+            code: stack.runtimes(path.executor).to_vec(),
         }),
         Err(e) => {
-            tracing::error!(error = %e, "Executor runtime unavailable");
+            tracing::error!(error = %e, "Executor artifacts unreadable — run forge build");
             None
         }
     }
@@ -213,14 +206,15 @@ mod verify_tests;
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::{address, Bytes};
+    use alloy_primitives::{address, keccak256, Address, Bytes};
     use alloy_sol_types::SolCall;
     use liq_exec::chain::{ChainClient, SimCall};
-    use liq_exec::executor::IExecutor;
+    use liq_exec::executor::{IExecutor, IExecutorModule};
 
-    /// The compiled Executor (with the governance leg), constructed by the
-    /// node at a real block, answers as the operator it was built for when
-    /// placed at the placeholder address the transactions are signed to.
+    /// The compiled Executor and its modules, built here and placed by the
+    /// node's state override at a real block, answer as the system they
+    /// were built for: the core at the placeholder address the transactions
+    /// are signed to, wired to its modules where they were placed.
     #[tokio::test(flavor = "current_thread")]
     #[ignore = "needs MAINNET_RPC_URL and forge build output"]
     async fn simulated_executor_has_our_immutables() {
@@ -233,30 +227,41 @@ mod tests {
         let chain = ChainClient::new(&url).unwrap();
         let operator = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
         let sink = address!("11fa49084B4D63b156a4C8238291A562019bA49d");
-        let spec = liq_sim::ExecutorSpec::mainnet(operator, sink);
-        let initcode = liq_sim::executor_initcode(&spec).unwrap();
+        let backrun = address!("70997970C51812dc3A010C7d01b50e0d17dc79C8");
+        let spec = liq_sim::ExecutorSpec::mainnet(operator, backrun, sink);
+        let code = liq_sim::executor_stack(&spec)
+            .unwrap()
+            .runtimes(liq_sim::PLANNED_EXECUTOR);
+        assert!(code.iter().all(|(_, c)| c.len() > 1_000));
         let base = 26_019_517u64;
-        let runtime = chain
-            .creation_runtime(operator, &initcode, base)
-            .await
-            .unwrap();
-        assert!(runtime.len() > 1_000);
-        let ask = |data: Vec<u8>| SimCall {
+        let ask = |to: Address, data: Vec<u8>| SimCall {
             from: operator,
-            to: liq_sim::PLANNED_EXECUTOR,
+            to,
             data: Bytes::from(data),
             gas: None,
             gas_price: None,
         };
+        let core = |data: Vec<u8>| ask(liq_sim::PLANNED_EXECUTOR, data);
         let out = chain
             .simulate(
                 base,
                 base + 1,
                 1_789_916_831,
-                Some((liq_sim::PLANNED_EXECUTOR, &runtime)),
+                &code,
                 &[
-                    ask(IExecutor::OPERATORCall {}.abi_encode()),
-                    ask(IExecutor::PROFIT_SINKCall {}.abi_encode()),
+                    core(IExecutor::OPERATORCall {}.abi_encode()),
+                    core(IExecutor::BACKRUN_OPERATORCall {}.abi_encode()),
+                    core(IExecutor::PROFIT_SINKCall {}.abi_encode()),
+                    core(IExecutor::LIQUIDATION_MODULECall {}.abi_encode()),
+                    core(IExecutor::SWAP_MODULECall {}.abi_encode()),
+                    ask(
+                        liq_sim::PLANNED_LIQUIDATION_MODULE,
+                        IExecutorModule::MODULE_IDCall {}.abi_encode(),
+                    ),
+                    ask(
+                        liq_sim::PLANNED_SWAP_MODULE,
+                        IExecutorModule::MODULE_IDCall {}.abi_encode(),
+                    ),
                 ],
             )
             .await
@@ -267,8 +272,28 @@ mod tests {
             operator
         );
         assert_eq!(
-            IExecutor::PROFIT_SINKCall::abi_decode_returns(&out[1].return_data).unwrap(),
+            IExecutor::BACKRUN_OPERATORCall::abi_decode_returns(&out[1].return_data).unwrap(),
+            backrun
+        );
+        assert_eq!(
+            IExecutor::PROFIT_SINKCall::abi_decode_returns(&out[2].return_data).unwrap(),
             sink
+        );
+        assert_eq!(
+            IExecutor::LIQUIDATION_MODULECall::abi_decode_returns(&out[3].return_data).unwrap(),
+            liq_sim::PLANNED_LIQUIDATION_MODULE
+        );
+        assert_eq!(
+            IExecutor::SWAP_MODULECall::abi_decode_returns(&out[4].return_data).unwrap(),
+            liq_sim::PLANNED_SWAP_MODULE
+        );
+        assert_eq!(
+            IExecutorModule::MODULE_IDCall::abi_decode_returns(&out[5].return_data).unwrap(),
+            keccak256("liq-executor/liquidation-module/v1")
+        );
+        assert_eq!(
+            IExecutorModule::MODULE_IDCall::abi_decode_returns(&out[6].return_data).unwrap(),
+            keccak256("liq-executor/swap-module/v1")
         );
     }
 }

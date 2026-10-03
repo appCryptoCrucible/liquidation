@@ -32,6 +32,9 @@ where
     let url = rpc_url(&config_dir)?;
     wait_for_rpc(&url).await?;
     let state = state_paths(&root)?;
+    // Jobs are simulated in-process on this node's state at the store's tip.
+    let node_state: std::sync::Arc<dyn liq_sim::StateProviderFactory> =
+        std::sync::Arc::new(crate::sim_state::NodeState::new(ctx.provider().clone()));
     // First start, or adapter bindings changed: build the state from the
     // node's receipts before anything folds, plans or sends.
     let mut started = startup::run_on_built_state(
@@ -39,6 +42,7 @@ where
         &config_dir.join("cores.toml"),
         &state,
         PROD_ALLOW_UNPINNED,
+        Some(node_state),
     )
     .await?;
     // Resume from the snapshot: Reth re-executes every block after it and

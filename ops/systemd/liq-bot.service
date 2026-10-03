@@ -13,6 +13,10 @@ RestartSec=5
 # Live send stays off. Do not set this true here — H4 only, via config reload.
 Environment=LIQ_SUBMIT_ENABLED=false
 Environment=LIQ_STATE_DIR=/var/liq/bot
+# Operator keys and the searcher identity (LIQ_OPERATOR_SECRET,
+# LIQ_BACKRUN_OPERATOR_SECRET, LIQ_IDENTITY_SECRET, PROFIT_SINK), mode 0600,
+# not in git. Optional: without it the bot runs, records nothing, sends nothing.
+EnvironmentFile=-/opt/liq/operator.env
 WorkingDirectory=/opt/liq
 ExecStart=/opt/liq/target/release/liq-bot
 # Operator keys are 17B. This unit does not generate them.

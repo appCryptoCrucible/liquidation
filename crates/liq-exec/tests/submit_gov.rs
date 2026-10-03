@@ -140,7 +140,7 @@ fn path(
 fn target() -> GovTarget {
     GovTarget {
         executor: EXECUTOR,
-        code: Some(Bytes::from_static(&[0x60, 0x00])),
+        code: vec![(EXECUTOR, Bytes::from_static(&[0x60, 0x00]))],
     }
 }
 
@@ -385,6 +385,74 @@ async fn ordinary_and_governance_share_the_resynced_nonces() {
     p.sync_nonce(&chain, 102).await.unwrap();
     p.submit_path(&ordinary(102)).await.unwrap();
     assert_eq!(sent_nonces(&builder), vec![42, 43, 44, 43]);
+}
+
+/// Anvil account 1: the second operator in these tests.
+const SECOND_SECRET: B256 =
+    b256!("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d");
+const SECOND: Address = address!("0x70997970C51812dc3A010C7d01b50e0d17dc79C8");
+
+/// Two operator keys, two nonce slots: each resyncs to its own key's
+/// confirmed nonce, and allocating on one does not move the other.
+#[tokio::test(flavor = "current_thread")]
+async fn each_operator_slot_resyncs_to_its_own_chain_nonce() {
+    let answer: Responder = Arc::new(|req: &Value| {
+        if req["method"] != "eth_getTransactionCount" {
+            return Value::Null;
+        }
+        let who: Address = req["params"][0].as_str().unwrap().parse().unwrap();
+        let n: u64 = if who == OPERATOR {
+            42
+        } else if who == SECOND {
+            7
+        } else {
+            0
+        };
+        json!(format!("{n:#x}"))
+    });
+    let rpc = spawn_rpc(answer).await;
+    let builder = spawn_mock(Duration::ZERO).await;
+    let first = Arc::new(PrecomputedSigner::from_secret(SECRET).unwrap());
+    let second = Arc::new(PrecomputedSigner::from_secret(SECOND_SECRET).unwrap());
+    assert_eq!(second.address(), SECOND);
+    let nonces = NonceAllocator::from_addresses(vec![first.address(), second.address()]).unwrap();
+    let url = leak_str(builder.url.clone());
+    let builders = BuilderSet::from_parts(
+        vec![BuilderEndpoint {
+            id: BuilderId(1),
+            name: "mock",
+            endpoint: url,
+        }],
+        url,
+    )
+    .unwrap();
+    let p = ExecPath::new(
+        CaptureRecorder::default(),
+        AllowAll,
+        Arc::new(SubmitEnabled::new(false)),
+        NonceMode::Allocate,
+        nonces,
+        vec![first, second],
+        builders,
+        SearcherKey::from_secret(SECRET).unwrap(),
+        LiveSendBits {
+            held: Arc::new(AtomicBool::new(false)),
+            nonce_resync: Arc::new(AtomicBool::new(false)),
+        },
+    )
+    .unwrap();
+    p.sync_nonce(&ChainClient::new(&rpc.url).unwrap(), 101)
+        .await
+        .unwrap();
+    assert!(p.nonce_resync.load(Ordering::Acquire));
+    assert_eq!(p.nonces.next_of(0).unwrap(), 42);
+    assert_eq!(p.nonces.next_of(1).unwrap(), 7);
+    assert_eq!(p.nonces.allocate(1).unwrap().nonce, 7);
+    assert_eq!(
+        p.nonces.next_of(0).unwrap(),
+        42,
+        "the first key's sequence is untouched"
+    );
 }
 
 /// The live-send resync bit follows the chain resync: on after a successful

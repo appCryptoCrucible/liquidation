@@ -112,14 +112,22 @@ fn answer_revert(req: &Value) -> Value {
 
 /// A job the drain could not simulate in process is simulated against the
 /// node on the block before its target, as the target block, at the price it
-/// will pay, with the Executor's code where it will be sent; it is sized from
-/// that simulation, and dropped if it reverts.
+/// will pay, with the Executor's code where it will be sent and its modules'
+/// where it delegatecalls them; it is sized from that simulation, and
+/// dropped if it reverts.
 #[tokio::test(flavor = "current_thread")]
 async fn rpc_verification_sizes_or_drops_the_job() {
     let operator = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+    let placed = [
+        liq_sim::PLANNED_EXECUTOR,
+        liq_sim::PLANNED_LIQUIDATION_MODULE,
+        liq_sim::PLANNED_SWAP_MODULE,
+    ];
     let t = GovTarget {
         executor: liq_sim::PLANNED_EXECUTOR,
-        code: Some(Bytes::from_static(&[0x60, 0x00])),
+        code: placed
+            .map(|at| (at, Bytes::from_static(&[0x60, 0x00])))
+            .to_vec(),
     };
     let (url, seen) = node(answer_ok).await;
     let chain = ChainClient::new(&url).unwrap();
@@ -140,9 +148,9 @@ async fn rpc_verification_sizes_or_drops_the_job() {
         format!("{:#x}", 1_000 + 12)
     );
     assert_eq!(block["calls"][0]["gasPrice"], format!("{:#x}", 1_010));
-    assert!(
-        block["stateOverrides"][format!("{:#x}", liq_sim::PLANNED_EXECUTOR)]["code"].is_string()
-    );
+    for at in placed {
+        assert!(block["stateOverrides"][format!("{at:#x}")]["code"].is_string());
+    }
 
     let (url, _) = node(answer_revert).await;
     let chain = ChainClient::new(&url).unwrap();

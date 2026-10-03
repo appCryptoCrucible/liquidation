@@ -106,12 +106,13 @@ impl GovInbox {
     }
 }
 
-/// The Executor the simulation calls. `code` is its runtime, placed at
-/// `executor` for the simulation while it is not deployed.
+/// The Executor the simulation calls. `code` is what the simulation places
+/// while it is not deployed: the core's runtime at `executor` and its
+/// modules' where the core delegatecalls them. Empty once deployed.
 #[derive(Clone, Debug)]
 pub struct GovTarget {
     pub executor: Address,
-    pub code: Option<Bytes>,
+    pub code: Vec<(Address, Bytes)>,
 }
 
 /// What [`ExecPath::submit_gov`] did.
@@ -212,7 +213,7 @@ where
                 job.base_block,
                 job.target_block,
                 job.target_ts,
-                target.code.as_ref().map(|c| (target.executor, c)),
+                &target.code,
                 &calls,
             )
             .await?;
