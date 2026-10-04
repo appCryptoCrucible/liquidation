@@ -8,7 +8,14 @@ evm_version = "cancun"
 ffi = true
 fs_permissions = [{ access = "read", path = "./" }]
 optimizer = true
-optimizer_runs = 200
+# Runtime gas over deploy size. Since the Executor split, every contract sits
+# far enough under EIP-170 to afford it: at this setting the core is
+# 12,044 B, LiquidationModule 21,767 B, SwapModule 11,152 B. Measured on the
+# mainnet fork suite against 200 runs: about 2,250 gas less per typical
+# liquidation. Higher values build identical code. An adapter that pushes
+# LiquidationModule past 24,576 B needs a lower setting for that file
+# (compilation_restrictions) or another split.
+optimizer_runs = 1000000
 via_ir = true
 
 [fuzz]

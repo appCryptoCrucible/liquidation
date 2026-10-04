@@ -28,27 +28,34 @@
 [tx]
 # 21_000 intrinsic + ~6_000 calldata (plans measured at 333–385 bytes,
 # ~4.7–5.3k gas) + one profit swap ([swap].univ3).
-# + 5_000 since the Executor split into a core and two delegatecalled modules
-# (2026-10): the first touch of each module is a cold account (EIP-2929,
-# 2 × 2_500 over warm). Measured on the unit suite, Foundry v1.8.3, same plans
-# before and after: one flash group +9_783, two groups +14_566, i.e.
-# 5_000 per transaction + 4_800 per group (the [wrap] rows).
-base = 114_100
+# + 5_800 since the Executor split into a core and two delegatecalled modules
+# (2026-10), compiled at 1_000_000 optimizer runs. Measured on the mainnet
+# fork suite (`forge test --isolate -vvvv`, Foundry v1.8.3), the same 70
+# execute calls before and after the split, our code's gas only: one flash
+# group with repay and profit swaps +10_031 median (n 48, +8_758..+10_574;
+# +12_280 at 200 runs), one swap batch +9_044 (n 7), no swaps +6_475 (n 15).
+# Where it goes: the first touch of each module is a cold account
+# (2 × 2_600), each delegatecall copies the plan and decodes its arguments,
+# and the core walks the plan ~600 gas dearer per walk than the single
+# contract did (the same PlanDecoder, inlined less; three walks per group).
+# Split as 5_800 here + 4_300 per group in [wrap]: a second group costs
+# +4_277 on the unit suite (our code only; no fork test has two groups).
+base = 114_900
 
 [wrap]
-# Each includes 4_800 since the split: per flash group, the delegatecalls into
+# Each includes 4_300 since the split: per flash group, the delegatecalls into
 # the liquidation module (its legs) and the swap module (its repay swaps).
-aave = 202_865
-morpho = 132_989
-univ3 = 137_472
-univ4 = 110_701
+aave = 202_365
+morpho = 132_489
+univ3 = 136_972
+univ4 = 110_201
 # DERIVED: Sky DSS was only measurable against Aave V3 (DAI debt):
 # 296_199 there, minus Aave V3's average guard excess over Morpho across the
-# providers measured on both (96_278); + 4_800 (split).
-sky_dss = 204_721
+# providers measured on both (96_278); + 4_300 (split).
+sky_dss = 204_221
 # Aave V3 flash wrapping an Aave V4 leg: same wrap as `aave`; the V4 leg's
 # extra cost is in [liquidation].aave-v4.
-aave_v4 = 202_865
+aave_v4 = 202_365
 
 [liquidation]
 # mainnet frame p75 375_651 (median 273_221, n 14) + fork guard 105_091

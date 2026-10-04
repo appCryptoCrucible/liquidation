@@ -281,9 +281,15 @@ Amsterdam). The Executor is now a core plus two modules:
 
 | Contract | Holds | Runtime |
 |---|---|---|
-| `Executor.sol` (core) | `execute`, the operator check, flash sources and their callbacks, the profit check, the bid, `sweep` | 8,861 B |
-| `LiquidationModule.sol` | every protocol's liquidation leg; the Aave payload and Sky spell actions | 16,136 B |
-| `SwapModule.sol` | swaps and unwraps; the routers and venue anchors | 7,952 B |
+| `Executor.sol` (core) | `execute`, the operator check, flash sources and their callbacks, the profit check, the bid, `sweep` | 12,044 B |
+| `LiquidationModule.sol` | every protocol's liquidation leg; the Aave payload and Sky spell actions | 21,767 B |
+| `SwapModule.sol` | swaps and unwraps; the routers and venue anchors | 11,152 B |
+
+The sizes are at 1,000,000 optimizer runs (`contracts/foundry.toml`). The
+split leaves room to optimize for runtime gas rather than size, and higher
+values build the same code. `LiquidationModule` has the least headroom
+(2,809 B): an adapter that takes it past the limit needs a lower setting for
+that file (`compilation_restrictions`) or another split.
 
 The core runs a module with `delegatecall` inside `execute`: the module's code
 on the core's address, balances, allowances and transient storage. No token
@@ -308,9 +314,14 @@ as they did before the split. What keeps it as safe as one contract:
    address that borrowed or swapped, which is the core, and the callback
    checks are unchanged.
 
-Cost: two cold account accesses per transaction (+5,000 gas) and one more
-`delegatecall` per flash group (+4,800). Both are measured with the pinned
-Foundry and included in `config/liq-gas.toml`. `test/unit/ExecutorModules.t.sol`
+Cost, measured on the mainnet fork suite against the single contract with the
+same plans: +10,031 gas (median) for a one-group liquidation with repay and
+profit swaps (+12,280 at 200 optimizer runs). That is two cold module accesses
+(2 × 2,600), the delegatecalls themselves (each copies the plan and decodes
+its arguments), and a plan walk about 600 gas dearer in the smaller core (the
+same `PlanDecoder`, inlined less; three walks per group).
+`config/liq-gas.toml` charges +5,800 per transaction and +4,300 per flash
+group. `test/unit/ExecutorModules.t.sol`
 covers each rule above and the size limit.
 
 ## Step 7 — Gas
