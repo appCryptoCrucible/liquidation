@@ -28,18 +28,18 @@
 [tx]
 # 21_000 intrinsic + ~6_000 calldata (plans measured at 333–385 bytes,
 # ~4.7–5.3k gas) + one profit swap ([swap].univ3).
-# + 8_200 since the Executor split into a core and two delegatecalled modules
-# (2026-10), compiled at 1_000_000 optimizer runs, each flash callback reading
-# its group from transient storage. Measured on the mainnet fork suite
+# + 6_000 since the Executor split into a core and two delegatecalled modules
+# (2026-10). Compiled at 1_000_000 optimizer runs; `execute` decodes each
+# flash group once, runs it from that decode, and hands it to its callback
+# through transient storage. Measured on the mainnet fork suite
 # (`forge test --isolate -vvvv`, Foundry v1.8.3), the same 70 execute calls
 # before and after the split, our code's gas only: one flash group with repay
-# and profit swaps +8_161 median (n 48, +6_448..+8_730), one swap batch
-# +7_067 (n 7), no swaps +4_928 (n 15). Most of it is the first touch of each
-# module (a cold account, 2 × 2_600) and the delegatecalls, each of which
-# copies the plan. All of it is charged here: a second flash group costs 508
-# less than on the single contract (unit suite, our code only; no fork test
-# has two groups), because its callback no longer re-walks the plan.
-base = 117_300
+# and profit swaps +5_927 median (n 48, +3_769..+6_516), one swap batch
+# +4_720 (n 7), no swaps +3_078 (n 15). Most of it is the first touch of each
+# module (a cold account, 2 × 2_600). All of it is charged here: a second
+# flash group costs about 3_000 less than on the single contract (unit suite,
+# our code only; no fork test has two groups).
+base = 115_100
 
 [wrap]
 # As measured on the single contract: the split adds nothing per group beyond

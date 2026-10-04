@@ -281,7 +281,7 @@ Amsterdam). The Executor is now a core plus two modules:
 
 | Contract | Holds | Runtime |
 |---|---|---|
-| `Executor.sol` (core) | `execute`, the operator check, flash sources and their callbacks, the profit check, the bid, `sweep` | 12,420 B |
+| `Executor.sol` (core) | `execute`, the operator check, flash sources and their callbacks, the profit check, the bid, `sweep` | 12,558 B |
 | `LiquidationModule.sol` | every protocol's liquidation leg; the Aave payload and Sky spell actions | 21,767 B |
 | `SwapModule.sol` | swaps and unwraps; the routers and venue anchors | 11,152 B |
 
@@ -315,14 +315,14 @@ as they did before the split. What keeps it as safe as one contract:
    checks are unchanged.
 
 Cost, measured on the mainnet fork suite against the single contract with the
-same plans: +8,161 gas (median) for a one-group liquidation with repay and
-profit swaps. Most of it is two cold module accesses (2 × 2,600) and the
-delegatecalls themselves, each of which copies the plan. It was +12,280 at
-first. Compiling at 1,000,000 optimizer runs took off about 2,250, and handing
-each flash callback its group through transient storage, instead of decoding
-the plan again, about 1,850. A second flash group now costs nothing beyond the
-single contract (508 less on the unit suite), since its callback no longer
-re-walks the plan from the start. `config/liq-gas.toml` charges +8,200 per
+same plans: +5,927 gas (median) for a one-group liquidation with repay and
+profit swaps. Most of it is two cold module accesses (2 × 2,600). It was
++12,280 at first. Three changes took off about 6,350: compiling at 1,000,000
+optimizer runs (about 2,250), handing each flash callback its group through
+transient storage instead of decoding the plan again (about 1,850), and
+running each group from the decode `header()` already made for its bounds
+check (about 2,200). A second flash group costs about 3,000 less than on the
+single contract (unit suite). `config/liq-gas.toml` charges +6,000 per
 transaction. `test/unit/ExecutorModules.t.sol`
 covers each rule above and the size limit.
 

@@ -131,8 +131,12 @@ library PlanDecoder {
     // ─────────────────────────────── header ───────────────────────────────
 
     /// Decodes the header and walks the whole plan once, so every group,
-    /// leg and swap blob is bounds-checked before execution starts.
-    function header(bytes calldata plan) internal pure returns (Plan memory p) {
+    /// leg and swap blob is bounds-checked before execution starts. Returns
+    /// each group as the walk decoded it, so the Executor runs them without
+    /// decoding them again.
+    function header(bytes calldata plan)
+        internal pure returns (Plan memory p, FlashGroup[] memory groups)
+    {
         p.flags      = uint8(plan[0]);
         p.bidBps     = uint16(bytes2(plan[1:3]));
         p.gasCostWei = uint128(bytes16(plan[3:19]));
@@ -140,9 +144,10 @@ library PlanDecoder {
         p.groupCount = uint8(plan[HEADER_LEN]);
         if (p.groupCount == 0) revert NoGroups();
 
+        groups = new FlashGroup[](p.groupCount);
         uint256 cur = HEADER_LEN + 1;
         for (uint256 g; g < p.groupCount; ++g) {
-            (, cur) = group(plan, cur);
+            (groups[g], cur) = group(plan, cur);
         }
         p.profitSwapOffset = cur;
         cur = skipSwapLegs(plan, cur + 1, uint8(plan[cur]));

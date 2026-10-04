@@ -216,8 +216,9 @@ contract Executor {
         assembly { tstore(T_ENTERED, 1) }
 
         // Decodes the header and bounds-checks the whole plan before any
-        // external call (unknown adapter, truncated blob → revert here).
-        Plan memory p = plan.header();
+        // external call (unknown adapter, truncated blob → revert here),
+        // keeping every group it decoded for the loop below.
+        (Plan memory p, FlashGroup[] memory groups) = plan.header();
 
         // Governance plan: apply the change that makes the legs liquidatable.
         // Several transactions in one bundle each carry it; only the first to
@@ -244,10 +245,8 @@ contract Executor {
         // enough to cover its own repay, and settles before the next one starts.
         // Multi-source cascade = sibling groups with the same debtAsset and
         // different providers (PLAN-ENCODING §1b′) — never nested callbacks.
-        uint256 cursor = PlanDecoder.HEADER_LEN + 1;
-        for (uint256 g; g < p.groupCount; ++g) {
-            (FlashGroup memory fg, uint256 next) = plan.group(cursor);
-            cursor = next;
+        for (uint256 g; g < groups.length; ++g) {
+            FlashGroup memory fg = groups[g];
 
             if (fg.provider == P_NONE) {
                 if (fg.flashAmount != 0 || fg.flashSource != address(0)) revert FlashMismatch();

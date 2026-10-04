@@ -10,8 +10,8 @@ import {SafeTransfer} from "../../src/lib/SafeTransfer.sol";
 contract ExecutorHarness {
     using PlanDecoder for bytes;
 
-    function debugHeader(bytes calldata plan) external pure returns (Plan memory) {
-        return plan.header();
+    function debugHeader(bytes calldata plan) external pure returns (Plan memory p) {
+        (p, ) = plan.header();
     }
 
     function debugGroup(bytes calldata plan, uint256 g) external pure returns (FlashGroup memory fg, uint256 next) {
@@ -56,7 +56,7 @@ contract ExecutorHarness {
     function debugProfitSwap(bytes calldata plan, uint256 i)
         external pure returns (SwapLeg memory s, bytes memory data)
     {
-        Plan memory p = plan.header();
+        (Plan memory p, ) = plan.header();
         require(i < uint8(plan[p.profitSwapOffset]), "profit swap index");
         return _swapAt(plan, p.profitSwapOffset + 1, i);
     }
