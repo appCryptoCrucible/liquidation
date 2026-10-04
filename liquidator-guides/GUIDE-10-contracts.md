@@ -281,7 +281,7 @@ Amsterdam). The Executor is now a core plus two modules:
 
 | Contract | Holds | Runtime |
 |---|---|---|
-| `Executor.sol` (core) | `execute`, the operator check, flash sources and their callbacks, the profit check, the bid, `sweep` | 12,044 B |
+| `Executor.sol` (core) | `execute`, the operator check, flash sources and their callbacks, the profit check, the bid, `sweep` | 12,420 B |
 | `LiquidationModule.sol` | every protocol's liquidation leg; the Aave payload and Sky spell actions | 21,767 B |
 | `SwapModule.sol` | swaps and unwraps; the routers and venue anchors | 11,152 B |
 
@@ -315,13 +315,15 @@ as they did before the split. What keeps it as safe as one contract:
    checks are unchanged.
 
 Cost, measured on the mainnet fork suite against the single contract with the
-same plans: +10,031 gas (median) for a one-group liquidation with repay and
-profit swaps (+12,280 at 200 optimizer runs). That is two cold module accesses
-(2 × 2,600), the delegatecalls themselves (each copies the plan and decodes
-its arguments), and a plan walk about 600 gas dearer in the smaller core (the
-same `PlanDecoder`, inlined less; three walks per group).
-`config/liq-gas.toml` charges +5,800 per transaction and +4,300 per flash
-group. `test/unit/ExecutorModules.t.sol`
+same plans: +8,161 gas (median) for a one-group liquidation with repay and
+profit swaps. Most of it is two cold module accesses (2 × 2,600) and the
+delegatecalls themselves, each of which copies the plan. It was +12,280 at
+first. Compiling at 1,000,000 optimizer runs took off about 2,250, and handing
+each flash callback its group through transient storage, instead of decoding
+the plan again, about 1,850. A second flash group now costs nothing beyond the
+single contract (508 less on the unit suite), since its callback no longer
+re-walks the plan from the start. `config/liq-gas.toml` charges +8,200 per
+transaction. `test/unit/ExecutorModules.t.sol`
 covers each rule above and the size limit.
 
 ## Step 7 — Gas
@@ -413,8 +415,8 @@ expected provider is a free-money function for anyone who finds it.**
 - [ ] **Multi-group plan fork-tested**: two flash groups, different providers,
       different debt assets, one profit guard — and a test where group 1's legs
       all fail while group 2's succeed
-- [ ] Group re-walk in the callbacks lands on the right group: a three-group plan
-      asserts each callback saw its own `debtAsset`
+- [ ] Each callback gets its own group (stored by `execute` in transient storage):
+      a three-group plan with a different flash amount per group passes
 - [ ] Wallet-funded bid: `msg.value` capped, remainder refunded, and a test
       donating ETH via `receive()` proves the donation is **not** bid away
 - [ ] Fee-on-transfer safety: seized and swapped amounts are read from measured

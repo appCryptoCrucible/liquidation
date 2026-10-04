@@ -18,8 +18,8 @@ import {PlanBuilder as PB} from "../unit/PlanBuilder.sol";
  *
  * What 10A proves on real state, per flash provider:
  *   the Executor enters the provider, the provider calls back, the callback
- *   authenticates (T_EXPECTED_CALLER + T_ENTERED), the group is re-walked
- *   from calldata, FlashMismatch checks pass on the provider's real
+ *   authenticates (T_EXPECTED_CALLER + T_ENTERED), it reads the group
+ *   `execute` stored for it, FlashMismatch checks pass on the provider's real
  *   arguments, and the liquidation guard reads the real protocol's health
  *   view. The leg targets an address with no debt, so the guard returns
  *   false and the group reverts `AllLegsFailed` — deterministic on any block.

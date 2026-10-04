@@ -229,24 +229,28 @@ contract ExecutorCoverage10CTest is ExecutorTestBase {
         _assertClean();
     }
 
-    function test_three_group_rewalk_same_debt() public {
+    /// Each provider's callback gets its own group. The groups borrow
+    /// different amounts, so a callback handed another group's would fail:
+    /// Aave and Morpho check the amount they lent (`FlashMismatch`), V4
+    /// settles what it took, and each borrower is liquidated exactly once.
+    function test_three_groups_each_callback_gets_its_own_group() public {
         address b0 = makeAddr("g0");
         address b1 = makeAddr("g1");
         address b2 = makeAddr("g2");
         pool.setPosition(b0, 0.9e18, 10_000e6, 0.20e8);
-        pool.setPosition(b1, 0.9e18, 10_000e6, 0.20e8);
-        pool.setPosition(b2, 0.9e18, 10_000e6, 0.20e8);
+        pool.setPosition(b1, 0.9e18, 12_000e6, 0.24e8);
+        pool.setPosition(b2, 0.9e18, 11_000e6, 0.22e8);
         bytes memory plan = bytes.concat(
             PB.header(PB.F_SWEEP, 0, GAS_COST, 0.3e18, 3),
             PB.groupHead(PB.P_AAVE, address(pool), address(debt), 10_000e6, 1, 1),
             PB.legV3(address(pool), b0, address(coll), 10_000e6),
             PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, 10_005e6),
-            PB.groupHead(PB.P_MORPHO, address(morpho), address(debt), 10_000e6, 1, 1),
-            PB.legV3(address(pool), b1, address(coll), 10_000e6),
-            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, 10_000e6),
-            PB.groupHead(PB.P_UNIV4, address(pm), address(debt), 10_000e6, 1, 1),
-            PB.legV3(address(pool), b2, address(coll), 10_000e6),
-            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, 10_000e6),
+            PB.groupHead(PB.P_MORPHO, address(morpho), address(debt), 12_000e6, 1, 1),
+            PB.legV3(address(pool), b1, address(coll), 12_000e6),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, 12_000e6),
+            PB.groupHead(PB.P_UNIV4, address(pm), address(debt), 11_000e6, 1, 1),
+            PB.legV3(address(pool), b2, address(coll), 11_000e6),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, 11_000e6),
             PB.profit(1, _profitLeg())
         );
         _exec(plan);

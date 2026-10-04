@@ -5,7 +5,8 @@ import {SafeTransfer} from "./lib/SafeTransfer.sol";
 import {Plan, FlashGroup, PlanDecoder} from "./lib/PlanDecoder.sol";
 import {IERC20, IWETH, IAavePool, IUniV3Pool, IMorpho, IPoolManager, IDssFlash} from "./lib/Interfaces.sol";
 import {
-    T_EXPECTED_CALLER, T_ENTERED, T_SWAPPING, T_GROUP, T_FILLED,
+    T_EXPECTED_CALLER, T_ENTERED, T_SWAPPING, T_FILLED,
+    T_GROUP_SOURCE, T_GROUP_DEBT, T_GROUP_SPAN,
     ModuleIds, ILiquidationModule, ISwapModule
 } from "./lib/ExecutorShared.sol";
 
@@ -250,16 +251,13 @@ contract Executor {
 
             if (fg.provider == P_NONE) {
                 if (fg.flashAmount != 0 || fg.flashSource != address(0)) revert FlashMismatch();
-                assembly { tstore(T_GROUP, g) }
                 // Reverts `AllLegsFailed` when nothing filled.
                 _core(fg, plan);
                 continue;
             }
 
-            assembly {
-                tstore(T_GROUP, g)
-                tstore(T_FILLED, not(0)) // NO_CALLBACK sentinel
-            }
+            assembly { tstore(T_FILLED, not(0)) } // NO_CALLBACK sentinel
+            _storeGroup(fg);
             _arm(fg.flashSource);
             _initiate(fg, plan);     // returns only after the callback settled
             if (fg.provider != P_UNIV3 && fg.provider != P_UNIV4) {
@@ -405,12 +403,42 @@ contract Executor {
     }
 
     /// The provider callbacks each need the group they belong to, and none of
-    /// their ABIs has room to carry it — so the index goes through transient
-    /// storage and the group is re-walked from calldata here.
-    function _currentGroup(bytes calldata plan) internal view returns (FlashGroup memory fg) {
-        uint256 g;
-        assembly { g := tload(T_GROUP) }
-        fg = plan.groupAt(g);
+    /// their ABIs has room to carry it. `execute` has just decoded it, so it
+    /// passes it through transient storage: three words, cheaper than
+    /// decoding the plan the provider hands back. Offsets are below the
+    /// plan's length, which calldata keeps far under 2^64.
+    function _storeGroup(FlashGroup memory fg) private {
+        uint256 source = uint256(fg.provider) << 160 | uint256(uint160(fg.flashSource));
+        uint256 debt = uint256(fg.repaySwapCount) << 168 | uint256(fg.liqCount) << 160
+            | uint256(uint160(fg.debtAsset));
+        uint256 span = fg.repaySwapOffset << 192 | fg.liqOffset << 128 | uint256(fg.flashAmount);
+        assembly {
+            tstore(T_GROUP_SOURCE, source)
+            tstore(T_GROUP_DEBT, debt)
+            tstore(T_GROUP_SPAN, span)
+        }
+    }
+
+    /// The group `execute` stored for the callback it is waiting on. Only a
+    /// callback that passed `_checkCallback` reads it: the armed provider,
+    /// inside this `execute`, for this group.
+    function _currentGroup() internal view returns (FlashGroup memory fg) {
+        uint256 source;
+        uint256 debt;
+        uint256 span;
+        assembly {
+            source := tload(T_GROUP_SOURCE)
+            debt   := tload(T_GROUP_DEBT)
+            span   := tload(T_GROUP_SPAN)
+        }
+        fg.provider        = uint8(source >> 160);
+        fg.flashSource     = address(uint160(source));
+        fg.debtAsset       = address(uint160(debt));
+        fg.liqCount        = uint8(debt >> 160);
+        fg.repaySwapCount  = uint8(debt >> 168);
+        fg.flashAmount     = uint128(span);
+        fg.liqOffset       = uint64(span >> 128);
+        fg.repaySwapOffset = span >> 192;
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -425,7 +453,7 @@ contract Executor {
     ) external returns (bool) {
         _checkCallback();
         if (initiator != address(this)) revert BadCallback();
-        FlashGroup memory fg = _currentGroup(params);
+        FlashGroup memory fg = _currentGroup();
         if (asset != fg.debtAsset || amount != fg.flashAmount) revert FlashMismatch();
         _core(fg, params);
         asset.safeApprove(msg.sender, amount + premium);
@@ -437,7 +465,7 @@ contract Executor {
     /// the fee owed without branching on direction.
     function uniswapV3FlashCallback(uint256 fee0, uint256 fee1, bytes calldata data) external {
         _checkCallback();
-        FlashGroup memory fg = _currentGroup(data);
+        FlashGroup memory fg = _currentGroup();
         _core(fg, data);
         fg.debtAsset.safeTransfer(msg.sender, uint256(fg.flashAmount) + fee0 + fee1);
     }
@@ -447,7 +475,7 @@ contract Executor {
     /// returns, so a missed settle fails closed rather than stealing.
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
         _checkCallback();
-        FlashGroup memory fg = _currentGroup(data);
+        FlashGroup memory fg = _currentGroup();
 
         IPoolManager(msg.sender).take(fg.debtAsset, address(this), fg.flashAmount);
         _core(fg, data);
@@ -461,7 +489,7 @@ contract Executor {
     /// Morpho Blue. Zero fee, pull-based.
     function onMorphoFlashLoan(uint256 assets, bytes calldata data) external {
         _checkCallback();
-        FlashGroup memory fg = _currentGroup(data);
+        FlashGroup memory fg = _currentGroup();
         if (assets != fg.flashAmount) revert FlashMismatch();
         _core(fg, data);
         fg.debtAsset.safeApprove(msg.sender, assets);
@@ -474,7 +502,7 @@ contract Executor {
     ) external returns (bytes32) {
         _checkCallback();
         if (initiator != address(this)) revert BadCallback();
-        FlashGroup memory fg = _currentGroup(data);
+        FlashGroup memory fg = _currentGroup();
         if (token != fg.debtAsset || amount != fg.flashAmount) revert FlashMismatch();
         _core(fg, data);
         token.safeApprove(msg.sender, amount + fee);

@@ -115,8 +115,8 @@ splitting; it is separate from any global haircut used for eligibility.
 repeated debt assets are unambiguous. Profit swaps still run once globally after
 every group has settled.
 
-**Executor capability:** current `Executor.sol` already supports this. `T_GROUP` /
-`T_EXPECTED_CALLER` are per-group and reset between iterations; `_initiate` is
+**Executor capability:** current `Executor.sol` already supports this. The stored
+group (`T_GROUP_*`) and `T_EXPECTED_CALLER` are per-group and rewritten each iteration; `_initiate` is
 synchronous through the provider callback. Nested multi-pool (GUIDE 07's old Step 7
 diagram) is **rejected** — do not implement it.
 

@@ -18,11 +18,17 @@ uint256 constant T_EXPECTED_CALLER = 0x00;
 uint256 constant T_ENTERED         = 0x01;
 // Non-zero while swap legs run: a Uniswap V3 swap callback is expected.
 uint256 constant T_SWAPPING        = 0x02;
-// Which flash group is executing, so a callback can find its own legs.
-uint256 constant T_GROUP           = 0x03;
+// The flash group that is borrowing, as `execute` decoded it, in three
+// words: its callback reads it here instead of decoding the plan again.
+// provider << 160 | flashSource
+uint256 constant T_GROUP_SOURCE    = 0x03;
 // Successful liquidation legs in the group currently executing, or
 // `NO_CALLBACK` if the provider returned without ever calling back.
 uint256 constant T_FILLED          = 0x04;
+// repaySwapCount << 168 | liqCount << 160 | debtAsset
+uint256 constant T_GROUP_DEBT      = 0x05;
+// repaySwapOffset << 192 | liqOffset << 128 | flashAmount
+uint256 constant T_GROUP_SPAN      = 0x06;
 
 /// What each module answers to `MODULE_ID()`. The Executor's constructor
 /// refuses an address that is not the module it is wired as.
