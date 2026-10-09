@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {Executor} from "../../src/Executor.sol";
 import {LiquidationModule} from "../../src/LiquidationModule.sol";
 import {SwapModule} from "../../src/SwapModule.sol";
+import {DexModule} from "../../src/DexModule.sol";
 import {ILiquidationModule, ISwapModule} from "../../src/lib/ExecutorShared.sol";
 import {ExecutorTestBase} from "./Base.sol";
 import {PlanBuilder as PB} from "./PlanBuilder.sol";
@@ -106,7 +107,8 @@ contract ExecutorModulesTest is ExecutorTestBase {
         address otherWeth = makeAddr("other-weth");
         LiquidationModule otherLiq = new LiquidationModule(otherWeth);
         SwapModule otherSwaps = new SwapModule(
-            otherWeth, address(routerA), address(routerB), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry)
+            otherWeth, address(routerA), address(routerB), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry),
+            address(new DexModule(otherWeth))
         );
         vm.expectRevert(abi.encodeWithSelector(Executor.BadModule.selector, address(otherLiq)));
         new Executor(operator, backrunOperator, sink, address(weth), address(factory), h, address(otherLiq), address(swapModule));
@@ -146,8 +148,12 @@ contract ExecutorModulesTest is ExecutorTestBase {
             PB.legV3(address(pool), b2, address(coll), REPAY),
             PB.legV3(address(pool), borrower, address(coll), REPAY)
         );
+        // Stage 3: the pool's own `liquidationCall` refused the healthy
+        // position, and its revert data is the reason.
         vm.expectEmit(true, true, true, true, address(ex));
-        emit Executor.LegFailed(PB.A_V3, address(pool), b2, 2, ""); // stage 2: not liquidatable
+        emit Executor.LegFailed(
+            PB.A_V3, address(pool), b2, 3, abi.encodeWithSignature("Error(string)", "pool: healthy")
+        );
         _exec(_plan(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 2, legs));
         assertEq(weth.balanceOf(sink), GROSS_WETH);
         _assertClean();

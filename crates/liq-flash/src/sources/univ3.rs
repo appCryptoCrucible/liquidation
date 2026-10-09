@@ -9,7 +9,7 @@ use alloy_sol_types::{sol, SolEvent};
 use liq_protocol::{CallbackShape, DecodedLog};
 use liq_types::{AssetId, FlashProvider, LogFilter, LogSubscriber};
 
-use super::{apply_holder_transfer, IERC20};
+use super::{apply_holder_transfer, balance_answer, balance_read, IERC20};
 use crate::{FlashSource, GAS_OVERHEAD_STUB};
 
 sol! {
@@ -32,6 +32,8 @@ pub struct UniV3Pool {
     bal0: U256,
     bal1: U256,
     overhead: u64,
+    /// Balances read from chain once (`FlashSource::seed_reads`).
+    seeded: bool,
 }
 
 impl UniV3Pool {
@@ -56,6 +58,7 @@ impl UniV3Pool {
             bal0,
             bal1,
             overhead: GAS_OVERHEAD_STUB,
+            seeded: false,
         }
     }
 
@@ -137,6 +140,28 @@ impl FlashSource for UniV3Pool {
         apply_holder_transfer(self.token0, self.pool, &mut self.bal0, log);
         apply_holder_transfer(self.token1, self.pool, &mut self.bal1, log);
     }
+
+    fn seed_reads(&self) -> Vec<crate::SeedRead> {
+        if self.seeded {
+            return Vec::new();
+        }
+        vec![
+            balance_read(self.token0, self.pool),
+            balance_read(self.token1, self.pool),
+        ]
+    }
+
+    fn apply_seed(&mut self, answers: &[Option<alloy_primitives::Bytes>]) {
+        if self.seeded {
+            return;
+        }
+        let at = |i: usize| {
+            balance_answer(answers.get(i).and_then(Option::as_ref)).unwrap_or(U256::ZERO)
+        };
+        self.bal0 = at(0);
+        self.bal1 = at(1);
+        self.seeded = true;
+    }
 }
 
 #[cfg(test)]
@@ -146,6 +171,36 @@ mod tests {
     use crate::sources::fixtures::*;
     use alloy_primitives::{Address, U256};
     use liq_types::LogSubscriber;
+
+    /// Oracle: the 5-bp USDC/WETH pool's `balanceOf` on both tokens at
+    /// block 26M. The seed reads token0 then token1 and funds exactly those.
+    #[test]
+    fn seed_reads_both_balances() {
+        let mut p = UniV3Pool::new(
+            UNIV3_USDC_WETH_500,
+            USDC,
+            WETH,
+            ID_USDC,
+            ID_WETH,
+            500,
+            U256::ZERO,
+            U256::ZERO,
+        );
+        assert_eq!(
+            p.seed_reads(),
+            vec![
+                balance_of(USDC, UNIV3_USDC_WETH_500),
+                balance_of(WETH, UNIV3_USDC_WETH_500)
+            ]
+        );
+        p.apply_seed(&[
+            uint_answer(U256::from(V3_500_USDC_26M)),
+            uint_answer(u256(V3_500_WETH_26M)),
+        ]);
+        assert_eq!(p.available(ID_USDC), U256::from(V3_500_USDC_26M));
+        assert_eq!(p.available(ID_WETH), u256(V3_500_WETH_26M));
+        assert!(p.seed_reads().is_empty());
+    }
 
     fn v3_500() -> UniV3Pool {
         UniV3Pool::new(

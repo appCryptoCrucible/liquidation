@@ -20,8 +20,8 @@ use arc_swap::ArcSwap;
 use liq_types::AssetId;
 use smallvec::SmallVec;
 
-use crate::exact::{solve_pair, GasTerms, SolveBudget};
-use crate::solver::{mul_div_512, ExitSource, Leg, PoolBook, RouteError, Q96};
+use crate::exact::{exit_rho0, solve_pair, GasTerms, SolveBudget};
+use crate::solver::{mul_div_512, Leg, PoolBook, RouteError, Q96};
 
 /// Bucket ladder length (GUIDE 12 §3: `$10k / $100k / $1M / $5M`).
 pub const BUCKETS: usize = 4;
@@ -43,6 +43,13 @@ pub trait WarmInputs {
     fn priority_fee_wei(&self) -> u128;
     /// Block the folded state corresponds to.
     fn block(&self) -> u64;
+    /// Whether the band has been asked about `coll` yet (terms exist for
+    /// some pair on it), whatever it answered. A collateral with a route in
+    /// the book that was never evaluated is `unbanded` in the table: its
+    /// exit is unknown, not absent. Default: everything was evaluated.
+    fn evaluated(&self, _coll: AssetId) -> bool {
+        true
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -89,6 +96,11 @@ pub struct RouteTable {
     /// Indexed by `AssetId.0`: largest viable bucket size for the asset
     /// over every debt pair. Zero = no exit.
     exit_cap: Vec<U256>,
+    /// Indexed by `AssetId.0`: the book routes the asset but no band has
+    /// evaluated it yet, so its exit is unknown rather than absent. The
+    /// drain sizes such a first sighting on the hot path (its band from the
+    /// live pools, the same block) instead of the engine dropping it here.
+    unbanded: Vec<bool>,
     pub block: u64,
     pub base_fee: u128,
     /// `PoolBook::generation` the table was built from.
@@ -100,6 +112,17 @@ impl RouteTable {
     #[must_use]
     pub fn entry(&self, coll: AssetId, debt: AssetId) -> Option<&RouteEntry> {
         self.pairs.get(&(coll, debt))
+    }
+
+    /// Whether `coll` has a route in the book that no band has evaluated
+    /// yet. Hot path: one indexed read.
+    #[inline]
+    #[must_use]
+    pub fn unbanded(&self, coll: AssetId) -> bool {
+        self.unbanded
+            .get(usize::from(coll.0))
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Hot path: one indexed read, no hashing, no allocation.
@@ -216,11 +239,21 @@ impl WarmBuilder {
         let mut table = RouteTable {
             pairs: HashMap::new(),
             exit_cap: Vec::new(),
+            unbanded: Vec::new(),
             block: inputs.block(),
             base_fee,
             generation: book.generation(),
         };
         for (coll, debt) in book.pairs() {
+            if inputs.bucket_sizes(coll).is_none() && !inputs.evaluated(coll) {
+                let idx = usize::from(coll.0);
+                if table.unbanded.len() <= idx {
+                    table.unbanded.resize(idx.saturating_add(1), false);
+                }
+                if let Some(u) = table.unbanded.get_mut(idx) {
+                    *u = true;
+                }
+            }
             let (Some(sizes), Some(per_eth)) = (inputs.bucket_sizes(coll), inputs.per_eth(debt))
             else {
                 tracing::debug!(
@@ -235,10 +268,6 @@ impl WarmBuilder {
                 priority_fee_wei: priority_fee,
                 out_per_eth: per_eth,
             };
-            let unwrap = match book.exit_source(coll, debt) {
-                ExitSource::Unwrap(u, _) => Some(u),
-                ExitSource::Direct(_) => None,
-            };
             let mut legs: SmallVec<[(U256, Leg); 8]> = book
                 .exit_legs(coll, debt)
                 .iter()
@@ -249,15 +278,9 @@ impl WarmBuilder {
                 })
                 .collect();
             legs.sort_by_key(|l| std::cmp::Reverse(l.0));
-            // Through an unwrap the marginal is the pools' scaled by the
-            // unwrap rate (the rate alone when it unwraps into the debt).
-            let rho0 = match (unwrap, legs.first()) {
-                (None, Some(l)) => Ok(l.0),
-                (Some(u), Some(l)) => u.scale_rho(l.0, book),
-                (Some(u), None) if u.into == debt => u.rho(book),
-                _ => continue,
-            };
-            let Ok(rho0) = rho0 else {
+            // The best zero-size marginal of the exits the solve chooses
+            // between: the pools' (scaled by an unwrap's rate), or the hub's.
+            let Some(rho0) = exit_rho0(book, coll, debt) else {
                 continue;
             };
             let rings = self

@@ -113,8 +113,11 @@ contract ExecutorEdgeFuzzTest is ExecutorTestBase {
         assertGe(afterEx + afterSink + coinbase.received(), before, "INV-08: net WETH accounting");
     }
 
+    /// Any caller but the two operator keys. `BACKRUN_OPERATOR` has the same
+    /// right as `OPERATOR` (`test_backrun_operator_executes`), so it is not a
+    /// non-operator: with it the junk plan reaches the decoder instead.
     function testFuzz_nonOperator_execute_reverts(address caller, bytes memory junk) public {
-        vm.assume(caller != operator);
+        vm.assume(caller != operator && caller != backrunOperator);
         vm.prank(caller);
         vm.expectRevert(Executor.NotOperator.selector);
         ex.execute(junk);

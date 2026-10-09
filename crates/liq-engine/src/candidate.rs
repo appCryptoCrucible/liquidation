@@ -16,7 +16,7 @@
 //! never evict a real opportunity.
 
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashMap};
 use std::time::Instant;
 
 use alloy_primitives::{Address, Bytes, TxHash, B256, U256};
@@ -159,6 +159,37 @@ pub struct CandidateQueue {
     seq: u64,
     dropped: u64,
     admitted: u64,
+    superseded: u64,
+    /// Scratch for [`Self::drain`]: the newest `seq` queued per job.
+    newest: HashMap<JobKey, u64>,
+}
+
+/// What makes two candidates for one position different jobs: the
+/// transaction a backrun follows. Every other cause liquidates on committed
+/// state, so it is the same transaction however the position was found; a
+/// predicted price is never sent and is kept apart from both.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+struct JobKey {
+    position: PositionId,
+    follows: Option<B256>,
+    predicted: bool,
+}
+
+fn job_key(c: &Candidate) -> JobKey {
+    let (follows, predicted) = match &c.cause {
+        TriggerCause::SvrAuction { hint, .. } => (Some(*hint), false),
+        TriggerCause::OraclePublic { tx } => (Some(*tx), false),
+        TriggerCause::OraclePullHeld { payload } => {
+            (Some(alloy_primitives::keccak256(payload)), false)
+        }
+        TriggerCause::OraclePredicted { .. } => (None, true),
+        _ => (None, false),
+    };
+    JobKey {
+        position: c.position,
+        follows,
+        predicted,
+    }
 }
 
 impl CandidateQueue {
@@ -179,6 +210,8 @@ impl CandidateQueue {
             seq: 0,
             dropped: 0,
             admitted: 0,
+            superseded: 0,
+            newest: HashMap::with_capacity(capacity),
         }
     }
 
@@ -215,6 +248,14 @@ impl CandidateQueue {
     #[must_use]
     pub fn admitted(&self) -> u64 {
         self.admitted
+    }
+
+    /// Candidates a drain discarded because a newer one for the same job
+    /// was queued (a position folded more than once between drains).
+    #[inline]
+    #[must_use]
+    pub fn superseded(&self) -> u64 {
+        self.superseded
     }
 
     /// Insert; when full, keep the higher-ranked of the incoming candidate
@@ -254,11 +295,28 @@ impl CandidateQueue {
         true
     }
 
-    /// Every queued candidate, highest rank first, leaving the queue empty.
-    /// Sorts in place (`into_sorted_vec`), allocates nothing, and hands the
-    /// buffer back when the iterator drops.
+    /// Every queued candidate, highest rank first, leaving the queue empty;
+    /// one per job, the newest. A position folded several times between
+    /// drains (a price load, a dirty set, the block's Hot sweep) queued a
+    /// candidate each time, and each became its own liquidation of the same
+    /// debt in one plan: the first leg repaid it and every later leg, with
+    /// its swap, had nothing to repay (block 26,098,187: four legs, a
+    /// four-fold flash, and the second swap selling collateral never
+    /// seized). Sorts in place (`into_sorted_vec`), allocates nothing past
+    /// the scratch map's capacity, and hands the buffer back when the
+    /// iterator drops.
     pub fn drain(&mut self) -> Drain<'_> {
         let sorted = std::mem::take(&mut self.heap).into_sorted_vec();
+        self.newest.clear();
+        for Reverse(r) in &sorted {
+            if let Some(Some(c)) = self.slots.get(r.slot as usize) {
+                let seq = r.age.0;
+                let e = self.newest.entry(job_key(c)).or_insert(seq);
+                if seq > *e {
+                    *e = seq;
+                }
+            }
+        }
         Drain {
             q: self,
             sorted,
@@ -285,6 +343,10 @@ impl Iterator for Drain<'_> {
             self.next = self.next.saturating_add(1);
             self.q.free.push(r.slot);
             if let Some(c) = self.q.slots.get_mut(r.slot as usize).and_then(Option::take) {
+                if self.q.newest.get(&job_key(&c)) != Some(&r.age.0) {
+                    self.q.superseded = self.q.superseded.saturating_add(1);
+                    continue;
+                }
                 return Some(c);
             }
         }
@@ -357,6 +419,61 @@ mod tests {
         TriggerCause::Stale {
             liquidatable_since: 0,
         }
+    }
+
+    /// One position folded three times between drains (stale, interest
+    /// drift, a user action) is one liquidation: the drain yields the newest
+    /// only. A backrun of a hinted transaction is a different job on the
+    /// same position and stays, as does every other position. Negative:
+    /// before, all three canonical candidates came out and were planned as
+    /// three legs repaying the same debt.
+    #[test]
+    fn a_position_folded_twice_drains_once_per_job() {
+        let svr = |hint: u8| TriggerCause::SvrAuction {
+            hint: B256::repeat_byte(hint),
+            deadline: std::time::Instant::now(),
+            forwarder: Address::ZERO,
+            call_data: Bytes::new(),
+            caller: None,
+        };
+        let mut q = CandidateQueue::with_capacity(16);
+        q.push(cand(7, 300, stale()));
+        q.push(cand(7, 100, TriggerCause::InterestDrift));
+        q.push(cand(7, 200, TriggerCause::UserAction { tx: None }));
+        q.push(cand(7, 50, svr(1)));
+        q.push(cand(7, 60, svr(2)));
+        q.push(cand(8, 10, stale()));
+        let out: Vec<Candidate> = q.drain().collect();
+        let canonical: Vec<&Candidate> = out
+            .iter()
+            .filter(|c| {
+                c.position == PositionId(7) && !matches!(c.cause, TriggerCause::SvrAuction { .. })
+            })
+            .collect();
+        assert_eq!(
+            canonical.len(),
+            1,
+            "one canonical liquidation of position 7"
+        );
+        assert!(
+            canonical
+                .first()
+                .is_some_and(|c| matches!(c.cause, TriggerCause::UserAction { .. })),
+            "the newest fold wins, not the highest value"
+        );
+        assert_eq!(
+            out.iter()
+                .filter(|c| matches!(c.cause, TriggerCause::SvrAuction { .. }))
+                .count(),
+            2,
+            "each hinted backrun is its own job"
+        );
+        assert!(out.iter().any(|c| c.position == PositionId(8)));
+        assert_eq!(out.len(), 4);
+        assert_eq!(q.superseded(), 2);
+        assert!(q.is_empty());
+        let again: Vec<Candidate> = q.drain().collect();
+        assert!(again.is_empty(), "a drained queue starts clean");
     }
 
     /// Oracle: `TriggerKind` (liq-types) is the payload-free mirror; every

@@ -132,7 +132,7 @@ hard-code solely from this table).
 | **Euler V2** | EVault `GenericFactory`: `ProxyCreated(proxy, upgradeable, implementation, trailingData)` **or** `getProxyListLength()` + `getProxyListSlice(start, end)`; per vault `asset()` / oracle views | **per-vault** |
 | **Silo V2** | Silo factory / deployer `NewSilo` (or equivalent creation) logs → `SiloConfig.getSilos()` → two ERC-4626 silos; read `asset()` per silo | **per-market (pair of silos)** |
 | **Ajna** | `ERC20PoolFactory` / `ERC721PoolFactory` `PoolCreated` logs; optional official subgraph for backfill | **per-pool** |
-| **Uniswap V3 pools** | `factory.getPool(t0, t1, fee)`, or `PoolCreated` for a sweep | per-pool contracts |
+| **Uniswap V3 pools** | `factory.getPool(t0, t1, fee)` at every fee tier for each tracked token × the hubs (hubs paired with each other too), and each market token × each flash-loanable one; then `PoolCreated` over the last 3M blocks for recent pools. A market token is one a market lends or takes as collateral (plus the Aave V3 / Spark reserves); a flash-loanable one has a balance at Morpho or the V4 PoolManager, or is an Aave V3 / Spark reserve, or DAI. `getPool` is the complete list for its pairs: the `PoolCreated` window misses every pool older than it, such as the 2021 hub pairs (`discover.py` `univ3_get_pools`) | per-pool contracts |
 
 #### Enumeration recipes (GUIDE 15 protocols that were stubs)
 

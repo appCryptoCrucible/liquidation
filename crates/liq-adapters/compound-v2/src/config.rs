@@ -24,7 +24,7 @@ use liq_types::{AssetId, MarketId, ProtocolId};
 use crate::events::views::{
     closeFactorMantissaCall, liquidationIncentiveMantissaCall, oracleCall, underlyingCall,
 };
-use crate::math::close_factor_in_pin_bounds;
+use crate::math::close_factor_usable;
 
 /// Official Compound Unitroller (intern key).
 pub const OFFICIAL_UNITROLLER: Address =
@@ -55,11 +55,17 @@ pub struct CTokenPin {
     /// 2.8e16 on the current cToken code; 0 on cTokens without the getter.
     /// Read by [`Config::assert_live_registry`]; 0 before it.
     pub protocol_seize_share: u64,
+    /// A frozen market ([`crate::layout::CTokenRow::FROZEN`]): its
+    /// `accrueInterest()` reverts. [`Config::assert_live_registry`] checks
+    /// that it still does.
+    pub frozen: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForkConfig {
     pub comptroller: Address,
+    /// Which cToken code the fork runs.
+    pub variant: ForkVariant,
     /// Admin file. Zero until [`Config::assert_live_registry`] or a TOML pin
     /// that live-assert compared. Never a shared invented pair.
     pub close_factor_mantissa: u128,
@@ -68,6 +74,23 @@ pub struct ForkConfig {
     /// Price/flash key for CEther (ETH has no ERC-20). Typically WETH.
     pub native: Address,
     pub ctokens: Vec<CTokenPin>,
+}
+
+/// The cToken accounting a fork runs.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum ForkVariant {
+    /// Compound V2 `CToken` @ `a3214f67`.
+    #[default]
+    Compound,
+    /// Rari Fuse `CToken` (implementation `0x67db14e7…`): two more fee
+    /// accumulators (`totalFuseFees`, `totalAdminFees`), accrued from each
+    /// `accrueInterest` and subtracted in the exchange rate.
+    Fuse,
+    /// Moma Lending Pool `MToken` (implementation `0x1d0fcc81…`): the same
+    /// shape as Fuse with `totalFees` and `totalMomaFees`; the Comptroller
+    /// is the pool's `momaMaster()`, and the liquidator receives the whole
+    /// seize (no protocol share).
+    Moma,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -139,6 +162,8 @@ pub enum ConfigError {
     CetherHasUnderlying(Address),
     #[error("cToken {0} protocolSeizeShareMantissa() is above 1e18")]
     SeizeShareBounds(Address),
+    #[error("cToken {0} is pinned frozen but its accrueInterest() succeeds")]
+    FrozenMarketAccrues(Address),
     #[error("failed to load {0}")]
     Load(&'static str),
     #[error("protocol toml is malformed")]
@@ -172,12 +197,8 @@ impl Config {
                 return Err(ConfigError::DuplicateAddress(f.comptroller));
             }
             addrs.push(f.comptroller);
-            if f.oracle != Address::ZERO {
-                if addrs.contains(&f.oracle) {
-                    return Err(ConfigError::DuplicateAddress(f.oracle));
-                }
-                addrs.push(f.oracle);
-            }
+            // Oracles are not unique per fork: Rari's Fuse pools share one
+            // master price oracle.
             for c in &f.ctokens {
                 if c.ctoken == Address::ZERO {
                     return Err(ConfigError::ZeroComptroller(c.ctoken));
@@ -188,7 +209,7 @@ impl Config {
                 addrs.push(c.ctoken);
             }
             if f.close_factor_mantissa != 0
-                && !close_factor_in_pin_bounds(U256::from(f.close_factor_mantissa))
+                && !close_factor_usable(U256::from(f.close_factor_mantissa))
             {
                 return Err(ConfigError::CloseFactorBounds);
             }
@@ -314,82 +335,28 @@ impl Config {
     ) -> core::result::Result<(), ConfigError> {
         self.live_registry_asserted = false;
         self.validate()?;
-        for f in &mut self.forks {
-            let to = f.comptroller;
-            let cf = call_u256(
-                provider,
-                to,
-                block,
-                &closeFactorMantissaCall {}.abi_encode(),
-            )?;
-            let li = call_u256(
-                provider,
-                to,
-                block,
-                &liquidationIncentiveMantissaCall {}.abi_encode(),
-            )?;
-            let oracle = call_addr(provider, to, block, &oracleCall {}.abi_encode())?;
-            if f.close_factor_mantissa == 0 {
-                let n = u128::try_from(cf).map_err(|_| ConfigError::RegistryCall(to))?;
-                f.close_factor_mantissa = n;
-            } else if U256::from(f.close_factor_mantissa) != cf {
-                return Err(ConfigError::RegistryMismatch {
-                    comptroller: to,
-                    field: "closeFactorMantissa",
-                    expected: U256::from(f.close_factor_mantissa),
-                    found: cf,
-                });
-            }
-            if f.liquidation_incentive_mantissa == 0 {
-                let n = u128::try_from(li).map_err(|_| ConfigError::RegistryCall(to))?;
-                f.liquidation_incentive_mantissa = n;
-            } else if U256::from(f.liquidation_incentive_mantissa) != li {
-                return Err(ConfigError::RegistryMismatch {
-                    comptroller: to,
-                    field: "liquidationIncentiveMantissa",
-                    expected: U256::from(f.liquidation_incentive_mantissa),
-                    found: li,
-                });
-            }
-            if f.oracle == Address::ZERO {
-                f.oracle = oracle;
-            } else if f.oracle != oracle {
-                return Err(ConfigError::RegistryMismatch {
-                    comptroller: to,
-                    field: "oracle",
-                    expected: addr_u256(f.oracle),
-                    found: addr_u256(oracle),
-                });
-            }
-            if !close_factor_in_pin_bounds(U256::from(f.close_factor_mantissa)) {
-                return Err(ConfigError::CloseFactorBounds);
-            }
-            if f.liquidation_incentive_mantissa == 0 {
-                return Err(ConfigError::ZeroIncentive);
-            }
-            for c in &mut f.ctokens {
-                c.protocol_seize_share = seize_share(provider, c.ctoken, block)?;
-                if c.underlying == Address::ZERO {
-                    match provider.eth_call(c.ctoken, &underlyingCall {}.abi_encode(), block) {
-                        Ok(raw) if raw.len() >= 32 => {
-                            let found = addr_from_word(&raw)?;
-                            if found != Address::ZERO {
-                                return Err(ConfigError::CetherHasUnderlying(c.ctoken));
-                            }
-                        }
-                        Ok(_) | Err(_) => {}
-                    }
-                } else {
-                    let raw = provider
-                        .eth_call(c.ctoken, &underlyingCall {}.abi_encode(), block)
-                        .map_err(|_| ConfigError::RegistryCall(c.ctoken))?;
-                    let found = addr_from_word(&raw)?;
-                    if found != c.underlying {
-                        return Err(ConfigError::UnderlyingMismatch(c.ctoken));
-                    }
+        // Per fork: a fork whose live facts fail (a close factor outside the
+        // pin's bounds, a moved oracle, an RPC error) is left out and logged;
+        // every other fork binds. One fork never takes the family down.
+        let mut kept = Vec::with_capacity(self.forks.len());
+        let mut last = None;
+        for mut f in core::mem::take(&mut self.forks) {
+            match assert_fork(&mut f, provider, block) {
+                Ok(()) => kept.push(f),
+                Err(e) => {
+                    tracing::error!(
+                        comptroller = %f.comptroller,
+                        error = %e,
+                        "compound fork failed its live check: this fork is not bound, the others are"
+                    );
+                    last = Some(e);
                 }
             }
         }
+        if kept.is_empty() {
+            return Err(last.unwrap_or(ConfigError::MalformedToml));
+        }
+        self.forks = kept;
         self.live_registry_asserted = true;
         Ok(())
     }
@@ -478,10 +445,17 @@ impl Config {
                         Some(u) => parse_addr(u)?,
                     },
                     protocol_seize_share: 0,
+                    frozen: c.frozen.unwrap_or(false),
                 });
             }
             forks.push(ForkConfig {
                 comptroller: parse_addr(&fork.comptroller)?,
+                variant: match fork.variant.as_deref() {
+                    None | Some("compound") => ForkVariant::Compound,
+                    Some("fuse") => ForkVariant::Fuse,
+                    Some("moma") => ForkVariant::Moma,
+                    Some(_) => return Err(ConfigError::MalformedToml),
+                },
                 close_factor_mantissa: parse_u128_opt(fork.close_factor_mantissa.as_deref())?,
                 liquidation_incentive_mantissa: parse_u128_opt(
                     fork.liquidation_incentive_mantissa.as_deref(),
@@ -602,6 +576,8 @@ struct TomlFile {
 #[derive(serde::Deserialize)]
 struct TomlFork {
     comptroller: String,
+    /// `"compound"` (default), `"fuse"` or `"moma"`.
+    variant: Option<String>,
     close_factor_mantissa: Option<String>,
     liquidation_incentive_mantissa: Option<String>,
     oracle: Option<String>,
@@ -614,6 +590,129 @@ struct TomlFork {
 struct TomlCToken {
     address: String,
     underlying: Option<String>,
+    frozen: Option<bool>,
+}
+
+/// [`Config::assert_live_registry`] for one fork: its Comptroller's live
+/// close factor, incentive and oracle (filled where the TOML left them
+/// zero, compared where it pinned them), and each pinned cToken's seize
+/// share and underlying.
+fn assert_fork<R: RegistryRpc>(
+    f: &mut ForkConfig,
+    provider: &R,
+    block: BlockNum,
+) -> core::result::Result<(), ConfigError> {
+    let to = f.comptroller;
+    let cf = call_u256(
+        provider,
+        to,
+        block,
+        &closeFactorMantissaCall {}.abi_encode(),
+    )?;
+    let li = call_u256(
+        provider,
+        to,
+        block,
+        &liquidationIncentiveMantissaCall {}.abi_encode(),
+    )?;
+    let oracle = call_addr(provider, to, block, &oracleCall {}.abi_encode())?;
+    if f.close_factor_mantissa == 0 {
+        let n = u128::try_from(cf).map_err(|_| ConfigError::RegistryCall(to))?;
+        f.close_factor_mantissa = n;
+    } else if U256::from(f.close_factor_mantissa) != cf {
+        return Err(ConfigError::RegistryMismatch {
+            comptroller: to,
+            field: "closeFactorMantissa",
+            expected: U256::from(f.close_factor_mantissa),
+            found: cf,
+        });
+    }
+    if f.liquidation_incentive_mantissa == 0 {
+        let n = u128::try_from(li).map_err(|_| ConfigError::RegistryCall(to))?;
+        f.liquidation_incentive_mantissa = n;
+    } else if U256::from(f.liquidation_incentive_mantissa) != li {
+        return Err(ConfigError::RegistryMismatch {
+            comptroller: to,
+            field: "liquidationIncentiveMantissa",
+            expected: U256::from(f.liquidation_incentive_mantissa),
+            found: li,
+        });
+    }
+    if f.oracle == Address::ZERO {
+        f.oracle = oracle;
+    } else if f.oracle != oracle {
+        return Err(ConfigError::RegistryMismatch {
+            comptroller: to,
+            field: "oracle",
+            expected: addr_u256(f.oracle),
+            found: addr_u256(oracle),
+        });
+    }
+    if !close_factor_usable(U256::from(f.close_factor_mantissa)) {
+        return Err(ConfigError::CloseFactorBounds);
+    }
+    if f.liquidation_incentive_mantissa == 0 {
+        return Err(ConfigError::ZeroIncentive);
+    }
+    // Per cToken: one whose live facts fail (not deployed at `block`, a
+    // moved underlying) is left out and logged; the fork keeps the rest.
+    let comptroller = f.comptroller;
+    f.ctokens.retain_mut(|c| match assert_ctoken(c, provider, block) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::error!(
+                %comptroller,
+                ctoken = %c.ctoken,
+                error = %e,
+                "compound cToken failed its live check: this cToken is not pinned, the fork's others are"
+            );
+            false
+        }
+    });
+    Ok(())
+}
+
+/// One pinned cToken's seize share and underlying, read live.
+fn assert_ctoken<R: RegistryRpc>(
+    c: &mut CTokenPin,
+    provider: &R,
+    block: BlockNum,
+) -> core::result::Result<(), ConfigError> {
+    {
+        c.protocol_seize_share = seize_share(provider, c.ctoken, block)?;
+        // A frozen pin holds only while the market cannot accrue.
+        if c.frozen
+            && provider
+                .eth_call(
+                    c.ctoken,
+                    &crate::events::views::accrueInterestCall {}.abi_encode(),
+                    block,
+                )
+                .is_ok()
+        {
+            return Err(ConfigError::FrozenMarketAccrues(c.ctoken));
+        }
+        if c.underlying == Address::ZERO {
+            match provider.eth_call(c.ctoken, &underlyingCall {}.abi_encode(), block) {
+                Ok(raw) if raw.len() >= 32 => {
+                    let found = addr_from_word(&raw)?;
+                    if found != Address::ZERO {
+                        return Err(ConfigError::CetherHasUnderlying(c.ctoken));
+                    }
+                }
+                Ok(_) | Err(_) => {}
+            }
+        } else {
+            let raw = provider
+                .eth_call(c.ctoken, &underlyingCall {}.abi_encode(), block)
+                .map_err(|_| ConfigError::RegistryCall(c.ctoken))?;
+            let found = addr_from_word(&raw)?;
+            if found != c.underlying {
+                return Err(ConfigError::UnderlyingMismatch(c.ctoken));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `protocolSeizeShareMantissa()`. A cToken built before the getter existed

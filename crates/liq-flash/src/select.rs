@@ -35,14 +35,14 @@ pub struct CostModel {
     /// a measurement made here.** Tuning signal: the provider's
     /// `InsufficientLiquidity` simulation-failure rate (GUIDE 11) times
     /// the revert's gas. Starts at `0` for every provider.
-    pub failure_premium_gas: [u64; 5],
+    pub failure_premium_gas: [u64; 7],
 }
 
 impl CostModel {
     /// Fee-only ranking: zero gas price, zero premiums.
     pub const FEE_ONLY: Self = Self {
         gas_price_in_debt: U256::ZERO,
-        failure_premium_gas: [0; 5],
+        failure_premium_gas: [0; 7],
     };
 
     #[inline]
@@ -82,9 +82,13 @@ pub fn fee_amount(provider: FlashProvider, amount: U256, fee_bps: u16) -> Option
         // `toll · amount / WAD`, floor. 07A rounded `fee_bps` up from `toll`,
         // so this bounds the contract's fee from above.
         FlashProvider::SkyDss => mul_div(amount, bps, BPS, Rounding::Down).ok(),
-        // Fee-free by construction (GUIDE 07 §3).
-        // Fee-free by construction (GUIDE 07 §3); nothing borrowed at all.
-        FlashProvider::UniV4 | FlashProvider::Morpho | FlashProvider::None => None,
+        // Fee-free by construction (GUIDE 07 §3); nothing borrowed at all
+        // (`None`); the flash swap's cost is the pool's swap fee, which the
+        // exit quote carries already (`UniV3Swap`).
+        FlashProvider::UniV4
+        | FlashProvider::Morpho
+        | FlashProvider::None
+        | FlashProvider::UniV3Swap => None,
     }
 }
 
@@ -294,11 +298,13 @@ mod tests {
             FlashProvider::UniV4,
             FlashProvider::Morpho,
             FlashProvider::SkyDss,
+            FlashProvider::UniV3Swap,
         ] {
             assert_eq!(fee_amount(p, U256::MAX, 0), Some(U256::ZERO));
         }
         assert_eq!(fee_amount(FlashProvider::UniV4, usdc(1), 1), None);
         assert_eq!(fee_amount(FlashProvider::Morpho, usdc(1), 1), None);
+        assert_eq!(fee_amount(FlashProvider::UniV3Swap, usdc(1), 1), None);
         // DSS: floor(amount · bps / 1e4); 1e18 at 1 bp = 1e14.
         assert_eq!(
             fee_amount(

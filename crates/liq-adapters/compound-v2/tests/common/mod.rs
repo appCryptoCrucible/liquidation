@@ -81,6 +81,7 @@ impl Deploy {
         Config {
             protocol: PROTOCOL,
             forks: vec![ForkConfig {
+                variant: Default::default(),
                 comptroller: self.comptroller,
                 close_factor_mantissa: CLOSE_FACTOR,
                 liquidation_incentive_mantissa: INCENTIVE,
@@ -91,11 +92,13 @@ impl Deploy {
                         ctoken: self.ceth,
                         underlying: Address::ZERO,
                         protocol_seize_share: 0,
+                        frozen: false,
                     },
                     CTokenPin {
                         ctoken: self.cusdc,
                         underlying: self.usdc,
                         protocol_seize_share: 0,
+                        frozen: false,
                     },
                 ],
             }],
@@ -154,6 +157,14 @@ fn word_addr(a: Address) -> Bytes {
     let mut b = [0u8; 32];
     b[12..32].copy_from_slice(a.as_slice());
     Bytes::copy_from_slice(&b)
+}
+
+impl PinRpc {
+    /// Answer `sel` on `to` with `ret`.
+    #[allow(dead_code)]
+    pub fn push(&mut self, to: Address, sel: [u8; 4], ret: Bytes) {
+        self.rows.push((to, sel, ret));
+    }
 }
 
 pub fn pin_rpc_from_cfg(cfg: &Config) -> PinRpc {

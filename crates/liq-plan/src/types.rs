@@ -17,6 +17,11 @@ pub const FLAG_GOV_SPELL: u8 = liq_wire::wire::FLAG_GOV_SPELL;
 pub const LEG_TAKE_BALANCE: u8 = liq_wire::wire::LEG_TAKE_BALANCE;
 /// Swap-leg flag bit 1 — `amount` is an exact output.
 pub const LEG_EXACT_OUT: u8 = liq_wire::wire::LEG_EXACT_OUT;
+/// Swap-leg flags bits 2–7 — the liquidation leg a repay swap is tied to
+/// ([`liq_wire::wire::leg_tie`]).
+pub const LEG_TIE_SHIFT: u8 = liq_wire::wire::LEG_TIE_SHIFT;
+pub const LEG_TIE_MAX: usize = liq_wire::wire::LEG_TIE_MAX;
+pub use liq_wire::wire::{leg_tie, tie_flags};
 pub const VENUE_UNIV3_POOL: u8 = liq_wire::wire::VENUE_UNIV3_POOL;
 pub const VENUE_ROUTER: u8 = liq_wire::wire::VENUE_ROUTER;
 pub const VENUE_UNIV2_POOL: u8 = liq_wire::wire::VENUE_UNIV2_POOL;
@@ -26,6 +31,24 @@ pub const VENUE_UNWRAP_4626: u8 = liq_wire::wire::VENUE_UNWRAP_4626;
 pub const VENUE_PENDLE_PT_REDEEM: u8 = liq_wire::wire::VENUE_PENDLE_PT_REDEEM;
 pub const VENUE_CURVE_LP_ONE_COIN: u8 = liq_wire::wire::VENUE_CURVE_LP_ONE_COIN;
 pub const VENUE_PENDLE_MARKET_SELL: u8 = liq_wire::wire::VENUE_PENDLE_MARKET_SELL;
+pub const VENUE_UNIV4_POOL: u8 = liq_wire::wire::VENUE_UNIV4_POOL;
+pub const V4_KEY_LEN: usize = liq_wire::wire::V4_KEY_LEN;
+pub const VENUE_CHAIN: u8 = liq_wire::wire::VENUE_CHAIN;
+pub const VENUE_BALANCER: u8 = liq_wire::wire::VENUE_BALANCER;
+pub const VENUE_FLUID: u8 = liq_wire::wire::VENUE_FLUID;
+pub const BALANCER_POOL_ID_LEN: usize = liq_wire::wire::BALANCER_POOL_ID_LEN;
+pub const FLUID_LEG_LEN: usize = liq_wire::wire::FLUID_LEG_LEN;
+pub const CHAIN_HOP_BALANCER: u8 = liq_wire::wire::CHAIN_HOP_BALANCER;
+pub const CHAIN_HOP_FLUID: u8 = liq_wire::wire::CHAIN_HOP_FLUID;
+pub const CHAIN_HOP_V3: u8 = liq_wire::wire::CHAIN_HOP_V3;
+pub const CHAIN_HOP_V2: u8 = liq_wire::wire::CHAIN_HOP_V2;
+pub const CHAIN_HOP_V4: u8 = liq_wire::wire::CHAIN_HOP_V4;
+pub const CHAIN_HOP_V3_SUSHI: u8 = liq_wire::wire::CHAIN_HOP_V3_SUSHI;
+pub const CHAIN_HOP_V3_PANCAKE: u8 = liq_wire::wire::CHAIN_HOP_V3_PANCAKE;
+pub const CHAIN_HOP_CURVE: u8 = liq_wire::wire::CHAIN_HOP_CURVE;
+pub const CHAIN_HOP_CURVE_CRYPTO: u8 = liq_wire::wire::CHAIN_HOP_CURVE_CRYPTO;
+pub const CHAIN_CURVE_EXTRA: usize = liq_wire::wire::CHAIN_CURVE_EXTRA;
+pub const CHAIN_MAX_HOPS: usize = liq_wire::wire::CHAIN_MAX_HOPS;
 
 /// An unwrap venue converts a wrapper into what it wraps, not into the
 /// group's debt asset.
@@ -39,6 +62,9 @@ pub const fn is_unwrap_venue(v: u8) -> bool {
 /// V2 pair factory ids carried in a `VENUE_UNIV2_POOL` leg's data.
 pub const V2_FACTORY_UNISWAP: u8 = liq_wire::wire::V2_FACTORY_UNISWAP;
 pub const V2_FACTORY_SUSHI: u8 = liq_wire::wire::V2_FACTORY_SUSHI;
+pub const V3_FACTORY_UNISWAP: u8 = liq_wire::wire::V3_FACTORY_UNISWAP;
+pub const V3_FACTORY_SUSHI: u8 = liq_wire::wire::V3_FACTORY_SUSHI;
+pub const V3_FACTORY_PANCAKE: u8 = liq_wire::wire::V3_FACTORY_PANCAKE;
 
 pub const HEADER_LEN: usize = liq_wire::wire::HEADER_LEN;
 pub const GROUP_HEAD_LEN: usize = liq_wire::wire::GROUP_HEAD_LEN;
@@ -90,7 +116,8 @@ pub struct FlashGroup {
 ///
 /// `protocol_pull` is not on the wire. It is the amount the protocol will
 /// actually take (V3 close-factor / V4 target-HF clamp / Morpho share
-/// rounding). The repay swap must buy it back plus the flash premium.
+/// rounding). The repay swaps tied to the leg buy it back; the Executor
+/// adds the flash premium to the group's first exact-output pool leg.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LiqLeg {
     pub adapter: ExecutorAdapter,

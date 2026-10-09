@@ -13,20 +13,23 @@
 //!
 //! D08/D09: the fifth arena is Sky DSS, not a vault flash-loan callback.
 
-use alloy_primitives::{b256, Address, B256, U256};
-use alloy_sol_types::{sol, SolEvent};
+use alloy_primitives::{b256, Address, Bytes, B256, U256};
+use alloy_sol_types::{sol, SolCall, SolEvent};
 use liq_protocol::{CallbackShape, DecodedLog};
 use liq_types::fixed::{mul_div, Rounding, WAD};
 use liq_types::{AssetId, FlashProvider, LogFilter, LogSubscriber};
 
-use crate::{FlashSource, GAS_OVERHEAD_STUB};
+use crate::{FlashSource, SeedRead, GAS_OVERHEAD_STUB};
 
 sol! {
     interface IDssFlash {
         event File(bytes32 indexed what, uint256 data);
+        function max() external view returns (uint256);
+        function toll() external view returns (uint256);
     }
     interface IEnd {
         event Cage();
+        function live() external view returns (uint256);
     }
 }
 
@@ -45,6 +48,9 @@ pub struct SkyDssFlash {
     toll: U256,
     live: bool,
     overhead: u64,
+    /// `max`, `toll` and `live` read from chain once
+    /// (`FlashSource::seed_reads`).
+    seeded: bool,
 }
 
 impl SkyDssFlash {
@@ -65,6 +71,7 @@ impl SkyDssFlash {
             toll,
             live,
             overhead: GAS_OVERHEAD_STUB,
+            seeded: false,
         }
     }
 
@@ -162,15 +169,105 @@ impl FlashSource for SkyDssFlash {
             self.toll = ev.data;
         }
     }
+
+    /// `max()` and `toll()` on the module, `live()` on `End`.
+    fn seed_reads(&self) -> Vec<SeedRead> {
+        if self.seeded {
+            return Vec::new();
+        }
+        vec![
+            SeedRead {
+                to: self.flash,
+                data: IDssFlash::maxCall {}.abi_encode().into(),
+            },
+            SeedRead {
+                to: self.flash,
+                data: IDssFlash::tollCall {}.abi_encode().into(),
+            },
+            SeedRead {
+                to: self.end,
+                data: IEnd::liveCall {}.abi_encode().into(),
+            },
+        ]
+    }
+
+    /// An unread `max` or `live` leaves the module unfunded. `toll()`
+    /// reverts on the current deployment, which charges nothing, so an
+    /// unread toll stays as it was.
+    fn apply_seed(&mut self, answers: &[Option<Bytes>]) {
+        if self.seeded {
+            return;
+        }
+        let answer = |i: usize| answers.get(i).and_then(Option::as_ref);
+        self.max = answer(0)
+            .and_then(|a| IDssFlash::maxCall::abi_decode_returns(a).ok())
+            .unwrap_or(U256::ZERO);
+        if let Some(toll) = answer(1).and_then(|a| IDssFlash::tollCall::abi_decode_returns(a).ok())
+        {
+            self.toll = toll;
+        }
+        self.live = answer(2)
+            .and_then(|a| IEnd::liveCall::abi_decode_returns(a).ok())
+            .is_some_and(|v| v == U256::from(1u8));
+        self.seeded = true;
+    }
 }
 
 #[cfg(test)]
-#[allow(clippy::arithmetic_side_effects, clippy::unwrap_used, clippy::panic)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::panic
+)]
 mod tests {
     use super::*;
     use crate::sources::fixtures::*;
     use alloy_primitives::U256;
     use liq_types::LogSubscriber;
+
+    /// Oracle: block 26M. `DssFlash.max()` = 500M DAI, `toll()` reverts
+    /// (the module charges nothing), `End.live()` = 1. The seeded module
+    /// lends `max` DAI at no fee; a caged `End` or an unread `max` lends
+    /// nothing.
+    #[test]
+    fn seed_reads_max_toll_and_live() {
+        let mut s = SkyDssFlash::new(DSS_FLASH, END, ID_DAI, U256::ZERO, U256::ZERO, false);
+        assert_eq!(s.available(ID_DAI), U256::ZERO);
+        let reads = s.seed_reads();
+        let to: Vec<Address> = reads.iter().map(|r| r.to).collect();
+        assert_eq!(to, vec![DSS_FLASH, DSS_FLASH, END]);
+        assert_eq!(&reads[0].data[..], &[0x6a, 0xc5, 0xdb, 0x19], "max()");
+        assert_eq!(&reads[1].data[..], &[0x28, 0x5a, 0xaa, 0x20], "toll()");
+        assert_eq!(&reads[2].data[..], &[0x95, 0x7a, 0xa5, 0x8c], "live()");
+        s.apply_seed(&[
+            uint_answer(u256(DSS_MAX_26M)),
+            None,
+            uint_answer(U256::from(1u8)),
+        ]);
+        assert_eq!(s.available(ID_DAI), u256(DSS_MAX_26M));
+        assert_eq!(s.fee_bps(ID_DAI, U256::from(1u8)), 0);
+        assert!(s.seed_reads().is_empty());
+
+        let mut caged = SkyDssFlash::new(DSS_FLASH, END, ID_DAI, U256::ZERO, U256::ZERO, false);
+        caged.apply_seed(&[
+            uint_answer(u256(DSS_MAX_26M)),
+            None,
+            uint_answer(U256::ZERO),
+        ]);
+        assert_eq!(
+            caged.available(ID_DAI),
+            U256::ZERO,
+            "End caged: Vat is not live"
+        );
+        let mut unread = SkyDssFlash::new(DSS_FLASH, END, ID_DAI, U256::ZERO, U256::ZERO, false);
+        unread.apply_seed(&[None, None, uint_answer(U256::from(1u8))]);
+        assert_eq!(
+            unread.available(ID_DAI),
+            U256::ZERO,
+            "no max read: nothing lent"
+        );
+    }
 
     fn dss() -> SkyDssFlash {
         SkyDssFlash::new(DSS_FLASH, END, ID_DAI, u256(DSS_MAX_26M), U256::ZERO, true)

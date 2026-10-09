@@ -8,7 +8,8 @@
 use bytemuck::{Pod, Zeroable};
 
 /// Per-silo row body: storage totals + immutable solvency params from
-/// `ISiloConfig.getConfig`. 208 bytes (13 × 16).
+/// `ISiloConfig.getConfig`, and the interest growth the state reads
+/// measure. 240 bytes (15 × 16), the body's whole width.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
 pub struct SiloRow {
@@ -18,14 +19,31 @@ pub struct SiloRow {
     pub total_collateral_shares: u128,
     pub total_protected_shares: u128,
     pub total_debt_shares: u128,
-    pub lt: u128,
-    pub liquidation_fee: u128,
-    pub liquidation_target_ltv: u128,
+    /// Growth of `total_debt_assets` per second from accrued interest,
+    /// relative to it, in RAY (`1e27` = the whole total each second), as of
+    /// `MarketRow::last_update`: measured by the state reads from
+    /// `base_debt` (see `apply_totals`). Valid with
+    /// [`SiloRow::GROWTH_KNOWN`]. Collateral grows by the same interest net
+    /// of `interest_fee`, as Silo accrues it.
+    pub debt_rate_ray: u128,
+    /// The with-interest debt the next rate is measured from, at `base_at`.
+    pub base_debt: u128,
+    /// WAD (`<= 1e18`), from `getConfig`.
+    pub lt: u64,
+    pub liquidation_fee: u64,
+    pub liquidation_target_ltv: u64,
+    /// `daoFee + deployerFee` (WAD): the share of accrued interest that is
+    /// not the depositors'.
+    pub interest_fee: u64,
+    /// `utilizationData().interestRateTimestamp` at the last read: an
+    /// unchanged one at the next read means only interest moved the totals.
+    pub accrued_at: u64,
+    pub base_at: u32,
     pub hook: [u8; 20],
     pub silo: [u8; 20],
     pub config: [u8; 20],
     pub flags: u8,
-    pub _pad: [u8; 3],
+    pub _pad: [u8; 7],
 }
 
 impl SiloRow {
@@ -33,6 +51,15 @@ impl SiloRow {
     pub const VIEWED: u8 = 1 << 0;
     /// Solvency oracle is the address the config pins.
     pub const PRICED: u8 = 1 << 1;
+    /// A halt-class log came from this pair after the pin: the pair refuses
+    /// liquidation (`MarketFlags::PAUSED`) until the config is re-pinned.
+    pub const HALTED: u8 = 1 << 2;
+    /// `debt_rate_ray` comes from a state read: totals project from
+    /// `MarketRow::last_update` at it.
+    pub const GROWTH_KNOWN: u8 = 1 << 3;
+    /// A state read wrote the totals, `accrued_at` and the base: the next
+    /// read can measure the growth since.
+    pub const READ_BASE: u8 = 1 << 4;
 }
 
 /// Per-position extra: protected shares on each silo + which silo backs debt
@@ -75,7 +102,7 @@ pub const SLOT1: u16 = 1;
 pub const PAIR_SLOTS: u16 = 2;
 
 const _: () = {
-    assert!(core::mem::size_of::<SiloRow>() == 208);
+    assert!(core::mem::size_of::<SiloRow>() == 240);
     assert!(core::mem::align_of::<SiloRow>() == 16);
     assert!(core::mem::size_of::<UserExtra>() == 48);
     assert!(core::mem::size_of::<UserExtra>() <= 64);

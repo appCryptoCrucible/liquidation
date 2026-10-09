@@ -8,6 +8,7 @@ use liq_protocol::{
 };
 use liq_types::{AssetId, PriceVector, Wad};
 
+use crate::apply::accrue;
 use crate::layout::{SiloRow, UserExtra, SLOT0, SLOT1};
 use crate::math::{convert_to_assets, hf_ray, is_solvent, value_from_price, value_wad};
 
@@ -60,6 +61,19 @@ fn row_at<'a>(pos: PositionRef<'a>, slot: u16) -> Result<&'a MarketRow> {
             market: pos.key.market,
             slot,
         }))
+}
+
+/// One silo row's `(total_debt_assets, total_collateral_assets)` grown to
+/// `ts` at its read interest rates: what health converts shares with.
+pub fn totals_at(row: &MarketRow, ts: u64) -> Result<(u128, u128)> {
+    let mut b = *row.body::<SiloRow>()?;
+    accrue(&mut b, elapsed(row, ts))?;
+    Ok((b.total_debt_assets, b.total_collateral_assets))
+}
+
+/// Seconds from `row`'s last write to `ts` (zero when `ts` is not later).
+fn elapsed(row: &MarketRow, ts: u64) -> u64 {
+    ts.saturating_sub(u64::from(row.last_update))
 }
 
 fn viewed(row: &MarketRow) -> Result<&SiloRow> {
@@ -124,12 +138,18 @@ fn fill_terms<'a>(
     let debt_shares = U256::from(cell(pos.debt, debt_slot));
     let coll_shares = U256::from(cell(pos.supply, coll_slot));
     let prot_shares = U256::from(extra.protected(coll_slot));
+    // Both totals grown to the view's instant at the read interest rates,
+    // as `isSolvent` accrues them in memory.
+    let mut debt_grown = *debt_body;
+    accrue(&mut debt_grown, elapsed(debt_row, pos.timestamp))?;
+    let mut coll_grown = *coll_body;
+    accrue(&mut coll_grown, elapsed(coll_row, pos.timestamp))?;
     let debt_assets = if debt_shares.is_zero() {
         U256::ZERO
     } else {
         convert_to_assets(
             debt_shares,
-            U256::from(debt_body.total_debt_assets),
+            U256::from(debt_grown.total_debt_assets),
             U256::from(debt_body.total_debt_shares),
             true,
             true,
@@ -137,7 +157,7 @@ fn fill_terms<'a>(
     };
     let coll_assets = convert_to_assets(
         coll_shares,
-        U256::from(coll_body.total_collateral_assets),
+        U256::from(coll_grown.total_collateral_assets),
         U256::from(coll_body.total_collateral_shares),
         false,
         false,

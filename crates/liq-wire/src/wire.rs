@@ -38,6 +38,31 @@ pub const SPELL_LEN: usize = 20;
 pub const LEG_TAKE_BALANCE: u8 = 1 << 0;
 /// Swap-leg flag bit 1 — `amount` is an exact output.
 pub const LEG_EXACT_OUT: u8 = 1 << 1;
+/// Swap-leg flags bits 2–7 — `SwapModule.L_TIE_SHIFT`: the liquidation leg
+/// a repay swap serves, as its index in the group plus one (0: untied). The
+/// Executor skips a tied swap whose leg did not fill.
+pub const LEG_TIE_SHIFT: u8 = 2;
+/// Legs a tie can name: six bits, zero meaning untied.
+pub const LEG_TIE_MAX: usize = 63;
+
+/// The liquidation leg (index in its group) a swap leg's `flags` tie it
+/// to, or `None` when untied.
+#[must_use]
+pub const fn leg_tie(flags: u8) -> Option<usize> {
+    ((flags >> LEG_TIE_SHIFT) as usize).checked_sub(1)
+}
+
+/// `flags` tied to leg `leg` of its group, replacing any tie they held.
+/// `None` past [`LEG_TIE_MAX`] legs.
+#[must_use]
+pub fn tie_flags(flags: u8, leg: usize) -> Option<u8> {
+    if leg >= LEG_TIE_MAX {
+        return None;
+    }
+    let low = flags & ((1 << LEG_TIE_SHIFT) - 1);
+    let tie = u8::try_from(leg.checked_add(1)?).ok()?;
+    Some(low | (tie << LEG_TIE_SHIFT))
+}
 /// Swap venue 0 — Uniswap V3 pool-direct (`data` = 20-byte pool).
 pub const VENUE_UNIV3_POOL: u8 = 0;
 /// Swap venue 1 — allowlisted router (`data` = 20-byte target + calldata).
@@ -47,13 +72,15 @@ pub const VENUE_ROUTER: u8 = 1;
 /// verifies the pair by CREATE2 against that factory.
 pub const VENUE_UNIV2_POOL: u8 = 2;
 /// Swap venue 3 — pool-direct Curve StableSwap plain pool (`data` = 20-byte
-/// pool ‖ 1-byte i ‖ 1-byte j). Exact input only; the Executor verifies the
-/// pool in Curve's MetaRegistry and the coin indices.
+/// pool ‖ 1-byte i ‖ 1-byte j ‖ 1-byte MetaRegistry handler index). Exact
+/// input only; the Executor verifies the pool with the MetaRegistry handler
+/// at that index (`get_registry(h)`, then its `is_registered(pool)`) and the
+/// coin indices.
 pub const VENUE_CURVE_POOL: u8 = 3;
 /// Swap venue 4 — pool-direct Curve crypto pool (twocrypto-ng, tricrypto-ng,
-/// the original `CurveCryptoSwap2`) (`data` = 20-byte pool ‖ 1-byte i ‖
-/// 1-byte j), `exchange(uint256,uint256,uint256,uint256)`. Exact input only;
-/// verified like venue 3.
+/// the original `CurveCryptoSwap2`) (`data` as venue 3),
+/// `exchange(uint256,uint256,uint256,uint256)`. Exact input only; verified
+/// like venue 3.
 pub const VENUE_CURVE_CRYPTO_POOL: u8 = 4;
 /// Swap venue 5 — unwrap: redeem ERC-4626 shares (`tokenIn` is the vault)
 /// for its `asset()` (`tokenOut`) (`data` = 20-byte vault). Exact input.
@@ -66,15 +93,76 @@ pub const VENUE_UNWRAP_4626: u8 = 5;
 pub const VENUE_PENDLE_PT_REDEEM: u8 = 6;
 /// Swap venue 7 — unwrap: withdraw a Curve StableSwap-NG LP (`tokenIn`, the
 /// pool itself) as one coin, `remove_liquidity_one_coin(amount, i, 0)`
-/// (`data` = 20-byte pool ‖ 1-byte `i`). Exact input. Placed like venue 5.
+/// (`data` = 20-byte pool ‖ 1-byte `i` ‖ 1-byte MetaRegistry handler
+/// index, verified as venue 3). Exact input. Placed like venue 5.
 pub const VENUE_CURVE_LP_ONE_COIN: u8 = 7;
 /// Swap venue 8 — unwrap: sell a live Pendle PT (`tokenIn`) on its market
 /// (`swapExactPtForSy`), then `SY.redeem` into `tokenOut` (`data` = 20-byte
 /// market, checked against Pendle's V6 market factory). Exact input.
 pub const VENUE_PENDLE_MARKET_SELL: u8 = 8;
+/// Swap venue 9 — a Uniswap V4 pool on the canonical PoolManager, by its
+/// key (`data` = 20-byte currency0 ‖ 20-byte currency1 ‖ 3-byte fee ‖ 3-byte
+/// int24 tickSpacing ‖ 20-byte hooks; 66 bytes). Exact input or output.
+/// The Executor refuses a hook that is not none or allowlisted
+/// (`MainnetVenues.v4HookAllowed`). Currency `0` is native ETH, which the
+/// leg names as WETH.
+pub const VENUE_UNIV4_POOL: u8 = 9;
+/// Length of venue-9 data.
+pub const V4_KEY_LEN: usize = 66;
+/// Swap venue 10 — a chain through Uniswap-family V3 / V2 / V4 and Curve hops
+/// (coverage plan 4F). Exact output buys exactly `amount` of `tokenOut` with
+/// `tokenIn`, each hop's amount the pools' own answer at execution (V3 and
+/// V2 hops only); exact input sells `amount` (or the whole balance,
+/// TAKE_BALANCE) along the path. `data` = hops (1) ‖ per hop: kind (1) ‖
+/// param (3) ‖ the hops − 1 intermediate tokens (20 each), in path order ‖
+/// extras. Params: [`CHAIN_HOP_V3`] the fee tier; [`CHAIN_HOP_V2`] the
+/// factory id in the low byte; [`CHAIN_HOP_V4`] the offset of its 66-byte
+/// pool key in `data`; [`CHAIN_HOP_CURVE`] / [`CHAIN_HOP_CURVE_CRYPTO`] the
+/// offset of pool (20) ‖ i ‖ j ‖ MetaRegistry handler ([`CHAIN_CURVE_EXTRA`]).
+pub const VENUE_CHAIN: u8 = 10;
+/// Swap venue 11 — a Balancer V2 pool, one `Vault.swap` (`data` = the
+/// 32-byte pool id). Exact input or output. The pool must be one the
+/// Executor's `DexModule` allows (the v4 weighted factory's, or a reviewed
+/// legacy pool).
+pub const VENUE_BALANCER: u8 = 11;
+/// Length of venue-11 data.
+pub const BALANCER_POOL_ID_LEN: usize = 32;
+/// Swap venue 12 — a Fluid DEX T1 pool (`data` = 20-byte pool ‖ 1-byte
+/// `swap0to1`). Exact input, or exact output with a non-native input. The
+/// pool must be the DexFactory's own for its `DEX_ID()`; a native-ETH side is
+/// named as WETH.
+pub const VENUE_FLUID: u8 = 12;
+/// Length of venue-12 data.
+pub const FLUID_LEG_LEN: usize = 21;
+pub const CHAIN_HOP_V3: u8 = 0;
+pub const CHAIN_HOP_V4: u8 = 1;
+pub const CHAIN_HOP_V2: u8 = 2;
+pub const CHAIN_HOP_CURVE: u8 = 3;
+pub const CHAIN_HOP_CURVE_CRYPTO: u8 = 4;
+/// A SushiSwap V3 hop and a PancakeSwap V3 hop: a [`CHAIN_HOP_V3`] hop (the
+/// param is the fee tier) on that factory's pool. Both buy an exact output.
+pub const CHAIN_HOP_V3_SUSHI: u8 = 5;
+pub const CHAIN_HOP_V3_PANCAKE: u8 = 6;
+/// A Balancer V2 hop (extra: the 32-byte pool id) and a Fluid DEX hop
+/// (extra: pool ‖ swap0to1, [`FLUID_LEG_LEN`]): exact input only, like a Curve
+/// hop. The param is the extra's offset in `data`.
+pub const CHAIN_HOP_BALANCER: u8 = 7;
+pub const CHAIN_HOP_FLUID: u8 = 8;
+/// A Curve hop's extra: pool ‖ i ‖ j ‖ handler.
+pub const CHAIN_CURVE_EXTRA: usize = 23;
+/// Most hops in one chain (the Executor's `CHAIN_MAX_HOPS`).
+pub const CHAIN_MAX_HOPS: usize = 4;
 /// UniV2 factory ids in venue-2 data.
 pub const V2_FACTORY_UNISWAP: u8 = 0;
 pub const V2_FACTORY_SUSHI: u8 = 1;
+/// V3 factory ids: the optional 21st byte of venue-0 data (absent: Uniswap).
+/// Each is one factory whose pools the Executor derives by CREATE2 from its
+/// own anchors: Uniswap V3, SushiSwap V3 (an unmodified fork, the same init
+/// hash) and PancakeSwap V3 (pools deployed by its `PoolDeployer`, calling
+/// back `pancakeV3SwapCallback`).
+pub const V3_FACTORY_UNISWAP: u8 = 0;
+pub const V3_FACTORY_SUSHI: u8 = 1;
+pub const V3_FACTORY_PANCAKE: u8 = 2;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum WireError {
@@ -301,6 +389,7 @@ pub const fn provider_from_wire(b: u8) -> Option<FlashProvider> {
         3 => Some(FlashProvider::Morpho),
         4 => Some(FlashProvider::SkyDss),
         5 => Some(FlashProvider::None),
+        6 => Some(FlashProvider::UniV3Swap),
         _ => None,
     }
 }
@@ -673,10 +762,11 @@ mod tests {
             FlashProvider::Morpho,
             FlashProvider::SkyDss,
             FlashProvider::None,
+            FlashProvider::UniV3Swap,
         ] {
             assert_eq!(provider_from_wire(p as u8), Some(p));
         }
-        assert_eq!(provider_from_wire(6), None);
+        assert_eq!(provider_from_wire(7), None);
     }
 
     /// Oracle: `PlanDecoder.sol` constants.

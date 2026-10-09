@@ -23,10 +23,6 @@ interface ISiloV2 {
     function accrueInterest() external returns (uint256);
 }
 
-interface IAavePoolFee {
-    function FLASHLOAN_PREMIUM_TOTAL() external view returns (uint128);
-}
-
 /// `CollateralDebtData` (core-v3 `510fc654`).
 struct CollateralDebtData {
     uint256 debt;
@@ -292,29 +288,26 @@ contract ForkSiloGearboxTest is Test {
     }
 
     /// Aave flashes `repay` WETH; the leg adds/repays it; UniV3 buys back
-    /// the WETH owed with wstETH; leftover wstETH goes to WETH as profit.
+    /// the WETH owed with wstETH (the pull, plus the premium the Executor
+    /// adds); leftover wstETH goes to WETH as profit.
     function _gbPlan(address ca, uint256 repay, uint256 minSeized, uint8 mode)
-        internal view returns (bytes memory)
+        internal pure returns (bytes memory)
     {
-        uint256 bps = IAavePoolFee(AAVE_V3_POOL).FLASHLOAN_PREMIUM_TOTAL();
-        uint256 fee = (repay * bps + 10_000 - 1) / 10_000;
         return bytes.concat(
             PB.header(PB.F_SWEEP, 0, 0, 0, 1),
             PB.groupHead(PB.P_AAVE, AAVE_V3_POOL, WETH, uint128(repay), 1, 1),
             PB.legGearbox(GB_FACADE, ca, WSTETH, uint128(repay), minSeized, mode),
-            PB.poolSwap(WSTETH_WETH_001, WSTETH, WETH, PB.L_EXACT_OUT, uint128(repay + fee)),
+            PB.poolSwap(WSTETH_WETH_001, WSTETH, WETH, PB.L_EXACT_OUT, uint128(repay)),
             PB.profit(1, PB.poolSwap(WSTETH_WETH_001, WSTETH, WETH, PB.L_TAKE_BALANCE, 0))
         );
     }
 
-    function _siloPlan(address user, uint256 repay) internal view returns (bytes memory) {
-        uint256 bps = IAavePoolFee(AAVE_V3_POOL).FLASHLOAN_PREMIUM_TOTAL();
-        uint256 fee = (repay * bps + 10_000 - 1) / 10_000;
+    function _siloPlan(address user, uint256 repay) internal pure returns (bytes memory) {
         return bytes.concat(
             PB.header(PB.F_SWEEP, 0, 0, 0, 1),
             PB.groupHead(PB.P_AAVE, AAVE_V3_POOL, WETH, uint128(repay), 1, 1),
             PB.legSilo(SILO_HOOK, user, WSTETH, uint128(repay)),
-            PB.poolSwap(WSTETH_WETH_001, WSTETH, WETH, PB.L_EXACT_OUT, uint128(repay + fee)),
+            PB.poolSwap(WSTETH_WETH_001, WSTETH, WETH, PB.L_EXACT_OUT, uint128(repay)),
             PB.profit(1, PB.poolSwap(WSTETH_WETH_001, WSTETH, WETH, PB.L_TAKE_BALANCE, 0))
         );
     }

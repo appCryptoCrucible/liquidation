@@ -71,6 +71,8 @@ AAVE_V4_HUBS = {
 ILK_REGISTRY = "0x5a464C28D19848f44199D003BeF5ecc87d090F87"
 MAKER_VAT = "0x35D1b3F3D7966A1DFe207aa4514C12a259A0492B"
 SKY_DSS_FLASH = "0x60744434d6339a6B27d73d9Eda62b6F66a0a04FA"
+# Chainlog MCD_END: its Cage() is how a DssFlash user learns the Vat stopped.
+SKY_END = "0x0e2e8F1D1326A4B9633D96222Ce399c708B19c28"
 # Compound V2 Unitroller — compound.finance / etherscan verified proxy
 COMPOUND_V2_COMPTROLLER = "0x3d9819210A31b4961b30EF54bE2aeD79B9c9Cd3B"
 COMPOUND_V2_DEPLOY_BLOCK = 7_711_536
@@ -755,12 +757,19 @@ def enum_sky(b: Builder) -> None:
             "admitted": True,
         },
     )
+    # Kinds as `liq_bot::index` matches them (and as C1 writes them).
     if rpc.has_code(SKY_DSS_FLASH):
         b.flash_sources[checksum(SKY_DSS_FLASH)] = {
             "venue": "sky-dss-flash",
-            "kind": "erc3156",
+            "kind": "dss_flash",
             "source": checksum(SKY_DSS_FLASH),
             "asset": HUB_ASSETS["DAI"],
+        }
+    if rpc.has_code(SKY_END):
+        b.flash_sources[checksum(SKY_END)] = {
+            "venue": "sky-dss-flash",
+            "kind": "mcd_end",
+            "source": checksum(SKY_END),
         }
     b.add_token_addr(HUB_ASSETS["DAI"], tracked=True)
     b.counts[family] = {

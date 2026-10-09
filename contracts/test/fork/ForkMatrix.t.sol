@@ -125,6 +125,13 @@ contract ForkMatrixTest is Test {
         _expectAllLegsFailed(_plan(PB.P_UNIV3, USDC_WETH_005, USDC, 1_000e6));
     }
 
+    /// The real pool pays 1,000 USDC into our callback, the no-debt leg is
+    /// skipped, and the group's revert unwinds the swap: the pool keeps its
+    /// USDC and is owed nothing.
+    function test_fork_univ3_flash_swap_callback_roundtrip() public onFork {
+        _expectAllLegsFailed(_plan(PB.P_UNIV3_SWAP, USDC_WETH_005, USDC, 1_000e6));
+    }
+
     function test_fork_univ4_unlock_callback_roundtrip() public onFork {
         _expectAllLegsFailed(_plan(PB.P_UNIV4, V4_POOL_MANAGER, USDC, 1_000e6));
     }

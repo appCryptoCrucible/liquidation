@@ -14,8 +14,8 @@ use crate::verify::{
 };
 use crate::warm::{
     clear_except, deploy_runtime, insert_executor, load_executor_creation_bytecode, ExecutorSpec,
-    Simulator, WarmSet, PLANNED_EXECUTOR, PLANNED_LIQUIDATION_MODULE, PLANNED_SWAP_MODULE,
-    UNIV3_FACTORY, UNIV3_POOL_INIT_HASH, WETH,
+    Simulator, WarmSet, PLANNED_DEX_MODULE, PLANNED_EXECUTOR, PLANNED_LIQUIDATION_MODULE,
+    PLANNED_SWAP_MODULE, UNIV3_FACTORY, UNIV3_POOL_INIT_HASH, WETH,
 };
 use crate::{BlockRef, MemoryFactory, PanicNetworkDb, SimEnv, SimError, SimId, SimRequest};
 use alloy_primitives::{address, bytes, Address, Bytes, B256, U256};
@@ -355,11 +355,12 @@ fn executor_bytecode_is_from_forge_artifact_and_lands_at_planned() {
     let provider = factory.provider();
     let mut overlay = CacheDB::new(provider);
     insert_executor(&mut overlay, PLANNED_EXECUTOR, &spec(), DEPLOYER).expect("insert");
-    // The core and both modules, each placed where it runs.
+    // The core and its modules, each placed where it runs.
     for at in [
         PLANNED_EXECUTOR,
         PLANNED_LIQUIDATION_MODULE,
         PLANNED_SWAP_MODULE,
+        PLANNED_DEX_MODULE,
     ] {
         let info = overlay.basic_ref(at).unwrap().expect("placed account");
         assert!(!info.code_hash.is_zero());
@@ -378,7 +379,17 @@ fn executor_bytecode_is_from_forge_artifact_and_lands_at_planned() {
         read_address(&mut overlay, &env, PLANNED_EXECUTOR, swap).unwrap(),
         PLANNED_SWAP_MODULE
     );
-    for at in [PLANNED_LIQUIDATION_MODULE, PLANNED_SWAP_MODULE] {
+    // The swap module is wired to the dex module where it was placed.
+    let dex = ExecutorWiring::DEX_MODULECall {}.abi_encode();
+    assert_eq!(
+        read_address(&mut overlay, &env, PLANNED_SWAP_MODULE, dex).unwrap(),
+        PLANNED_DEX_MODULE
+    );
+    for at in [
+        PLANNED_LIQUIDATION_MODULE,
+        PLANNED_SWAP_MODULE,
+        PLANNED_DEX_MODULE,
+    ] {
         let weth = ExecutorWiring::WETHCall {}.abi_encode();
         assert_eq!(read_address(&mut overlay, &env, at, weth).unwrap(), WETH);
     }
@@ -389,6 +400,7 @@ alloy_sol_types::sol! {
     interface ExecutorWiring {
         function LIQUIDATION_MODULE() external view returns (address);
         function SWAP_MODULE() external view returns (address);
+        function DEX_MODULE() external view returns (address);
         function WETH() external view returns (address);
     }
 }

@@ -725,21 +725,77 @@ fn apply_log_journaled_and_subscriptions_nonempty() {
     let _ = UNMAPPED_ASSET;
 }
 
+/// Decision 8: a halt-class log after the pin stops the credit manager it
+/// concerns, not the bot. Two managers, A and B, share a pool, quota keeper
+/// and account factory. A proxy upgrade on A's facade halts A only, and A's
+/// own `Unpaused` does not lift it; one on the shared pool halts both; one
+/// on the contracts register stops the protocol; before the pin, nothing.
 #[test]
-fn halt_after_pin() {
+fn a_halt_stops_its_credit_manager_not_the_bot() {
     let d = Deploy::new();
-    let p = d.adapter();
-    let mut st = store_after(&p, &listing_logs(&d));
-    let l = log(
-        d.facade,
-        &halt::Upgraded {
-            implementation: Address::repeat_byte(0x77),
+    let mut cfg = d.config();
+    let mut b = d.manager_config(false, 0);
+    b.market = liq_types::MarketId(MARKET.0 + 1);
+    b.manager = Address::repeat_byte(0xb1);
+    b.facade = Address::repeat_byte(0xb2);
+    b.configurator = Address::repeat_byte(0xb4);
+    cfg.managers.push(b.clone());
+    cfg.expected_managers = 2;
+    let p = GearboxV3::new(cfg).unwrap();
+    let mut listing = listing_logs(&d);
+    listing.push(log(
+        d.factory,
+        &factory::AddCreditManager {
+            creditManager: b.manager,
+            masterCreditAccount: Address::repeat_byte(0x31),
         },
+        DEPLOY_BLOCK,
+        T0,
+    ));
+    let mut st = store_after(&p, &listing);
+    let paused = |st: &liq_protocol::conformance::JournalStore, m: liq_types::MarketId| {
+        let row = st
+            .market(MarketSlot {
+                market: m,
+                slot: UNDERLYING_SLOT,
+            })
+            .unwrap();
+        row.flags.0 & liq_protocol::MarketFlags::PAUSED.0 != 0
+    };
+    let up = |a: Address, block: u64| {
+        log(
+            a,
+            &halt::Upgraded {
+                implementation: Address::repeat_byte(0x77),
+            },
+            block,
+            T0,
+        )
+    };
+    assert_eq!(
+        p.apply_log(&mut st, &up(d.facade, DEPLOY_BLOCK).view()),
+        Ok(DirtySet::None)
+    );
+    assert!(!paused(&st, MARKET) && !paused(&st, b.market));
+
+    p.apply_log(&mut st, &up(d.facade, DEPLOY_BLOCK + 1).view())
+        .unwrap();
+    assert!(paused(&st, MARKET), "A halted");
+    assert!(!paused(&st, b.market), "B continues");
+    let unpause = log(
+        d.facade,
+        &facade::Unpaused { account: d.facade },
         DEPLOY_BLOCK + 1,
         T0,
     );
+    p.apply_log(&mut st, &unpause.view()).unwrap();
+    assert!(paused(&st, MARKET), "Unpaused does not lift a halt");
+
+    p.apply_log(&mut st, &up(d.pool, DEPLOY_BLOCK + 2).view())
+        .unwrap();
+    assert!(paused(&st, b.market), "the shared pool halts B too");
     assert_eq!(
-        p.apply_log(&mut st, &l.view()),
+        p.apply_log(&mut st, &up(d.register, DEPLOY_BLOCK + 2).view()),
         Err(ProtocolError::HaltSignal)
     );
 }

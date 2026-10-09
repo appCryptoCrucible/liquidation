@@ -18,6 +18,7 @@ use smallvec::SmallVec;
 
 use crate::bid::{beta_of, BidSchedule};
 use crate::exact::{solve_batch, GasTerms, SolveBudget};
+use crate::profit::WrapGas;
 use crate::profit::{
     best_plan, delta_net, expected_contrib_per_gas, expected_gas, gas_price_in_debt,
     is_reward_only, repay_for_seized, reward_plan, MarketView, ProfitCtx, ProfitError, SizedLeg,
@@ -194,7 +195,7 @@ pub struct SelectCfg {
     pub nonce_slots: u8,
     pub header_gas_limit: u64,
     /// Wrapping gas per `FlashProvider as usize`. 10C measurements.
-    pub wrap_gas: [u64; 5],
+    pub wrap_gas: [u64; 7],
     /// Aave V3 flash + V4 adapter leg (`liq-gas.toml` `[wrap].aave_v4`).
     pub wrap_aave_v4: u64,
     /// Intern id for family `aave-v4`. `None` → Aave wrap is V3/Spark.
@@ -224,6 +225,19 @@ pub struct SelectCfg {
     /// WETH's asset id: reward-only legs are valued in it. `None` leaves
     /// reward-only quotes unsized.
     pub weth: Option<AssetId>,
+}
+
+impl SelectCfg {
+    /// The wrap gas `select` charges, for the exit solve to weigh a leg's
+    /// funding ([`crate::profit::WrapGas`]).
+    #[must_use]
+    pub fn wrap(&self) -> WrapGas<'_> {
+        WrapGas {
+            by_provider: &self.wrap_gas,
+            aave_v4: self.wrap_aave_v4,
+            aave_v4_protocol: self.aave_v4,
+        }
+    }
 }
 
 /// One scored, exact-solved leg ready to batch.
@@ -271,29 +285,9 @@ fn wrap_gas(
     provider: liq_types::FlashProvider,
     protocol: ProtocolId,
 ) -> Result<u64, SelectError> {
-    // Nothing borrowed: no flash callback to wrap the legs in.
-    if provider == liq_types::FlashProvider::None {
-        return Ok(0);
-    }
-    if provider == liq_types::FlashProvider::Aave {
-        if let Some(id) = cfg.aave_v4 {
-            if protocol == id {
-                if cfg.wrap_aave_v4 == 0 {
-                    return Err(SelectError::ZeroWrapGas);
-                }
-                return Ok(cfg.wrap_aave_v4);
-            }
-        }
-    }
-    let g = cfg
-        .wrap_gas
-        .get(provider as usize)
-        .copied()
-        .ok_or(SelectError::ZeroWrapGas)?;
-    if g == 0 {
-        return Err(SelectError::ZeroWrapGas);
-    }
-    Ok(g)
+    cfg.wrap()
+        .of(provider, protocol)
+        .ok_or(SelectError::ZeroWrapGas)
 }
 
 fn success_gas(
@@ -378,6 +372,7 @@ fn rank(
             market,
             gas,
             budget: &cfg.budget,
+            wrap: Some(cfg.wrap()),
         };
         let leg = if is_reward_only(el.quote()) {
             let Some(weth) = cfg.weth else {
@@ -563,10 +558,10 @@ fn pack(
                 };
             }
         }
-        if cfg.legs_per_plan != u8::MAX
-            && plan_leg_count(&cur) >= usize::from(cfg.legs_per_plan)
-            && !cur.groups.is_empty()
-        {
+        let full = (cfg.legs_per_plan != u8::MAX
+            && plan_leg_count(&cur) >= usize::from(cfg.legs_per_plan))
+            || debt_group_full(&cur, &s);
+        if (full || needs_own_group(&cur, &s)) && !cur.groups.is_empty() {
             seal_cascades(&mut cur, cfg, flash, book, gas)?;
             if !cur.groups.is_empty() {
                 plans.push(cur);
@@ -646,6 +641,42 @@ fn plan_leg_count(plan: &SelectedPlan) -> usize {
     plan.groups.iter().map(|g| g.legs.len()).sum()
 }
 
+/// Whether `s` would join a debt group holding as many legs as a repay
+/// swap's tie can name ([`liq_plan::LEG_TIE_MAX`]): each flash group names
+/// its legs in six bits of its swaps' flags, so the next leg starts the
+/// next plan.
+fn debt_group_full(plan: &SelectedPlan, s: &Scored) -> bool {
+    let reward_only = s.leg.is_reward_only();
+    plan.groups.iter().any(|g| {
+        g.debt == s.leg.debt
+            && g.reward_only == reward_only
+            && g.legs.len() >= liq_plan::LEG_TIE_MAX
+    })
+}
+
+/// Whether `s` would join a flash group that holds a leg that must be alone
+/// in its group, or is one: an exit through the hub, or a flash swap.
+///
+/// A hub exit's repay legs are tied to it (they no longer run when it is
+/// beaten), but its repay blob closes the collateral itself: a TAKE_BALANCE
+/// into WETH that must run after every set-amount leg on that token,
+/// another leg's included, and would sell that leg's leftover too. A flash
+/// swap's lender must be paid whatever filled, so a beaten leg beside a
+/// live one would leave its debt bought and unpaid for. Alone in its group,
+/// a beaten liquidation fails the group (`AllLegsFailed`) and nothing is
+/// spent.
+fn needs_own_group(plan: &SelectedPlan, s: &Scored) -> bool {
+    let alone = |x: &Scored| {
+        x.leg.exit.hub.is_some() || x.leg.route.provider == liq_types::FlashProvider::UniV3Swap
+    };
+    let reward_only = s.leg.is_reward_only();
+    plan.groups.iter().any(|g| {
+        g.debt == s.leg.debt
+            && g.reward_only == reward_only
+            && (alone(s) || g.legs.iter().any(alone))
+    })
+}
+
 fn push_leg(plan: &mut SelectedPlan, s: Scored, incr: u64) {
     plan.hop_and_wrap_gas = plan.hop_and_wrap_gas.saturating_add(incr);
     let reward_only = s.leg.is_reward_only();
@@ -687,6 +718,25 @@ fn seal_cascades(
             g.cascade = Cascade {
                 groups: SmallVec::from_elem(direct_route(g.debt), 1),
                 funded: U256::ZERO,
+                cost: U256::ZERO,
+            };
+            continue;
+        }
+        // A flash swap lends from the exit's own pool: one leg, one group,
+        // and no source in the index to cascade over.
+        if let Some(route) = g
+            .legs
+            .first()
+            .map(|s| s.leg.route)
+            .filter(|r| r.provider == liq_types::FlashProvider::UniV3Swap)
+        {
+            if g.legs.len() != 1 {
+                return Err(ProfitError::Missing("one leg per flash-swap group").into());
+            }
+            g.need = route.amount;
+            g.cascade = Cascade {
+                groups: SmallVec::from_elem(route, 1),
+                funded: route.amount,
                 cost: U256::ZERO,
             };
             continue;
@@ -1007,7 +1057,7 @@ mod tests {
             legs_per_plan: u8::MAX,
             nonce_slots: 4,
             header_gas_limit: 30_000_000,
-            wrap_gas: [366_332, 355_632, 460_032, 370_435, 384_134],
+            wrap_gas: [366_332, 355_632, 460_032, 370_435, 384_134, 0, 0],
             wrap_aave_v4: 496_704,
             aave_v4: None,
             liq_gas: LiqGas::uniform(80_000),
@@ -1164,6 +1214,30 @@ mod tests {
             .map(|p| p.groups.iter().map(|g| g.legs.len()).sum())
             .collect();
         assert_eq!(counts, vec![8, 1]);
+    }
+
+    /// A flash group names its legs in six bits of each repay swap's flags,
+    /// so a debt group holds 63 legs at most: the 64th position on the same
+    /// debt opens the next bundle, with no per-plan cap set.
+    #[test]
+    fn a_debt_group_holds_no_more_legs_than_a_tie_can_name() {
+        let quotes: Vec<Quote> = (0..64u32).map(|i| q(100 + i, e18(1))).collect();
+        let inputs: Vec<PositionInput<'_>> = quotes
+            .iter()
+            .map(|quote| inp(quote, true, learning_p(), 50_000))
+            .collect();
+        let mut open = cfg();
+        open.exact_k = u8::MAX;
+        open.nonce_slots = 4;
+        assert_eq!(open.legs_per_plan, u8::MAX, "no per-plan cap");
+        let bk = book(vec![deep()]);
+        let (_s, flash) = idx();
+        let plans = select(&inputs, &open, &flash, H, &bk, None, &Mkt, &GAS).unwrap();
+        let counts: Vec<usize> = plans
+            .iter()
+            .map(|p| p.groups.iter().map(|g| g.legs.len()).sum())
+            .collect();
+        assert_eq!(counts, vec![liq_plan::LEG_TIE_MAX, 1]);
     }
 
     /// Legs are packed in contribution-per-gas order. On the only plan a
@@ -1323,6 +1397,154 @@ mod tests {
         assert_eq!(ctors, 1, "Eligible is constructed only in admit()");
     }
 
+    /// Two debt assets, one collateral: a USDT-like token (6 decimals,
+    /// 2,000 per ETH) and a WBTC-like one (8 decimals, 0.025 per ETH), each
+    /// with a deep V2 pool against the collateral. Repaying 0.05 of the
+    /// WBTC-like debt earns about 0.09 ETH; repaying 1,000 of the USDT-like
+    /// debt about 0.02 ETH. Oracle: that arithmetic — the WBTC leg wins.
+    /// Negative: compared in raw debt units (the old rule) the USDT leg's
+    /// ~4.6e7 beats the WBTC leg's ~2.3e5 and the smaller liquidation is
+    /// taken (block 26,098,187).
+    #[test]
+    fn legs_on_different_debts_compare_in_weth() {
+        struct TwoDebts;
+        impl MarketView for TwoDebts {
+            fn pair_terms(&self, _: ProtocolId, _: AssetId, debt: AssetId) -> Option<PairTerms> {
+                // Collateral raw units per debt raw unit, RAY.
+                let per_unit = if debt == A1 {
+                    500_000_000u64
+                } else {
+                    400_000_000_000u64
+                };
+                Some(PairTerms {
+                    bonus: bonus_5(),
+                    coll_per_debt: Ray::from_raw(RAY * U256::from(per_unit)),
+                    flash_fee_bps: 0,
+                    fixed_gas: 50_000,
+                })
+            }
+            fn per_eth(&self, a: AssetId) -> Option<U256> {
+                Some(match a {
+                    A1 => U256::from(2_000_000_000u64),
+                    A2 => U256::from(2_500_000u64),
+                    _ => e18(1),
+                })
+            }
+            fn band(
+                &self,
+                _: ProtocolId,
+                _: AssetId,
+                _: AssetId,
+            ) -> Option<crate::band::ViabilityBand> {
+                Some(crate::band::ViabilityBand {
+                    min_size: U256::ZERO,
+                    max_size: U256::MAX,
+                    base_fee: 0,
+                    block: 0,
+                })
+            }
+        }
+        let mut assets = HashMap::new();
+        assets.insert(tok(0), A0);
+        assets.insert(tok(1), A1);
+        assets.insert(tok(2), A2);
+        let mut bk = PoolBook::new(assets, None, HOP_GAS);
+        bk.add(v2(1, e18(10_000), U256::from(20_000_000_000_000u64)))
+            .unwrap();
+        let mut wbtc_pool = v2(2, e18(10_000), U256::from(25_000_000_000u64));
+        wbtc_pool.assets = SmallVec::from_slice(&[A0, A2]);
+        wbtc_pool.tokens = SmallVec::from_slice(&[tok(0), tok(2)]);
+        bk.add(wbtc_pool).unwrap();
+        let held = |asset, token| HeldAsset {
+            asset,
+            token,
+            balance: e18(1_000_000),
+        };
+        let srcs: Vec<Box<dyn FlashSource>> = vec![Box::new(MorphoBlue::new(
+            addr(0xA0),
+            &[held(A1, tok(1)), held(A2, tok(2))],
+        ))];
+        let mut flash = FlashIndex::new(4);
+        flash.refresh(&srcs);
+        let mut quote = q(30, U256::from(1_000_000_000u64));
+        quote.seize_options[0].max_seize = e18(100);
+        quote.repay_options.push(RepayOption {
+            min_repay: U256::ZERO,
+            pair_seize: None,
+            asset: A2,
+            max_repay: U256::from(5_000_000u64),
+            slot: liq_protocol::SlotRef::ByAsset,
+        });
+        let pctx = ProfitCtx {
+            protocol: PROTO,
+            flash: &flash,
+            haircut: H,
+            book: &bk,
+            warm: None,
+            market: &TwoDebts,
+            gas: &GAS,
+            budget: &B,
+            wrap: None,
+        };
+        let leg = best_plan(&pctx, &quote).unwrap().unwrap();
+        assert_eq!(leg.debt, A2, "the leg worth more in ETH");
+        let usdt = crate::profit::evaluate(
+            &pctx,
+            &quote,
+            liq_protocol::LegChoice { repay: 0, seize: 0 },
+            &flash.entries(A1)[..1],
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            usdt.contribution > leg.contribution,
+            "in raw units the USDT leg is larger ({} vs {}) — the trap",
+            usdt.contribution,
+            leg.contribution
+        );
+    }
+
+    /// A flash swap funds the leg when it nets more than the loan. One deep
+    /// V3 pool A0/A1 is the whole exit, so the flash swap's exit is the
+    /// loan's and the two differ by funding alone: Morpho's wrap (370,435,
+    /// no fee) against the flash swap's. Unmeasured (0), the loan stays —
+    /// nothing is priced at zero gas; measured under Morpho's, the pool
+    /// itself funds the leg (provider `UniV3Swap`, the pool as source,
+    /// nothing owed beyond the pull); measured over it, the loan stays.
+    /// Oracle: the comparison's arithmetic on identical exits.
+    #[test]
+    fn a_flash_swap_funds_the_leg_when_it_nets_more_than_the_loan() {
+        let bk = book(vec![deep()]);
+        let (_s, flash) = idx();
+        let quote = q(60, e18(10));
+        let pool = bk.get(PoolId(0)).unwrap().address;
+        let leg_with = |swap_wrap: u64| {
+            let mut c = cfg();
+            c.wrap_gas[liq_types::FlashProvider::UniV3Swap as usize] = swap_wrap;
+            let inputs = [inp(&quote, true, learning_p(), 50_000)];
+            let plans = select(&inputs, &c, &flash, H, &bk, None, &Mkt, &GAS).unwrap();
+            plans[0].groups[0].legs[0].leg.clone()
+        };
+        let loan = leg_with(0);
+        assert_eq!(loan.route.provider, liq_types::FlashProvider::Morpho);
+        let swap = leg_with(300_000);
+        assert_eq!(swap.route.provider, liq_types::FlashProvider::UniV3Swap);
+        assert_eq!(swap.route.source, pool, "the exit's pool lends");
+        assert_eq!(
+            swap.route.callback,
+            liq_protocol::CallbackShape::UniV3SwapCallback
+        );
+        assert_eq!((swap.route.fee_bps, swap.flash_fee), (0, U256::ZERO));
+        assert_eq!((swap.flash_owed, swap.s), (loan.s, loan.s));
+        assert_eq!(swap.exit, loan.exit, "the same exit");
+        assert_eq!(
+            swap.contribution, loan.contribution,
+            "Morpho charges no fee either"
+        );
+        let dearer = leg_with(400_000);
+        assert_eq!(dearer.route.provider, liq_types::FlashProvider::Morpho);
+    }
+
     /// GUIDE 12 §4c: two positions that share an output pool must be
     /// re-quoted with `solve_batch` on the displaced book. Packed
     /// contribution is strictly below the sum of independent quotes on a
@@ -1344,6 +1566,7 @@ mod tests {
             market: &Mkt,
             gas: &GAS,
             budget: &B,
+            wrap: None,
         };
         let c1 = best_plan(&pctx, &a).unwrap().unwrap().contribution;
         let c2 = best_plan(&pctx, &b).unwrap().unwrap().contribution;
@@ -1412,7 +1635,7 @@ mod tests {
         let bk = book(vec![deep()]);
         let (_s, flash) = idx();
         let mut c = cfg();
-        c.wrap_gas = [100_000, 100_000, 100_000, 100_000, 100_000];
+        c.wrap_gas = [100_000; 7];
         c.liq_gas = LiqGas::uniform(200_000);
         c.header_gas_limit = 30_000_000;
         let inputs = [

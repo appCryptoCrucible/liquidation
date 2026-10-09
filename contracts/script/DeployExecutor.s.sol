@@ -5,16 +5,18 @@ import {Script} from "forge-std/Script.sol";
 import {Executor} from "../src/Executor.sol";
 import {LiquidationModule} from "../src/LiquidationModule.sol";
 import {SwapModule} from "../src/SwapModule.sol";
+import {DexModule} from "../src/DexModule.sol";
 import {MainnetVenues} from "../src/lib/MainnetVenues.sol";
 
 /// Constructor wiring for the human deploy (H3). This repository does not
 /// broadcast it. `forge script` without `--broadcast` only simulates;
 /// `--broadcast` is a separate operator step and must be signed by `OPERATOR`.
 ///
-/// Three contracts, in order: the two modules, then the Executor, whose
-/// constructor checks each module answers its MODULE_ID and our WETH. The
-/// Executor's address is the one `venues.executor` takes; the modules are
-/// read from it (`LIQUIDATION_MODULE()`, `SWAP_MODULE()`).
+/// Four contracts, in order: the dex module, the two modules (the swap module
+/// takes the dex module), then the Executor, whose constructor checks each
+/// module answers its MODULE_ID and our WETH. The Executor's address is the
+/// one `venues.executor` takes; the modules are read from it
+/// (`LIQUIDATION_MODULE()`, `SWAP_MODULE()`; the swap module's `DEX_MODULE()`).
 ///
 /// Factory, init-hash and WETH are the mainnet constants in
 /// `crates/liq-sim/src/warm.rs`. `OPERATOR` and `BACKRUN_OPERATOR` are the
@@ -49,6 +51,7 @@ contract DeployExecutor is Script {
         if (OPERATOR == BACKRUN_OPERATOR) revert("operators are the same key");
         vm.startBroadcast();
         LiquidationModule liquidations = new LiquidationModule(WETH);
+        DexModule dexes = new DexModule(WETH);
         SwapModule swaps = new SwapModule(
             WETH,
             SWAP_ROUTER02,
@@ -57,7 +60,8 @@ contract DeployExecutor is Script {
             MainnetVenues.UNIV2_INIT_HASH,
             MainnetVenues.SUSHI_FACTORY,
             MainnetVenues.SUSHI_INIT_HASH,
-            MainnetVenues.CURVE_META_REGISTRY
+            MainnetVenues.CURVE_META_REGISTRY,
+            address(dexes)
         );
         new Executor(
             OPERATOR,

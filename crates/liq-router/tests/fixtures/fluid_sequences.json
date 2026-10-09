@@ -1,0 +1,556 @@
+{
+ "block": 26149877,
+ "time_offset": 12,
+ "sequences": [
+  {
+   "pool_id": 2,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "1634650668",
+     "chain": "1635665969"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "1634650668",
+     "chain": "1635665791"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "3163160650",
+     "chain": "3161153117"
+    }
+   ]
+  },
+  {
+   "pool_id": 3,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "4780123",
+     "chain": "4773450"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "4780123",
+     "chain": "4773446"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "1658775",
+     "chain": "1660945"
+    }
+   ]
+  },
+  {
+   "pool_id": 4,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "808651677792725046001",
+     "chain": "808120631"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "808651677792725046001",
+     "chain": "808120602"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "1634650668",
+     "chain": "1635397756782343000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 15,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "74400768871562247345",
+     "chain": "93150752"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "74400768871562247345",
+     "chain": "93150669"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "3163160650",
+     "chain": "2525414042066956000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 16,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "227408",
+     "chain": "227722"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "227408",
+     "chain": "227722"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "1658775",
+     "chain": "1654827"
+    }
+   ]
+  },
+  {
+   "pool_id": 17,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "63748",
+     "chain": "63837"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "63748",
+     "chain": "63837"
+    }
+   ]
+  },
+  {
+   "pool_id": 18,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "70084666361403330513",
+     "chain": "70107158"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "70084666361403330513",
+     "chain": "70107149"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "3163160650",
+     "chain": "3161505034400542000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 19,
+   "swaps": [
+    {
+     "zero_to_one": false,
+     "amount": "1634650668",
+     "chain": "1636913018852618000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 20,
+   "swaps": [
+    {
+     "zero_to_one": false,
+     "amount": "1634650668",
+     "chain": "1635703046687621000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 23,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "468564407873301713",
+     "chain": "467951"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "468564407873301713",
+     "chain": "467951"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "1634650668",
+     "chain": "1635380288297281000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 24,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "443659002726704892",
+     "chain": "443780"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "443659002726704892",
+     "chain": "443780"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "1634650668",
+     "chain": "1633685622319754000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 28,
+   "swaps": [
+    {
+     "zero_to_one": false,
+     "amount": "1634650668",
+     "chain": "1270115551747034000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 30,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "4780123",
+     "chain": "4761634"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "4780123",
+     "chain": "4761567"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "63748",
+     "chain": "63984"
+    }
+   ]
+  },
+  {
+   "pool_id": 32,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "80011318229410538",
+     "chain": "80123"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "80011318229410538",
+     "chain": "80123"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "40421",
+     "chain": "40348452112000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 33,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "808651677792725046001",
+     "chain": "645768748823976000000"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "808651677792725046001",
+     "chain": "645764225053543000000"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "74400768871562247345",
+     "chain": "93149261621762000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 34,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "1634650668",
+     "chain": "1635431202"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "1634650668",
+     "chain": "1635380094"
+    }
+   ]
+  },
+  {
+   "pool_id": 35,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "759795816666117269",
+     "chain": "759485152543000000"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "759795816666117269",
+     "chain": "759485003177000000"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "70084666361403330513",
+     "chain": "70042623912846000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 36,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "70084666361403330513",
+     "chain": "70079211969860000000"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "70084666361403330513",
+     "chain": "70079062445838000000"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "26458942984726257387",
+     "chain": "26455784413390000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 37,
+   "swaps": [
+    {
+     "zero_to_one": false,
+     "amount": "70084666361403330513",
+     "chain": "70061384383998000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 38,
+   "swaps": [
+    {
+     "zero_to_one": false,
+     "amount": "1903619952530",
+     "chain": "1"
+    }
+   ]
+  },
+  {
+   "pool_id": 39,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "4330443",
+     "chain": "5136171"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "4330443",
+     "chain": "5136171"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "1634650668",
+     "chain": "1376830600"
+    }
+   ]
+  },
+  {
+   "pool_id": 40,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "1315278",
+     "chain": "1505504"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "1315278",
+     "chain": "1505416"
+    }
+   ]
+  },
+  {
+   "pool_id": 41,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "70084666361403330513",
+     "chain": "64900218603034000000"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "70084666361403330513",
+     "chain": "64897324554223000000"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "899344970334837096",
+     "chain": "971058096322000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 42,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "354048334526934551",
+     "chain": "366003210847000000"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "354048334526934551",
+     "chain": "366003045641000000"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "70084666361403330513",
+     "chain": "67779027781868000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 44,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "3285854768561219086326",
+     "chain": "3635884673"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "3285854768561219086326",
+     "chain": "3635881770"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "3163160650",
+     "chain": "2857499403060511000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 45,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "4620167063",
+     "chain": "5256021675"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "4620167063",
+     "chain": "5255998311"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "1634650668",
+     "chain": "1436330388"
+    }
+   ]
+  },
+  {
+   "pool_id": 46,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "7225845947076634860096",
+     "chain": "8070382297"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "7225845947076634860096",
+     "chain": "8070369993"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "1634650668",
+     "chain": "1463008123701717000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 47,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "16056839125431578708",
+     "chain": "16057942"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "16056839125431578708",
+     "chain": "16057941"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "1634650668",
+     "chain": "1633878722399070000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 48,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "7225845947076634860096",
+     "chain": "8072470623"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "7225845947076634860096",
+     "chain": "8072457064"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "3163160650",
+     "chain": "2830288394757139000000"
+    }
+   ]
+  },
+  {
+   "pool_id": 49,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "5878",
+     "chain": "5875"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "5878",
+     "chain": "5875"
+    }
+   ]
+  },
+  {
+   "pool_id": 50,
+   "swaps": [
+    {
+     "zero_to_one": true,
+     "amount": "1634650668",
+     "chain": "1636465817129150000000"
+    },
+    {
+     "zero_to_one": true,
+     "amount": "1634650668",
+     "chain": "1636462774136491000000"
+    },
+    {
+     "zero_to_one": false,
+     "amount": "238571821588946467120",
+     "chain": "238260173"
+    }
+   ]
+  }
+ ]
+}

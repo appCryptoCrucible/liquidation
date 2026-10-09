@@ -48,22 +48,25 @@ contract ExecutorFlowTest is ExecutorTestBase {
     }
     /// Routers are the swap module's anchors now.
     function test_constructor_rejects_zero_router_a() public {
+        address dexm = swapModule.DEX_MODULE();
         vm.expectRevert(Executor.ZeroAddress.selector);
-        new SwapModule(address(weth), address(0), address(routerB), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
+        new SwapModule(address(weth), address(0), address(routerB), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry), dexm);
     }
     function test_constructor_rejects_zero_router_b() public {
+        address dexm = swapModule.DEX_MODULE();
         vm.expectRevert(Executor.ZeroAddress.selector);
-        new SwapModule(address(weth), address(routerA), address(0), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
+        new SwapModule(address(weth), address(routerA), address(0), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry), dexm);
     }
     /// WETH is in all three contracts; each refuses zero.
     function test_constructor_rejects_zero_weth() public {
         (address lm, address sm, bytes32 h) = _coreParts();
+        address dexm0 = swapModule.DEX_MODULE();
         vm.expectRevert(Executor.ZeroAddress.selector);
         new Executor(operator, backrunOperator, sink, address(0), address(factory), h, lm, sm);
         vm.expectRevert(Executor.ZeroAddress.selector);
         new LiquidationModule(address(0));
         vm.expectRevert(Executor.ZeroAddress.selector);
-        new SwapModule(address(0), address(routerA), address(routerB), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
+        new SwapModule(address(0), address(routerA), address(routerB), v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry), dexm0);
     }
 
     function test_zero_address_router_target_reverts() public {
@@ -147,12 +150,12 @@ contract ExecutorFlowTest is ExecutorTestBase {
     /// remainder of the allowance must not survive the call.
     function test_clamped_pull_zeroes_residual_allowance() public {
         pool.setPosition(borrower, 0.95e18, 20_000e6, COLL_OUT);
-        uint128 owed = 20_010e6;
         bytes memory plan = bytes.concat(
             PB.header(PB.F_SWEEP, 0, GAS_COST, 0.6e18, 1),
             PB.groupHead(PB.P_AAVE, address(pool), address(debt), 20_000e6, 1, 1),
             PB.legV3(address(pool), borrower, address(coll), REPAY), // asks 30k, gets 20k
-            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, owed),
+            // The pull; the Executor adds the 10 premium on the 20k flash.
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, 20_000e6),
             PB.profit(1, _profitLeg())
         );
         _exec(plan);
@@ -454,14 +457,14 @@ contract ExecutorFlowTest is ExecutorTestBase {
     }
 
     function test_unknown_venue_reverts() public {
-        bytes memory profitLeg = PB.swap(10, address(coll), address(weth), PB.L_TAKE_BALANCE, 0, abi.encodePacked(address(pCollWeth)));
+        bytes memory profitLeg = PB.swap(13, address(coll), address(weth), PB.L_TAKE_BALANCE, 0, abi.encodePacked(address(pCollWeth)));
         bytes memory plan = bytes.concat(
             PB.header(PB.F_SWEEP, 0, GAS_COST, 0, 1),
             PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 1),
             PB.legV3(address(pool), borrower, address(coll), REPAY), _repayLeg(),
             PB.profit(1, profitLeg)
         );
-        vm.expectRevert(abi.encodeWithSelector(Executor.UnknownVenue.selector, uint8(10)));
+        vm.expectRevert(abi.encodeWithSelector(Executor.UnknownVenue.selector, uint8(13)));
         _exec(plan);
     }
 
@@ -499,7 +502,7 @@ contract ExecutorFlowTest is ExecutorTestBase {
             PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
             PB.groupHead(PB.P_AAVE, address(pool), address(usdt), REPAY, 1, 1),
             PB.legV3(address(pool), borrower, address(coll), REPAY),
-            PB.poolSwap(address(pCollUsdt), address(coll), address(usdt), PB.L_EXACT_OUT, OWED),
+            PB.poolSwap(address(pCollUsdt), address(coll), address(usdt), PB.L_EXACT_OUT, REPAY),
             PB.profit(1, _profitLeg())
         );
         _exec(plan);

@@ -27,6 +27,42 @@ pub fn mul_div_up(a: U256, b: U256, d: U256) -> Result<U256> {
     Ok(mul_div(a, b, d, Rounding::Up)?)
 }
 
+/// `total` grown for `dt` seconds at `rate_ray` (relative, per second; the
+/// state reads' measured interest), rounded down. Silo compounds, which
+/// over the seconds between reads is the same to well under a unit in a
+/// million of the growth.
+pub fn grown(total: u128, rate_ray: u128, dt: u64) -> Result<u128> {
+    if dt == 0 || rate_ray == 0 || total == 0 {
+        return Ok(total);
+    }
+    let g = mul_div_down(
+        U256::from(total),
+        U256::from(rate_ray)
+            .checked_mul(U256::from(dt))
+            .ok_or(ProtocolError::Fixed(FixedError::Overflow))?,
+        liq_types::fixed::RAY,
+    )?;
+    U256::from(total)
+        .checked_add(g)
+        .and_then(|t| u128::try_from(t).ok())
+        .ok_or(ProtocolError::Fixed(FixedError::Overflow))
+}
+
+/// The relative rate (RAY per second) at which `from` became `to` over
+/// `dt` seconds, rounded down. Zero when nothing grew.
+pub fn rate_ray(from: U256, to: U256, dt: u64) -> Result<u128> {
+    if dt == 0 || from.is_zero() || to <= from {
+        return Ok(0);
+    }
+    let r = mul_div_down(
+        to.saturating_sub(from),
+        liq_types::fixed::RAY,
+        from.checked_mul(U256::from(dt))
+            .ok_or(ProtocolError::Fixed(FixedError::Overflow))?,
+    )?;
+    u128::try_from(r).map_err(|_| ProtocolError::Fixed(FixedError::Overflow))
+}
+
 #[inline]
 pub fn asset_unit(decimals: u8) -> Result<U256> {
     U256::from(10u8)

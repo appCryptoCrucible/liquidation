@@ -5,8 +5,11 @@
 //!
 //! `has_exit(coll, amount)` is `true` when the warm tier solved a bucket
 //! `≥ amount` for `coll` into *some* debt asset whose realised
-//! `min(spot, twa)` output stays within the configured impact bound. One
-//! `ArcSwap::load`, one indexed read, no allocation, no lock.
+//! `min(spot, twa)` output stays within the configured impact bound — or
+//! when the book routes `coll` but no band has evaluated it yet
+//! ([`RouteTable::unbanded`]): an exit that is unknown, not absent, is the
+//! drain's to size on the hot path the same block. One `ArcSwap::load`, two
+//! indexed reads, no allocation, no lock.
 
 use std::sync::Arc;
 
@@ -39,7 +42,11 @@ impl WarmRouteCache {
 impl RouteCache for WarmRouteCache {
     #[inline]
     fn has_exit(&self, coll: AssetId, amount: U256) -> bool {
-        !amount.is_zero() && amount <= self.slot.load().exit_cap(coll)
+        if amount.is_zero() {
+            return false;
+        }
+        let t = self.slot.load();
+        amount <= t.exit_cap(coll) || t.unbanded(coll)
     }
 }
 
@@ -160,6 +167,54 @@ mod tests {
         Some(h) => h,
         None => unreachable!(),
     };
+
+    /// Inputs with no ladder for anything: the warm tier before any band.
+    /// `evaluated` says whether the band has been asked about a collateral.
+    struct Unladdered {
+        evaluated: bool,
+    }
+    impl WarmInputs for Unladdered {
+        fn bucket_sizes(&self, _: AssetId) -> Option<SmallVec<[U256; 4]>> {
+            None
+        }
+        fn per_eth(&self, _: AssetId) -> Option<U256> {
+            Some(e18(1))
+        }
+        fn next_base_fee(&self) -> u128 {
+            30_000_000_000
+        }
+        fn priority_fee_wei(&self) -> u128 {
+            0
+        }
+        fn block(&self) -> u64 {
+            1
+        }
+        fn evaluated(&self, _: AssetId) -> bool {
+            self.evaluated
+        }
+    }
+
+    /// A collateral the book routes but no band has evaluated has an
+    /// unknown exit, not none: `has_exit` lets it through for the drain to
+    /// size the same block. Once evaluated without a viable band it has no
+    /// exit; an asset the book does not route never has one.
+    #[test]
+    fn an_unbanded_collateral_is_unknown_not_unexitable() {
+        let bk = book(vec![v2(1, e18(10_000), e18(10_000))]);
+        let mut w = warm();
+        let rc = WarmRouteCache::new(w.slot());
+
+        let t = w.rebuild(&bk, &Unladdered { evaluated: false });
+        assert!(t.unbanded(A0) && t.unbanded(A1), "the pool routes both");
+        assert_eq!(t.exit_cap(A0), U256::ZERO, "nothing solved");
+        assert!(rc.has_exit(A0, e18(1)), "unknown: the drain decides");
+        assert!(!rc.has_exit(A0, U256::ZERO));
+        assert!(!rc.has_exit(A2, e18(1)), "no route in the book: no exit");
+
+        let t = w.rebuild(&bk, &Unladdered { evaluated: true });
+        assert!(!t.unbanded(A0), "evaluated");
+        assert!(!rc.has_exit(A0, e18(1)), "evaluated, no band: no exit");
+    }
 
     /// Oracle: `has_exit` is the largest bucket whose `min(spot, twa)`
     /// output is within `max_impact_bps` of the zero-size marginal. A

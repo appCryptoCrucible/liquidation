@@ -45,3 +45,6 @@ discovery.env
 
 # Operator keys (ops/systemd/reth-liq.service and liq-bot.service EnvironmentFile)
 operator.env
+
+# RPC answers cached by the historical-liquidations test (crates/liq-replay)
+data/history-cache/

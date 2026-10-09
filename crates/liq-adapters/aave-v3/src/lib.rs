@@ -23,8 +23,8 @@ use liq_protocol::{
 use liq_types::{AssetId, LogFilter, LogSubscriber, Price, PriceVector, ProtocolId, Ray};
 
 pub use config::{
-    AssetConfig, BalanceModel, CloseFactorScope, Config, ConfigError, LiquidationParams,
-    PoolConfig, SourcePin,
+    AaveVersion, AssetConfig, BalanceModel, CloseFactorScope, Config, ConfigError,
+    LiquidationParams, PoolConfig, SourcePin,
 };
 
 use crate::events::{cfg as ccfg, halt, oracle, pool, provider, sentinel, stable, token};
@@ -74,6 +74,9 @@ fn decode_probe(raw: &[u8]) -> Result<Ray> {
 
 impl LogSubscriber for AaveV3 {
     fn subscriptions(&self) -> Vec<LogFilter> {
+        if self.cfg.liquidation.version == AaveVersion::V2 {
+            return self.subscriptions_v2();
+        }
         let mut out = Vec::new();
         for p in &self.cfg.pools {
             for t0 in [
@@ -342,7 +345,19 @@ impl Protocol for AaveV3 {
             if priced.is_empty() {
                 continue;
             }
-            let Ok(tag) = u32::try_from(i) else { continue };
+            let Ok(mut tag) = u32::try_from(i) else {
+                continue;
+            };
+            let mut priced = priced;
+            if self.cfg.liquidation.version == AaveVersion::V2 {
+                // ETH prices: WETH (exactly 1e18) first, the numeraire the
+                // bot restates the read in USD with.
+                let Some(w) = priced.iter().position(|(u, _)| *u == WETH) else {
+                    continue;
+                };
+                priced.swap(0, w);
+                tag |= ETH_QUOTED_READ;
+            }
             let (underlyings, assets): (Vec<Address>, Vec<AssetId>) = priced.into_iter().unzip();
             out.push(liq_protocol::PriceRead {
                 market: pool.market,
@@ -372,7 +387,110 @@ impl Protocol for AaveV3 {
     }
 }
 
+/// [`liq_protocol::PriceRead::tag`] bit of an Aave V2 read: its prices are
+/// ETH (wei per whole token), WETH first at exactly one RAY, which the bot
+/// restates in USD with WETH's USD price.
+pub const ETH_QUOTED_READ: u32 = 1 << 31;
+
+const WETH: Address = alloy_primitives::address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+
 impl AaveV3 {
+    /// Aave V2: the pool's, configurator's, oracle's and provider's V2
+    /// events, and every aToken / variable / stable debt token's.
+    fn subscriptions_v2(&self) -> Vec<LogFilter> {
+        use events::v2;
+        let mut out = Vec::new();
+        let mut push = |address: Address, topics: &[alloy_primitives::B256]| {
+            out.extend(topics.iter().map(|&topic0| LogFilter { address, topic0 }));
+        };
+        for p in &self.cfg.pools {
+            push(
+                p.address,
+                &[
+                    pool::ReserveDataUpdated::SIGNATURE_HASH,
+                    pool::Withdraw::SIGNATURE_HASH,
+                    pool::ReserveUsedAsCollateralEnabled::SIGNATURE_HASH,
+                    pool::ReserveUsedAsCollateralDisabled::SIGNATURE_HASH,
+                    pool::LiquidationCall::SIGNATURE_HASH,
+                    v2::pool::Deposit::SIGNATURE_HASH,
+                    v2::pool::Borrow::SIGNATURE_HASH,
+                    v2::pool::Repay::SIGNATURE_HASH,
+                    v2::pool::Swap::SIGNATURE_HASH,
+                    v2::pool::RebalanceStableBorrowRate::SIGNATURE_HASH,
+                    v2::pool::FlashLoan::SIGNATURE_HASH,
+                    v2::pool::Paused::SIGNATURE_HASH,
+                    v2::pool::Unpaused::SIGNATURE_HASH,
+                    halt::Upgraded::SIGNATURE_HASH,
+                ],
+            );
+            push(
+                p.configurator,
+                &[
+                    ccfg::ReserveInitialized::SIGNATURE_HASH,
+                    ccfg::CollateralConfigurationChanged::SIGNATURE_HASH,
+                    v2::cfg::BorrowingEnabledOnReserve::SIGNATURE_HASH,
+                    v2::cfg::BorrowingDisabledOnReserve::SIGNATURE_HASH,
+                    v2::cfg::StableRateEnabledOnReserve::SIGNATURE_HASH,
+                    v2::cfg::StableRateDisabledOnReserve::SIGNATURE_HASH,
+                    v2::cfg::ReserveActivated::SIGNATURE_HASH,
+                    v2::cfg::ReserveDeactivated::SIGNATURE_HASH,
+                    v2::cfg::ReserveFrozen::SIGNATURE_HASH,
+                    v2::cfg::ReserveUnfrozen::SIGNATURE_HASH,
+                    v2::cfg::ReserveFactorChanged::SIGNATURE_HASH,
+                    v2::cfg::ReserveDecimalsChanged::SIGNATURE_HASH,
+                    v2::cfg::ReserveInterestRateStrategyChanged::SIGNATURE_HASH,
+                    ccfg::ATokenUpgraded::SIGNATURE_HASH,
+                    ccfg::VariableDebtTokenUpgraded::SIGNATURE_HASH,
+                    v2::cfg::StableDebtTokenUpgraded::SIGNATURE_HASH,
+                    halt::Upgraded::SIGNATURE_HASH,
+                ],
+            );
+            push(
+                p.oracle,
+                &[
+                    oracle::AssetSourceUpdated::SIGNATURE_HASH,
+                    oracle::FallbackOracleUpdated::SIGNATURE_HASH,
+                    v2::oracle::WethSet::SIGNATURE_HASH,
+                ],
+            );
+            push(
+                p.provider,
+                &[
+                    v2::provider::LendingPoolUpdated::SIGNATURE_HASH,
+                    v2::provider::ConfigurationAdminUpdated::SIGNATURE_HASH,
+                    v2::provider::EmergencyAdminUpdated::SIGNATURE_HASH,
+                    v2::provider::LendingPoolConfiguratorUpdated::SIGNATURE_HASH,
+                    v2::provider::LendingPoolCollateralManagerUpdated::SIGNATURE_HASH,
+                    v2::provider::PriceOracleUpdated::SIGNATURE_HASH,
+                    v2::provider::LendingRateOracleUpdated::SIGNATURE_HASH,
+                    v2::provider::ProxyCreated::SIGNATURE_HASH,
+                    v2::provider::AddressSet::SIGNATURE_HASH,
+                ],
+            );
+            if p.grace_sentinel != Address::ZERO {
+                push(
+                    p.grace_sentinel,
+                    &[v2::grace::GracePeriodSet::SIGNATURE_HASH],
+                );
+            }
+            for &t in &p.tokens {
+                push(
+                    t,
+                    &[
+                        v2::atoken::Mint::SIGNATURE_HASH,
+                        v2::atoken::Burn::SIGNATURE_HASH,
+                        token::BalanceTransfer::SIGNATURE_HASH,
+                        v2::vtoken::Mint::SIGNATURE_HASH,
+                        v2::vtoken::Burn::SIGNATURE_HASH,
+                        stable::Mint::SIGNATURE_HASH,
+                        stable::Burn::SIGNATURE_HASH,
+                    ],
+                );
+            }
+        }
+        out
+    }
+
     /// Reserves of `pool` with a pinned price source and an interned asset,
     /// in config order (the order a read asks and its answer returns).
     fn priced_underlyings(&self, pool: Address) -> Vec<(Address, AssetId)> {

@@ -10,13 +10,22 @@ import {
     MockCurveNgLp, MockPendleMarket, MockPendleFactory
 } from "./Mocks.sol";
 import {MainnetVenues} from "../../src/lib/MainnetVenues.sol";
+import {DexModule} from "../../src/DexModule.sol";
 
 /// Pool-direct UniswapV2 / SushiSwap and Curve legs. The success paths run
 /// the reference liquidation with the repay swap on the new venue; the
 /// refusals prove a plan cannot send funds to a pool the Executor has not
-/// verified on chain (CREATE2 for V2, MetaRegistry + coin indices for Curve).
+/// verified on chain (CREATE2 for V2; for Curve the MetaRegistry handler the
+/// leg names, and the coin indices).
 contract ExecutorVenuesTest is ExecutorTestBase {
     uint128 constant MIN_PROFIT = 0.5e18;
+    /// The MetaRegistry handler the Curve doubles are registered in. Not 0,
+    /// so a leg that dropped its handler byte cannot pass by default.
+    uint8 constant H = 1;
+    /// A handler that exists and does not hold them.
+    uint8 constant H_OTHER = 0;
+    /// Past `registry_length`: `get_registry` reads the zero address.
+    uint8 constant H_NONE = 200;
 
     /// A V2 pair at the address `factory_` derives for (COLL, DEBT), priced
     /// at 1 COLL = 60_000 DEBT with deep reserves.
@@ -37,7 +46,7 @@ contract ExecutorVenuesTest is ExecutorTestBase {
         c = new MockCurvePool(coins);
         c.setRate(600, 1); // 1 raw COLL → 600 raw DEBT = 60_000 DEBT / COLL
         debt.mint(address(c), 1e15);
-        if (register) curveRegistry.register(address(c));
+        if (register) curveRegistry.register(address(c), H);
     }
 
     function _crypto(bool register) internal returns (MockCurveCryptoPool c) {
@@ -47,7 +56,7 @@ contract ExecutorVenuesTest is ExecutorTestBase {
         c = new MockCurveCryptoPool(coins);
         c.setRate(600, 1);
         debt.mint(address(c), 1e15);
-        if (register) curveRegistry.register(address(c));
+        if (register) curveRegistry.register(address(c), H);
     }
 
     function _planWith(bytes memory repay, uint8 profitCount, bytes memory profitLegs)
@@ -72,18 +81,18 @@ contract ExecutorVenuesTest is ExecutorTestBase {
         MockV2Pair p = _pair(v2Factory, V2_HASH);
         uint256 sinkBefore = weth.balanceOf(sink);
         _exec(_planWith(
-            PB.v2Swap(address(p), 0, address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.v2Swap(address(p), 0, address(coll), address(debt), PB.L_EXACT_OUT, REPAY),
             1, _collProfit()
         ));
         assertGt(weth.balanceOf(sink), sinkBefore, "no profit");
-        assertEq(debt.balanceOf(address(ex)), 0, "exact-out bought exactly the flash owed");
+        assertEq(debt.balanceOf(address(ex)), 0, "exact-out bought the pull and the premium, no more");
         _assertClean();
     }
 
     function test_v2_sushi_pair_is_verified_by_its_own_factory() public {
         MockV2Pair p = _pair(sushiFactory, SUSHI_HASH);
         _exec(_planWith(
-            PB.v2Swap(address(p), 1, address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.v2Swap(address(p), 1, address(coll), address(debt), PB.L_EXACT_OUT, REPAY),
             1, _collProfit()
         ));
         _assertClean();
@@ -93,7 +102,7 @@ contract ExecutorVenuesTest is ExecutorTestBase {
         MockV2Pair p = _pair(v2Factory, V2_HASH);
         vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(2), address(p)));
         _exec(_planWith(
-            PB.v2Swap(address(p), 1, address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.v2Swap(address(p), 1, address(coll), address(debt), PB.L_EXACT_OUT, REPAY),
             1, _collProfit()
         ));
     }
@@ -102,7 +111,7 @@ contract ExecutorVenuesTest is ExecutorTestBase {
         address rogue = makeAddr("rogue");
         vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(2), rogue));
         _exec(_planWith(
-            PB.v2Swap(rogue, 0, address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.v2Swap(rogue, 0, address(coll), address(debt), PB.L_EXACT_OUT, REPAY),
             1, _collProfit()
         ));
     }
@@ -111,7 +120,7 @@ contract ExecutorVenuesTest is ExecutorTestBase {
         MockV2Pair p = _pair(v2Factory, V2_HASH);
         vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(2), address(p)));
         _exec(_planWith(
-            PB.v2Swap(address(p), 7, address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.v2Swap(address(p), 7, address(coll), address(debt), PB.L_EXACT_OUT, REPAY),
             1, _collProfit()
         ));
     }
@@ -125,7 +134,7 @@ contract ExecutorVenuesTest is ExecutorTestBase {
         uint128 collIn = 0.51e8; // → 30_600 DEBT ≥ 30_015 owed
         uint256 sinkBefore = weth.balanceOf(sink);
         _exec(_planWith(
-            PB.curveSwap(address(c), 0, 1, address(coll), address(debt), 0, collIn),
+            PB.curveSwap(address(c), 0, 1, H, address(coll), address(debt), 0, collIn),
             2,
             bytes.concat(
                 _collProfit(),
@@ -140,18 +149,45 @@ contract ExecutorVenuesTest is ExecutorTestBase {
 
     function test_curve_unregistered_pool_is_refused() public {
         MockCurvePool c = _curve(false);
-        vm.expectRevert(bytes("no registry"));
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(3), address(c)));
         _exec(_planWith(
-            PB.curveSwap(address(c), 0, 1, address(coll), address(debt), 0, 0.51e8),
+            PB.curveSwap(address(c), 0, 1, H, address(coll), address(debt), 0, 0.51e8),
             1, _collProfit()
         ));
+    }
+
+    /// The leg names the handler; only that one is asked. Oracle: the
+    /// registry double's own table, where the pool sits in handler `H` and
+    /// nowhere else (the deployed MetaRegistry keeps one handler per index
+    /// and the zero address past its list).
+    function test_curve_pool_named_with_another_handler_is_refused() public {
+        MockCurvePool c = _curve(true);
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(3), address(c)));
+        _exec(_planWith(
+            PB.curveSwap(address(c), 0, 1, H_OTHER, address(coll), address(debt), 0, 0.51e8),
+            1, _collProfit()
+        ));
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(3), address(c)));
+        _exec(_planWith(
+            PB.curveSwap(address(c), 0, 1, H_NONE, address(coll), address(debt), 0, 0.51e8),
+            1, _collProfit()
+        ));
+    }
+
+    /// A leg in the layout before the handler byte (pool, i, j: 22 bytes)
+    /// is refused whole, not read with a handler of its own invention.
+    function test_curve_leg_without_a_handler_byte_is_refused() public {
+        MockCurvePool c = _curve(true);
+        bytes memory old = PB.swap(3, address(coll), address(debt), 0, 0.51e8, abi.encodePacked(address(c), uint8(0), uint8(1)));
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(3), address(0)));
+        _exec(_planWith(old, 1, _collProfit()));
     }
 
     function test_curve_wrong_coin_index_is_refused() public {
         MockCurvePool c = _curve(true);
         vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(3), address(c)));
         _exec(_planWith(
-            PB.curveSwap(address(c), 1, 0, address(coll), address(debt), 0, 0.51e8),
+            PB.curveSwap(address(c), 1, 0, H, address(coll), address(debt), 0, 0.51e8),
             1, _collProfit()
         ));
     }
@@ -160,7 +196,7 @@ contract ExecutorVenuesTest is ExecutorTestBase {
         MockCurvePool c = _curve(true);
         vm.expectRevert(abi.encodeWithSelector(Executor.ExactOutUnsupported.selector, uint8(3)));
         _exec(_planWith(
-            PB.curveSwap(address(c), 0, 1, address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.curveSwap(address(c), 0, 1, H, address(coll), address(debt), PB.L_EXACT_OUT, OWED),
             1, _collProfit()
         ));
     }
@@ -173,7 +209,7 @@ contract ExecutorVenuesTest is ExecutorTestBase {
         MockCurveCryptoPool c = _crypto(true);
         uint256 sinkBefore = weth.balanceOf(sink);
         _exec(_planWith(
-            PB.curveCryptoSwap(address(c), 0, 1, address(coll), address(debt), 0, 0.51e8),
+            PB.curveCryptoSwap(address(c), 0, 1, H, address(coll), address(debt), 0, 0.51e8),
             2,
             bytes.concat(
                 _collProfit(),
@@ -188,9 +224,24 @@ contract ExecutorVenuesTest is ExecutorTestBase {
 
     function test_curve_crypto_unregistered_pool_is_refused() public {
         MockCurveCryptoPool c = _crypto(false);
-        vm.expectRevert(bytes("no registry"));
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(4), address(c)));
         _exec(_planWith(
-            PB.curveCryptoSwap(address(c), 0, 1, address(coll), address(debt), 0, 0.51e8),
+            PB.curveCryptoSwap(address(c), 0, 1, H, address(coll), address(debt), 0, 0.51e8),
+            1, _collProfit()
+        ));
+    }
+
+    /// Same handler check as the plain venue, on the crypto venue.
+    function test_curve_crypto_pool_named_with_another_handler_is_refused() public {
+        MockCurveCryptoPool c = _crypto(true);
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(4), address(c)));
+        _exec(_planWith(
+            PB.curveCryptoSwap(address(c), 0, 1, H_OTHER, address(coll), address(debt), 0, 0.51e8),
+            1, _collProfit()
+        ));
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(4), address(c)));
+        _exec(_planWith(
+            PB.curveCryptoSwap(address(c), 0, 1, H_NONE, address(coll), address(debt), 0, 0.51e8),
             1, _collProfit()
         ));
     }
@@ -199,7 +250,7 @@ contract ExecutorVenuesTest is ExecutorTestBase {
         MockCurveCryptoPool c = _crypto(true);
         vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(4), address(c)));
         _exec(_planWith(
-            PB.curveCryptoSwap(address(c), 1, 0, address(coll), address(debt), 0, 0.51e8),
+            PB.curveCryptoSwap(address(c), 1, 0, H, address(coll), address(debt), 0, 0.51e8),
             1, _collProfit()
         ));
     }
@@ -208,7 +259,7 @@ contract ExecutorVenuesTest is ExecutorTestBase {
         MockCurveCryptoPool c = _crypto(true);
         vm.expectRevert(abi.encodeWithSelector(Executor.ExactOutUnsupported.selector, uint8(4)));
         _exec(_planWith(
-            PB.curveCryptoSwap(address(c), 0, 1, address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.curveCryptoSwap(address(c), 0, 1, H, address(coll), address(debt), PB.L_EXACT_OUT, OWED),
             1, _collProfit()
         ));
     }
@@ -219,7 +270,7 @@ contract ExecutorVenuesTest is ExecutorTestBase {
         MockCurveCryptoPool c = _crypto(true);
         vm.expectRevert();
         _exec(_planWith(
-            PB.curveSwap(address(c), 0, 1, address(coll), address(debt), 0, 0.51e8),
+            PB.curveSwap(address(c), 0, 1, H, address(coll), address(debt), 0, 0.51e8),
             1, _collProfit()
         ));
     }
@@ -234,7 +285,7 @@ contract ExecutorVenuesTest is ExecutorTestBase {
             PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 2),
             PB.legV3(address(pool), borrower, address(v), REPAY),
             unwrapLeg,
-            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, REPAY),
             PB.profit(1, _collProfit())
         );
     }
@@ -278,7 +329,7 @@ contract ExecutorVenuesTest is ExecutorTestBase {
         lp = new MockCurveNgLp(coins);
         lp.mint(address(pool), 1e12);
         coll.mint(address(lp), 1e12);
-        if (register) curveRegistry.register(address(lp));
+        if (register) curveRegistry.register(address(lp), H);
     }
 
     function _lpPlan(address lp, bytes memory withdrawLeg) internal view returns (bytes memory) {
@@ -287,7 +338,7 @@ contract ExecutorVenuesTest is ExecutorTestBase {
             PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 2),
             PB.legV3(address(pool), borrower, lp, REPAY),
             withdrawLeg,
-            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, REPAY),
             PB.profit(1, _collProfit())
         );
     }
@@ -295,7 +346,7 @@ contract ExecutorVenuesTest is ExecutorTestBase {
     function test_curve_lp_withdraws_one_coin_then_repays() public {
         MockCurveNgLp lp = _ngLp(true);
         uint256 sinkBefore = weth.balanceOf(sink);
-        _exec(_lpPlan(address(lp), PB.curveLpOneCoin(address(lp), 0, address(coll))));
+        _exec(_lpPlan(address(lp), PB.curveLpOneCoin(address(lp), 0, H, address(coll))));
         assertGt(weth.balanceOf(sink), sinkBefore, "no profit");
         assertEq(lp.balanceOf(address(ex)), 0, "LP all withdrawn");
         _assertClean();
@@ -303,14 +354,23 @@ contract ExecutorVenuesTest is ExecutorTestBase {
 
     function test_curve_lp_unregistered_pool_is_refused() public {
         MockCurveNgLp lp = _ngLp(false);
-        vm.expectRevert(bytes("no registry"));
-        _exec(_lpPlan(address(lp), PB.curveLpOneCoin(address(lp), 0, address(coll))));
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(7), address(lp)));
+        _exec(_lpPlan(address(lp), PB.curveLpOneCoin(address(lp), 0, H, address(coll))));
+    }
+
+    /// Same handler check as the swap venues, on the LP withdrawal.
+    function test_curve_lp_named_with_another_handler_is_refused() public {
+        MockCurveNgLp lp = _ngLp(true);
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(7), address(lp)));
+        _exec(_lpPlan(address(lp), PB.curveLpOneCoin(address(lp), 0, H_OTHER, address(coll))));
+        vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(7), address(lp)));
+        _exec(_lpPlan(address(lp), PB.curveLpOneCoin(address(lp), 0, H_NONE, address(coll))));
     }
 
     function test_curve_lp_wrong_coin_is_refused() public {
         MockCurveNgLp lp = _ngLp(true);
         vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(7), address(lp)));
-        _exec(_lpPlan(address(lp), PB.curveLpOneCoin(address(lp), 1, address(coll))));
+        _exec(_lpPlan(address(lp), PB.curveLpOneCoin(address(lp), 1, H, address(coll))));
     }
 
     /// The pool must be the LP being spent: a registered pool cannot be named
@@ -318,7 +378,7 @@ contract ExecutorVenuesTest is ExecutorTestBase {
     function test_curve_lp_pool_must_be_the_spent_token() public {
         MockCurveNgLp lp = _ngLp(true);
         MockCurveNgLp other = _ngLp(true);
-        bytes memory leg = PB.swap(7, address(lp), address(coll), PB.L_TAKE_BALANCE, 0, abi.encodePacked(address(other), uint8(0)));
+        bytes memory leg = PB.swap(7, address(lp), address(coll), PB.L_TAKE_BALANCE, 0, abi.encodePacked(address(other), uint8(0), H));
         vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, uint8(7), address(other)));
         _exec(_lpPlan(address(lp), leg));
     }
@@ -345,7 +405,7 @@ contract ExecutorVenuesTest is ExecutorTestBase {
             PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 2),
             PB.legV3(address(pool), borrower, pt, REPAY),
             redeemLeg,
-            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, REPAY),
             PB.profit(1, _collProfit())
         );
     }
@@ -430,14 +490,29 @@ contract ExecutorVenuesTest is ExecutorTestBase {
 
     /// The venue anchors are the swap module's.
     function test_constructor_rejects_zero_venue_anchors() public {
+        address dexm = swapModule.DEX_MODULE();
         vm.expectRevert(Executor.ZeroAddress.selector);
         new SwapModule(address(weth), address(routerA), address(routerB),
-            address(0), V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry));
+            address(0), V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry), dexm);
         vm.expectRevert(Executor.ZeroAddress.selector);
         new SwapModule(address(weth), address(routerA), address(routerB),
-            v2Factory, V2_HASH, address(0), SUSHI_HASH, address(curveRegistry));
+            v2Factory, V2_HASH, address(0), SUSHI_HASH, address(curveRegistry), dexm);
         vm.expectRevert(Executor.ZeroAddress.selector);
         new SwapModule(address(weth), address(routerA), address(routerB),
-            v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(0));
+            v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(0), dexm);
+        vm.expectRevert(Executor.ZeroAddress.selector);
+        new SwapModule(address(weth), address(routerA), address(routerB),
+            v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry), address(0));
+    }
+
+    /// The dex module must be a `DexModule` for this WETH: an EOA, any other
+    /// contract, or one built for another WETH is refused at deploy.
+    function test_constructor_refuses_a_dex_module_that_is_not_one_for_this_weth() public {
+        for (uint256 k; k < 3; ++k) {
+            address bad = k == 0 ? makeAddr("eoa") : k == 1 ? address(weth) : address(new DexModule(makeAddr("other-weth")));
+            vm.expectRevert(abi.encodeWithSelector(SwapModule.BadDexModule.selector, bad));
+            new SwapModule(address(weth), address(routerA), address(routerB),
+                v2Factory, V2_HASH, sushiFactory, SUSHI_HASH, address(curveRegistry), bad);
+        }
     }
 }

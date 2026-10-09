@@ -753,4 +753,223 @@ mod tests {
         }
         assert!(accrued > 0, "no account with debt was compared");
     }
+
+    /// Live: every Silo silo's totals read at ten consecutive blocks and
+    /// folded, as the reader does each head, then projected 50 blocks
+    /// (about ten minutes) on, against the silo's own `getDebtAssets()` /
+    /// `getCollateralAssets()` there. Only borrowed silos that did not
+    /// accrue over the span (an accrual resets the base). A silo with a
+    /// measured rate must recover the span's interest, debt and collateral
+    /// (net of fees), to within a tenth of it; one without must not have
+    /// grown the 100 units a measurement needs over the reads (it is then
+    /// held at the chain's totals, short of the interest since).
+    #[test]
+    #[ignore = "needs MAINNET_RPC_URL"]
+    fn live_silo_totals_project_to_what_the_silo_reports_later() {
+        use alloy_sol_types::SolEvent;
+        use liq_adapters_silo_v2::events::{factory, silo};
+        use liq_adapters_silo_v2::health::totals_at;
+        sol! {
+            function getDebtAssets() returns (uint256);
+            function getCollateralAssets() returns (uint256);
+            function utilizationData() returns (uint256, uint256, uint64);
+            function getCurrentBlockTimestamp() returns (uint256);
+        }
+        const MULTICALL3: Address = address!("cA11bde05977b3631167028862bE2a173976CA11");
+        let url = std::env::var("MAINNET_RPC_URL").unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let rpc = HttpRpc::connect(&url).unwrap();
+        let head = rt.block_on(rpc.block_number()).unwrap();
+        let (first, b0, b1) = (head - 60, head - 51, head - 1);
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut out = crate::bind::ProtocolLoad::default();
+        crate::bind::push_silo(&root.join("config/protocols"), &mut out);
+        assert!(out.omitted.is_empty(), "omitted: {:?}", out.omitted);
+        let protocols: &'static [BoundProtocol] = Box::leak(out.protocols.into_boxed_slice());
+        let BoundProtocol::SiloV2(p) = &protocols[0] else {
+            panic!("silo not bound");
+        };
+        let cfg = p.config();
+        let call = |to: Address, data: Vec<u8>, block: u64| {
+            rt.block_on(rpc.call_at(to, data.into(), block)).unwrap()
+        };
+        let ts_at = |block: u64| -> u64 {
+            let raw = call(
+                MULTICALL3,
+                getCurrentBlockTimestampCall {}.abi_encode(),
+                block,
+            );
+            u64::try_from(U256::from_be_slice(&raw[..32])).unwrap()
+        };
+        let ts1 = ts_at(b1);
+
+        // The silos borrowed from on chain (the bot's own store knows which
+        // from their events; asking only those keeps the reads per block
+        // what a node serves).
+        let silos: Vec<Address> = cfg
+            .pairs
+            .iter()
+            .flat_map(|p| [p.silo0.silo, p.silo1.silo])
+            .collect();
+        let debts = rt
+            .block_on(crate::pool_seed::aggregate(
+                &rpc,
+                silos
+                    .iter()
+                    .map(|s| crate::pool_seed::call(*s, getDebtAssetsCall {}.abi_encode()))
+                    .collect(),
+                first,
+            ))
+            .expect("debt totals");
+        let borrowed: Vec<Address> = silos
+            .iter()
+            .zip(&debts)
+            .filter(|(_, r)| {
+                r.success && r.returnData.len() >= 32 && r.returnData[..32] != [0u8; 32]
+            })
+            .map(|(s, _)| *s)
+            .collect();
+
+        // List every pair through the adapter's own `NewSilo`, and give each
+        // borrowed silo a unit of debt so its totals are asked for (the read
+        // then replaces them with the chain's).
+        let mut st = JournalStore::default();
+        let fold = |st: &mut JournalStore, at: Address, ev: &dyn Fn() -> (Vec<B256>, Vec<u8>)| {
+            let (topics, data) = ev();
+            let log = liq_protocol::DecodedLog {
+                address: at,
+                topics: &topics,
+                data: &data,
+                block: 1,
+                timestamp: 1,
+            };
+            liq_protocol::Protocol::apply_log(p, st, &log).unwrap();
+        };
+        for pair in &cfg.pairs {
+            let listed = factory::NewSilo {
+                implementation: Address::ZERO,
+                token0: pair.silo0.token,
+                token1: pair.silo1.token,
+                silo0: pair.silo0.silo,
+                silo1: pair.silo1.silo,
+                siloConfig: pair.silo_config,
+            };
+            fold(&mut st, cfg.factories[0], &|| {
+                (
+                    listed.encode_topics().into_iter().map(|t| t.0).collect(),
+                    listed.encode_data(),
+                )
+            });
+            for side in [&pair.silo0, &pair.silo1] {
+                if !borrowed.contains(&side.silo) {
+                    continue;
+                }
+                let unit = silo::Borrow {
+                    sender: Address::repeat_byte(1),
+                    receiver: Address::repeat_byte(1),
+                    owner: Address::repeat_byte(1),
+                    assets: U256::from(1u8),
+                    shares: U256::from(1u8),
+                };
+                fold(&mut st, side.silo, &|| {
+                    (
+                        unit.encode_topics().into_iter().map(|t| t.0).collect(),
+                        unit.encode_data(),
+                    )
+                });
+            }
+        }
+        struct Rows<'a>(&'a JournalStore);
+        impl MarketRows for Rows<'_> {
+            fn rows(&self, m: MarketId) -> Option<&[liq_protocol::MarketRow]> {
+                self.0.markets(m).ok()
+            }
+        }
+        let reads: StateReadSet = liq_protocol::Protocol::state_reads(p, &Rows(&st))
+            .into_iter()
+            .map(|r| (0, r))
+            .collect();
+        assert_eq!(reads.len(), borrowed.len() * 4);
+        for b in first..=b0 {
+            let ts = ts_at(b);
+            // A free-tier endpoint throttles bursts: retry a block's batch.
+            let mut batch = rt.block_on(read_state_block(protocols, &rpc, &reads, b));
+            for _ in 0..4 {
+                if batch.failed == 0 {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                batch = rt.block_on(read_state_block(protocols, &rpc, &reads, b));
+            }
+            assert_eq!(batch.failed, 0, "multicall batches failed");
+            liq_protocol::Protocol::apply_state_reads(p, &mut st, ts, &batch.answers_for(0))
+                .unwrap();
+        }
+
+        let word = |raw: &[u8], i: usize| U256::from_be_slice(&raw[i * 32..i * 32 + 32]);
+        let (mut compared, mut unmeasured, mut worst) = (0usize, 0usize, 0u128);
+        for pair in &cfg.pairs {
+            for (slot, side) in [(0u16, &pair.silo0), (1, &pair.silo1)] {
+                let row = st
+                    .market(liq_protocol::MarketSlot {
+                        market: pair.market,
+                        slot,
+                    })
+                    .unwrap();
+                let body = row.body::<liq_adapters_silo_v2::layout::SiloRow>().unwrap();
+                let debt0 = body.total_debt_assets;
+                if debt0 == 0 {
+                    continue;
+                }
+                let irts =
+                    |b: u64| word(&call(side.silo, utilizationDataCall {}.abi_encode(), b), 2);
+                if irts(first) != irts(b1) {
+                    continue; // accrued over the span: a new base
+                }
+                let measured =
+                    body.flags & liq_adapters_silo_v2::layout::SiloRow::GROWTH_KNOWN != 0;
+                if !measured {
+                    let at_first = word(
+                        &call(side.silo, getDebtAssetsCall {}.abi_encode(), first),
+                        0,
+                    );
+                    let grew = u128::try_from(U256::from(debt0) - at_first).unwrap();
+                    assert!(
+                        grew < 100,
+                        "silo {:#x}: grew {grew} over the reads but no rate was measured",
+                        side.silo
+                    );
+                    unmeasured += 1;
+                    continue;
+                }
+                let debt1 = word(&call(side.silo, getDebtAssetsCall {}.abi_encode(), b1), 0);
+                let coll1 = word(
+                    &call(side.silo, getCollateralAssetsCall {}.abi_encode(), b1),
+                    0,
+                );
+                let (pd, pc) = totals_at(row, ts1).unwrap();
+                for (what, base, proj, actual) in [
+                    ("debt", debt0, pd, debt1),
+                    ("collateral", body.total_collateral_assets, pc, coll1),
+                ] {
+                    let actual = u128::try_from(actual).unwrap();
+                    let grew = actual - base;
+                    let err = proj.abs_diff(actual);
+                    assert!(
+                        err <= grew / 10 + 1,
+                        "silo {:#x} {what}: projected {proj}, chain {actual}, the span's growth {grew}",
+                        side.silo
+                    );
+                    if let Some(bps) = (err * 10_000).checked_div(grew) {
+                        worst = worst.max(bps);
+                    }
+                }
+                compared += 1;
+            }
+        }
+        eprintln!(
+            "silo blocks {b0}..{b1}: {compared} borrowed silos projected ({unmeasured} still measuring); worst error {worst} bps of the span's interest"
+        );
+        assert!(compared > 0);
+    }
 }

@@ -88,7 +88,9 @@ contract ExecutorCoverage10CTest is ExecutorTestBase {
     function test_surplus_borrow_take_balance_routes_leftover_debt() public {
         uint128 flash = REPAY * 2;
         uint128 owedFlash = flash + uint128(uint256(flash) * 5 / 10_000);
-        uint128 buy = owedFlash - (flash - REPAY);
+        // The pull: the unspent half of the flash is still here, and the
+        // Executor adds the premium on the whole of it.
+        uint128 buy = REPAY;
         bytes memory plan = bytes.concat(
             PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
             PB.groupHead(PB.P_AAVE, address(pool), address(debt), flash, 1, 1),
@@ -147,7 +149,7 @@ contract ExecutorCoverage10CTest is ExecutorTestBase {
             PB.header(PB.F_SWEEP, 0, GAS_COST, 0, 1),
             PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 1),
             PB.legV3(address(pool), b, address(fot), REPAY),
-            PB.poolSwap(address(pFotDebt), address(fot), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.poolSwap(address(pFotDebt), address(fot), address(debt), PB.L_EXACT_OUT, REPAY),
             PB.profit(1, PB.poolSwap(address(pFotWeth), address(fot), address(weth), PB.L_TAKE_BALANCE, 0))
         );
         uint256 poolDebt = debt.balanceOf(address(pool));
@@ -215,7 +217,7 @@ contract ExecutorCoverage10CTest is ExecutorTestBase {
             PB.groupHead(PB.P_AAVE, address(pool), address(debt), 15_000e6, 2, 1),
             PB.legV3(address(pool), beaten, address(coll), 15_000e6),
             PB.legV3(address(pool), live1, address(coll), 15_000e6),
-            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, 15_007.5e6),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, 15_000e6),
             PB.groupHead(PB.P_MORPHO, address(morpho), address(debt), 15_000e6, 1, 1),
             PB.legV3(address(pool), live2, address(coll), 15_000e6),
             PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, 15_000e6),
@@ -244,7 +246,7 @@ contract ExecutorCoverage10CTest is ExecutorTestBase {
             PB.header(PB.F_SWEEP, 0, GAS_COST, 0.3e18, 3),
             PB.groupHead(PB.P_AAVE, address(pool), address(debt), 10_000e6, 1, 1),
             PB.legV3(address(pool), b0, address(coll), 10_000e6),
-            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, 10_005e6),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, 10_000e6),
             PB.groupHead(PB.P_MORPHO, address(morpho), address(debt), 12_000e6, 1, 1),
             PB.legV3(address(pool), b1, address(coll), 12_000e6),
             PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, 12_000e6),

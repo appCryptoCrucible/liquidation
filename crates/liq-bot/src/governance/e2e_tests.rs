@@ -72,6 +72,7 @@ fn adapter(d: &Deploy) -> AaveV3 {
             sentinel: Address::ZERO,
             sequencer_oracle: Address::ZERO,
             tokens: Vec::new(),
+            grace_sentinel: Address::ZERO,
         }],
         assets: vec![asset(d.weth, WETH, 1), asset(d.dai, DAI, 2)],
         price_sources: vec![
@@ -93,6 +94,7 @@ fn adapter(d: &Deploy) -> AaveV3 {
             oracle_decimals: 8,
             balance_model: BalanceModel::TokenMath35,
             close_factor_scope: CloseFactorScope::PositionBase,
+            version: Default::default(),
         },
         pinned_through: DEPLOY_BLOCK,
     })

@@ -12,10 +12,6 @@ interface IERC20F {
     function allowance(address, address) external view returns (uint256);
 }
 
-interface IAavePoolFeeF {
-    function FLASHLOAN_PREMIUM_TOTAL() external view returns (uint128);
-}
-
 /// `vaultT1/coreModule/main.sol` at `9496626f`.
 interface IFluidVaultT1F {
     function operate(uint256 nftId_, int256 newCol_, int256 newDebt_, address to_)
@@ -281,14 +277,13 @@ contract ForkFluidTest is Test {
         uint256 ethOut = _withdrawInToken0(_supplyDex(VAULT_T2_ETH_OSETH_WSTETH), colShares);
         uint256 colPer = colShares * 1e18 / debt * 99 / 100;
         uint256 colPerShare = ethOut * 1e18 / colShares * 99 / 100;
-        uint256 bps = IAavePoolFeeF(AAVE_V3_POOL).FLASHLOAN_PREMIUM_TOTAL();
-        uint256 fee = (debt * bps + 10_000 - 1) / 10_000;
+        // The repay leg buys the pull; the Executor adds Aave's premium.
         bytes memory plan = bytes.concat(
             PB.header(PB.F_SWEEP, 0, 0, 0, 1),
             PB.groupHead(PB.P_AAVE, AAVE_V3_POOL, WSTETH, uint128(debt), 1, 1),
             PB.legFluidT(VAULT_T2_ETH_OSETH_WSTETH, VAULT_T2_ETH_OSETH_WSTETH, WETH, uint128(debt),
                 2, PB.FL_NATIVE_COL, colPer, 0, colPerShare),
-            PB.poolSwap(WSTETH_WETH_001, WETH, WSTETH, PB.L_EXACT_OUT, uint128(debt + fee)),
+            PB.poolSwap(WSTETH_WETH_001, WETH, WSTETH, PB.L_EXACT_OUT, uint128(debt)),
             PB.profit(0, "")
         );
         uint256 sinkBefore = IERC20F(WETH).balanceOf(sink);
@@ -340,15 +335,14 @@ contract ForkFluidTest is Test {
     // ── shared ─────────────────────────────────────────────────────────
 
     /// Aave flashes USDC, the vault is liquidated, the seized ETH (wrapped
-    /// by the Executor) buys back the USDC owed, the rest is WETH profit.
+    /// by the Executor) buys back the USDC owed (the pull, plus the premium
+    /// the Executor adds), the rest is WETH profit.
     function _runUsdcPlan(bytes memory leg, uint256 repay) internal {
-        uint256 bps = IAavePoolFeeF(AAVE_V3_POOL).FLASHLOAN_PREMIUM_TOTAL();
-        uint256 fee = (repay * bps + 10_000 - 1) / 10_000;
         bytes memory plan = bytes.concat(
             PB.header(PB.F_SWEEP, 0, 0, 0, 1),
             PB.groupHead(PB.P_AAVE, AAVE_V3_POOL, USDC, uint128(repay), 1, 1),
             leg,
-            PB.poolSwap(USDC_WETH_005, WETH, USDC, PB.L_EXACT_OUT, uint128(repay + fee)),
+            PB.poolSwap(USDC_WETH_005, WETH, USDC, PB.L_EXACT_OUT, uint128(repay)),
             PB.profit(0, "")
         );
         // The Executor's test address holds mainnet dust; compare, don't zero.
@@ -361,7 +355,7 @@ contract ForkFluidTest is Test {
         assertGt(IERC20F(WETH).balanceOf(sink), sinkBefore, "no WETH profit");
         assertEq(IERC20F(WETH).balanceOf(address(ex)), wethBefore, "weth left");
         // T1 `liquidate` can repay a wei under `debtAmt_` (its raw-amount
-        // rounding), and the repay swap buys `repay + fee` regardless: at
+        // rounding), and the repay swap buys `repay` and the premium regardless: at
         // most one wei of the debt token stays behind. `sweep()` clears it.
         assertLe(IERC20F(USDC).balanceOf(address(ex)), usdcBefore + 1, "usdc left");
         assertEq(address(ex).balance, ethBefore, "eth left");

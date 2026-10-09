@@ -56,6 +56,12 @@ pub fn percent_mul(v: U256, p: U256) -> Result<U256> {
     Ok(mul_div(v, p, BPS, Rounding::HalfUp)?)
 }
 
+/// `PercentageMath.percentDiv`, half-up: `(v·10_000 + p/2) / p`.
+#[inline]
+pub fn percent_div(v: U256, p: U256) -> Result<U256> {
+    Ok(mul_div(v, BPS, p, Rounding::HalfUp)?)
+}
+
 #[inline]
 pub fn percent_mul_floor(v: U256, p: U256) -> Result<U256> {
     Ok(mul_div(v, p, BPS, Rounding::Down)?)
@@ -222,6 +228,82 @@ pub fn normalized_income(r: &Reserve, last: u32, ts: u64) -> Result<U256> {
 }
 
 #[inline]
+/// Aave V2 `MathUtils.calculateCompoundedInterest` (pool `0x02d84abd…`):
+/// the per-second rate first, then `1 + r·n + n(n−1)·r²/2 + n(n−1)(n−2)·r³/6`
+/// with `r²`, `r³` by half-up `rayMul`. Its roundings differ from V3's.
+pub fn compounded_interest_v2(rate: U256, dt: u64) -> Result<U256> {
+    if dt == 0 {
+        return Ok(RAY);
+    }
+    let of = || ProtocolError::Fixed(FixedError::Overflow);
+    let exp = U256::from(dt);
+    let exp1 = U256::from(dt.saturating_sub(1));
+    let exp2 = U256::from(if dt > 2 { dt.saturating_sub(2) } else { 0 });
+    let r = rate.checked_div(SECONDS_PER_YEAR).ok_or(of())?;
+    let p2 = ray_mul(r, r)?;
+    let p3 = ray_mul(p2, r)?;
+    let second = exp
+        .checked_mul(exp1)
+        .and_then(|v| v.checked_mul(p2))
+        .ok_or(of())?
+        .checked_div(U256::from(2u8))
+        .ok_or(of())?;
+    let third = exp
+        .checked_mul(exp1)
+        .and_then(|v| v.checked_mul(exp2))
+        .and_then(|v| v.checked_mul(p3))
+        .ok_or(of())?
+        .checked_div(U256::from(6u8))
+        .ok_or(of())?;
+    RAY.checked_add(r.checked_mul(exp).ok_or(of())?)
+        .and_then(|v| v.checked_add(second))
+        .and_then(|v| v.checked_add(third))
+        .ok_or(of())
+}
+
+/// [`normalized_debt`] by the instance's own compounding.
+pub fn normalized_debt_for(
+    version: crate::config::AaveVersion,
+    r: &Reserve,
+    last: u32,
+    ts: u64,
+) -> Result<U256> {
+    if version == crate::config::AaveVersion::V3 {
+        return normalized_debt(r, last, ts);
+    }
+    let stored = U256::from(r.variable_borrow_index);
+    let last = u64::from(last);
+    if ts < last {
+        return Err(ProtocolError::TimestampBeforeUpdate);
+    }
+    if ts == last {
+        return Ok(stored);
+    }
+    ray_mul(
+        compounded_interest_v2(U256::from(r.variable_borrow_rate), ts.wrapping_sub(last))?,
+        stored,
+    )
+}
+
+/// Aave V2 `GenericLogic.calculateUserAccountData` health factor: the
+/// liquidation threshold averaged over the collateral (floor), then
+/// `totalCollateral.percentMul(avgLT).wadDiv(totalDebt)`, both half-up.
+/// `weighted` is `Σ value·LT` over collateral with a non-zero threshold,
+/// `collateral` their `Σ value`.
+pub fn hf_wad_v2(weighted: U256, collateral: U256, debt: U256) -> Result<U256> {
+    if debt.is_zero() {
+        return Ok(U256::MAX);
+    }
+    let avg_lt = if collateral.is_zero() {
+        U256::ZERO
+    } else {
+        weighted
+            .checked_div(collateral)
+            .ok_or(ProtocolError::Fixed(FixedError::DivisionByZero))?
+    };
+    wad_div(percent_mul(collateral, avg_lt)?, debt)
+}
+
 pub fn normalized_debt(r: &Reserve, last: u32, ts: u64) -> Result<U256> {
     let stored = U256::from(r.variable_borrow_index);
     let last = u64::from(last);
@@ -364,5 +446,67 @@ mod rounding_direction {
             supply_mint_scaled(BalanceModel::TokenMath35, amount, index).unwrap(),
             U256::ZERO
         );
+    }
+}
+
+/// Aave V2's own roundings, worked from its deployed Solidity
+/// (`MathUtils`, `GenericLogic`, `PercentageMath`, `WadRayMath` of pool
+/// `0x02d84abd…`) with exact integers.
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod v2_math {
+    use super::{compounded_interest_v2, hf_wad_v2, percent_div, percent_mul, RAY};
+    use alloy_primitives::U256;
+
+    /// `calculateCompoundedInterest` at 5 % for 3 s and for a day, and at
+    /// 30 % for a year; zero time is one RAY.
+    #[test]
+    fn compounding_matches_v2_math_utils() {
+        let r5 = U256::from(5u64) * U256::from(10u64).pow(U256::from(25u8));
+        let r30 = U256::from(3u64) * U256::from(10u64).pow(U256::from(26u8));
+        assert_eq!(compounded_interest_v2(r5, 0).unwrap(), RAY);
+        assert_eq!(
+            compounded_interest_v2(r5, 3).unwrap(),
+            "1000000004756468805106019786".parse::<U256>().unwrap()
+        );
+        assert_eq!(
+            compounded_interest_v2(r5, 86_400).unwrap(),
+            "1000136995684314615598974400".parse::<U256>().unwrap()
+        );
+        assert_eq!(
+            compounded_interest_v2(r30, 31_536_000).unwrap(),
+            "1349500611679432534313416000".parse::<U256>().unwrap()
+        );
+    }
+
+    /// Two collaterals (82.5 % and 70 %) against 1.8 ETH of debt: the
+    /// threshold averages to 7_694 (floor), and the health factor is
+    /// `percentMul(collateral, 7_694).wadDiv(debt)`, half-up.
+    #[test]
+    fn health_factor_averages_the_threshold_first() {
+        let c1 = U256::from(1_234_567_890_123_456_789u128);
+        let c2 = U256::from(987_654_321_098_765_432u128);
+        let weighted = c1 * U256::from(8_250u16) + c2 * U256::from(7_000u16);
+        let hf = hf_wad_v2(weighted, c1 + c2, U256::from(1_800_000_000_000_000_000u128)).unwrap();
+        assert_eq!(hf, U256::from(949_876_538_507_987_654u128));
+        assert_eq!(hf_wad_v2(weighted, c1 + c2, U256::ZERO).unwrap(), U256::MAX);
+    }
+
+    /// `_calculateAvailableCollateralToLiquidate`: 1,000 USDC of debt at
+    /// 0.0004 ETH with a 105 % bonus seizes 0.42 WETH (bonus applied before
+    /// the division); half that balance repays 500 USDC (`percentDiv`).
+    #[test]
+    fn seize_and_debt_needed_round_as_v2_does() {
+        let debt_p = U256::from(400_000_000_000_000u64);
+        let coll_p = U256::from(1_000_000_000_000_000_000u64);
+        let cover = U256::from(1_000_000_000u64);
+        let e18 = U256::from(10u64).pow(U256::from(18u8));
+        let e6 = U256::from(1_000_000u64);
+        let bonus = U256::from(10_500u16);
+        let max_coll = percent_mul(debt_p * cover * e18, bonus).unwrap() / (coll_p * e6);
+        assert_eq!(max_coll, U256::from(420_000_000_000_000_000u64));
+        let half = max_coll / U256::from(2u8);
+        let need = percent_div(coll_p * half * e6 / (debt_p * e18), bonus).unwrap();
+        assert_eq!(need, U256::from(500_000_000u64));
     }
 }

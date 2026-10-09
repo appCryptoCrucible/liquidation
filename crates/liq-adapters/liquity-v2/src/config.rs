@@ -22,6 +22,10 @@ sol! {
         function CCR() external view returns (uint256);
         function LIQUIDATION_PENALTY_SP() external view returns (uint256);
         function LIQUIDATION_PENALTY_REDISTRIBUTION() external view returns (uint256);
+        function collateralRegistry() external view returns (address);
+    }
+    interface ICollateralRegistry {
+        function totalCollaterals() external view returns (uint256);
     }
 }
 
@@ -235,7 +239,54 @@ impl Config {
             )?;
         }
         self.live_registry_asserted = true;
+        self.log_branch_count(provider, block);
         Ok(())
+    }
+
+    /// Coverage (plan 1B): the branches configured against the
+    /// `CollateralRegistry`'s `totalCollaterals()` at `block`, logged. A
+    /// difference does not stop binding; the configured branches still bind.
+    fn log_branch_count<R: RegistryRpc>(&self, provider: &R, block: BlockNum) {
+        let Some(first) = self.branches.first() else {
+            return;
+        };
+        let word = |to: Address, data: Vec<u8>| -> Option<[u8; 32]> {
+            let raw = provider.eth_call(to, &data, block).ok()?;
+            raw.get(..32)?.try_into().ok()
+        };
+        let total = word(
+            first.addresses_registry,
+            IAddressesRegistry::collateralRegistryCall {}.abi_encode(),
+        )
+        .map(|w| Address::from_word(w.into()))
+        .and_then(|reg| {
+            word(
+                reg,
+                ICollateralRegistry::totalCollateralsCall {}.abi_encode(),
+            )
+        })
+        .map(|w| U256::from_be_bytes(w));
+        let configured = self.branches.len();
+        match total {
+            Some(t) if t == U256::from(configured) => tracing::info!(
+                target: "coverage",
+                block,
+                branches = configured,
+                "liquity-v2 branches bound: every collateral the registry lists"
+            ),
+            Some(t) => tracing::warn!(
+                target: "coverage",
+                block,
+                configured,
+                on_chain = %t,
+                "liquity-v2: the CollateralRegistry lists a different number of collaterals than are configured"
+            ),
+            None => tracing::warn!(
+                target: "coverage",
+                block,
+                "liquity-v2: CollateralRegistry.totalCollaterals() unread — branch count unchecked"
+            ),
+        }
     }
 
     #[inline]

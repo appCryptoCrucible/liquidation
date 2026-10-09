@@ -1,26 +1,31 @@
 #!/usr/bin/env python3
-"""Daily registry refresh for the running bot (ops/systemd/liq-discovery.timer).
+"""Daily registry refresh: proposes, never applies (decision 2026-10-07).
 
-1. Exits, applied automatically. `discover_exits.py` (V2 pairs, Curve plain /
-   NG / crypto pools) and `discover_unwraps.py` (vaults, Curve LPs, Pendle PTs)
-   run on a working copy of `registry/registry.json`, with every gate they
-   have. Only tokens already in the registry are considered, so no asset id
-   changes. When exits changed, the live file is replaced atomically and the
-   running bot's registry watch (`liq-bot/src/registry_watch.rs`) adds them
-   within ~15 s — no restart.
-2. Markets and tokens, for review only. `discover.py` enumerates every
-   protocol family from its on-chain roots into a scratch directory; new
-   protocol markets, new tokens and new Uniswap V3 pools are listed in the
-   report and never written to the live registry — adding them means a
-   config change and a restart, decided by a person.
+Nothing this script finds reaches the bot without a person. It never writes
+`registry/registry.json`, and the bot reads the registry only at startup (no
+registry watch, no Uniswap V3 `PoolCreated` discovery).
 
-The report is `data/review/<YYYY-MM-DD>.md`: what was applied, what needs a
-decision, what disappeared, and any step that failed.
+1. Exits. `discover_exits.py` (V2 pairs, Curve plain / NG / crypto pools) and
+   `discover_unwraps.py` (vaults, Curve LPs, Pendle PTs) run on a working
+   copy of the registry, with every gate they have. Only tokens already in
+   the registry are considered, so no asset id changes.
+2. Markets, tokens and Uniswap V3 pools. `discover.py` enumerates every
+   protocol family from its on-chain roots into a scratch directory.
 
-Safety valve: if a run would drop more than `--max-drop` (default 10 %) of
-an exit kind that exists today, and at least `--min-drop` (default 3) of
-them, nothing is applied (a flaky RPC fails gates, it does not retire pools)
-and the report says so. A pool or two dying in a small set still applies.
+Written to `data/review/`:
+- `<date>-candidates.json`: every proposed change, one entry each (a pool or
+  unwrap added, changed or removed; a new Uniswap V3 pool), with what it is
+  and `"approve": false`. Check each on chain, set `"approve": true` on those
+  to admit, then run `tools/registry/admit_reviewed.py <that file>` and
+  restart the bot once for the batch.
+- `<date>-registry.candidate.json` / `<date>-markets.candidate.json`: the
+  working registries the entries come from, so admission copies exactly
+  what was proposed.
+- `<date>.md`: the readable report (markets, tokens, coverage, problems).
+
+Safety valve: a run that would drop more than `--max-drop` (default 10 %) of
+an exit kind, and at least `--min-drop` (default 3), is flagged in the
+report: a flaky RPC fails gates, it does not retire pools.
 
 Needs `MAINNET_RPC_URL` on an endpoint with Alchemy's transfer index (the
 unwrap gates find real holders with `alchemy_getAssetTransfers`), `forge
@@ -28,7 +33,7 @@ build` run once in contracts/ (the Pendle probes), and web3 / eth_abi /
 requests.
 
 Usage: MAINNET_RPC_URL=... python tools/registry/daily_refresh.py
-           [--dry-run] [--skip-markets] [--max-drop 0.10]
+           [--skip-markets] [--max-drop 0.10]
 """
 from __future__ import annotations
 
@@ -72,17 +77,10 @@ def sym(reg: dict, t: str) -> str:
     return (reg["tokens"].get(t) or {}).get("symbol") or t
 
 
-def atomic_write(path: Path, text: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
-
-
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--registry", type=Path, default=ROOT / "registry" / "registry.json")
     ap.add_argument("--review-dir", type=Path, default=ROOT / "data" / "review")
-    ap.add_argument("--dry-run", action="store_true", help="report only; never touch the live file")
     ap.add_argument("--skip-markets", action="store_true", help="skip the discover.py market scan")
     ap.add_argument("--max-drop", type=float, default=0.10)
     ap.add_argument("--min-drop", type=int, default=3,
@@ -141,6 +139,7 @@ def main() -> int:
         new_markets: list[str] = []
         gone_markets: list[str] = []
         new_v3: list[str] = []
+        on_chain: dict[str, int] = {}
         if not args.skip_markets:
             mdir = work / "markets"
             mdir.mkdir()
@@ -152,30 +151,59 @@ def main() -> int:
                 new_v3 = sorted(a for a, p in m["pools"].items()
                                 if p["venue"] == "univ3" and a not in live["pools"])
                 mtok = m["tokens"]
+                for v in m["protocols"].values():
+                    on_chain[v.get("family", "?")] = on_chain.get(v.get("family", "?"), 0) + 1
             else:
                 mtok = {}
         else:
             mtok = {}
 
-        changed = bool(pools_added or pools_gone or un_added or un_changed or un_gone)
-        applied = changed and ok and not valve and not args.dry_run
-        if applied:
-            atomic_write(live_path.with_name("registry.meta.json"),
-                         (wreg / "registry.meta.json").read_text(encoding="utf-8"))
-            atomic_write(live_path, cand_path.read_text(encoding="utf-8"))
+        today = datetime.date.today().isoformat()
+        args.review_dir.mkdir(parents=True, exist_ok=True)
+        # The working registries, kept so admission copies exactly what was
+        # proposed.
+        cand_copy = args.review_dir / f"{today}-registry.candidate.json"
+        shutil.copy2(cand_path, cand_copy)
+        markets_copy = None
+        if not args.skip_markets and (work / "markets" / "registry.json").exists():
+            markets_copy = args.review_dir / f"{today}-markets.candidate.json"
+            shutil.copy2(work / "markets" / "registry.json", markets_copy)
+
+        def pool_entry(reg: dict, a: str, action: str, src) -> dict:
+            p = reg["pools"][a]
+            toks = [t for t in [p.get("token0"), p.get("token1")] + p.get("coins", []) if t]
+            return {"kind": "pool", "action": action, "address": a, "venue": p.get("venue"),
+                    "tokens": [f"{sym(reg, t)} {t}" for t in dict.fromkeys(toks)],
+                    "source": str(src) if src else None, "approve": False}
+
+        entries = []
+        entries += [pool_entry(cand, a, "add", cand_copy) for a in pools_added]
+        entries += [pool_entry(live, a, "remove", None) for a in pools_gone]
+        entries += [{"kind": "unwrap", "action": "add", "token": t, "symbol": sym(cand, t),
+                     "unwrap": cu[t], "source": str(cand_copy), "approve": False} for t in un_added]
+        entries += [{"kind": "unwrap", "action": "change", "token": t, "symbol": sym(cand, t),
+                     "from": lu[t], "unwrap": cu[t], "source": str(cand_copy), "approve": False}
+                    for t in un_changed]
+        entries += [{"kind": "unwrap", "action": "remove", "token": t, "symbol": sym(live, t),
+                     "unwrap": lu[t], "approve": False} for t in un_gone]
+        if markets_copy:
+            mreg = load(markets_copy)
+            entries += [pool_entry(mreg, a, "add", markets_copy) for a in new_v3]
+        cands_path = args.review_dir / f"{today}-candidates.json"
+        cands_path.write_text(json.dumps({
+            "date": today,
+            "note": "Set approve: true on each entry checked on chain, then "
+                    "`python tools/registry/admit_reviewed.py <this file>` and restart the bot once.",
+            "safety_valve": valve,
+            "problems": errors,
+            "entries": entries,
+        }, indent=1) + "\n", encoding="utf-8")
 
         # Report.
-        today = datetime.date.today().isoformat()
         L = [f"# Registry refresh {today}", ""]
-        if applied:
-            L.append("Exits were **applied** to the live registry; the running bot adds them without a restart.")
-        elif changed and args.dry_run:
-            L.append("Dry run: exit changes below were **not applied**.")
-        elif changed:
-            L.append("Exit changes below were **not applied** (see Problems).")
-        else:
-            L.append("No exit changes.")
-        L += ["", "## Applied automatically (exits for known tokens)", ""]
+        L.append(f"Nothing was applied: {len(entries)} proposed changes are in `{cands_path.name}` for review."
+                 if entries else "No changes proposed.")
+        L += ["", "## Proposed exits for known tokens (review, then `admit_reviewed.py`)", ""]
         L += [f"- new `{cp[a]}` pool {a}" for a in pools_added] or ["- none"]
         L += [f"- new unwrap {sym(cand, t)} {t} → `{cu[t]['kind']}` into {sym(cand, cu[t]['into'])}" for t in un_added]
         L += [f"- unwrap changed {sym(cand, t)} {t}: {lu[t]} → {cu[t]}" for t in un_changed]
@@ -185,24 +213,40 @@ def main() -> int:
         L += [f"- new protocol market `{k}`" for k in new_markets]
         L += [f"- new token {t} ({(mtok.get(t) or {}).get('symbol')}, {(mtok.get(t) or {}).get('decimals')} decimals)"
               for t in new_tokens]
-        L += [f"- new Uniswap V3 pool {a} (pools created on chain are already followed live)" for a in new_v3]
+        L += [f"- new Uniswap V3 pool {a} (in the candidates file)" for a in new_v3]
         if not (new_markets or new_tokens or new_v3 or args.skip_markets):
             L.append("- none")
+        # Coverage (plan 1B): per family, markets discovery finds on chain
+        # against those in the registry. The bot's startup log says which
+        # bind and which are priced (`target: coverage`, "protocol prices").
+        L += ["", "## Coverage: markets on chain against the registry", ""]
+        if on_chain:
+            in_reg: dict[str, int] = {}
+            for v in live["protocols"].values():
+                in_reg[v.get("family", "?")] = in_reg.get(v.get("family", "?"), 0) + 1
+            fam_of = lambda k: k.split(":", 1)[0]
+            L += ["| family | on chain | in registry | not tracked | gone |", "|---|---:|---:|---:|---:|"]
+            for f in sorted(set(on_chain) | set(in_reg)):
+                new_f = sum(1 for k in new_markets if fam_of(k) == f)
+                gone_f = sum(1 for k in gone_markets if fam_of(k) == f)
+                L.append(f"| {f} | {on_chain.get(f, 0)} | {in_reg.get(f, 0)} | {new_f} | {gone_f} |")
+            L += ["", "Target: no market on chain untracked. A family the bot has no adapter for (ajna, sky-maker) is listed for completeness."]
+        else:
+            L.append("- market scan skipped or failed: no coverage counts")
         L += ["", "## No longer admitted", ""]
-        L += [f"- `{lp[a]}` pool {a} (stays routed until a restart)" for a in pools_gone]
-        L += [f"- unwrap {sym(live, t)} {t} (`{lu[t]['kind']}`) — removed from the running book" for t in un_gone]
+        L += [f"- `{lp[a]}` pool {a} (proposed removal)" for a in pools_gone]
+        L += [f"- unwrap {sym(live, t)} {t} (`{lu[t]['kind']}`) (proposed removal)" for t in un_gone]
         L += [f"- protocol market `{k}` no longer found by discovery" for k in gone_markets]
         if not (pools_gone or un_gone or gone_markets):
             L.append("- none")
         if valve or errors:
             L += ["", "## Problems", ""]
-            L += [f"- safety valve: {v} — nothing applied" for v in valve]
+            L += [f"- safety valve: {v} — check the RPC before admitting any removal" for v in valve]
             L += [f"- {e}" for e in errors]
-        args.review_dir.mkdir(parents=True, exist_ok=True)
         report = args.review_dir / f"{today}.md"
         report.write_text("\n".join(L) + "\n", encoding="utf-8")
         print(f"report: {report}")
-        print(f"applied: {applied}; +{len(pools_added)} pools, +{len(un_added)} ~{len(un_changed)} "
+        print(f"proposed, not applied ({cands_path}): +{len(pools_added)} pools, +{len(un_added)} ~{len(un_changed)} "
               f"-{len(un_gone)} unwraps; review: {len(new_markets)} markets, {len(new_tokens)} tokens, "
               f"{len(new_v3)} V3 pools")
         return 0 if (ok and not valve) else 1

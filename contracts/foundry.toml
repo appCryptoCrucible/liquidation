@@ -10,7 +10,9 @@ fs_permissions = [{ access = "read", path = "./" }]
 optimizer = true
 # Runtime gas over deploy size. Since the Executor split, every contract sits
 # far enough under EIP-170 to afford it: at this setting the core is
-# 12,558 B, LiquidationModule 21,767 B, SwapModule 11,152 B. Measured on the
+# 14,814 B, LiquidationModule 19,318 B, SwapModule 24,147 B (429 B spare: the
+# Balancer and Fluid venues are a third module, DexModule, 6,017 B, that
+# SwapModule delegatecalls). Measured on the
 # mainnet fork suite against 200 runs: about 2,250 gas less per typical
 # liquidation. Higher values build identical code. An adapter that pushes
 # LiquidationModule past 24,576 B needs a lower setting for that file

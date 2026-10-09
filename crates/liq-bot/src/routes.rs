@@ -224,6 +224,7 @@ mod tests {
     #[test]
     fn v3_ticks_must_explain_l() {
         let mut s = V3State {
+            factory: 0,
             sqrt_price_x96: U256::from(1u64),
             tick: 0,
             liquidity: 1_000,
@@ -234,6 +235,8 @@ mod tests {
                 net: 1_000,
                 gross: 1_000,
             }],
+            v4: None,
+            window: None,
         };
         v3_ticks_explain_l(&s).unwrap();
         s.liquidity = 2_000;
@@ -361,9 +364,11 @@ mod tests {
                 stale: true,
                 stale_block: 0,
                 ng: false,
+                d_once: false,
                 offpeg_fee_multiplier: U256::ZERO,
                 dynamic_rates: false,
                 read_block: 0,
+                handler: 0,
             }),
         };
         assert!(reseed_curve(&mut p, &MissingCurve).is_err());

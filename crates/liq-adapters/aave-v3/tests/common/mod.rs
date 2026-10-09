@@ -30,8 +30,9 @@ pub const PROTOCOL: ProtocolId = ProtocolId(3);
 pub const POOL_MARKET: MarketId = MarketId(200);
 pub const WETH: AssetId = AssetId(0);
 pub const DAI: AssetId = AssetId(1);
-pub const WETH_SLOT: u16 = 1;
-pub const DAI_SLOT: u16 = 2;
+/// The reserves' slots, in listing order after the pool's e-mode rows.
+pub const WETH_SLOT: u16 = liq_adapters_aave_v3::layout::FIRST_RESERVE;
+pub const DAI_SLOT: u16 = liq_adapters_aave_v3::layout::FIRST_RESERVE + 1;
 pub const DEPLOY_BLOCK: u64 = 100;
 pub const T0: u64 = 1_700_000_000;
 pub const T1: u64 = T0 + 2_592_000;
@@ -102,6 +103,7 @@ impl Deploy {
                 sentinel: Address::ZERO,
                 sequencer_oracle: Address::ZERO,
                 tokens: vec![self.a_weth, self.a_dai],
+                grace_sentinel: Address::ZERO,
             }],
             assets: vec![
                 AssetConfig {
@@ -142,6 +144,7 @@ impl Deploy {
                 oracle_decimals: 8,
                 balance_model: BalanceModel::TokenMath35,
                 close_factor_scope: CloseFactorScope::PositionBase,
+                version: Default::default(),
             },
             pinned_through: DEPLOY_BLOCK,
         }

@@ -20,8 +20,8 @@ use liq_adapters_silo_v2::events::{factory, hook, silo};
 use liq_adapters_silo_v2::{alloc_meter, math};
 use liq_protocol::conformance::{run, Fixtures, LogFixture, PositionFixture};
 use liq_protocol::{
-    CallbackShape, DirtySet, ExecutorAdapter, FlashRoute, HealthState, LegChoice, MarketFlags,
-    MarketRow, Protocol, ProtocolError, StateWriter,
+    CallbackShape, ExecutorAdapter, FlashRoute, HealthState, LegChoice, MarketFlags, MarketRow,
+    Protocol, ProtocolError, StateWriter,
 };
 use liq_types::{LogSubscriber, PositionKey, Ray};
 
@@ -475,55 +475,7 @@ fn unread_get_config_fails_closed() {
     let _ = MarketFlags::UNPRICED;
 }
 
-#[test]
-fn halt_logs_fold_before_the_pin_and_error_after() {
-    let d = Deploy::new();
-    let (p, mut st) = full_store(&d, ALICE_DEBT_OK);
-    let impl_ = Address::repeat_byte(0x77);
-    let before = log(
-        d.hook,
-        &halt::Upgraded {
-            implementation: impl_,
-        },
-        DEPLOY_BLOCK,
-        T0,
-    );
-    assert_eq!(
-        p.apply_log(&mut st, &before.view()).unwrap(),
-        DirtySet::None
-    );
-    let after = log(
-        d.hook,
-        &halt::Upgraded {
-            implementation: impl_,
-        },
-        DEPLOY_BLOCK + 1,
-        T0,
-    );
-    assert_eq!(
-        p.apply_log(&mut st, &after.view()),
-        Err(ProtocolError::HaltSignal)
-    );
-}
-
-#[test]
-fn new_silo_hook_mismatch_after_pin_halts() {
-    let d = Deploy::new();
-    let (p, mut st) = full_store(&d, ALICE_DEBT_OK);
-    let ev = log(
-        d.factory,
-        &factory::NewSiloHook {
-            silo: d.silo0,
-            hook: Address::repeat_byte(0xff),
-        },
-        DEPLOY_BLOCK + 1,
-        T0,
-    );
-    assert_eq!(
-        p.apply_log(&mut st, &ev.view()),
-        Err(ProtocolError::HaltSignal)
-    );
-}
+// Halts per pair: `tests/accrual.rs`.
 
 #[test]
 fn pin_liquidation_topic_is_not_watch_four_arg() {

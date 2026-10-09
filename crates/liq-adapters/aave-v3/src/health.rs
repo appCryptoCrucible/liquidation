@@ -9,10 +9,13 @@ use liq_types::fixed::FixedError;
 use liq_types::{AssetId, MarketId, PriceVector, Ray, Wad};
 
 use crate::config::Config;
-use crate::layout::{PoolMeta, Reserve, UserExtra, UserReserve, UNMAPPED_ASSET};
+use crate::layout::{
+    emode_place, EModeCat, EModeRow, PoolMeta, Reserve, UserExtra, UserReserve, FIRST_RESERVE,
+    UNMAPPED_ASSET,
+};
 use crate::math::{
-    asset_unit, debt_assets, hf_wad_to_ray, mul_div_ceil, normalized_debt, normalized_income, p_of,
-    supply_assets, wad_div, BPS,
+    asset_unit, debt_assets, hf_wad_to_ray, mul_div_ceil, normalized_income, p_of, supply_assets,
+    wad_div, BPS,
 };
 
 #[derive(Copy, Clone, Debug)]
@@ -91,8 +94,13 @@ impl SlotTerms<'_> {
         self.debt.is_some() && !self.paused() && self.in_grace(ts)
     }
     #[inline]
+    /// Liquidation is refused while `gracePeriodUntil >= block.timestamp`:
+    /// V3.1+ `ValidationLogic.validateLiquidationCall` requires `until <
+    /// block.timestamp`, and V2's collateral manager (`0xcc963272…`) returns
+    /// `ON_GRACE_PERIOD` when `until >= block.timestamp`. The last second is
+    /// still inside the window.
     pub(crate) fn in_grace(&self, ts: u64) -> bool {
-        u64::from(self.reserve.grace_until) > ts
+        self.reserve.grace_until != 0 && u64::from(self.reserve.grace_until) >= ts
     }
 }
 
@@ -109,30 +117,41 @@ fn cell(v: &[u128], slot: u16) -> u128 {
     v.get(usize::from(slot)).copied().unwrap_or(0)
 }
 
-/// LTV / LT / bonus for a user-reserve under e-mode (`getUserReserveLtv` +
-/// liquidation-threshold branch in `calculateUserAccountData`).
-fn risk_params(meta: &PoolMeta, r: &Reserve, slot: u16, emode: u8) -> (u16, u16, u16) {
-    let cat = meta.emode(emode);
-    let bit = match emode {
-        0 => None,
-        id => cat.and_then(|c| Some((c, PoolMeta::emode_mask(meta.emode_index(id)?)?))),
+/// The account's e-mode category `id`, as the pool configured it; `None`
+/// when e-mode is off or the pool has no such category.
+fn emode_cat(markets: &[MarketRow], market: MarketId, id: u8) -> Result<Option<&EModeCat>> {
+    let Some((slot, i)) = emode_place(id) else {
+        return Ok(None);
     };
-    if let Some((c, mask)) = bit {
-        let in_coll = r.emode_coll & mask != 0;
-        if in_coll {
-            let ltv = if r.emode_ltv0 & mask != 0 { 0 } else { c.ltv };
+    let row: &EModeRow = markets
+        .get(usize::from(slot))
+        .ok_or(ProtocolError::SlotOutOfRange(MarketSlot { market, slot }))?
+        .body()?;
+    Ok(row.cats.get(i).filter(|c| c.id == id))
+}
+
+/// LTV / LT / bonus for a user-reserve under e-mode (`getUserReserveLtv` +
+/// liquidation-threshold branch in `calculateUserAccountData`), with `cat`
+/// the account's category.
+fn risk_params(cat: Option<&EModeCat>, r: &Reserve) -> (u16, u16, u16) {
+    if let Some(c) = cat {
+        if r.emode_coll.contains(c.id) {
+            let ltv = if r.emode_ltv0.contains(c.id) {
+                0
+            } else {
+                c.ltv
+            };
             return (ltv, c.liq_threshold, c.liq_bonus);
         }
         if c.isolated != 0 {
             return (0, r.liq_threshold, r.liq_bonus);
         }
     }
-    let _ = slot;
     (r.ltv, r.liq_threshold, r.liq_bonus)
 }
 
 pub(crate) fn walk<'a, F, P>(
-    model: crate::config::BalanceModel,
+    lp: &crate::config::LiquidationParams,
     pos: &PositionRef<'a>,
     mut price_of: P,
     mut f: F,
@@ -141,17 +160,18 @@ where
     F: FnMut(&SlotTerms<'a>) -> Result<()>,
     P: FnMut(AssetId) -> Result<U256>,
 {
-    let meta: &PoolMeta = pos
-        .markets
-        .first()
-        .ok_or(ProtocolError::UnknownMarket(pos.key.market))?
-        .body()?;
+    if pos.markets.is_empty() {
+        return Err(ProtocolError::UnknownMarket(pos.key.market));
+    }
+    let model = lp.balance_model;
+    let version = lp.version;
     let extra: &UserExtra = pos.extra.view()?;
     if extra.stable_slots != 0 {
         return Err(ProtocolError::UntrackedDebt);
     }
+    let cat = emode_cat(pos.markets, pos.key.market, extra.emode)?;
     for slot in pos.config.iter() {
-        if slot == 0 {
+        if slot < FIRST_RESERVE {
             continue;
         }
         let row = pos
@@ -182,8 +202,9 @@ where
         let p = price_of(row.asset)?;
         let unit = asset_unit(row.decimals)?;
         let liq_idx = normalized_income(reserve, row.last_update, pos.timestamp)?;
-        let debt_idx = normalized_debt(reserve, row.last_update, pos.timestamp)?;
-        let (_ltv, lt, bonus) = risk_params(meta, reserve, slot, extra.emode);
+        let debt_idx =
+            crate::math::normalized_debt_for(version, reserve, row.last_update, pos.timestamp)?;
+        let (_ltv, lt, bonus) = risk_params(cat, reserve);
 
         let collateral = if counted && lt > 0 {
             let assets = supply_assets(model, U256::from(supply_scaled), liq_idx)?;
@@ -217,7 +238,17 @@ where
 
         let debt = if borrowing {
             let assets = debt_assets(model, U256::from(debt_scaled), debt_idx)?;
-            let value = mul_div_ceil(assets, p, unit)?;
+            // V2 floors the debt's value (`price.mul(balance).div(unit)`);
+            // V3.5 rounds it up.
+            let value = if version == crate::config::AaveVersion::V2 {
+                assets
+                    .checked_mul(p)
+                    .ok_or(FixedError::Overflow)?
+                    .checked_div(unit)
+                    .ok_or(FixedError::DivisionByZero)?
+            } else {
+                mul_div_ceil(assets, p, unit)?
+            };
             Some(Debt {
                 assets,
                 per_price: assets,
@@ -260,10 +291,19 @@ pub(crate) struct Account {
     pub sentinel_ok: bool,
     pub oracle_decimals: u8,
     pub sensitivity: AssetMask,
+    /// V2: `Σ value` of the collateral with a non-zero threshold (what V2
+    /// averages its threshold over), and the version.
+    pub lt_collateral: U256,
+    pub version: crate::config::AaveVersion,
 }
 
 impl Account {
-    pub(crate) fn new(market: MarketId, sentinel_ok: bool, oracle_decimals: u8) -> Self {
+    pub(crate) fn new(
+        market: MarketId,
+        sentinel_ok: bool,
+        oracle_decimals: u8,
+        version: crate::config::AaveVersion,
+    ) -> Self {
         Self {
             market,
             weighted: U256::ZERO,
@@ -276,6 +316,8 @@ impl Account {
             sentinel_ok,
             oracle_decimals,
             sensitivity: AssetMask::EMPTY,
+            lt_collateral: U256::ZERO,
+            version,
         }
     }
 
@@ -287,6 +329,12 @@ impl Account {
                 .ok_or(FixedError::Overflow)?;
             let w = c.value.checked_mul(c.lt).ok_or(FixedError::Overflow)?;
             self.weighted = self.weighted.checked_add(w).ok_or(FixedError::Overflow)?;
+            if !c.lt.is_zero() {
+                self.lt_collateral = self
+                    .lt_collateral
+                    .checked_add(c.value)
+                    .ok_or(FixedError::Overflow)?;
+            }
             self.any_seizable |= t.seizable(ts);
             self.grace_seizable |= t.seizable_but_for_grace(ts);
         }
@@ -310,6 +358,9 @@ impl Account {
 
     /// `avgLiquidationThreshold.wadDiv(totalDebt) / 100_00`.
     pub(crate) fn hf_wad(&self) -> Result<U256> {
+        if self.version == crate::config::AaveVersion::V2 {
+            return crate::math::hf_wad_v2(self.weighted, self.lt_collateral, self.debt_value);
+        }
         if self.debt_value.is_zero() {
             return Ok(U256::MAX);
         }
@@ -320,6 +371,9 @@ impl Account {
 }
 
 fn sentinel_ok(meta: &PoolMeta, ts: u64) -> bool {
+    if meta.halted != 0 || meta.pool_paused != 0 {
+        return false;
+    }
     if meta.sentinel_present == 0 {
         return true;
     }
@@ -341,9 +395,10 @@ pub(crate) fn health_with(cfg: &Config, pos: PositionRef<'_>, px: &PriceVector) 
         pos.key.market,
         sentinel_ok(meta, pos.timestamp),
         cfg.liquidation.oracle_decimals,
+        cfg.liquidation.version,
     );
     walk(
-        cfg.liquidation.balance_model,
+        &cfg.liquidation,
         &pos,
         |asset| price_p(px, asset, scale),
         |t| acc.add(t, pos.timestamp),

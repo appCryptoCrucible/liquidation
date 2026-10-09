@@ -37,8 +37,8 @@ pub use error::{ConfigError, Result};
 pub use intern::{AssetRec, FeedRec, Intern, MarketRec};
 pub use protocols::{AaveV3Toml, AaveV4Toml, MorphoBlueToml};
 pub use registry::{
-    CryptoKind, OnChainId, OracleEntry, PoolEntry, PoolVenue, ProtocolEntry, Registry,
-    SymbolCollision, TokenEntry, TokenQuirk, TokenUnwrap, UnwrapKind,
+    BalancerKind, CryptoKind, OnChainId, OracleEntry, PoolEntry, PoolVenue, ProtocolEntry,
+    Registry, SymbolCollision, TokenEntry, TokenQuirk, TokenUnwrap, UnwrapKind,
 };
 pub use rpc::{ChainRpc, HttpRpc};
 pub use validate::Validate;

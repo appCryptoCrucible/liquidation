@@ -8,6 +8,7 @@ license.workspace = true
 liq-types = { path = "../../liq-types" }
 liq-protocol = { path = "../../liq-protocol" }
 alloy-primitives = { workspace = true, features = ["std"] }
+tracing = { workspace = true }
 alloy-sol-types = { workspace = true, features = ["std"] }
 bytemuck = { workspace = true }
 smallvec = { workspace = true }

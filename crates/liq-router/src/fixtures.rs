@@ -28,6 +28,9 @@ pub const A0: AssetId = AssetId(0);
 pub const A1: AssetId = AssetId(1);
 pub const A2: AssetId = AssetId(2);
 pub const HOP_GAS: u64 = 100_000;
+/// The MetaRegistry handler index every Curve fixture pool carries. Not 0,
+/// so a leg that drops the byte, or a zeroed one, shows in an assertion.
+pub const CURVE_HANDLER: u8 = 6;
 
 pub fn addr(n: u64) -> Address {
     Address::from_slice(&{
@@ -88,12 +91,15 @@ pub fn v3(
         tokens: SmallVec::from_slice(&[tok(0), tok(1)]),
         hop_gas: HOP_GAS,
         state: PoolState::V3(V3State {
+            factory: 0,
             sqrt_price_x96,
             tick,
             liquidity,
             fee_pips,
             tick_spacing: spacing,
             ticks,
+            v4: None,
+            window: None,
         }),
     }
 }
@@ -130,9 +136,11 @@ pub fn curve(n: u64, balances: &[U256], a_times_100: u64, fee_1e10: u64) -> Pool
             stale: false,
             stale_block: 0,
             ng: false,
+            d_once: false,
             offpeg_fee_multiplier: U256::ZERO,
             dynamic_rates: false,
             read_block: 0,
+            handler: CURVE_HANDLER,
         }),
     }
 }

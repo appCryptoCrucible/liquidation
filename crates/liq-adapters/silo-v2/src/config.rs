@@ -25,6 +25,9 @@ pub struct SideConfig {
     pub lt: u128,
     pub liquidation_fee: u128,
     pub liquidation_target_ltv: u128,
+    /// `daoFee + deployerFee` (WAD): the share of the silo's accrued
+    /// interest that does not go to its depositors.
+    pub interest_fee: u128,
 }
 
 /// Isolated pair: one collateral token backs one debt token.

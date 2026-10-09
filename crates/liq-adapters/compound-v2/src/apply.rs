@@ -150,6 +150,10 @@ fn seed_row(cfg: &Config, market: MarketId, pin: &crate::config::CTokenPin) -> R
     body.underlying = addr20(pin.underlying);
     body.borrow_index = INITIAL_BORROW_INDEX;
     body.flags = CTokenRow::LISTED | CTokenRow::DEC_KNOWN;
+    body.flags2 |= variant_flags(fork.variant);
+    if pin.frozen {
+        body.flags2 |= CTokenRow::FROZEN;
+    }
     if cether {
         body.flags |= CTokenRow::CETHER;
     }
@@ -183,15 +187,29 @@ fn list_ctoken(
     } else {
         let mut row = MarketRow::blank(UNMAPPED_ASSET, 0);
         row.flags = MarketFlags::UNPRICED;
+        let variant = cfg
+            .fork_by_market(market)
+            .map(|f| f.variant)
+            .unwrap_or_default();
         let body: &mut CTokenRow = row.body_mut()?;
         body.ctoken = addr20(ctoken);
         body.borrow_index = INITIAL_BORROW_INDEX;
         body.flags = CTokenRow::LISTED;
+        body.flags2 |= variant_flags(variant);
         row
     };
     row.last_update = last_update(ts)?;
     let slot = st.push_market(market, row)?;
     Ok(slot.slot)
+}
+
+/// A cToken's `flags2` for its fork's code.
+fn variant_flags(v: crate::config::ForkVariant) -> u8 {
+    match v {
+        crate::config::ForkVariant::Compound => 0,
+        crate::config::ForkVariant::Fuse => CTokenRow::FUSE,
+        crate::config::ForkVariant::Moma => CTokenRow::MOMA,
+    }
 }
 
 fn find_ctoken(st: &dyn StateWriter, market: MarketId, ctoken: Address) -> Result<u16> {
@@ -225,6 +243,30 @@ fn locate_ctoken(cfg: &Config, st: &dyn StateWriter, ctoken: Address) -> Result<
         }
     }
     Err(ProtocolError::UnexpectedLog)
+}
+
+/// Mark one fork halted ([`ComptrollerMeta::HALTED`]): its positions are
+/// `Blocked`. State, so a reorg that drops the log unwinds it.
+fn halt_fork(
+    st: &mut dyn StateWriter,
+    market: MarketId,
+    emitter: Address,
+    topic0: B256,
+) -> Result<DirtySet> {
+    tracing::error!(
+        market = market.0,
+        %emitter,
+        %topic0,
+        "compound fork emitted a halt-class log after the pin: this fork is halted (no liquidations) until the config is re-pinned; other forks continue"
+    );
+    let at = MarketSlot {
+        market,
+        slot: META_SLOT,
+    };
+    let mut row = *st.market(at)?;
+    row.body_mut::<ComptrollerMeta>()?.flags |= ComptrollerMeta::HALTED;
+    st.set_market(at, row)?;
+    Ok(DirtySet::ProtocolWide)
 }
 
 fn patch_meta(
@@ -263,15 +305,21 @@ fn patch_ctoken(
     st.set_market(at, row)
 }
 
-fn recompute_exrate(body: &mut CTokenRow) -> Result<()> {
-    if body.total_supply == 0 {
+pub(crate) fn recompute_exrate(body: &mut CTokenRow) -> Result<()> {
+    let fees_unknown =
+        body.flags2 & CTokenRow::FEE_ACCUMULATORS != 0 && body.flags2 & CTokenRow::FEES_KNOWN == 0;
+    if body.total_supply == 0 || fees_unknown {
         body.flags &= !CTokenRow::EXRATE_KNOWN;
         return Ok(());
     }
+    // Fuse: `totalReserves + totalFuseFees + totalAdminFees` (zero fees on
+    // a plain fork).
     let er = exchange_rate_stored(
         U256::from(body.cash),
         U256::from(body.total_borrows),
-        U256::from(body.total_reserves),
+        U256::from(body.total_reserves)
+            .checked_add(U256::from(body.total_fees))
+            .ok_or(FixedError::Overflow)?,
         U256::from(body.total_supply),
     )?;
     body.exchange_rate_mantissa = u128_of(er)?;
@@ -292,10 +340,18 @@ pub(crate) fn apply_log(
 ) -> Result<DirtySet> {
     let topic0 = *log.topics.first().ok_or(ProtocolError::MalformedLog)?;
     if HALT.contains(&topic0) {
-        return if log.block <= cfg.pinned_through {
-            Ok(DirtySet::None)
-        } else {
-            Err(ProtocolError::HaltSignal)
+        if log.block <= cfg.pinned_through {
+            return Ok(DirtySet::None);
+        }
+        // The Comptroller's or one of its cTokens' proxy: halt that fork,
+        // not the bot.
+        let fork = match cfg.interned_id(log.address) {
+            Some(m) if cfg.fork_by_market(m).is_some() => Some(m),
+            _ => locate_ctoken(cfg, st, log.address).ok().map(|(m, _)| m),
+        };
+        return match fork {
+            Some(market) => halt_fork(st, market, log.address, topic0),
+            None => Err(ProtocolError::HaltSignal),
         };
     }
     if let Some(market) = cfg.interned_id(log.address) {
@@ -346,8 +402,8 @@ fn comptroller_log(
     if topic0 == cmp::NewCloseFactor::SIGNATURE_HASH {
         let ev = decode::<cmp::NewCloseFactor>(log)?;
         let cf = u128_of(ev.newCloseFactorMantissa)?;
-        if !math::close_factor_in_pin_bounds(ev.newCloseFactorMantissa) {
-            return Err(ProtocolError::HaltSignal);
+        if !math::close_factor_usable(ev.newCloseFactorMantissa) {
+            return halt_fork(st, market, log.address, topic0);
         }
         patch_meta(st, market, ts, |m| {
             m.close_factor_mantissa = cf;
@@ -369,7 +425,8 @@ fn comptroller_log(
     if topic0 == cmp::NewCollateralFactor::SIGNATURE_HASH {
         let ev = decode::<cmp::NewCollateralFactor>(log)?;
         let slot = find_ctoken(st, market, ev.cToken)?;
-        let cf = u128_of(ev.newCollateralFactorMantissa)?;
+        let cf = u64::try_from(ev.newCollateralFactorMantissa)
+            .map_err(|_| ProtocolError::MalformedLog)?;
         patch_ctoken(st, market, slot, ts, |b| {
             b.collateral_factor_mantissa = cf;
             Ok(())
@@ -433,6 +490,41 @@ fn ctoken_log(
             b.cash = u128_of(ev.cashPrior)?;
             b.borrow_index = u128_of(ev.borrowIndex)?;
             b.total_borrows = u128_of(ev.totalBorrows)?;
+            b.accrual_ts = ts;
+            if !ev.interestAccumulated.is_zero() {
+                if b.flags & CTokenRow::RF_KNOWN == 0 {
+                    b.flags &= !CTokenRow::EXRATE_KNOWN;
+                    return Ok(());
+                }
+                let add = math::mul_scalar_truncate(
+                    U256::from(b.reserve_factor_mantissa),
+                    ev.interestAccumulated,
+                )?;
+                b.total_reserves = add_u128(b.total_reserves, add, true)?;
+                if b.flags2 & CTokenRow::FEE_ACCUMULATORS != 0 {
+                    let fees = math::mul_scalar_truncate(
+                        U256::from(b.fee_mantissa),
+                        ev.interestAccumulated,
+                    )?;
+                    b.total_fees = add_u128(b.total_fees, fees, true)?;
+                }
+            }
+            recompute_exrate(b)
+        })?;
+        return Ok(accrual_dirty(market, slot));
+    }
+    if topic0 == crate::events::ctoken_original::AccrueInterest::SIGNATURE_HASH {
+        // The same accrual without `cashPrior`: accrual moves no cash, so
+        // the cash the deltas keep stands. Reserves take the reserve
+        // factor's share of the interest, as the four-field form's do.
+        let ev = decode::<crate::events::ctoken_original::AccrueInterest>(log)?;
+        patch_ctoken(st, market, slot, ts, |b| {
+            if b.flags2 & CTokenRow::FEE_ACCUMULATORS != 0 {
+                return Err(ProtocolError::UnexpectedLog);
+            }
+            b.borrow_index = u128_of(ev.borrowIndex)?;
+            b.total_borrows = u128_of(ev.totalBorrows)?;
+            b.accrual_ts = ts;
             if !ev.interestAccumulated.is_zero() {
                 if b.flags & CTokenRow::RF_KNOWN == 0 {
                     b.flags &= !CTokenRow::EXRATE_KNOWN;
@@ -444,6 +536,23 @@ fn ctoken_log(
                 )?;
                 b.total_reserves = add_u128(b.total_reserves, add, true)?;
             }
+            recompute_exrate(b)
+        })?;
+        return Ok(accrual_dirty(market, slot));
+    }
+    if topic0 == crate::events::ctoken_reserves::AccrueInterest::SIGNATURE_HASH {
+        // The same accrual, with the new reserves stated: no reserve factor
+        // needed. No fee-accumulator code emits this form.
+        let ev = decode::<crate::events::ctoken_reserves::AccrueInterest>(log)?;
+        patch_ctoken(st, market, slot, ts, |b| {
+            if b.flags2 & CTokenRow::FEE_ACCUMULATORS != 0 {
+                return Err(ProtocolError::UnexpectedLog);
+            }
+            b.cash = u128_of(ev.cashPrior)?;
+            b.borrow_index = u128_of(ev.borrowIndex)?;
+            b.total_borrows = u128_of(ev.totalBorrows)?;
+            b.total_reserves = u128_of(ev.totalReserves)?;
+            b.accrual_ts = ts;
             recompute_exrate(b)
         })?;
         return Ok(accrual_dirty(market, slot));
@@ -537,7 +646,8 @@ fn ctoken_log(
     if topic0 == ctoken::NewReserveFactor::SIGNATURE_HASH {
         let ev = decode::<ctoken::NewReserveFactor>(log)?;
         patch_ctoken(st, market, slot, ts, |b| {
-            b.reserve_factor_mantissa = u128_of(ev.newReserveFactorMantissa)?;
+            b.reserve_factor_mantissa = u64::try_from(ev.newReserveFactorMantissa)
+                .map_err(|_| ProtocolError::MalformedLog)?;
             b.flags |= CTokenRow::RF_KNOWN;
             Ok(())
         })?;

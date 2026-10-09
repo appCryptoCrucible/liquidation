@@ -9,18 +9,47 @@ import {MockERC20, MockUniV3Pool, MockDssFlash, LazyFlashProvider} from "./Mocks
 
 /// The other four flash providers, the Aave V4 and Morpho adapters, and a
 /// sequential multi-group cascade (D32).
+/// A "pool" whose swap has another contract deliver the callback.
+contract RogueSwapPool {
+    RogueCaller immutable caller;
+    address public immutable token0;
+    address public immutable token1;
+    constructor(address real) {
+        caller = new RogueCaller();
+        token0 = MockUniV3Pool(real).token0();
+        token1 = MockUniV3Pool(real).token1();
+    }
+    function swap(address, bool, int256 amountSpecified, uint160, bytes calldata data)
+        external returns (int256, int256)
+    {
+        caller.relay(msg.sender, amountSpecified, data);
+        return (0, 0);
+    }
+}
+
+contract RogueCaller {
+    function relay(address ex, int256 amountSpecified, bytes calldata data) external {
+        IV3SwapCallbackLike(ex).uniswapV3SwapCallback(-amountSpecified, 1, data);
+    }
+}
+
+interface IV3SwapCallbackLike {
+    function uniswapV3SwapCallback(int256, int256, bytes calldata) external;
+}
+
 contract ProvidersAndAdaptersTest is ExecutorTestBase {
     uint128 constant COLL_SPENT_0FEE = 50_000_000;                 // 30_000e6 · 1e8 / 60_000e6
     uint128 constant GROSS_0FEE      = (COLL_OUT - COLL_SPENT_0FEE) * 2e11; // 1e18
 
-    function _planWith(uint8 provider, address src, uint128 owed, bytes memory legs, uint8 n)
+    /// The repay leg buys the pull; the Executor adds the provider's fee.
+    function _planWith(uint8 provider, address src, bytes memory legs, uint8 n)
         internal view returns (bytes memory)
     {
         return bytes.concat(
             PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
             PB.groupHead(provider, src, address(debt), REPAY, n, 1),
             legs,
-            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, owed),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, REPAY),
             PB.profit(1, _profitLeg())
         );
     }
@@ -34,7 +63,7 @@ contract ProvidersAndAdaptersTest is ExecutorTestBase {
     function test_univ3_flash_repays_amount_plus_fee_by_transfer() public {
         // debt is token0 or token1 of pDebtWeth; the Executor picks the side.
         uint256 before = debt.balanceOf(address(pDebtWeth));
-        _exec(_planWith(PB.P_UNIV3, address(pDebtWeth), OWED, _v3Leg(), 1)); // 5 bps fee
+        _exec(_planWith(PB.P_UNIV3, address(pDebtWeth), _v3Leg(), 1)); // 5 bps fee
         assertEq(debt.balanceOf(address(pDebtWeth)), before + 15e6, "pool keeps the fee");
         assertEq(weth.balanceOf(sink), GROSS_WETH);
         _assertClean();
@@ -42,7 +71,7 @@ contract ProvidersAndAdaptersTest is ExecutorTestBase {
 
     function test_univ4_unlock_take_settle() public {
         uint256 before = debt.balanceOf(address(pm));
-        _exec(_planWith(PB.P_UNIV4, address(pm), REPAY, _v3Leg(), 1));
+        _exec(_planWith(PB.P_UNIV4, address(pm), _v3Leg(), 1));
         assertEq(debt.balanceOf(address(pm)), before, "zero-fee, fully settled");
         assertEq(weth.balanceOf(sink), GROSS_0FEE);
         _assertClean();
@@ -51,13 +80,13 @@ contract ProvidersAndAdaptersTest is ExecutorTestBase {
     function test_lazy_flash_provider_residual_allowance_is_zero() public {
         LazyFlashProvider lazy = new LazyFlashProvider();
         debt.mint(address(lazy), 1e15);
-        _exec(_planWith(PB.P_AAVE, address(lazy), OWED, _v3Leg(), 1));
+        _exec(_planWith(PB.P_AAVE, address(lazy), _v3Leg(), 1));
         assertEq(debt.allowance(address(ex), address(lazy)), 0, "D1: residual flash allowance");
     }
 
     function test_morpho_flash_repaid_by_pull() public {
         uint256 before = debt.balanceOf(address(morpho));
-        _exec(_planWith(PB.P_MORPHO, address(morpho), REPAY, _v3Leg(), 1));
+        _exec(_planWith(PB.P_MORPHO, address(morpho), _v3Leg(), 1));
         assertEq(debt.balanceOf(address(morpho)), before);
         assertEq(weth.balanceOf(sink), GROSS_0FEE);
         _assertClean();
@@ -92,7 +121,127 @@ contract ProvidersAndAdaptersTest is ExecutorTestBase {
         MockERC20 dai = new MockERC20("DAI", 18);
         MockDssFlash dss = new MockDssFlash(address(dai));
         vm.expectRevert("DssFlash/token-unsupported");
-        _exec(_planWith(PB.P_SKY, address(dss), REPAY, _v3Leg(), 1));
+        _exec(_planWith(PB.P_SKY, address(dss), _v3Leg(), 1));
+    }
+
+    // ── flash swaps ───────────────────────────────────────────────────
+
+    /// A flash swap on the collateral/debt pool: the pool pays the debt, the
+    /// leg is liquidated inside the swap callback, and the pool is paid the
+    /// collateral its exact-output price asks for. No flash loan, no repay
+    /// swap: the group has no swap legs at all. The mock pool charges no
+    /// fee, so the sink receives the fee-free gross.
+    function test_univ3_flash_swap_on_the_collateral_pool_pays_it_the_collateral() public {
+        uint256 debtBefore = debt.balanceOf(address(pCollDebt));
+        uint256 collBefore = coll.balanceOf(address(pCollDebt));
+        bytes memory plan = bytes.concat(
+            PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
+            PB.groupHead(PB.P_UNIV3_SWAP, address(pCollDebt), address(debt), REPAY, 1, 0),
+            _v3Leg(),
+            PB.profit(1, _profitLeg())
+        );
+        _exec(plan);
+        assertEq(debt.balanceOf(address(pCollDebt)), debtBefore - REPAY, "the pool sold the debt");
+        assertEq(coll.balanceOf(address(pCollDebt)), collBefore + COLL_SPENT_0FEE, "and was paid collateral");
+        assertEq(pCollDebt.swaps(), 1, "one swap: the flash swap itself");
+        assertEq(weth.balanceOf(sink), GROSS_0FEE);
+        _assertClean();
+    }
+
+    /// A flash swap on the debt/WETH pool (an exit through WETH): the pool
+    /// pays the debt, the callback liquidates and sells all the collateral
+    /// into WETH (the repay blob's TAKE_BALANCE leg, which closes it), and
+    /// the pool is paid WETH. What WETH is left is the profit; no profit
+    /// leg sells the collateral.
+    function test_univ3_flash_swap_on_the_weth_pool_buys_the_debt_with_weth() public {
+        uint256 wethBefore = weth.balanceOf(address(pDebtWeth));
+        bytes memory plan = bytes.concat(
+            PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
+            PB.groupHead(PB.P_UNIV3_SWAP, address(pDebtWeth), address(debt), REPAY, 1, 1),
+            _v3Leg(),
+            PB.poolSwap(address(pCollWeth), address(coll), address(weth), PB.L_TAKE_BALANCE, 0),
+            PB.profit(0, "")
+        );
+        _exec(plan);
+        // 0.55 COLL → 11 WETH; 30_000 DEBT exact-out costs 10 WETH.
+        assertEq(weth.balanceOf(address(pDebtWeth)), wethBefore + 10e18, "paid in WETH");
+        assertEq(weth.balanceOf(sink), 1e18);
+        assertEq(pDebtWeth.swaps(), 1);
+        assertEq(pCollWeth.swaps(), 1);
+        _assertClean();
+    }
+
+    /// Every leg beaten: the group reverts inside the swap callback, so the
+    /// swap reverts with it and the pool has sold nothing.
+    function test_univ3_flash_swap_with_all_legs_beaten_pays_nothing() public {
+        pool.setPosition(borrower, 1.2e18, REPAY, COLL_OUT);
+        uint256 debtBefore = debt.balanceOf(address(pCollDebt));
+        bytes memory plan = bytes.concat(
+            PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
+            PB.groupHead(PB.P_UNIV3_SWAP, address(pCollDebt), address(debt), REPAY, 1, 0),
+            _v3Leg(),
+            PB.profit(1, _profitLeg())
+        );
+        vm.expectRevert(Executor.AllLegsFailed.selector);
+        _exec(plan);
+        assertEq(debt.balanceOf(address(pCollDebt)), debtBefore);
+    }
+
+    /// A pool that delivers less than the group's amount (its liquidity ran
+    /// out) is refused before any leg runs.
+    function test_univ3_flash_swap_short_delivery_reverts() public {
+        pCollDebt.setShort(1);
+        bytes memory plan = bytes.concat(
+            PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
+            PB.groupHead(PB.P_UNIV3_SWAP, address(pCollDebt), address(debt), REPAY, 1, 0),
+            _v3Leg(),
+            PB.profit(1, _profitLeg())
+        );
+        vm.expectRevert(Executor.FlashMismatch.selector);
+        _exec(plan);
+        assertEq(pool.hf(borrower), 0.95e18, "nothing liquidated");
+    }
+
+    /// A pool holding neither token as the debt cannot have paid it: whatever
+    /// it hands over, the callback refuses before any leg runs.
+    function test_univ3_flash_swap_pool_without_the_debt_reverts() public {
+        coll.mint(address(pCollWeth), 1e12); // enough of either token to hand over
+        bytes memory plan = bytes.concat(
+            PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
+            PB.groupHead(PB.P_UNIV3_SWAP, address(pCollWeth), address(debt), REPAY, 1, 0),
+            _v3Leg(),
+            PB.profit(1, _profitLeg())
+        );
+        vm.expectRevert(Executor.FlashMismatch.selector);
+        _exec(plan);
+    }
+
+    /// The lending pool is locked while it swaps: a repay leg on it reverts
+    /// in the pool, and the plan with it. The encoder never emits one.
+    function test_univ3_flash_swap_repay_leg_on_the_lending_pool_reverts() public {
+        bytes memory plan = bytes.concat(
+            PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
+            PB.groupHead(PB.P_UNIV3_SWAP, address(pCollDebt), address(debt), REPAY, 1, 1),
+            _v3Leg(),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, 1),
+            PB.profit(1, _profitLeg())
+        );
+        vm.expectRevert(bytes("LOK"));
+        _exec(plan);
+    }
+
+    /// The swap callback outside a swap leg is the flash swap's, and only
+    /// from the armed pool: another contract's call mid-execute is refused.
+    function test_univ3_flash_swap_callback_from_another_pool_reverts() public {
+        RogueSwapPool rogue = new RogueSwapPool(address(pCollDebt));
+        bytes memory plan = bytes.concat(
+            PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
+            PB.groupHead(PB.P_UNIV3_SWAP, address(rogue), address(debt), REPAY, 1, 0),
+            _v3Leg(),
+            PB.profit(1, _profitLeg())
+        );
+        vm.expectRevert(Executor.BadSwapCallback.selector);
+        _exec(plan);
     }
 
     // ── Aave V4 adapter ───────────────────────────────────────────────
@@ -101,7 +250,7 @@ contract ProvidersAndAdaptersTest is ExecutorTestBase {
         spoke.setReserve(3, address(coll));
         spoke.setReserve(7, address(debt));
         spoke.setPosition(borrower, 0.95e18, REPAY, COLL_OUT);
-        _exec(_planWith(PB.P_AAVE, address(pool), OWED,
+        _exec(_planWith(PB.P_AAVE, address(pool),
             PB.legV4(address(spoke), borrower, address(coll), REPAY, 3, 7), 1));
         assertEq(spoke.lastCollId(), 3); assertEq(spoke.lastDebtId(), 7);
         assertEq(spoke.lastUser(), borrower); assertEq(spoke.lastDebtToCover(), REPAY);
@@ -113,7 +262,7 @@ contract ProvidersAndAdaptersTest is ExecutorTestBase {
         spoke.setReserve(3, address(coll)); spoke.setReserve(7, address(debt));
         spoke.setPosition(borrower, 1.01e18, REPAY, COLL_OUT);
         vm.expectRevert(Executor.AllLegsFailed.selector);
-        _exec(_planWith(PB.P_AAVE, address(pool), OWED,
+        _exec(_planWith(PB.P_AAVE, address(pool),
             PB.legV4(address(spoke), borrower, address(coll), REPAY, 3, 7), 1));
     }
 
@@ -144,7 +293,7 @@ contract ProvidersAndAdaptersTest is ExecutorTestBase {
         (bytes32 id, ) = _market();
         morpho.setPosition(id, borrower, 30_000e12, 1e8);
 
-        _exec(_planWith(PB.P_AAVE, address(pool), OWED,
+        _exec(_planWith(PB.P_AAVE, address(pool),
             PB.legMorpho(address(morpho), borrower, address(coll), REPAY, id), 1));
 
         uint256 shares = _sharesDown(REPAY);
@@ -165,7 +314,7 @@ contract ProvidersAndAdaptersTest is ExecutorTestBase {
     function test_morpho_caps_shares_at_borrower_position() public {
         (bytes32 id, ) = _market();
         morpho.setPosition(id, borrower, 1e12, 1e8); // ~1 DEBT of debt
-        _exec(_planWith(PB.P_AAVE, address(pool), OWED,
+        _exec(_planWith(PB.P_AAVE, address(pool),
             PB.legMorpho(address(morpho), borrower, address(coll), REPAY, id), 1));
         assertEq(morpho.lastRepaidShares(), 1e12, "capped: one share above owed would revert in Morpho");
         assertEq(morpho.lastRepaidAssets(), _assetsUp(1e12));
@@ -175,7 +324,7 @@ contract ProvidersAndAdaptersTest is ExecutorTestBase {
         (bytes32 id, ) = _market();
         morpho.setPosition(id, borrower, 30_000e12, 1e8);
         vm.expectRevert(Executor.LegMismatch.selector);
-        _exec(_planWith(PB.P_AAVE, address(pool), OWED,
+        _exec(_planWith(PB.P_AAVE, address(pool),
             PB.legMorpho(address(morpho), borrower, address(weth), REPAY, id), 1)); // wrong collateral
     }
 
@@ -184,14 +333,14 @@ contract ProvidersAndAdaptersTest is ExecutorTestBase {
         morpho.setPosition(id, borrower, 30_000e12, 1e8);
         morpho.setHealthy(borrower, true);
         vm.expectRevert(Executor.AllLegsFailed.selector);
-        _exec(_planWith(PB.P_AAVE, address(pool), OWED,
+        _exec(_planWith(PB.P_AAVE, address(pool),
             PB.legMorpho(address(morpho), borrower, address(coll), REPAY, id), 1));
     }
 
     function test_morpho_no_debt_skipped_before_approval() public {
         (bytes32 id, ) = _market();
         vm.expectRevert(Executor.AllLegsFailed.selector);
-        _exec(_planWith(PB.P_AAVE, address(pool), OWED,
+        _exec(_planWith(PB.P_AAVE, address(pool),
             PB.legMorpho(address(morpho), borrower, address(coll), REPAY, id), 1));
     }
 
@@ -203,10 +352,10 @@ contract ProvidersAndAdaptersTest is ExecutorTestBase {
         pool.setPosition(b2, 0.9e18, 15_000e6, 0.275e8);
         bytes memory plan = bytes.concat(
             PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 2),
-            // group 0: Aave flash (5 bps)
+            // group 0: Aave flash (5 bps), its premium added by the Executor
             PB.groupHead(PB.P_AAVE, address(pool), address(debt), 15_000e6, 1, 1),
             PB.legV3(address(pool), b1, address(coll), 15_000e6),
-            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, 15_007.5e6),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, 15_000e6),
             // group 1: Morpho flash (0 fee)
             PB.groupHead(PB.P_MORPHO, address(morpho), address(debt), 15_000e6, 1, 1),
             PB.legV3(address(pool), b2, address(coll), 15_000e6),
@@ -214,7 +363,7 @@ contract ProvidersAndAdaptersTest is ExecutorTestBase {
             PB.profit(1, _profitLeg())
         );
         _exec(plan);
-        // spent: ceil(15_007.5e6·1e8/60_000e6) = 25_012_500 ; 25_000_000
+        // spent: ceil(15_007.5e6·1e8/60_000e6) = 25_012_500 (pull + premium) ; 25_000_000
         uint256 left = uint256(0.55e8) - 25_012_500 - 25_000_000;
         assertEq(weth.balanceOf(sink), left * 2e11);
         assertEq(debt.balanceOf(address(ex)), 0);
@@ -230,7 +379,7 @@ contract ProvidersAndAdaptersTest is ExecutorTestBase {
             PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 2),
             PB.groupHead(PB.P_AAVE, address(pool), address(debt), 15_000e6, 1, 1),
             PB.legV3(address(pool), b1, address(coll), 15_000e6),
-            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, 15_007.5e6),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, 15_000e6),
             PB.groupHead(9, address(morpho), address(debt), 15_000e6, 1, 1), // unknown provider
             PB.legV3(address(pool), b2, address(coll), 15_000e6),
             PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, 15_000e6),
@@ -242,7 +391,8 @@ contract ProvidersAndAdaptersTest is ExecutorTestBase {
         assertLt(pool.hf(b1), 1e18, "b1 still liquidatable: nothing partial");
     }
 
-    /// Collateral is WETH. The repay leg buys the debt the flash is owed.
+    /// Collateral is WETH. The repay leg buys the debt the liquidation
+    /// pulled, and the Executor adds the premium: the flash is owed both.
     /// A WETH→WETH closer has no pool; it must not run. The residual WETH
     /// is the profit and is swept. Same result with no closer at all.
     function test_weth_collateral_residual_sweeps_without_self_swap() public {
@@ -257,7 +407,7 @@ contract ProvidersAndAdaptersTest is ExecutorTestBase {
         assertGt(profit, 0, "seizure covers the repay");
 
         bytes memory repay = PB.poolSwap(
-            address(pDebtWeth), address(weth), address(debt), PB.L_EXACT_OUT, OWED
+            address(pDebtWeth), address(weth), address(debt), PB.L_EXACT_OUT, REPAY
         );
         bytes memory selfSwap = PB.poolSwap(
             address(pDebtWeth), address(weth), address(weth), PB.L_TAKE_BALANCE, 0

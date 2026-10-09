@@ -30,6 +30,9 @@ pub struct AaveV3PoolToml {
     /// token contracts whose logs the adapter reads.
     #[serde(default)]
     pub tokens: Vec<Address>,
+    /// Aave V2 only: the collateral manager's grace sentinel.
+    #[serde(default)]
+    pub grace_sentinel: Address,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -62,6 +65,13 @@ pub struct AaveV3LiquidationToml {
     /// Absent on Aave V3: `position-base`. Spark sets `reserve-debt`.
     #[serde(default = "default_close_scope")]
     pub close_factor_scope: String,
+    /// `v3` (absent) or `v2`: the Aave code the instance runs.
+    #[serde(default = "default_aave_version")]
+    pub version: String,
+}
+
+fn default_aave_version() -> String {
+    "v3".into()
 }
 
 fn default_balance_model() -> String {

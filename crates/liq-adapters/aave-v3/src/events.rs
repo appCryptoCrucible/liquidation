@@ -54,6 +54,81 @@ pub mod cfg {
     }
 }
 
+/// Aave V2 events whose signatures differ from V3's (`ILendingPool`,
+/// `LendingPoolConfigurator`, `IAToken`, `IVariableDebtToken`, as deployed:
+/// pool `0x02d84abd…`, configurator `0x246ca675…`, aToken `0x1c050bca…`,
+/// variable debt `0x1f57cc62…`). `Withdraw`, `ReserveUsedAsCollateral*`,
+/// `LiquidationCall`, `ReserveDataUpdated`, `ReserveInitialized`,
+/// `CollateralConfigurationChanged`, `BalanceTransfer` and the stable debt
+/// token's `Mint`/`Burn` have V3's signatures and are decoded with V3's
+/// types (V2's `BalanceTransfer.value` is NOT scaled, unlike V3's).
+pub mod v2 {
+    pub mod pool {
+        alloy_sol_types::sol! {
+            event Deposit(address indexed reserve, address user, address indexed onBehalfOf, uint256 amount, uint16 indexed referral);
+            event Borrow(address indexed reserve, address user, address indexed onBehalfOf, uint256 amount, uint256 borrowRateMode, uint256 borrowRate, uint16 indexed referral);
+            event Repay(address indexed reserve, address indexed user, address indexed repayer, uint256 amount);
+            event Swap(address indexed reserve, address indexed user, uint256 rateMode);
+            event RebalanceStableBorrowRate(address indexed reserve, address indexed user);
+            event FlashLoan(address indexed target, address indexed initiator, address indexed asset, uint256 amount, uint256 premium, uint16 referralCode);
+            event Paused();
+            event Unpaused();
+        }
+    }
+    pub mod cfg {
+        alloy_sol_types::sol! {
+            event BorrowingEnabledOnReserve(address indexed asset, bool stableRateEnabled);
+            event BorrowingDisabledOnReserve(address indexed asset);
+            event StableRateEnabledOnReserve(address indexed asset);
+            event StableRateDisabledOnReserve(address indexed asset);
+            event ReserveActivated(address indexed asset);
+            event ReserveDeactivated(address indexed asset);
+            event ReserveFrozen(address indexed asset);
+            event ReserveUnfrozen(address indexed asset);
+            event ReserveFactorChanged(address indexed asset, uint256 factor);
+            event ReserveDecimalsChanged(address indexed asset, uint256 decimals);
+            event ReserveInterestRateStrategyChanged(address indexed asset, address strategy);
+            event StableDebtTokenUpgraded(address indexed asset, address indexed proxy, address indexed implementation);
+        }
+    }
+    pub mod atoken {
+        alloy_sol_types::sol! {
+            event Mint(address indexed from, uint256 value, uint256 index);
+            event Burn(address indexed from, address indexed target, uint256 value, uint256 index);
+        }
+    }
+    pub mod vtoken {
+        alloy_sol_types::sol! {
+            event Mint(address indexed from, address indexed onBehalfOf, uint256 value, uint256 index);
+            event Burn(address indexed user, uint256 amount, uint256 index);
+        }
+    }
+    pub mod provider {
+        alloy_sol_types::sol! {
+            event LendingPoolUpdated(address indexed newAddress);
+            event ConfigurationAdminUpdated(address indexed newAddress);
+            event EmergencyAdminUpdated(address indexed newAddress);
+            event LendingPoolConfiguratorUpdated(address indexed newAddress);
+            event LendingPoolCollateralManagerUpdated(address indexed newAddress);
+            event PriceOracleUpdated(address indexed newAddress);
+            event LendingRateOracleUpdated(address indexed newAddress);
+            event ProxyCreated(bytes32 id, address indexed newAddress);
+            event AddressSet(bytes32 id, address indexed newAddress, bool hasProxy);
+        }
+    }
+    pub mod oracle {
+        alloy_sol_types::sol! {
+            event WethSet(address indexed weth);
+        }
+    }
+    /// `LiquidationsGraceSentinel` (`0x929b090f…`, Sourcify exact match).
+    pub mod grace {
+        alloy_sol_types::sol! {
+            event GracePeriodSet(address indexed asset, uint40 until);
+        }
+    }
+}
+
 pub mod oracle {
     use super::sol;
     sol! {

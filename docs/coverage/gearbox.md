@@ -53,7 +53,7 @@ Then `Err(ExecutorUnwired)`:
 | Positions | open/close/liquidate/partial/add/withdraw collateral, StartMultiCall (marks the account for a chain read), pool Borrow, UpdateQuota, factory take/deploy |
 | MarketReprice | factory AddCreditManager (listing), UpdateFees, LT / ramp / expiration, facade pause/unpause |
 | None | Execute / MultiCall bookends, pool Repay (no account), matching SetCreditFacade, IRM, limits, adapters, forbid/allow token |
-| halt | proxy upgrade / admin / init after pin; SetPriceOracle; CreditConfiguratorUpgraded; SetCreditFacade mismatch; factory Rescue; unknown manager after pin |
+| halt | proxy upgrade / admin / init after pin; SetPriceOracle; CreditConfiguratorUpgraded; SetCreditFacade mismatch; factory Rescue; unknown manager after pin. Scoped (decision 8): a facade, manager or configurator halts its credit manager (`ManagerRow::HALTED`, which `Unpaused` does not clear); a pool, quota keeper or account factory halts every manager sharing it; only the contracts register stops the protocol |
 
 ## Coverage
 

@@ -32,11 +32,15 @@ pub const PLANNED_LIQUIDATION_MODULE: Address =
 /// Where the compiled `SwapModule` is placed. Not a mainnet claim.
 pub const PLANNED_SWAP_MODULE: Address =
     alloy_primitives::address!("e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2");
+/// Where the compiled `DexModule` is placed: the swap module is built to
+/// delegatecall it there for Balancer and Fluid legs. Not a mainnet claim.
+pub const PLANNED_DEX_MODULE: Address =
+    alloy_primitives::address!("e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3");
 
-/// Constructor arguments of a CacheDB-inserted Executor and its two
-/// modules: the core takes the keys, the sink, WETH and the V3 anchors; the
-/// swap module takes WETH, the routers and the V2/Sushi/Curve anchors; the
-/// liquidation module takes WETH.
+/// Constructor arguments of a CacheDB-inserted Executor and its modules: the
+/// core takes the keys, the sink, WETH and the V3 anchors; the swap module
+/// takes WETH, the routers, the V2/Sushi/Curve anchors and the dex module; the
+/// liquidation and dex modules take WETH.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct ExecutorSpec {
     pub operator: Address,
@@ -269,8 +273,14 @@ pub fn liquidation_module_initcode(spec: &ExecutorSpec) -> Result<Bytes, SimErro
     initcode("LiquidationModule", &spec.weth.abi_encode())
 }
 
-/// `SwapModule`'s deploy input for `spec`.
-pub fn swap_module_initcode(spec: &ExecutorSpec) -> Result<Bytes, SimError> {
+/// `DexModule`'s deploy input for `spec`.
+pub fn dex_module_initcode(spec: &ExecutorSpec) -> Result<Bytes, SimError> {
+    initcode("DexModule", &spec.weth.abi_encode())
+}
+
+/// `SwapModule`'s deploy input for `spec`, wired to the dex module at
+/// `dex_module` (whose constructor-time check reads it).
+pub fn swap_module_initcode(spec: &ExecutorSpec, dex_module: Address) -> Result<Bytes, SimError> {
     let args = (
         spec.weth,
         spec.router_a,
@@ -280,38 +290,42 @@ pub fn swap_module_initcode(spec: &ExecutorSpec) -> Result<Bytes, SimError> {
         spec.sushi_factory,
         spec.sushi_init_hash,
         spec.curve_registry,
+        dex_module,
     )
         .abi_encode();
     initcode("SwapModule", &args)
 }
 
-/// Runtime code of the compiled Executor and its two modules, built for
-/// `spec`. The core is wired to [`PLANNED_LIQUIDATION_MODULE`] and
-/// [`PLANNED_SWAP_MODULE`]: placed there with [`ExecutorCode::placements`],
-/// the three run as the deployed system would.
+/// Runtime code of the compiled Executor and its modules, built for `spec`.
+/// The core is wired to [`PLANNED_LIQUIDATION_MODULE`] and
+/// [`PLANNED_SWAP_MODULE`], the swap module to [`PLANNED_DEX_MODULE`]: placed
+/// there with [`ExecutorCode::placements`], the four run as the deployed
+/// system would.
 #[derive(Clone, Debug)]
 pub struct ExecutorCode {
     pub core: Bytecode,
     pub liquidation: Bytecode,
     pub swap: Bytecode,
+    pub dex: Bytecode,
 }
 
 impl ExecutorCode {
     /// Each contract and the address it runs at: the core at `core_at`,
     /// the modules where the core delegatecalls them.
     #[must_use]
-    pub fn placements(&self, core_at: Address) -> [(Address, Bytecode); 3] {
+    pub fn placements(&self, core_at: Address) -> [(Address, Bytecode); 4] {
         [
             (core_at, self.core.clone()),
             (PLANNED_LIQUIDATION_MODULE, self.liquidation.clone()),
             (PLANNED_SWAP_MODULE, self.swap.clone()),
+            (PLANNED_DEX_MODULE, self.dex.clone()),
         ]
     }
 
     /// [`Self::placements`] as raw runtime bytes, for a node's state
     /// override.
     #[must_use]
-    pub fn runtimes(&self, core_at: Address) -> [(Address, Bytes); 3] {
+    pub fn runtimes(&self, core_at: Address) -> [(Address, Bytes); 4] {
         self.placements(core_at)
             .map(|(at, code)| (at, code.original_bytes()))
     }
@@ -328,7 +342,13 @@ pub fn executor_stack(spec: &ExecutorSpec) -> Result<ExecutorCode, SimError> {
         liquidation_module_initcode(spec)?,
         RUNTIME_DEPLOYER,
     )?;
-    let swap = deploy_runtime(&world.cache, swap_module_initcode(spec)?, RUNTIME_DEPLOYER)?;
+    let dex = deploy_runtime(&world.cache, dex_module_initcode(spec)?, RUNTIME_DEPLOYER)?;
+    place_code(&mut world, PLANNED_DEX_MODULE, dex.clone())?;
+    let swap = deploy_runtime(
+        &world.cache,
+        swap_module_initcode(spec, PLANNED_DEX_MODULE)?,
+        RUNTIME_DEPLOYER,
+    )?;
     place_code(&mut world, PLANNED_LIQUIDATION_MODULE, liquidation.clone())?;
     place_code(&mut world, PLANNED_SWAP_MODULE, swap.clone())?;
     let core = deploy_runtime(
@@ -340,6 +360,7 @@ pub fn executor_stack(spec: &ExecutorSpec) -> Result<ExecutorCode, SimError> {
         core,
         liquidation,
         swap,
+        dex,
     })
 }
 
@@ -470,6 +491,7 @@ impl<P: DatabaseRef<Error = SimError>> Simulator<P> {
         warm.insert(executor);
         warm.insert(PLANNED_LIQUIDATION_MODULE);
         warm.insert(PLANNED_SWAP_MODULE);
+        warm.insert(PLANNED_DEX_MODULE);
         warm.insert(spec.weth);
         warm.insert(spec.profit_sink);
         warm.insert(spec.operator);

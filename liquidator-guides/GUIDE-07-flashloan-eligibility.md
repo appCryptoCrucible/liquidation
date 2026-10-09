@@ -130,6 +130,15 @@ flash source and a swap venue (D08/D09). Do not implement `receiveFlashLoan`.
 | **Sky DSS Flash** | **0** today (`flashFee` → 0; runtime lookup) | governance `max` ceiling, **DAI only** | ERC-3156 `onFlashLoan` |
 | Uniswap V3 pool | pool fee tier (1 / 5 / 30 / 100 bps) | that pool's ERC-20 balance | `uniswapV3FlashCallback` |
 | Aave V3 / V4 | 5 bps (0 if waived) | aToken underlying balance | `executeOperation` |
+| Uniswap V3 pool, as a flash swap (provider 6) | the pool's swap fee, which the exit pays anyway | the pool's depth into the debt: the exit solve's, not a balance | `uniswapV3SwapCallback` |
+
+The flash swap is not a sixth arena. It is the V3 pool's other callback: an
+exit whose last swap, into the debt, is one V3 pool can have that pool lend the
+debt exact-out and be paid inside its swap callback, so the flash loan's fee
+and wrapper fall away. It is a shape of the exit (`liq-router`
+`solve_pair_single_lender`), found and priced where the exit is solved, never a
+source the index holds: it has no availability of its own and funds nothing by
+itself, so eligibility still needs a lender in the index.
 
 **Count: five arenas.** Balancer is not among them. Sky DSS is **DAI-denominated
 only** — `available(asset) = 0` for every non-DAI debt asset. It still earns its

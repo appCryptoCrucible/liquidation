@@ -604,14 +604,25 @@ be lost. Without per-leg tolerance, one competitor beating you on Alice costs yo
 Bob and Mary as well.
 
 So each leg is attempted inside `try/catch`, a failed leg is skipped, and
-`minProfit` judges the batch as a whole. Two consequences for the solver:
+`minProfit` judges the batch as a whole. A failed leg's repay swaps are
+skipped with it: each is tied to the leg it repays (PLAN-ENCODING §1c), and
+the flash premium is bought by whichever leg's exact output runs first, so
+the group owes it once whatever fills. Without the tie, a beaten leg's exact
+output still ran, paid for with collateral that never arrived, and reverted
+the batch. Three consequences for the solver:
 
 - **Set `minProfit` as a floor, not an expectation.** If it encodes the
   all-legs-succeed outcome, any partial fill reverts the batch — which is free,
   but throws away a profitable partial. Size it to the worst partial you would
-  still accept.
-- **Zero successful legs reverts.** `AllLegsFailed`. The bundle is dropped and
-  costs nothing.
+  still accept. The assembler's is the worst landing: each flash group's
+  weakest leg alone, less that group's premium on the whole flash (a beaten
+  leg's share of the flash goes back unspent, its premium does not), less the
+  plan's gas once, after the bid, and never under 1 wei.
+- **Zero successful legs reverts.** `AllLegsFailed`, per flash group, and the
+  plan with it. The bundle is dropped and costs nothing.
+- **Every leg must be able to buy the premium alone.** The Executor adds it
+  to a pool exact output only; a leg repaid on Curve alone overshoots by the
+  whole premium, since it may be the one that fills.
 
 ### The routing problem is the hard part
 

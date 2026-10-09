@@ -55,7 +55,9 @@ pub struct SnapshotHead {
 /// subscription, so every snapshot written before it is rebuilt.
 /// 2: Gearbox MarketIds moved to 64000.., Morpho dropped its catalog rows
 /// and skips markets on unlisted tokens, Gearbox accounts carry `STALE`.
-pub const STATE_EPOCH: u32 = 2;
+/// 3: Aave V3 pools keep their e-mode categories by id in nine rows after
+/// the meta row, so reserves start at slot 10 and their rows changed.
+pub const STATE_EPOCH: u32 = 3;
 
 /// Hash of [`STATE_EPOCH`] and every `(protocol, address, topic0)` the bound
 /// adapters subscribe to, sorted. Equal fingerprints mean the same contracts

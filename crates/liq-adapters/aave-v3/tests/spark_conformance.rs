@@ -64,6 +64,7 @@ fn to_config(t: &AaveV3Toml) -> Config {
                 sentinel: p.sentinel,
                 sequencer_oracle: p.sequencer_oracle,
                 tokens: p.tokens.clone(),
+                grace_sentinel: Address::ZERO,
             })
             .collect(),
         assets: t
@@ -89,6 +90,7 @@ fn to_config(t: &AaveV3Toml) -> Config {
             })
             .collect(),
         liquidation: LiquidationParams {
+            version: Default::default(),
             close_factor_bps: t.liquidation.close_factor_bps,
             close_factor_hf_wad: t.liquidation.close_factor_hf_wad,
             min_base_max_close: t.liquidation.min_base_max_close,
@@ -547,9 +549,10 @@ fn halt_logs_fold_before_the_pin_and_error_after() {
         pin + 1,
         T0,
     );
+    // After the pin the pool's market is halted, not the bot.
     assert_eq!(
         h.p.apply_log(&mut st, &after.view()),
-        Err(ProtocolError::HaltSignal)
+        Ok(DirtySet::ProtocolWide)
     );
 }
 

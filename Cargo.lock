@@ -5567,6 +5567,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "toml 1.1.6+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]
@@ -5645,6 +5646,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "toml 1.1.6+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]
@@ -5674,6 +5676,7 @@ dependencies = [
  "liq-types",
  "smallvec",
  "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]
@@ -5735,6 +5738,7 @@ dependencies = [
  "tokio",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
+ "uniswap_v3_math",
 ]
 
 [[package]]
@@ -5930,14 +5934,22 @@ dependencies = [
  "alloy-sol-types",
  "arrayvec",
  "arrow",
+ "crossbeam-channel",
+ "liq-adapters-aave-v3",
  "liq-adapters-aave-v4",
+ "liq-adapters-compound-v2",
+ "liq-adapters-euler-v2",
+ "liq-adapters-morpho-blue",
+ "liq-adapters-silo-v2",
  "liq-bot",
  "liq-config",
  "liq-engine",
+ "liq-exec",
  "liq-flash",
  "liq-node",
  "liq-obs",
  "liq-oracle",
+ "liq-plan",
  "liq-protocol",
  "liq-router",
  "liq-sim",
@@ -5945,10 +5957,14 @@ dependencies = [
  "liq-types",
  "liq-watch",
  "parquet",
+ "reqwest 0.12.23",
  "revm",
+ "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "toml 1.1.6+spec-1.1.0",
  "tracing",
+ "tracing-subscriber",
  "uniswap_v3_math",
 ]
 

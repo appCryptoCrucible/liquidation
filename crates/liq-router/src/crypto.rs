@@ -13,6 +13,14 @@
 //! Vyper semantics: `uint256` arithmetic is checked (an overflow is a revert:
 //! [`RouteError::Math`]), `unsafe_*` wraps, `int256` `/` truncates toward
 //! zero. `A`/`gamma` ramps are not modelled: a ramping pool is stale.
+//!
+//! A swap's own state change is followed for the 2025 Twocrypto pools
+//! ([`CryptoKind::TwoStable`]): `_exchange` then `tweak_price` as deployed
+//! (`0x6e54…a9c2` v2.1.0d, `0x6563…9bf3` v3.0.0, Vyper 0.4.3), a port of
+//! `crypto_math.two_stable_exchange`, which `tools/registry/crypto_sequence.py`
+//! checks against swaps run in sequence on the chain. The other kinds go
+//! stale after one swap (their `tweak_price` may move `price_scale` on every
+//! swap, which is not ported).
 
 use alloy_primitives::{I256, U256, U512};
 use smallvec::SmallVec;
@@ -36,8 +44,54 @@ pub enum CryptoKind {
     TwoV200,
     /// twocrypto-ng with `CurveTwocryptoMathOptimized` v2.1.0.
     TwoV210,
+    /// The 2025 Twocrypto pools (v2.1.0d, v3.0.0) whose MATH is the
+    /// stableswap adaptation (`StableswapMath`, `0xbfdd…ea13`): the
+    /// twocrypto shell (price scaling, the pool's `_fee`) around
+    /// StableSwap-NG's `get_y`. `ann` is the pool's `A()` as that `get_y`
+    /// takes it.
+    TwoStable,
     /// tricrypto-ng with `CurveTricryptoMathOptimized` v2.0.0.
     Tri,
+}
+
+/// The `tweak_price` state of a 2025 Twocrypto pool: what its first swap
+/// of a block needs to update the price oracle and rebalance `price_scale`,
+/// and the swaps after it to keep `D` and the LP accounting right. Read
+/// with the pool and carried in [`CryptoState::tweak`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TweakState {
+    /// v3.0.0 (admin fee out of the balance, LP-protected profit threshold,
+    /// the oracle capped both ways); otherwise v2.1.0d.
+    pub v3: bool,
+    /// `cached_price_oracle`: the stored EMA, not the `price_oracle()`
+    /// view (which applies the EMA to the read block's time).
+    pub price_oracle: U256,
+    pub last_prices: U256,
+    pub last_timestamp: U256,
+    /// `packed_rebalancing_params`: `[allowed_extra_profit |
+    /// adjustment_step_min, adjustment_step | adjustment_step_max, ma_time]`.
+    pub packed_rebalancing_params: U256,
+    pub total_supply: U256,
+    pub donation_shares: U256,
+    pub donation_duration: U256,
+    pub last_donation_release_ts: U256,
+    pub donation_protection_expiry_ts: U256,
+    pub donation_protection_period: U256,
+    pub virtual_price: U256,
+    pub xcp_profit: U256,
+    /// v3.0.0 only (zero otherwise).
+    pub lp_xcp_profit: U256,
+    /// v3.0.0 only (zero otherwise).
+    pub reserved_profit_fraction: U256,
+    pub admin_fee: U256,
+    /// `block.timestamp` of the block the plan executes in: the one after
+    /// the read, taken as 12 s later. A missed slot makes it 24 s, which
+    /// moves the first swap's oracle update by a few wei; the swaps after
+    /// it do not depend on it.
+    pub exec_ts: U256,
+    /// The storage slot `cached_price_oracle` was read from, kept so the
+    /// next read need not find it again.
+    pub oracle_slot: U256,
 }
 
 /// One crypto pool read at a block (the reseed thread's answer).
@@ -53,6 +107,9 @@ pub struct CryptoRead {
     pub fee_gamma: U256,
     /// `future_A_gamma_time()` is after the read block's timestamp.
     pub ramping: bool,
+    /// The `tweak_price` state, for a [`CryptoKind::TwoStable`] pool whose
+    /// swaps are followed; `None` leaves the pool stale after one swap.
+    pub tweak: Option<TweakState>,
 }
 
 /// A crypto pool's swap state, read off the hot path.
@@ -73,12 +130,19 @@ pub struct CryptoState {
     pub mid_fee: U256,
     pub out_fee: U256,
     pub fee_gamma: U256,
-    /// Set by any pool log, and after a simulated swap (the pool's
-    /// `tweak_price` moves `D` and `price_scale`, which this model does not
-    /// follow); cleared by a read.
+    /// Set by any pool log, and after a simulated swap on a pool whose
+    /// `tweak_price` is not followed (see [`Self::tweak`]); cleared by a
+    /// read.
     pub stale: bool,
+    /// The `tweak_price` state of a [`CryptoKind::TwoStable`] pool, which
+    /// [`Self::apply`] then follows exactly; `None` for the other kinds,
+    /// which go stale after one swap.
+    pub tweak: Option<TweakState>,
     pub stale_block: u64,
     pub read_block: u64,
+    /// Index of the Curve MetaRegistry handler that holds the pool; see
+    /// [`crate::solver::CurveState::handler`].
+    pub handler: u8,
 }
 
 impl CryptoState {
@@ -100,6 +164,186 @@ impl CryptoState {
 
     /// Output of `exchange(i, j, dx)` against this state.
     pub fn dy(&self, i: u8, j: u8, dx: U256) -> R<U256> {
+        if dx.is_zero() {
+            return Ok(U256::ZERO);
+        }
+        Ok(self.swap(i, j, dx)?.dy)
+    }
+
+    /// `exchange(i, j, dx)`: the output, and this state moved as the pool
+    /// moves its own. A [`CryptoKind::TwoStable`] pool with its
+    /// [`TweakState`] follows `_exchange` and `tweak_price` exactly; any
+    /// other goes stale, its `D` and `price_scale` unknown after the swap.
+    pub fn apply(&mut self, i: u8, j: u8, dx: U256) -> R<U256> {
+        if dx.is_zero() {
+            return Ok(U256::ZERO);
+        }
+        let sw = self.swap(i, j, dx)?;
+        let (Some(tw), CryptoKind::TwoStable) = (self.tweak.as_mut(), self.kind) else {
+            self.stale = true;
+            return Ok(sw.dy);
+        };
+        let j = usize::from(j);
+        let e18 = e(18);
+        let mut bal = sw.balances;
+        let mut xp = sw.xp;
+        let yb = bal.get_mut(j).ok_or(RouteError::BadLeg)?;
+        if tw.v3 {
+            let admin = udiv_unsafe(
+                mul(mul(sw.fee, tw.reserved_profit_fraction)?, tw.admin_fee)?,
+                e(20),
+            );
+            *yb = sub(*yb, admin)?;
+        }
+        let mut y = mul(*yb, *self.precisions.get(j).ok_or(RouteError::BadLeg)?)?;
+        let price_scale = *self.price_scale.first().ok_or(RouteError::BadLeg)?;
+        if j > 0 {
+            y = udiv_unsafe(mul(y, price_scale)?, e18);
+        }
+        *xp.get_mut(j).ok_or(RouteError::BadLeg)? = y;
+        let d = two_stable_newton_d(self.ann, &xp)?;
+        self.balances = bal;
+        // ---- tweak_price ----
+        let ts = tw.exec_ts;
+        let params = unpack_3(tw.packed_rebalancing_params);
+        let mut price_oracle = tw.price_oracle;
+        let last_timestamp = tw.last_timestamp;
+        if last_timestamp < ts {
+            let dt = udiv_unsafe(mul(sub(ts, last_timestamp)?, e18)?, params[2]);
+            let alpha = wad_exp(si(dt)?.checked_neg().ok_or(RouteError::Math)?)?;
+            let capped = if tw.v3 {
+                tw.last_prices
+                    .max(udiv_unsafe(price_scale, U256::from(2u64)))
+                    .min(mul(U256::from(2u64), price_scale)?)
+            } else {
+                tw.last_prices.min(mul(U256::from(2u64), price_scale)?)
+            };
+            price_oracle = udiv_unsafe(
+                add(mul(capped, sub(e18, alpha)?)?, mul(price_oracle, alpha)?)?,
+                e18,
+            );
+            tw.price_oracle = price_oracle;
+            tw.last_timestamp = ts;
+        }
+        tw.last_prices = udiv_unsafe(mul(two_stable_get_p(&xp, d, self.ann)?, price_scale)?, e18);
+        let donation_shares = two_stable_donation_shares(tw, ts, true)?;
+        let total_supply = tw.total_supply;
+        let locked_supply = sub(total_supply, donation_shares)?;
+        let old_vp = tw.virtual_price;
+        let xcp = two_stable_xcp(d, price_scale)?;
+        let virtual_price = udiv(mul(e18, xcp)?, total_supply)?;
+        let mut xcp_profit = tw.xcp_profit;
+        let (threshold, gate_extra) = if tw.v3 {
+            if virtual_price < sw.vp_preop || virtual_price < old_vp {
+                return Err(RouteError::Math);
+            }
+            let mut lp = tw.lp_xcp_profit;
+            if virtual_price > old_vp {
+                xcp_profit = add(xcp_profit, sub(virtual_price, old_vp)?)?;
+                if xcp_profit > e18 {
+                    let d_profit = sub(xcp_profit, tw.xcp_profit.max(e18))?;
+                    let (rf, af) = (tw.reserved_profit_fraction, tw.admin_fee);
+                    lp = add(
+                        lp,
+                        udiv_unsafe(
+                            mul(mul(d_profit, rf)?, sub(e(10), af)?)?,
+                            sub(e(20), mul(rf, af)?)?,
+                        ),
+                    )?;
+                }
+            } else {
+                let delta = sub(old_vp, virtual_price)?;
+                xcp_profit = sub(xcp_profit, delta)?;
+                lp = if lp > e18 && delta <= sub(lp, e18)? {
+                    sub(lp, delta)?
+                } else {
+                    e18
+                };
+            }
+            tw.lp_xcp_profit = lp;
+            (lp, U256::ZERO)
+        } else {
+            if virtual_price < old_vp {
+                return Err(RouteError::Math);
+            }
+            xcp_profit = sub(add(xcp_profit, virtual_price)?, old_vp)?;
+            (
+                e18.max(udiv(add(xcp_profit, e18)?, U256::from(2u64))?),
+                params[0],
+            )
+        };
+        tw.xcp_profit = xcp_profit;
+        let vp_boosted = udiv(mul(e18, xcp)?, locked_supply)?;
+        if vp_boosted < virtual_price {
+            return Err(RouteError::Math);
+        }
+        if vp_boosted > add(threshold, gate_extra)? && ts > last_timestamp {
+            // No policy contract: the seed refuses a pool with one.
+            let target = price_oracle;
+            let norm = udiv_unsafe(mul(target, e18)?, price_scale);
+            let norm = if norm > e18 {
+                sub(norm, e18)?
+            } else {
+                sub(e18, norm)?
+            };
+            let step = udiv_unsafe(norm, U256::from(5u64)).min(params[1]);
+            let moved = if tw.v3 { step > params[0] } else { norm > step };
+            let p_new = if moved {
+                udiv_unsafe(
+                    add(mul(price_scale, sub(norm, step)?)?, mul(step, target)?)?,
+                    norm,
+                )
+            } else {
+                price_scale
+            };
+            if p_new != price_scale {
+                let xp0 = *xp.first().ok_or(RouteError::BadLeg)?;
+                let xp1 = *xp.get(1).ok_or(RouteError::BadLeg)?;
+                let xp2 = [xp0, udiv_unsafe(mul(xp1, p_new)?, price_scale)];
+                let new_d = two_stable_newton_d(self.ann, &xp2)?;
+                let new_xcp = two_stable_xcp(new_d, p_new)?;
+                let mut new_vp = udiv(mul(e18, new_xcp)?, total_supply)?;
+                let mut burn = U256::ZERO;
+                let goal = threshold.max(virtual_price);
+                if new_vp < goal {
+                    let tweaked = udiv(mul(e18, new_xcp)?, goal)?;
+                    if tweaked >= total_supply {
+                        return Err(RouteError::Math);
+                    }
+                    burn = sub(total_supply, tweaked)?.min(donation_shares);
+                    new_vp = udiv(mul(e18, new_xcp)?, sub(total_supply, burn)?)?;
+                }
+                if new_vp > e18 && new_vp >= threshold {
+                    self.d = new_d;
+                    tw.virtual_price = new_vp;
+                    *self.price_scale.first_mut().ok_or(RouteError::BadLeg)? = p_new;
+                    if !burn.is_zero() {
+                        let unlocked = two_stable_donation_shares(tw, ts, false)?;
+                        let unlocked_new =
+                            sub(unlocked, udiv(mul(burn, unlocked)?, donation_shares)?)?;
+                        let new_total = sub(tw.donation_shares, burn)?;
+                        let mut new_elapsed = U256::ZERO;
+                        if !new_total.is_zero() && !unlocked_new.is_zero() {
+                            new_elapsed =
+                                udiv(mul(unlocked_new, tw.donation_duration)?, new_total)?;
+                        }
+                        tw.donation_shares = new_total;
+                        tw.total_supply = sub(total_supply, burn)?;
+                        tw.last_donation_release_ts = sub(ts, new_elapsed)?;
+                    }
+                    return Ok(sw.dy);
+                }
+            }
+        }
+        self.d = d;
+        tw.virtual_price = virtual_price;
+        Ok(sw.dy)
+    }
+
+    /// `_exchange` up to the fee: the output, the fee, the balances after
+    /// (coin `j` less `dy` only), the `xp` the fee was taken at and, for
+    /// v3.0.0, the virtual price before the swap.
+    fn swap(&self, i: u8, j: u8, dx: U256) -> R<Swap> {
         if self.stale {
             return Err(RouteError::StalePool);
         }
@@ -109,7 +353,7 @@ impl CryptoState {
             return Err(RouteError::BadLeg);
         }
         if dx.is_zero() {
-            return Ok(U256::ZERO);
+            return Err(RouteError::BadLeg);
         }
         let mut bal = self.balances.clone();
         let bi = bal.get_mut(i).ok_or(RouteError::BadLeg)?;
@@ -140,6 +384,14 @@ impl CryptoState {
             }
             CryptoKind::TwoV200 => two_get_y(self.ann, self.gamma, &xp, self.d, j, false)?,
             CryptoKind::TwoV210 => two_get_y(self.ann, self.gamma, &xp, self.d, j, true)?,
+            CryptoKind::TwoStable => {
+                let y = two_stable_get_y(self.ann, &xp, self.d, j)?;
+                // `assert y_out[0] < xp[j], "unsafe value for y"`.
+                if y >= *xp.get(j).ok_or(RouteError::BadLeg)? {
+                    return Err(RouteError::Math);
+                }
+                y
+            }
             CryptoKind::Tri => tri_get_y(self.ann, self.gamma, &xp, self.d, j)?,
         };
         let xj = *xp.get(j).ok_or(RouteError::BadLeg)?;
@@ -154,13 +406,31 @@ impl CryptoState {
             dy = udiv(mul(dy, e18)?, ps)?;
         }
         dy = udiv(dy, *self.precisions.get(j).ok_or(RouteError::BadLeg)?)?;
-        let f = if self.kind == CryptoKind::Tri {
-            tri_fee(&xp, self.mid_fee, self.out_fee, self.fee_gamma)?
-        } else {
-            two_fee(&xp, self.mid_fee, self.out_fee, self.fee_gamma)?
+        let f = match self.kind {
+            CryptoKind::Tri => tri_fee(&xp, self.mid_fee, self.out_fee, self.fee_gamma)?,
+            CryptoKind::TwoStable => {
+                two_stable_fee(&xp, self.mid_fee, self.out_fee, self.fee_gamma)?
+            }
+            _ => two_fee(&xp, self.mid_fee, self.out_fee, self.fee_gamma)?,
         };
         let fee = udiv_unsafe(mul(f, dy)?, e(10));
-        sub(dy, fee)
+        let dy = sub(dy, fee)?;
+        let vp_preop = match (&self.tweak, self.kind) {
+            (Some(tw), CryptoKind::TwoStable) if tw.v3 => {
+                let ps = *self.price_scale.first().ok_or(RouteError::BadLeg)?;
+                udiv(mul(e18, two_stable_xcp(self.d, ps)?)?, tw.total_supply)?
+            }
+            _ => U256::ZERO,
+        };
+        let bj = bal.get_mut(j).ok_or(RouteError::BadLeg)?;
+        *bj = sub(*bj, dy)?;
+        Ok(Swap {
+            dy,
+            fee,
+            balances: bal,
+            xp,
+            vp_preop,
+        })
     }
 
     /// `ρ(x)`: `sqrt` of the marginal output per input after `x` of coin
@@ -186,6 +456,15 @@ impl CryptoState {
             .ok_or(RouteError::Math)?;
         narrow(q.root(2))
     }
+}
+
+/// What `_exchange` computes before the pool's own state moves.
+struct Swap {
+    dy: U256,
+    fee: U256,
+    balances: SmallVec<[U256; MAX_COINS]>,
+    xp: SmallVec<[U256; MAX_COINS]>,
+    vp_preop: U256,
 }
 
 // ───────────────────────────── helpers ─────────────────────────────
@@ -600,6 +879,210 @@ fn two_fee(xp: &[U256], mid_fee: U256, out_fee: U256, fee_gamma: U256) -> R<U256
         add(mul(mid_fee, f)?, mul(out_fee, sub(e18, f)?)?)?,
         e18,
     ))
+}
+
+// ───────────────────────── Twocrypto 2025, stableswap math ─────────────────────────
+
+/// `StableswapMath.get_y` (`0xbfdd…ea13`), N = 2: `amp` is the pool's `A()`.
+fn two_stable_get_y(amp: U256, xp: &[U256], d: U256, i: usize) -> R<U256> {
+    let n = U256::from(2u64);
+    let a_mult = U256::from(A_MULTIPLIER);
+    let ann = mul(amp, n)?;
+    let mut s = U256::ZERO;
+    let mut c = d;
+    for (k, &x) in xp.iter().enumerate() {
+        if k == i {
+            continue;
+        }
+        s = add(s, x)?;
+        c = udiv(mul(c, d)?, mul(x, n)?)?;
+    }
+    c = udiv(mul(mul(c, d)?, a_mult)?, mul(ann, n)?)?;
+    let b = add(s, udiv(mul(d, a_mult)?, ann)?)?;
+    let mut y = d;
+    for _ in 0..255 {
+        let prev = y;
+        y = udiv(
+            add(mul(y, y)?, c)?,
+            sub(add(mul(U256::from(2u64), y)?, b)?, d)?,
+        )?;
+        if y.abs_diff(prev) <= U256::ONE {
+            return Ok(y);
+        }
+    }
+    Err(RouteError::Math)
+}
+
+/// `Twocrypto._fee` (2025): the balance term
+/// `fee_gamma·B / (fee_gamma·B/1e18 + 1e18 − B)`, clamped to
+/// [0.1 bps, 100 %] of 1e10.
+fn two_stable_fee(xp: &[U256], mid_fee: U256, out_fee: U256, fee_gamma: U256) -> R<U256> {
+    let (x0, x1) = (
+        *xp.first().ok_or(RouteError::BadLeg)?,
+        *xp.get(1).ok_or(RouteError::BadLeg)?,
+    );
+    let e18 = e(18);
+    let s = add(x0, x1)?;
+    let b = udiv(mul(udiv(mul(mul(e18, U256::from(4u64))?, x0)?, s)?, x1)?, s)?;
+    let b = udiv(
+        mul(fee_gamma, b)?,
+        sub(add(udiv_unsafe(mul(fee_gamma, b)?, e18), e18)?, b)?,
+    )?;
+    let fee = udiv_unsafe(add(mul(mid_fee, b)?, mul(out_fee, sub(e18, b)?)?)?, e18);
+    Ok(fee.clamp(e(5), e(10)))
+}
+
+/// `StableswapMath.newton_D`: `amp` is the pool's `A()`.
+fn two_stable_newton_d(amp: U256, xp: &[U256]) -> R<U256> {
+    let (x0, x1) = (
+        *xp.first().ok_or(RouteError::BadLeg)?,
+        *xp.get(1).ok_or(RouteError::BadLeg)?,
+    );
+    if x0.is_zero() || x1.is_zero() || udiv_unsafe(x0.max(x1), x0.min(x1)) >= U256::from(10_000u64)
+    {
+        return Err(RouteError::Math);
+    }
+    let n = U256::from(2u64);
+    let a_mult = U256::from(A_MULTIPLIER);
+    let s = add(x0, x1)?;
+    let mut d = s;
+    let ann = mul(amp, n)?;
+    for _ in 0..255 {
+        let mut d_p = d;
+        for &x in xp {
+            d_p = udiv(mul(d_p, d)?, x)?;
+        }
+        d_p = udiv(d_p, U256::from(4u64))?;
+        let prev = d;
+        d = udiv(
+            mul(add(udiv_unsafe(mul(ann, s)?, a_mult), mul(d_p, n)?)?, d)?,
+            add(
+                udiv_unsafe(mul(sub(ann, a_mult)?, d)?, a_mult),
+                mul(U256::from(3u64), d_p)?,
+            )?,
+        )?;
+        if d.abs_diff(prev) <= U256::ONE {
+            return Ok(d);
+        }
+    }
+    Err(RouteError::Math)
+}
+
+/// `StableswapMath.get_p`: `dx/dy` at `xp`, times `price_scale` for a price.
+fn two_stable_get_p(xp: &[U256], d: U256, amp: U256) -> R<U256> {
+    let (x0, x1) = (
+        *xp.first().ok_or(RouteError::BadLeg)?,
+        *xp.get(1).ok_or(RouteError::BadLeg)?,
+    );
+    let ann = amp.wrapping_mul(U256::from(2u64));
+    let mut dr = udiv_unsafe(d, U256::from(4u64));
+    for &x in xp {
+        dr = udiv(mul(dr, d)?, x)?;
+    }
+    let xp0_a = udiv_unsafe(mul(ann, x0)?, U256::from(A_MULTIPLIER));
+    udiv(
+        mul(e(18), add(xp0_a, udiv_unsafe(mul(dr, x0)?, x1))?)?,
+        add(xp0_a, dr)?,
+    )
+}
+
+/// `_xcp`: `D / N / sqrt(price_scale)`, in 1e18.
+fn two_stable_xcp(d: U256, price_scale: U256) -> R<U256> {
+    udiv(
+        udiv(mul(d, e(18))?, U256::from(2u64))?,
+        isqrt(mul(e(18), price_scale)?),
+    )
+}
+
+/// `_donation_shares(protection)` at `ts`.
+fn two_stable_donation_shares(tw: &TweakState, ts: U256, protection: bool) -> R<U256> {
+    let shares = tw.donation_shares;
+    if shares.is_zero() {
+        return Ok(U256::ZERO);
+    }
+    let e18 = e(18);
+    let elapsed = sub(ts, tw.last_donation_release_ts)?;
+    let unlocked = shares.min(udiv_unsafe(mul(shares, elapsed)?, tw.donation_duration));
+    if !protection {
+        return Ok(unlocked);
+    }
+    let mut factor = U256::ZERO;
+    let expiry = tw.donation_protection_expiry_ts;
+    if expiry > ts {
+        factor = udiv_unsafe(mul(sub(expiry, ts)?, e18)?, tw.donation_protection_period).min(e18);
+    }
+    Ok(udiv_unsafe(mul(unlocked, sub(e18, factor)?)?, e18))
+}
+
+/// `_unpack_3`: three values at 128, 64 and 0 bits.
+fn unpack_3(packed: U256) -> [U256; 3] {
+    let m64 = U256::from(u64::MAX);
+    [
+        packed.wrapping_shr(128),
+        packed.wrapping_shr(64) & m64,
+        packed & m64,
+    ]
+}
+
+/// snekmate `math._wad_exp` (v0.1.x), as `StableswapMath.wad_exp` returns
+/// it: `e^x` for a 1e18 `x`, in 1e18.
+fn wad_exp(x: I256) -> R<U256> {
+    let k128 = |v: u128| I256::from_raw(U256::from(v));
+    let big = |s: &str| -> I256 { I256::from_dec_str(s).unwrap_or(I256::ZERO) };
+    // Vyper's `<<` on int256: the bits, wrapping.
+    let shl = |v: I256, n: usize| I256::from_raw(v.into_raw().wrapping_shl(n));
+    if x <= k128(41_446_531_673_892_822_313).wrapping_neg() {
+        return Ok(U256::ZERO);
+    }
+    if x >= k128(135_305_999_368_893_231_589) {
+        return Err(RouteError::Math);
+    }
+    let x = idiv_u(shl(x, 78), k128(5u128.pow(18)));
+    let ln2_96 = k128(54_916_777_467_707_473_351_141_471_128);
+    let k = idiv_u(shl(x, 96), ln2_96)
+        .wrapping_add(shl(I256::ONE, 95))
+        .asr(96);
+    let x = x.wrapping_sub(k.wrapping_mul(ln2_96));
+    let y = x
+        .wrapping_add(k128(1_346_386_616_545_796_478_920_950_773_328))
+        .wrapping_mul(x)
+        .asr(96)
+        .wrapping_add(k128(57_155_421_227_552_351_082_224_309_758_442));
+    let p = y
+        .wrapping_add(x)
+        .wrapping_sub(k128(94_201_549_194_550_492_254_356_042_504_812))
+        .wrapping_mul(y)
+        .asr(96)
+        .wrapping_add(big("28719021644029726153956944680412240"))
+        .wrapping_mul(x)
+        .wrapping_add(shl(big("4385272521454847904659076985693276"), 96));
+    let mut q = x
+        .wrapping_sub(k128(2_855_989_394_907_223_263_936_484_059_900))
+        .wrapping_mul(x)
+        .asr(96)
+        .wrapping_add(k128(50_020_603_652_535_783_019_961_831_881_945));
+    q = q
+        .wrapping_mul(x)
+        .asr(96)
+        .wrapping_sub(big("533845033583426703283633433725380"));
+    q = q
+        .wrapping_mul(x)
+        .asr(96)
+        .wrapping_add(big("3604857256930695427073651918091429"));
+    q = q
+        .wrapping_mul(x)
+        .asr(96)
+        .wrapping_sub(big("14423608567350463180887372962807573"));
+    q = q
+        .wrapping_mul(x)
+        .asr(96)
+        .wrapping_add(big("26449188498355588339934803723976023"));
+    let r = idiv_u(p, q);
+    let scale = U256::from_str_radix("3822833074963236453042738258902158003155416615667", 10)
+        .map_err(|_| RouteError::Math)?;
+    let shift = k128(195).wrapping_sub(k);
+    let shift = usize::try_from(us(shift)?).map_err(|_| RouteError::Math)?;
+    Ok(r.into_raw().wrapping_mul(scale).wrapping_shr(shift))
 }
 
 // ───────────────────────────── tricrypto ─────────────────────────────

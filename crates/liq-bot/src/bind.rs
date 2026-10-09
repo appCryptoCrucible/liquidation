@@ -221,6 +221,11 @@ pub fn resolve_family(
             (BoundProtocol::Fluid(_), "fluid")
             | (BoundProtocol::Gearbox(_), "gearbox")
             | (BoundProtocol::LiquityV2(_), "liquity-v2") => Some(p.id()),
+            (BoundProtocol::AaveV3(a), "aave-v2")
+                if a.config().liquidation.version == liq_adapters_aave_v3::AaveVersion::V2 =>
+            {
+                Some(p.id())
+            }
             _ => None,
         })
     })
@@ -367,6 +372,7 @@ pub fn load_protocols(
     }
     push_spark(&proto_dir, intern, &mut out);
     push_aave_v3(&proto_dir, intern, &mut out);
+    push_aave_v2(&proto_dir, &mut out);
     push_aave_v4(&proto_dir, intern, &mut out);
     push_morpho(&proto_dir, intern, &mut out);
     push_euler(&proto_dir, intern, &mut out);
@@ -463,6 +469,50 @@ fn push_spark(dir: &Path, intern: &Intern, out: &mut ProtocolLoad) {
     match liq_adapters_aave_v3::AaveV3::new(cfg) {
         Ok(p) => out.protocols.push(BoundProtocol::AaveV3(p)),
         Err(e) => omit(out, "spark", e),
+    }
+}
+
+/// Aave V2's protocol id: config-defined, after the registry-interned ids
+/// and Liquity (9), Fluid (10) and Gearbox (11). V2 is not a registry
+/// family: adding one would renumber every interned protocol and market.
+pub const AAVE_V2_PROTOCOL: ProtocolId = ProtocolId(12);
+
+/// Aave V2 (`aave-v2.toml`): the Aave V3 adapter running its V2 version.
+fn push_aave_v2(dir: &Path, out: &mut ProtocolLoad) {
+    let path = dir.join("aave-v2.toml");
+    if !path.is_file() {
+        omit(out, "aave-v2", "toml absent");
+        return;
+    }
+    let toml = match AaveV3Toml::from_path(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            omit(out, "aave-v2", e);
+            return;
+        }
+    };
+    if ProtocolId(toml.protocol) != AAVE_V2_PROTOCOL {
+        omit(
+            out,
+            "aave-v2",
+            format!("toml protocol {} != {}", toml.protocol, AAVE_V2_PROTOCOL.0),
+        );
+        return;
+    }
+    let cfg = match spark_to_config(&toml) {
+        Ok(c) if c.liquidation.version == liq_adapters_aave_v3::AaveVersion::V2 => c,
+        Ok(_) => {
+            omit(out, "aave-v2", "aave-v2.toml is not `version = \"v2\"`");
+            return;
+        }
+        Err(e) => {
+            omit(out, "aave-v2", e);
+            return;
+        }
+    };
+    match liq_adapters_aave_v3::AaveV3::new(cfg) {
+        Ok(p) => out.protocols.push(BoundProtocol::AaveV3(p)),
+        Err(e) => omit(out, "aave-v2", e),
     }
 }
 
@@ -644,6 +694,11 @@ fn spark_to_config(t: &AaveV3Toml) -> Result<liq_adapters_aave_v3::Config, Strin
         "reserve-debt" => liq_adapters_aave_v3::CloseFactorScope::ReserveDebt,
         other => return Err(format!("unknown close_factor_scope {other}")),
     };
+    let version = match t.liquidation.version.as_str() {
+        "v3" => liq_adapters_aave_v3::AaveVersion::V3,
+        "v2" => liq_adapters_aave_v3::AaveVersion::V2,
+        other => return Err(format!("unknown aave version {other}")),
+    };
     Ok(liq_adapters_aave_v3::Config {
         protocol: ProtocolId(t.protocol),
         pools: t
@@ -658,6 +713,7 @@ fn spark_to_config(t: &AaveV3Toml) -> Result<liq_adapters_aave_v3::Config, Strin
                 sentinel: p.sentinel,
                 sequencer_oracle: p.sequencer_oracle,
                 tokens: p.tokens.clone(),
+                grace_sentinel: p.grace_sentinel,
             })
             .collect(),
         assets: t
@@ -689,6 +745,7 @@ fn spark_to_config(t: &AaveV3Toml) -> Result<liq_adapters_aave_v3::Config, Strin
             oracle_decimals: t.liquidation.oracle_decimals,
             balance_model,
             close_factor_scope,
+            version,
         },
         pinned_through: t.pinned_through,
     })
@@ -716,7 +773,7 @@ fn push_euler(dir: &Path, intern: &Intern, out: &mut ProtocolLoad) {
     }
 }
 
-fn push_silo(dir: &Path, out: &mut ProtocolLoad) {
+pub(crate) fn push_silo(dir: &Path, out: &mut ProtocolLoad) {
     let Some(raw) = read_toml(dir, "silo-v2.toml") else {
         omit(out, "silo-v2", "toml absent");
         return;
@@ -778,6 +835,7 @@ fn silo_side(s: SiloSideToml) -> Result<liq_adapters_silo_v2::SideConfig, String
         lt: s.lt,
         liquidation_fee: s.liquidation_fee,
         liquidation_target_ltv: s.liquidation_target_ltv,
+        interest_fee: s.interest_fee,
     })
 }
 
@@ -813,6 +871,7 @@ struct SiloSideToml {
     lt: u128,
     liquidation_fee: u128,
     liquidation_target_ltv: u128,
+    interest_fee: u128,
 }
 
 #[derive(serde::Deserialize)]
@@ -1035,7 +1094,7 @@ pub fn registry_weth(intern: &Intern) -> Option<Address> {
 /// the V3-flash + V4-adapter figure.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct WrapGas {
-    pub by_provider: [u64; 5],
+    pub by_provider: [u64; 7],
     pub aave_v4: u64,
 }
 
@@ -1044,7 +1103,7 @@ pub struct WrapGas {
 /// snapshots only, no failed-path measurement.
 #[derive(Clone, Debug)]
 pub struct SelectBind {
-    pub wrap_gas: [u64; 5],
+    pub wrap_gas: [u64; 7],
     pub wrap_aave_v4: u64,
     pub aave_v4: Option<ProtocolId>,
     pub weth: Address,
@@ -1542,6 +1601,10 @@ mod tests {
                 continue;
             };
             let cfg = a.config();
+            // Aave V2 runs on this adapter too (its own test below).
+            if cfg.liquidation.version == liq_adapters_aave_v3::AaveVersion::V2 {
+                continue;
+            }
             if cfg.pools.iter().any(|pl| pl.address == spark_pool) {
                 seen.0 += 1;
                 assert_eq!(cfg.liquidation.balance_model, BalanceModel::WadRayHalfUp);
@@ -1580,7 +1643,14 @@ mod tests {
         )
         .unwrap();
         let out = load_protocols(&root().join("config"), &intern, None);
-        for name in ["aave-v3", "aave-v4", "morpho-blue", "spark"] {
+        for name in [
+            "aave-v3",
+            "aave-v2",
+            "aave-v4",
+            "morpho-blue",
+            "spark",
+            "euler-v2",
+        ] {
             assert!(
                 !out.omitted.iter().any(|(n, _)| *n == name),
                 "{name} omitted: {:?}",
@@ -1590,11 +1660,48 @@ mod tests {
         let bound = |f: fn(&BoundProtocol) -> bool| out.protocols.iter().filter(|p| f(p)).count();
         assert_eq!(
             bound(|p| matches!(p, BoundProtocol::AaveV3(_))),
-            2,
-            "Aave V3 + Spark"
+            3,
+            "Aave V3 + Spark + Aave V2"
+        );
+        // Aave V2: the V2 version, config-defined id 12, the pool's whole
+        // reserve debt, its ETH oracle, its grace sentinel.
+        let v2 = out
+            .protocols
+            .iter()
+            .find_map(|p| match p {
+                BoundProtocol::AaveV3(a)
+                    if a.config().liquidation.version == liq_adapters_aave_v3::AaveVersion::V2 =>
+                {
+                    Some(a.config())
+                }
+                _ => None,
+            })
+            .expect("aave-v2 bound");
+        assert_eq!(v2.protocol, AAVE_V2_PROTOCOL);
+        assert_eq!(v2.liquidation.close_factor_bps, 10_000);
+        assert_eq!(v2.liquidation.oracle_decimals, 18);
+        assert_eq!(
+            v2.liquidation.close_factor_scope,
+            liq_adapters_aave_v3::CloseFactorScope::ReserveDebt
+        );
+        assert!(!v2.pools[0].grace_sentinel.is_zero());
+        assert_eq!(
+            resolve_family(&intern, &out.protocols, "aave-v2"),
+            Some(AAVE_V2_PROTOCOL)
         );
         assert_eq!(bound(|p| matches!(p, BoundProtocol::AaveV4(_))), 1);
         assert_eq!(bound(|p| matches!(p, BoundProtocol::MorphoBlue(_))), 1);
+        // Every registry vault, each priced through its own pinned oracle.
+        let euler = out
+            .protocols
+            .iter()
+            .find_map(|p| match p {
+                BoundProtocol::EulerV2(e) => Some(e.config()),
+                _ => None,
+            })
+            .expect("euler-v2 bound");
+        assert_eq!(euler.vaults.len(), euler.interned.len());
+        assert!(!euler.price_sources.is_empty());
     }
 
     /// Live: Gearbox v3.1 discovery through the address provider loads the
@@ -1774,7 +1881,7 @@ mod tests {
     fn zero_weth_select_bind_none() {
         assert!(select_bind(
             WrapGas {
-                by_provider: [366_332, 355_632, 460_032, 370_435, 384_134],
+                by_provider: [366_332, 355_632, 460_032, 370_435, 384_134, 0, 0],
                 aave_v4: 496_704,
             },
             Address::ZERO,
@@ -1976,6 +2083,91 @@ mod prune_filter {
             "block {block}: {} subscribed addresses, {} added to the filter",
             subscribed.len(),
             missing.len()
+        );
+    }
+
+    /// Live: the generated Compound config binds against the chain, with
+    /// the forks the frozen-market rule brought in. The chain is the
+    /// oracle: a frozen pin survives the bind only while its
+    /// `accrueInterest()` reverts there, and every pinned cToken's own
+    /// `underlying()` and seize share are read.
+    #[test]
+    #[ignore = "needs MAINNET_RPC_URL"]
+    fn live_compound_binds_frozen_and_copycat_forks() {
+        use alloy_primitives::Address;
+        let url = std::env::var("MAINNET_RPC_URL").unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let rpc = liq_config::rpc::HttpRpc::connect(&url).unwrap();
+        let block = rt
+            .block_on(liq_config::rpc::ChainRpc::block_number(&rpc))
+            .unwrap();
+        let live = crate::live_rpc::LiveRpc::new(liq_config::rpc::HttpRpc::connect(&url).unwrap());
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let reg = Registry::from_path(&root.join("registry/registry.json")).unwrap();
+        let intern = Intern::from_registry(&reg).unwrap();
+        let mut out = ProtocolLoad::default();
+        push_compound(
+            &root.join("config/protocols"),
+            &intern,
+            Some((&live, block)),
+            &mut out,
+        );
+        assert!(out.omitted.is_empty(), "omitted: {:?}", out.omitted);
+        let Some(BoundProtocol::CompoundV2(p)) = out.protocols.first() else {
+            panic!("compound not bound");
+        };
+        let a = |s: &str| s.parse::<Address>().unwrap();
+        let fork = |c: &str| p.config().forks.iter().find(|f| f.comptroller == a(c));
+        let cream = fork("0x3d5bc3c8d13dcb8bf317092d84783c2697ae9258").expect("Cream v1 bound");
+        let cr_cream = a("0x892b14321a4fcba80669ae30bd0cd99a7ecf6ac0");
+        assert!(
+            cream
+                .ctokens
+                .iter()
+                .any(|c| c.ctoken == cr_cream && c.frozen),
+            "crCREAM frozen"
+        );
+        assert!(cream.ctokens.len() >= 90);
+        let inverse = fork("0x4dcf7407ae5c07f8681e1659f626e114a7667339").expect("Inverse bound");
+        let xinv = a("0x1637e4e9941d55703a7a5e7807d6ada3f7dcd61b");
+        assert!(
+            inverse.ctokens.iter().all(|c| c.ctoken != xinv),
+            "xINV is not Compound's code"
+        );
+        for c in [
+            "0x606246e9ef6c70dcb6cee42136cd06d127e2b7c7",
+            "0xf41ae30d269cd73a2dfaed3ee5496318ebd470b6",
+        ] {
+            assert!(fork(c).is_some(), "{c} bound");
+        }
+        // Copycats whose own close factor or incentive is zero: a
+        // liquidation there repays or seizes nothing.
+        for c in [
+            "0x1457b6bebffbb4cd2b4442a063ecd945dc0d6b70",
+            "0x7f9a61682e1aa0e45b3dd95860c17a1640d37c14",
+            "0x1b72ee0ad58b25c8645728aa5bacfc4fe5f082dd",
+            "0xaa86979f14545f86e4368764a99a86ba5fede477",
+        ] {
+            assert!(fork(c).is_none(), "{c} has nothing to liquidate");
+        }
+        // DeFiPie: pTokens behind `ProxyWithRegistry`, the five-field accrual.
+        let pie = fork("0x36de5bbc618a04c9b471208ef52ee2b1f536e92d").expect("DeFiPie bound");
+        assert_eq!(pie.ctokens.len(), 30);
+        let frozen = p
+            .config()
+            .forks
+            .iter()
+            .flat_map(|f| &f.ctokens)
+            .filter(|c| c.frozen)
+            .count();
+        eprintln!(
+            "compound block {block}: {} forks, {} cTokens, {frozen} frozen",
+            p.config().forks.len(),
+            p.config()
+                .forks
+                .iter()
+                .map(|f| f.ctokens.len())
+                .sum::<usize>()
         );
     }
 }

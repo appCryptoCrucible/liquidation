@@ -94,7 +94,7 @@ fn derive_flags(m: &ManagerRow) -> MarketFlags {
     if m.flags & ManagerRow::PRICED == 0 {
         f |= MarketFlags::UNPRICED.0;
     }
-    if m.flags & ManagerRow::PAUSED != 0 {
+    if m.flags & (ManagerRow::PAUSED | ManagerRow::HALTED) != 0 {
         f |= MarketFlags::PAUSED.0;
     }
     MarketFlags(f)
@@ -108,12 +108,65 @@ fn token_flags(t: &TokenRow) -> MarketFlags {
     }
 }
 
-fn halt_after(cfg: &Config, log: &DecodedLog<'_>) -> Result<DirtySet> {
+/// Which managers a halt-class log stops (decision 8: a halt stops the
+/// market it concerns, never the bot).
+#[derive(Clone, Copy)]
+enum HaltScope {
+    /// One manager: its facade, manager or configurator.
+    Manager(usize),
+    /// Every manager sharing this pool, quota keeper or account factory.
+    Shared(Address),
+    /// The contracts register, which every manager is listed in.
+    Protocol,
+}
+
+/// After the pin, mark the managers `scope` names halted
+/// ([`ManagerRow::HALTED`], as state: a reorg that drops the log unwinds
+/// it); the others continue. Before the pin, nothing.
+fn halt_after(
+    cfg: &Config,
+    st: &mut dyn StateWriter,
+    log: &DecodedLog<'_>,
+    scope: HaltScope,
+) -> Result<DirtySet> {
     if log.block <= cfg.pinned_through {
-        Ok(DirtySet::None)
-    } else {
-        Err(ProtocolError::HaltSignal)
+        return Ok(DirtySet::None);
     }
+    let topic0 = log.topics.first().copied().unwrap_or_default();
+    let hit = |i: usize, m: &ManagerConfig| match scope {
+        HaltScope::Manager(j) => i == j,
+        HaltScope::Shared(a) => m.pool == a || m.quota_keeper == a || m.factory == a,
+        HaltScope::Protocol => true,
+    };
+    if matches!(scope, HaltScope::Protocol) {
+        return Err(ProtocolError::HaltSignal);
+    }
+    let mut rows = DirtyRows::new();
+    for (i, m) in cfg.managers.iter().enumerate() {
+        if !hit(i, m) {
+            continue;
+        }
+        tracing::error!(
+            market = m.market.0,
+            manager = %m.manager,
+            emitter = %log.address,
+            %topic0,
+            "gearbox halt-class log after the pin: this credit manager is halted (no liquidations) until the config is re-pinned; other managers continue"
+        );
+        match st.markets(m.market) {
+            Ok(r) if !r.is_empty() => {}
+            // Not listed yet: nothing to liquidate.
+            Ok(_) | Err(ProtocolError::UnknownMarket(_)) => continue,
+            Err(e) => return Err(e),
+        }
+        for d in patch_manager(st, m.market, None, |b| {
+            b.flags |= ManagerRow::HALTED;
+            Ok(())
+        })? {
+            rows.push(d);
+        }
+    }
+    Ok(DirtySet::MarketReprice(rows))
 }
 
 const HALT: &[B256] = &[
@@ -304,7 +357,16 @@ pub(crate) fn apply_log(
     };
     let topic0 = *log.topics.first().ok_or(ProtocolError::MalformedLog)?;
     if HALT.contains(&topic0) {
-        return halt_after(cfg, log);
+        let scope = match em {
+            Emitter::Register => HaltScope::Protocol,
+            Emitter::Facade(i) | Emitter::Manager(i) | Emitter::Configurator(i) => {
+                HaltScope::Manager(i)
+            }
+            Emitter::Pool(_) | Emitter::Factory(_) | Emitter::Quota(_) => {
+                HaltScope::Shared(log.address)
+            }
+        };
+        return halt_after(cfg, st, log, scope);
     }
     match em {
         Emitter::Register => Ok(DirtySet::None),
@@ -436,7 +498,7 @@ fn facade_log(
 
 fn manager_log(
     cfg: &Config,
-    _st: &mut dyn StateWriter,
+    st: &mut dyn StateWriter,
     log: &DecodedLog<'_>,
     i: usize,
     topic0: B256,
@@ -445,7 +507,7 @@ fn manager_log(
     if topic0 == manager::SetCreditConfigurator::SIGNATURE_HASH {
         let ev = decode::<manager::SetCreditConfigurator>(log)?;
         if ev.newConfigurator != m.configurator {
-            return halt_after(cfg, log);
+            return halt_after(cfg, st, log, HaltScope::Manager(i));
         }
         return Ok(DirtySet::None);
     }
@@ -572,14 +634,14 @@ fn configurator_log(
     if topic0 == configurator::SetCreditFacade::SIGNATURE_HASH {
         let ev = decode::<configurator::SetCreditFacade>(log)?;
         if ev.creditFacade != m.facade {
-            return halt_after(cfg, log);
+            return halt_after(cfg, st, log, HaltScope::Manager(i));
         }
         return Ok(DirtySet::None);
     }
     if topic0 == configurator::SetPriceOracle::SIGNATURE_HASH
         || topic0 == configurator::CreditConfiguratorUpgraded::SIGNATURE_HASH
     {
-        return halt_after(cfg, log);
+        return halt_after(cfg, st, log, HaltScope::Manager(i));
     }
     if topic0 == configurator::ForbidToken::SIGNATURE_HASH
         || topic0 == configurator::AllowToken::SIGNATURE_HASH
@@ -602,7 +664,7 @@ fn pool_log(
     if topic0 == pool::Borrow::SIGNATURE_HASH {
         let ev = decode::<pool::Borrow>(log)?;
         let Some((_, m)) = cfg.manager_by_addr(ev.creditManager) else {
-            return halt_after(cfg, log);
+            return halt_after(cfg, st, log, HaltScope::Shared(log.address));
         };
         let ts = last_update(log.timestamp)?;
         ensure_listed(cfg, st, m, ts)?;
@@ -635,7 +697,7 @@ fn factory_log(
     if topic0 == factory::AddCreditManager::SIGNATURE_HASH {
         let ev = decode::<factory::AddCreditManager>(log)?;
         let Some((_, m)) = cfg.manager_by_addr(ev.creditManager) else {
-            return halt_after(cfg, log);
+            return halt_after(cfg, st, log, HaltScope::Shared(log.address));
         };
         let ts = last_update(log.timestamp)?;
         ensure_listed(cfg, st, m, ts)?;
@@ -647,7 +709,7 @@ fn factory_log(
     if topic0 == factory::DeployCreditAccount::SIGNATURE_HASH {
         let ev = decode::<factory::DeployCreditAccount>(log)?;
         let Some((_, m)) = cfg.manager_by_addr(ev.creditManager) else {
-            return halt_after(cfg, log);
+            return halt_after(cfg, st, log, HaltScope::Shared(log.address));
         };
         let ts = last_update(log.timestamp)?;
         ensure_listed(cfg, st, m, ts)?;
@@ -657,7 +719,7 @@ fn factory_log(
     if topic0 == factory::TakeCreditAccount::SIGNATURE_HASH {
         let ev = decode::<factory::TakeCreditAccount>(log)?;
         let Some((_, m)) = cfg.manager_by_addr(ev.creditManager) else {
-            return halt_after(cfg, log);
+            return halt_after(cfg, st, log, HaltScope::Shared(log.address));
         };
         let ts = last_update(log.timestamp)?;
         ensure_listed(cfg, st, m, ts)?;
@@ -668,7 +730,7 @@ fn factory_log(
         return Ok(DirtySet::None);
     }
     if topic0 == factory::Rescue::SIGNATURE_HASH {
-        return halt_after(cfg, log);
+        return halt_after(cfg, st, log, HaltScope::Shared(log.address));
     }
     Ok(DirtySet::None)
 }

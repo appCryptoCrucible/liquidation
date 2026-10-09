@@ -4,7 +4,7 @@
 use crate::error::ConfigError;
 use crate::Result;
 use alloy_eips::BlockId;
-use alloy_primitives::{Address, Bytes};
+use alloy_primitives::{Address, Bytes, U256};
 use alloy_provider::transport::RpcError;
 use alloy_provider::{Provider, ProviderBuilder, RootProvider};
 use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
@@ -28,6 +28,11 @@ pub trait ChainRpc: Send {
 
     /// `eth_blockNumber`. Transport failure → [`ConfigError::RpcUnavailable`].
     async fn block_number(&self) -> Result<u64>;
+
+    /// `eth_getStorageAt` at a pinned block: a contract's raw slot, for
+    /// state that has no getter. Transport failure →
+    /// [`ConfigError::RpcUnavailable`].
+    async fn storage_at(&self, at: Address, slot: U256, block: u64) -> Result<U256>;
 }
 
 /// HTTP JSON-RPC implementor. Constructed from the operator's `rpc_url`.
@@ -122,6 +127,16 @@ impl ChainRpc for HttpRpc {
     async fn block_number(&self) -> Result<u64> {
         self.provider
             .get_block_number()
+            .await
+            .map_err(|e| ConfigError::RpcUnavailable {
+                cause: e.to_string(),
+            })
+    }
+
+    async fn storage_at(&self, at: Address, slot: U256, block: u64) -> Result<U256> {
+        self.provider
+            .get_storage_at(at, slot)
+            .block_id(BlockId::number(block))
             .await
             .map_err(|e| ConfigError::RpcUnavailable {
                 cause: e.to_string(),

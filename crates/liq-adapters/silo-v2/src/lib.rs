@@ -76,7 +76,7 @@ pub mod quote;
 pub mod solve;
 
 use alloy_primitives::{Address, U256};
-use alloy_sol_types::SolEvent;
+use alloy_sol_types::{SolCall, SolEvent};
 use liq_protocol::{
     Archive, BlockNum, DecodedLog, DirtySet, ExecutorAdapter, FlashRoute, Health, LegChoice,
     LiquidationLeg, LiquidationPlan, PositionRef, ProbeCall, Protocol, ProtocolError, Quote,
@@ -109,6 +109,97 @@ impl SiloV2 {
 #[must_use]
 pub fn alloc_meter() -> Option<&'static (dyn Fn() -> u64 + Sync)> {
     None
+}
+
+alloy_sol_types::sol! {
+    /// The silo's own totals (`Silo.sol` @ pin): `getDebtAssets` and
+    /// `getCollateralAssets` include interest accrued to `block.timestamp`;
+    /// the storage pair and `utilizationData` are as of the last accrual.
+    interface ISiloTotals {
+        function getDebtAssets() external view returns (uint256);
+        function getCollateralAssets() external view returns (uint256);
+        function getCollateralAndDebtTotalsStorage() external view returns (uint256, uint256);
+        function utilizationData() external view returns (uint256, uint256, uint64);
+    }
+    /// `ISiloOracle.quote`: `baseAmount` of `baseToken` in the oracle's
+    /// quote token.
+    interface ISiloOracle {
+        function quote(uint256 baseAmount, address baseToken) external view returns (uint256);
+    }
+    struct Call3 {
+        address target;
+        bool allowFailure;
+        bytes callData;
+    }
+    struct Call3Result {
+        bool success;
+        bytes returnData;
+    }
+    interface IMulticall3 {
+        function aggregate3(Call3[] calldata calls) external payable returns (Call3Result[] memory);
+    }
+}
+
+/// Multicall3, the same address on every chain.
+const MULTICALL3: Address = alloy_primitives::address!("cA11bde05977b3631167028862bE2a173976CA11");
+
+/// Whole tokens each side's oracle is asked to quote: enough that an oracle
+/// answering in a 6-decimal unit still resolves the ratio to a unit in
+/// 10^12. Every live Silo oracle quotes linearly over this range (to 1e-6,
+/// survey at block 26132977), as `isSolvent` needs of it at any size.
+const QUOTE_WHOLE_TOKENS: u64 = 1_000_000;
+
+/// State-read kinds, `tag = kind << 16 | slot`.
+const READ_DEBT_WITH_INTEREST: u64 = 0;
+const READ_COLL_WITH_INTEREST: u64 = 1;
+const READ_TOTALS_STORAGE: u64 = 2;
+const READ_UTILIZATION: u64 = 3;
+
+/// The amount a side's oracle is asked to quote.
+fn quote_base(decimals: u8) -> Option<U256> {
+    U256::from(10u8)
+        .checked_pow(U256::from(decimals))?
+        .checked_mul(U256::from(QUOTE_WHOLE_TOKENS))
+}
+
+/// The pair's price read: one `aggregate3` of both sides' solvency-oracle
+/// quotes, so the two answers are of one block, as `isSolvent` reads them.
+/// A side without an oracle (`address(0)`) is valued at its raw amount, as
+/// `SiloSolvencyLib.getPositionValues` does, and needs no call. The
+/// numeraire published first is the side without an oracle (the quote
+/// token itself) when there is one, else slot 1.
+fn pair_price_read(cfg: &Config, pair: &PairConfig) -> Option<liq_protocol::PriceRead> {
+    let mut calls = Vec::new();
+    let mut assets = Vec::with_capacity(2);
+    for side in [&pair.silo0, &pair.silo1] {
+        let a = cfg.asset_by_underlying(side.token)?;
+        assets.push(a.asset);
+        if side.solvency_oracle != Address::ZERO {
+            calls.push(Call3 {
+                target: side.solvency_oracle,
+                allowFailure: false,
+                callData: ISiloOracle::quoteCall {
+                    baseAmount: quote_base(a.decimals)?,
+                    baseToken: side.token,
+                }
+                .abi_encode()
+                .into(),
+            });
+        }
+    }
+    // Slot order unless slot 0 is the oracle-less side.
+    let swapped = !(pair.silo0.solvency_oracle == Address::ZERO
+        && pair.silo1.solvency_oracle != Address::ZERO);
+    if swapped {
+        assets.swap(0, 1);
+    }
+    Some(liq_protocol::PriceRead {
+        market: pair.market,
+        target: MULTICALL3,
+        calldata: IMulticall3::aggregate3Call { calls }.abi_encode().into(),
+        tag: u32::from(swapped),
+        assets,
+    })
 }
 
 fn push_topic(out: &mut Vec<LogFilter>, address: Address, topic0: alloy_primitives::B256) {
@@ -299,5 +390,123 @@ impl Protocol for SiloV2 {
 
     fn health_probe(&self, _pos: PositionRef<'_>) -> Result<ProbeCall> {
         Err(ProtocolError::ProbeUnavailable)
+    }
+
+    /// One read per listed pair: both sides' solvency-oracle quotes
+    /// ([`pair_price_read`]), a ratio the bot restates in USD.
+    fn price_reads(&self, rows: &dyn liq_protocol::MarketRows) -> Vec<liq_protocol::PriceRead> {
+        self.cfg
+            .pairs
+            .iter()
+            .filter(|p| rows.rows(p.market).is_some_and(|r| !r.is_empty()))
+            .filter_map(|p| pair_price_read(&self.cfg, p))
+            .collect()
+    }
+
+    /// Each side's value of [`QUOTE_WHOLE_TOKENS`] whole tokens in the
+    /// pair's quote unit (RAY-scaled by `1e18`; only the ratio is used),
+    /// in `read.assets` order.
+    fn decode_prices(
+        &self,
+        read: &liq_protocol::PriceRead,
+        ret: &[u8],
+        out: &mut Vec<(AssetId, liq_types::Ray)>,
+    ) -> Result<()> {
+        let (_, pair) = self
+            .cfg
+            .pair_by_market(read.market)
+            .ok_or(ProtocolError::UnknownMarket(read.market))?;
+        let answers = IMulticall3::aggregate3Call::abi_decode_returns(ret)
+            .map_err(|_| ProtocolError::ProbeDecode)?;
+        let mut answers = answers.into_iter();
+        let mut values = Vec::with_capacity(2);
+        for side in [&pair.silo0, &pair.silo1] {
+            let a = self
+                .cfg
+                .asset_by_underlying(side.token)
+                .ok_or(ProtocolError::OracleSourceMismatch)?;
+            let v = if side.solvency_oracle == Address::ZERO {
+                quote_base(a.decimals).ok_or(ProtocolError::AmountTooLarge)?
+            } else {
+                let r = answers.next().ok_or(ProtocolError::ProbeDecode)?;
+                if !r.success {
+                    return Ok(());
+                }
+                ISiloOracle::quoteCall::abi_decode_returns(&r.returnData)
+                    .map_err(|_| ProtocolError::ProbeDecode)?
+            };
+            if v.is_zero() {
+                return Ok(());
+            }
+            let ray = v
+                .checked_mul(liq_types::fixed::WAD)
+                .ok_or(ProtocolError::AmountTooLarge)?;
+            values.push((a.asset, liq_types::Ray::from_raw(ray)));
+        }
+        if read.tag == 1 {
+            values.swap(0, 1);
+        }
+        out.extend(values);
+        Ok(())
+    }
+
+    /// Per borrowed-from silo: its totals with interest and as stored, and
+    /// the last accrual's time — the growth the store projects between
+    /// reads ([`layout::SiloRow::debt_rate_ray`]). The storage collateral
+    /// total is read with them but only the debt's measures the rate.
+    fn state_reads(&self, rows: &dyn liq_protocol::MarketRows) -> Vec<liq_protocol::StateRead> {
+        let mut out = Vec::new();
+        for p in &self.cfg.pairs {
+            let Some(rs) = rows.rows(p.market) else {
+                continue;
+            };
+            for (slot, row) in rs.iter().enumerate() {
+                let Ok(body) = row.body::<layout::SiloRow>() else {
+                    continue;
+                };
+                // Interest accrues only on debt.
+                if body.flags & layout::SiloRow::VIEWED == 0 || body.total_debt_assets == 0 {
+                    continue;
+                }
+                let Ok(slot) = u64::try_from(slot) else {
+                    continue;
+                };
+                let target = Address::from(body.silo);
+                let mut read = |kind: u64, calldata: Vec<u8>| {
+                    out.push(liq_protocol::StateRead {
+                        market: p.market,
+                        target,
+                        calldata: calldata.into(),
+                        tag: kind << 16 | slot,
+                    });
+                };
+                read(
+                    READ_DEBT_WITH_INTEREST,
+                    ISiloTotals::getDebtAssetsCall {}.abi_encode(),
+                );
+                read(
+                    READ_COLL_WITH_INTEREST,
+                    ISiloTotals::getCollateralAssetsCall {}.abi_encode(),
+                );
+                read(
+                    READ_TOTALS_STORAGE,
+                    ISiloTotals::getCollateralAndDebtTotalsStorageCall {}.abi_encode(),
+                );
+                read(
+                    READ_UTILIZATION,
+                    ISiloTotals::utilizationDataCall {}.abi_encode(),
+                );
+            }
+        }
+        out
+    }
+
+    fn apply_state_reads(
+        &self,
+        st: &mut dyn StateWriter,
+        timestamp: Timestamp,
+        answers: &[liq_protocol::StateAnswer<'_>],
+    ) -> Result<Vec<DirtySet>> {
+        apply::apply_totals(st, timestamp, answers)
     }
 }

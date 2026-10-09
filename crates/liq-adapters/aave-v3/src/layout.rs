@@ -1,10 +1,12 @@
 //! Store layout for one Aave V3 pool (`aave-dao/aave-v3-origin` @ `8305565ae`).
-//! Slot 0 is [`PoolMeta`]; slot `reserveId + 1` is [`Reserve`].
+//! Slot 0 is [`PoolMeta`]; slots `1..=EMODE_ROWS` are [`EModeRow`]s; each
+//! reserve then takes the next slot as it is initialized, from
+//! [`FIRST_RESERVE`].
 
 use bytemuck::{Pod, Zeroable};
 use liq_types::AssetId;
 
-/// Slot-0 body: pool-wide flash premium, L2 sentinel snapshot, e-mode table.
+/// Slot-0 body: pool-wide flash premium and L2 sentinel snapshot.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
 pub struct PoolMeta {
@@ -13,11 +15,18 @@ pub struct PoolMeta {
     pub sequencer_answer: i8,
     pub sentinel_grace: u32,
     pub sequencer_updated_at: u32,
-    pub _pad0: [u8; 4],
-    pub emode: [EModeCat; PoolMeta::EMODE_CAP],
+    /// A halt-class log came from this pool, its configurator, oracle,
+    /// provider or one of its tokens after the pin: the market's view is
+    /// not trusted, so nothing in it is liquidated until the config is
+    /// re-pinned. Other markets keep running.
+    pub halted: u8,
+    /// Aave V2 `LendingPool.Paused` (no V2 reserve pauses on its own).
+    pub pool_paused: u8,
+    pub _pad0: [u8; 2],
 }
 
-/// One e-mode category. `id == 0` is an empty table slot (category 0 is "off").
+/// One e-mode category. `id == 0` is an entry not configured (category 0
+/// is "off").
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
 pub struct EModeCat {
@@ -28,65 +37,77 @@ pub struct EModeCat {
     pub liq_bonus: u16,
 }
 
-impl PoolMeta {
-    /// E-mode categories this table holds.
-    ///
-    /// A6. This was 8, and the ninth `EModeCategoryAdded` returned
-    /// `Err(Internal)` from `apply_log` — a hard fold failure, not a skip.
-    /// Live Aave V3 deployments carry well over 8, so the adapter stopped
-    /// folding on any pool that had grown past the table.
-    ///
-    /// 28 is the largest value that fits: `MarketRow`'s body is 240 bytes,
-    /// this struct's header is 16, and [`EModeCat`] is 8 — `(240 - 16) / 8`.
-    /// `layout_size::fits_in_a_market_row_body` pins that, so raising this
-    /// past the budget fails the build rather than the fold.
-    ///
-    /// The category id itself is a `uint8`, so a pool could in principle
-    /// configure more than 28. That is why a full table reports a named,
-    /// diagnosable error instead of `Internal` — a capacity problem to be
-    /// seen and raised, not an unexplained halt.
-    pub const EMODE_CAP: usize = 28;
-
-    #[inline]
-    pub fn emode(&self, id: u8) -> Option<&EModeCat> {
-        if id == 0 {
-            return None;
-        }
-        self.emode.iter().find(|c| c.id == id)
-    }
-
-    /// Table position of `id`, which is also its bit in the per-reserve
-    /// [`Reserve::emode_coll`] / `emode_borrow` / `emode_ltv0` bitmaps.
-    ///
-    /// Aave stores the inverse — a `uint128` bitmap of reserve ids on each
-    /// category. This adapter transposes it to a bitmap of categories on each
-    /// reserve, which is equivalent so long as the bitmap is at least
-    /// `EMODE_CAP` bits wide. [`EModeBits`] is `u32` for that reason.
-    #[inline]
-    pub fn emode_index(&self, id: u8) -> Option<usize> {
-        self.emode.iter().position(|c| c.id == id)
-    }
-
-    /// Position to write `id` into: its existing row, else the first empty
-    /// one. `None` when the table is full and `id` is not already in it.
-    #[inline]
-    pub fn emode_slot_for(&self, id: u8) -> Option<usize> {
-        self.emode
-            .iter()
-            .position(|c| c.id == id)
-            .or_else(|| self.emode.iter().position(|c| c.id == 0))
-    }
-
-    /// The bit for a table position, as a mask over the reserve bitmaps.
-    #[inline]
-    pub fn emode_mask(i: usize) -> Option<EModeBits> {
-        u32::try_from(i).ok().and_then(|sh| 1_u32.checked_shl(sh))
-    }
+/// Body of slots `1..=EMODE_ROWS`: the pool's e-mode categories, by id.
+///
+/// A6. The table was 28 entries inside [`PoolMeta`], all one row body
+/// holds, and the 29th `EModeCategoryAdded` failed the fold. Aave V3 Core
+/// had 48 categories by block 26,112,136, so the adapter could not follow
+/// it at all. A category id is a `uint8` and Aave never deletes a
+/// category, so the table now has a place for every id: category `id` is
+/// entry `(id - 1) % PER_ROW` of slot `1 + (id - 1) / PER_ROW`
+/// ([`emode_place`]). Nothing here can fill up.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Pod, Zeroable)]
+#[repr(C)]
+pub struct EModeRow {
+    pub cats: [EModeCat; EModeRow::PER_ROW],
 }
 
-/// Width of the per-reserve e-mode bitmaps. Must be at least
-/// [`PoolMeta::EMODE_CAP`] bits; `layout_size` asserts it.
-pub type EModeBits = u32;
+impl EModeRow {
+    /// Categories one row body holds: `240 / 8`.
+    pub const PER_ROW: usize = 30;
+}
+
+/// Rows holding categories `1..=255`: `ceil(255 / PER_ROW)`.
+pub const EMODE_ROWS: u16 = 9;
+
+/// Slot of the first reserve. A position's slot mask is 128 bits wide
+/// ([`liq_protocol::AssetMask::MAX_SLOTS`]), so a pool can hold
+/// `128 - FIRST_RESERVE` reserves; Core had 67 at block 26,112,136.
+pub const FIRST_RESERVE: u16 = EMODE_ROWS + 1;
+
+/// Where category `id` is held: `(slot, entry)`. `None` for 0 (e-mode off).
+#[inline]
+#[must_use]
+pub fn emode_place(id: u8) -> Option<(u16, usize)> {
+    let k = usize::from(id).checked_sub(1)?;
+    let row = u16::try_from(k.checked_div(EModeRow::PER_ROW)?).ok()?;
+    Some((row.checked_add(1)?, k.checked_rem(EModeRow::PER_ROW)?))
+}
+
+/// A set of e-mode category ids, one bit per id, as wide as Aave's
+/// `uint8` id.
+///
+/// Aave keeps the transpose, a `uint128` bitmap of reserve ids on each
+/// category. Holding the set on each reserve instead is equivalent, and
+/// lets the health walk read it from the row it already has.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Pod, Zeroable)]
+#[repr(transparent)]
+pub struct EModeSet(pub [u64; 4]);
+
+impl EModeSet {
+    #[inline]
+    #[must_use]
+    pub fn contains(&self, id: u8) -> bool {
+        let (word, bit) = (usize::from(id >> 6), u32::from(id & 63));
+        self.0
+            .get(word)
+            .and_then(|w| w.checked_shr(bit))
+            .is_some_and(|w| w & 1 != 0)
+    }
+
+    #[inline]
+    pub fn set(&mut self, id: u8, on: bool) {
+        let (word, bit) = (usize::from(id >> 6), u32::from(id & 63));
+        let (Some(w), Some(mask)) = (self.0.get_mut(word), 1u64.checked_shl(bit)) else {
+            return;
+        };
+        if on {
+            *w |= mask;
+        } else {
+            *w &= !mask;
+        }
+    }
+}
 
 /// Per-reserve body. Indexes/rates first (health hot path).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Pod, Zeroable)]
@@ -98,8 +119,14 @@ pub struct Reserve {
     pub variable_borrow_rate: u128,
     pub deficit: u128,
     pub debt_ceiling: u128,
+    /// E-mode categories this reserve is collateral in.
+    pub emode_coll: EModeSet,
+    /// E-mode categories in which this reserve counts at LTV 0.
+    pub emode_ltv0: EModeSet,
     pub a_token: [u8; 20],
     pub v_token: [u8; 20],
+    /// `StableDebtToken` from `ReserveInitialized` (zero on 3.2+ pools).
+    pub s_token: [u8; 20],
     pub grace_until: u32,
     pub ltv: u16,
     pub liq_threshold: u16,
@@ -109,20 +136,10 @@ pub struct Reserve {
     /// `reserve_id` holds the pool's id for this reserve (read by
     /// `crate::resync`, not derived from the slot).
     pub id_known: u8,
-    pub _pad1: [u8; 2],
-    /// Bitmaps over e-mode TABLE POSITIONS (see [`PoolMeta::emode_index`]),
-    /// not over category ids and not over reserve ids. `u32` so all
-    /// [`PoolMeta::EMODE_CAP`] positions are addressable — as `u8` they
-    /// silently could not reach past the eighth category.
-    pub emode_coll: EModeBits,
-    pub emode_borrow: EModeBits,
-    pub emode_ltv0: EModeBits,
-    /// `StableDebtToken` from `ReserveInitialized` (zero on 3.2+ pools).
-    pub s_token: [u8; 20],
     /// `ReserveData.id`: this reserve's bit pair in a user's configuration
     /// bitmap. Valid only when `id_known != 0`.
     pub reserve_id: u16,
-    pub _pad: [u8; 6],
+    pub _pad: [u8; 4],
 }
 
 impl Reserve {
@@ -167,50 +184,65 @@ pub const UNMAPPED_ASSET: AssetId = AssetId(u16::MAX);
 
 const _: () = {
     assert!(core::mem::size_of::<EModeCat>() == 8);
-    assert!(core::mem::size_of::<PoolMeta>() <= 240);
-    assert!(core::mem::size_of::<Reserve>() == 192);
+    assert!(core::mem::size_of::<PoolMeta>() == 16);
+    assert!(core::mem::size_of::<EModeRow>() == 240);
+    assert!(core::mem::size_of::<EModeSet>() == 32);
+    assert!(core::mem::size_of::<Reserve>() == 240);
     assert!(core::mem::size_of::<UserExtra>() == 16);
     assert!(core::mem::size_of::<UserReserve>() == 16);
     assert!(core::mem::align_of::<Reserve>() == 16);
 };
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod layout_size {
-    use super::{EModeBits, EModeCat, PoolMeta, Reserve};
+    use super::{emode_place, EModeRow, EModeSet, PoolMeta, Reserve, EMODE_ROWS, FIRST_RESERVE};
 
-    /// `MarketRow::body` is 240 bytes. Both bodies must fit, or `body()`
+    /// `MarketRow::body` is 240 bytes. Every body must fit, or `body()`
     /// returns `BodyLayout` at runtime for every row in the protocol.
     #[test]
     fn fits_in_a_market_row_body() {
         const BUDGET: usize = 240;
-        assert!(
-            core::mem::size_of::<PoolMeta>() <= BUDGET,
-            "PoolMeta is {} bytes, over the {BUDGET}-byte body budget - lower EMODE_CAP",
-            core::mem::size_of::<PoolMeta>()
-        );
+        assert!(core::mem::size_of::<PoolMeta>() <= BUDGET);
+        assert!(core::mem::size_of::<EModeRow>() <= BUDGET);
         assert!(core::mem::size_of::<Reserve>() <= BUDGET);
     }
 
-    /// The bitmaps index table positions, so they must address every one.
+    /// Every category id Aave can configure has its own entry in the rows
+    /// before the first reserve, and no two ids share one.
     #[test]
-    fn emode_bitmap_covers_the_whole_table() {
-        assert!(
-            PoolMeta::EMODE_CAP <= core::mem::size_of::<EModeBits>() * 8,
-            "EModeBits is too narrow for EMODE_CAP categories"
-        );
-        assert!(PoolMeta::emode_mask(PoolMeta::EMODE_CAP - 1).is_some());
-        assert_eq!(
-            PoolMeta::emode_mask(core::mem::size_of::<EModeBits>() * 8),
-            None,
-            "a shift past the width must report None, never wrap to bit 0"
-        );
+    fn every_category_id_has_its_own_place() {
+        assert_eq!(emode_place(0), None, "category 0 is e-mode off");
+        let mut seen = std::collections::BTreeSet::new();
+        for id in 1..=u8::MAX {
+            let (slot, i) = emode_place(id).unwrap();
+            assert!(
+                (1..=EMODE_ROWS).contains(&slot),
+                "category {id} at slot {slot}"
+            );
+            assert!(slot < FIRST_RESERVE);
+            assert!(i < EModeRow::PER_ROW);
+            assert!(seen.insert((slot, i)), "category {id} shares a place");
+        }
+        assert_eq!(emode_place(1), Some((1, 0)));
+        assert_eq!(emode_place(30), Some((1, 29)));
+        assert_eq!(emode_place(31), Some((2, 0)));
+        assert_eq!(emode_place(u8::MAX), Some((EMODE_ROWS, 14)));
     }
 
-    /// The cap is the largest that fits, so the next category up would not.
+    /// The per-reserve sets hold every id, each on its own bit.
     #[test]
-    fn cap_is_the_largest_that_fits() {
-        let header = core::mem::size_of::<PoolMeta>()
-            - core::mem::size_of::<EModeCat>() * PoolMeta::EMODE_CAP;
-        assert!(header + core::mem::size_of::<EModeCat>() * (PoolMeta::EMODE_CAP + 1) > 240);
+    fn emode_set_holds_every_id() {
+        let mut s = EModeSet::default();
+        for id in [0u8, 1, 28, 29, 48, 63, 64, 127, 128, 200, 255] {
+            assert!(!s.contains(id));
+            s.set(id, true);
+            assert!(s.contains(id), "id {id}");
+        }
+        s.set(29, false);
+        assert!(!s.contains(29));
+        assert!(s.contains(28) && s.contains(48));
+        let ones: u32 = s.0.iter().map(|w| w.count_ones()).sum();
+        assert_eq!(ones, 10);
     }
 }

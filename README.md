@@ -396,7 +396,7 @@ flowchart TB
         WATCH["liq-watch<br/>every on-chain liquidation"]
         WDB[("watcher SQLite + JSONL")]
         DIGEST["ops/digest/digest.py<br/>miss taxonomy · pre-flight"]
-        REPLAY["liq-replay<br/>archive · health diff · parity · recall · bench · lite"]
+        REPLAY["liq-replay<br/>archive · health diff · parity · recall · bench · lite ·<br/>real liquidations through the searcher"]
         FORGE["Foundry tests<br/>unit · fork · invariant · differential"]
         BOOKS["liq-books<br/>per-bundle and per-liquidation books"]
         CSV[("books/*.csv")]

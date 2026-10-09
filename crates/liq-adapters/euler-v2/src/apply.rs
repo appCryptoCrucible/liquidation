@@ -100,6 +100,9 @@ fn derive_flags(v: &VaultRow) -> MarketFlags {
     if v.flags & VaultRow::HOOKS_KNOWN != 0 && v.hooked_ops & OP_LIQUIDATE != 0 {
         f |= MarketFlags::PAUSED.0;
     }
+    if v.flags & VaultRow::HALTED != 0 {
+        f |= MarketFlags::PAUSED.0;
+    }
     MarketFlags(f)
 }
 
@@ -323,10 +326,15 @@ pub(crate) fn apply_log(
         return Err(ProtocolError::UnexpectedLog);
     };
     if HALT.contains(&topic0) {
-        return if log.block <= cfg.pinned_through {
-            Ok(DirtySet::None)
-        } else {
-            Err(ProtocolError::HaltSignal)
+        if log.block <= cfg.pinned_through {
+            return Ok(DirtySet::None);
+        }
+        // One vault's own proxy or governor: halt that vault, not the bot.
+        // The factory and the EVC are shared by every vault, so theirs stop
+        // the protocol's ingest as before.
+        return match em {
+            Emitter::Vault(m) => halt_vault(cfg, st, m, log.address, topic0),
+            Emitter::Factory | Emitter::Evc | Emitter::Pending => Err(ProtocolError::HaltSignal),
         };
     }
     match em {
@@ -335,6 +343,49 @@ pub(crate) fn apply_log(
         Emitter::Vault(m) => apply_vault(cfg, st, m, topic0, log),
         Emitter::Pending => apply_pending(cfg, st, topic0, log),
     }
+}
+
+/// Mark `vault` halted ([`VaultRow::HALTED`]): its own market refuses
+/// liquidation, and every market's collateral row for its shares is
+/// unpriced, so positions holding them fail closed. State, not a flag in
+/// memory: a reorg that drops the log unwinds it with the block.
+fn halt_vault(
+    cfg: &Config,
+    st: &mut dyn StateWriter,
+    market: MarketId,
+    vault: Address,
+    topic0: B256,
+) -> Result<DirtySet> {
+    tracing::error!(
+        market = market.0,
+        %vault,
+        %topic0,
+        "euler vault emitted a halt-class log after the pin: this vault is halted (no liquidations, its shares unpriced as collateral) until the config is re-pinned; other vaults continue"
+    );
+    let mut rows = patch_vault(st, market, None, |v| {
+        v.flags |= VaultRow::HALTED;
+        Ok(())
+    })?;
+    for (m, slot) in coll_slots(cfg, st, vault)? {
+        let at = MarketSlot { market: m, slot };
+        let mut row = *st.market(at)?;
+        row.flags = MarketFlags(row.flags.0 | MarketFlags::UNPRICED.0);
+        st.set_market(at, row)?;
+        rows.push(at);
+    }
+    Ok(DirtySet::MarketReprice(rows))
+}
+
+/// `vault` is listed and halted ([`halt_vault`]).
+fn vault_halted(cfg: &Config, st: &dyn StateWriter, vault: Address) -> Result<bool> {
+    let Some(m) = lookup_vault(cfg, st, vault)? else {
+        return Ok(false);
+    };
+    let row = st.market(MarketSlot {
+        market: m,
+        slot: DEBT_SLOT,
+    })?;
+    Ok(row.body::<VaultRow>()?.flags & VaultRow::HALTED != 0)
 }
 
 fn apply_factory(
@@ -585,7 +636,10 @@ fn gov_ltv(
                 slot: DEBT_SLOT,
             })?;
             let v: &VaultRow = debt.body()?;
-            (t.asset, t.decimals, t.feed, v.flags & VaultRow::PRICED != 0)
+            // A halted collateral vault stays unpriced through a later
+            // `GovSetLTV` naming it.
+            let priced = v.flags & VaultRow::PRICED != 0 && !vault_halted(cfg, st, ev.collateral)?;
+            (t.asset, t.decimals, t.feed, priced)
         }
         None => (UNMAPPED_ASSET, 0, liq_protocol::FeedId(0), false),
     };

@@ -95,3 +95,16 @@ HubConfigurator / SpokeConfigurator emit nothing; they call Hub/Spoke which emit
 ## Deployed-code audit (2026-09-29)
 
 All 13 tracked spokes are ERC-1967 proxies with their own implementation (13 distinct addresses, Sourcify-verified, 58 `src/` files each). Every one of those 58 files is **byte-identical** to `aave/aave-v4` @ `40232a0a` (and `LiquidationLogic.sol` is also identical to today's `main`), so the adapter's pin is exactly what runs. The docs page (aave.com/docs/aave-v4/positions/liquidations) matches: HF < 1, repay up to the target health factor, a Dutch-auction bonus rising as HF falls, and a remaining debt under $1,000 (`DUST_LIQUIDATION_THRESHOLD = 1000e26`) forcing the whole reserve's debt, which `quote.rs` implements (`leaves_dust`). No mismatch.
+
+## Phase 3 check (2026-10-06)
+
+`docs/plans/coverage-and-routing-plan.md` Phase 3: V4 counts as covered when all six items pass.
+
+| # | Item | Result | Evidence |
+|---|---|---|---|
+| 1 | Binds at startup from the committed config, nothing omitted | **pass** | `bind::tests::committed_tomls_bind_aave_and_morpho`: `aave-v4` not omitted, one `AaveV4` bound |
+| 2 | Spoke set current | **pass** | `gen_aave_v4_toml.py` at block 26,129,511 gives the committed 13 spokes, 4 hubs, 24 assets and 75 price sources as identical sets; only `pinned_through` moves |
+| 3 | Health equals the spoke's `getUserAccountData` on real borrowers | **pass** (2026-10-07) | `liq-lite` (`LIQ_LITE_HEALTH_ONLY=1`) seeds every borrower active in a spoke's 2,000-block window from chain at the snapshot block and compares our health factor with the spoke's own `getUserAccountData(user).healthFactor` there: 49 borrowers with debt on five spokes (`0x94e7…` 35, `0x973a…` 8, `0xbf10…` 3, `0x774b…` 2, `0xba1b…` 1), **49 equal to the wei** (one at 1.00063). Found on the way: `liq-lite` pinned only sources listed in `registry.oracles` (4 of `0x94e7…`'s 14), so it refused every borrower; it now pins every reserve at the oracle's live source, as the committed config does (all 14 are in it). And the watcher halved a rate-limited `eth_getLogs` down to one block and failed; a 429 now waits and retries the range |
+| 4 | A real V4 position replays end to end | open | **24 V4 liquidations** are in the third of the three-month scan cached so far (spokes `0x94e7…` and `0x973a…`, from block 25,473,354), so there are events to replay. Still missing: `seed::aave_v4`. `liq-lite`'s seeding writes rows from chain views and could feed the harness's store, but its hub rows carry the one spoke's flags at index 0, while the bot's config lists 13 spokes and reads each spoke's flags at its own index; the seeder has to synthesize the hub and spoke events the bot folds in production, as `seed::aave_v3` does for V3 |
+| 5 | Executor leg pre-call guard | **pass** | `_liquidateAaveV4` calls `liquidationCall` directly; the `getUserAccountData` guard went with V3's |
+| 6 | V4 hubs as a flash source | **pass: none exists** | all four hub implementations (`0x7914a247…`, `0x54714198…`, `0xe1e61cc3…`, `0xfe89fd96…`, 24,353 bytes each) contain the selectors `draw`, `add` and `restore` (positive control) and none of `flashLoan` (V3 7-arg), `flashLoanSimple`, ERC-3156 `flashLoan(address,address,uint256,bytes)` or `flashLoan(uint256,address,uint256,bytes)`. The startup log's "omitted" is correct |

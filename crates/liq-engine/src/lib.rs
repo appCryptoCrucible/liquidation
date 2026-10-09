@@ -1,4 +1,4 @@
-﻿//! Health engine (GUIDE 08): a price tick in, the exact set of positions
+//! Health engine (GUIDE 08): a price tick in, the exact set of positions
 //! that crossed out, in `O(log N + k)`, as prioritised [`Candidate`]s.
 //!
 //! * [`band`] — recompute cadence per position; a cost optimisation only.
@@ -32,7 +32,7 @@ use liq_types::{AssetId, ProtocolId};
 
 pub use band::{classify, BandManager};
 pub use candidate::{Candidate, CandidateQueue, Drain, TriggerCause};
-pub use engine::{Engine, EngineConfig, ProtocolPriceMove, ProtocolPrices, Stats, World};
+pub use engine::{Engine, EngineConfig, ProtocolPriceMove, ProtocolPrices, Stats, Unfunded, World};
 pub use heap::TimeCrossHeap;
 pub use threshold::{Side, ThresholdIndex};
 pub use triggers::{

@@ -13,6 +13,12 @@ interface IERC20U {
     function approve(address, uint256) external returns (bool);
 }
 
+/// MetaRegistry views: the oracle for a Curve leg's handler index.
+interface ICurveMetaRegistryView {
+    function get_registry(uint256 i) external view returns (address);
+    function get_registry_handlers_from_pool(address pool) external view returns (address[10] memory);
+}
+
 interface IVault4626 {
     function deposit(uint256 assets, address receiver) external returns (uint256);
     function previewRedeem(uint256 shares) external view returns (uint256);
@@ -66,6 +72,9 @@ contract ForkUnwrapTest is Test {
     address constant USDC_WETH_005 = 0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640;
     /// Curve StableSwap-NG USR/USDC: coins [USR, USDC]; the pool is its LP.
     address constant NG_USR_USDC = 0x3eE841F47947FEFbE510366E4bbb49e145484195;
+    /// MetaRegistry handler index of the StableSwap-NG factory, which holds
+    /// that pool (checked on the fork before the plan uses it).
+    uint8 constant H_NG = 6;
     /// PT-sUSDE-25SEP2025, its YT and SY (redeems to sUSDe).
     address constant PT_SUSDE = 0x9F56094C450763769BA0EA9Fe2876070c0fD5F77;
     address constant YT_SUSDE = 0x029d6247ADb0A57138c62E3019C92d3dfC9c1840;
@@ -157,11 +166,19 @@ contract ForkUnwrapTest is Test {
         uint256 px = ICurveNgLp(NG_USR_USDC).calc_withdraw_one_coin(1e18, 1) * 1e36 / 1e18;
         (MarketParams memory mp, bytes32 id) = _openAndSink(NG_USR_USDC, USDC, px, user, lp);
         uint128 pulled = _repay(mp, id, user);
+        // chain: the MetaRegistry's own list of the handlers holding the
+        // pool names the handler at the index the leg carries.
+        ICurveMetaRegistryView meta = ICurveMetaRegistryView(MainnetVenues.CURVE_META_REGISTRY);
+        assertEq(
+            meta.get_registry_handlers_from_pool(NG_USR_USDC)[0],
+            meta.get_registry(H_NG),
+            "chain: the pool is not in the handler the leg names"
+        );
         bytes memory plan = bytes.concat(
             PB.header(PB.F_SWEEP, 0, 0, 0, 1),
             PB.groupHead(PB.P_MORPHO, MORPHO, USDC, pulled, 1, 1),
             PB.legMorpho(MORPHO, user, NG_USR_USDC, pulled, id),
-            PB.curveLpOneCoin(NG_USR_USDC, 1, USDC),
+            PB.curveLpOneCoin(NG_USR_USDC, 1, H_NG, USDC),
             PB.profit(1, PB.poolSwap(USDC_WETH_005, USDC, WETH, PB.L_TAKE_BALANCE, 0))
         );
         _execute(plan, NG_USR_USDC, USDC);

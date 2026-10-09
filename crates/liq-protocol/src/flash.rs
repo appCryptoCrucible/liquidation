@@ -25,19 +25,24 @@ pub enum CallbackShape {
     SkyDssOnFlashLoan,
     /// No flash and no re-entry: a reward-only group runs its legs inline.
     Direct,
+    /// Uniswap V3 flash swap: `uniswapV3SwapCallback(amount0Delta,
+    /// amount1Delta, data)` from the pool that sold the group its debt
+    /// exact-out; the pool is paid its other token inside it.
+    UniV3SwapCallback,
 }
 
 impl CallbackShape {
     /// Every shape, for harnesses that must exercise each one. Kept in step
     /// with the enum by [`CallbackShape::provider`]'s exhaustive `match` — a
     /// new variant is a compile error there before it can be missing here.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::AaveExecuteOperation,
         Self::UniV3FlashCallback,
         Self::UniV4UnlockCallback,
         Self::MorphoFlashCallback,
         Self::SkyDssOnFlashLoan,
         Self::Direct,
+        Self::UniV3SwapCallback,
     ];
 
     /// The provider that re-enters through this shape. Exhaustive.
@@ -51,6 +56,7 @@ impl CallbackShape {
             Self::MorphoFlashCallback => FlashProvider::Morpho,
             Self::SkyDssOnFlashLoan => FlashProvider::SkyDss,
             Self::Direct => FlashProvider::None,
+            Self::UniV3SwapCallback => FlashProvider::UniV3Swap,
         }
     }
 }
@@ -101,13 +107,14 @@ mod tests {
                 | FlashProvider::UniV4
                 | FlashProvider::Morpho
                 | FlashProvider::SkyDss
-                | FlashProvider::None => {}
+                | FlashProvider::None
+                | FlashProvider::UniV3Swap => {}
             }
         }
         assert_eq!(
             CallbackShape::ALL.len(),
-            6,
-            "oracle: GUIDE 07 §3 — five arenas plus the flash-less group"
+            7,
+            "oracle: GUIDE 07 §3 — five arenas, the flash-less group, and the V3 flash swap"
         );
     }
 }

@@ -26,12 +26,14 @@ contract OperatorRelay {
  *   1 COLL = 60_000 DEBT        1 COLL = 20 WETH
  *
  * Reference position: 30_000 DEBT of debt, 0.55 COLL seized (10 % bonus).
- * Flash 30_000 DEBT from Aave at 5 bps → owe 30_015. Repay swap buys exactly
- * 30_015 DEBT with 0.50025 COLL; 0.04975 COLL is left → 0.995 WETH gross.
+ * Flash 30_000 DEBT from Aave at 5 bps → owe 30_015. The repay swap is sized
+ * to the 30_000 the liquidation pulled; the Executor adds the 15 premium the
+ * flash callback reported (`T_FEE`), so it buys exactly 30_015 DEBT with
+ * 0.50025 COLL; 0.04975 COLL is left → 0.995 WETH gross.
  */
 abstract contract ExecutorTestBase is Test {
     uint128 constant REPAY      = 30_000e6;
-    uint128 constant OWED       = 30_015e6;          // + 5 bps
+    uint128 constant OWED       = 30_015e6;          // + 5 bps: what the flash is owed
     uint128 constant COLL_OUT   = 0.55e8;
     uint128 constant COLL_SPENT = 50_025_000;        // ceil(30_015e6 · 1e8 / 60_000e6)
     uint128 constant COLL_LEFT  = COLL_OUT - COLL_SPENT;
@@ -112,8 +114,10 @@ abstract contract ExecutorTestBase is Test {
 
     // ── plan assembly ──────────────────────────────────────────────────
 
+    /// Sized to the pull. Under a fee-charging flash the Executor adds the
+    /// fee to it, the group's first exact-output pool leg.
     function _repayLeg() internal view returns (bytes memory) {
-        return PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, OWED);
+        return PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, REPAY);
     }
 
     function _profitLeg() internal view returns (bytes memory) {

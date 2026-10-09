@@ -54,6 +54,10 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "ne
 toml = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+# The live fork-pool test places a quoter's post-swap price on the tick grid.
+uniswap_v3_math = { version = "=0.6.2", default-features = false }
+
 [target.'cfg(unix)'.dependencies]
 signal-hook = { workspace = true }
 

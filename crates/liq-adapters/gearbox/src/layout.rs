@@ -53,6 +53,10 @@ impl ManagerRow {
     pub const BASE_KNOWN: u8 = 1 << 3;
     /// `quota_last_update` holds a read of the quota keeper.
     pub const QUOTA_TIME_KNOWN: u8 = 1 << 4;
+    /// A halt-class log after the pin named this manager (or a pool, quota
+    /// keeper or account factory it shares): no liquidations until the config
+    /// is re-pinned. Apart from [`Self::PAUSED`], which `Unpaused` clears.
+    pub const HALTED: u8 = 1 << 5;
 }
 
 /// Slots 1.. : one collateral token's LT ramp (`CreditLogic.getLiquidationThreshold`).

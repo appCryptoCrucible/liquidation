@@ -13,11 +13,17 @@ import {IERC20} from "./Interfaces.sol";
  * naive interface silently excludes a large share of the opportunity set — and
  * it presents as "those liquidations never work," not as an obvious bug.
  *
- * USDT additionally reverts on a non-zero -> non-zero approve, so every
- * approval is zeroed first. When the allowance is already zero — the normal
- * case, since approvals here are exact and consumed — that write is same-value
- * and cheap. When it is not, this is the difference between working and being
- * permanently stuck at that allowance.
+ * USDT additionally reverts on a non-zero -> non-zero approve. Approvals here
+ * are exact and cleared after use, so the allowance is zero when one is made
+ * and a single call sets it. Only when that call is refused is the allowance
+ * zeroed and set again: the difference between working and being permanently
+ * stuck at a leftover allowance.
+ *
+ * Clearing reads the allowance and writes only when something is left. An
+ * `approve(spender, 0)` over an allowance the spender already consumed changes
+ * nothing and still costs the call and its event: 2,420 gas on WETH, 2,760 on
+ * USDT, 3,462 on USDC (mainnet fork, block 26_019_284), up to four times per
+ * liquidation.
  *
  * Deliberate deviation from OpenZeppelin's SafeERC20: no extcodesize check.
  * A call to an address with no code returns success with empty returndata,
@@ -40,17 +46,36 @@ library SafeTransfer {
         }
     }
 
-    /// Zero first, then set. `safeApprove(x, 0)` is a single zeroing write.
+    /// Set the allowance to `amount`, in one call when the token takes it.
+    /// A token that refuses (USDT, on a leftover allowance) is zeroed and
+    /// set again. `amount == 0` clears the allowance, and sends nothing when
+    /// it is already zero.
     function safeApprove(address token, address spender, uint256 amount) internal {
+        if (amount == 0) {
+            if (!_allowanceIsZero(token, spender)) _approve(token, spender, 0);
+            return;
+        }
+        if (_tryApprove(token, spender, amount)) return;
         _approve(token, spender, 0);
-        if (amount != 0) _approve(token, spender, amount);
+        _approve(token, spender, amount);
+    }
+
+    /// True only when the token answers `allowance(this, spender)` with
+    /// zero. No answer, or any other, is an allowance to clear.
+    function _allowanceIsZero(address token, address spender) private view returns (bool) {
+        (bool ok, bytes memory ret) =
+            token.staticcall(abi.encodeWithSelector(IERC20.allowance.selector, address(this), spender));
+        return ok && ret.length >= 32 && abi.decode(ret, (uint256)) == 0;
+    }
+
+    /// `approve` went through: no revert, and no data (USDT) or `true`.
+    function _tryApprove(address token, address spender, uint256 amount) private returns (bool) {
+        (bool ok, bytes memory ret) =
+            token.call(abi.encodeWithSelector(IERC20.approve.selector, spender, amount));
+        return ok && (ret.length == 0 || abi.decode(ret, (bool)));
     }
 
     function _approve(address token, address spender, uint256 amount) private {
-        (bool ok, bytes memory ret) =
-            token.call(abi.encodeWithSelector(IERC20.approve.selector, spender, amount));
-        if (!ok || (ret.length != 0 && !abi.decode(ret, (bool)))) {
-            revert ApproveFailed(token, spender, amount);
-        }
+        if (!_tryApprove(token, spender, amount)) revert ApproveFailed(token, spender, amount);
     }
 }

@@ -122,6 +122,7 @@ async fn rpc_verification_sizes_or_drops_the_job() {
         liq_sim::PLANNED_EXECUTOR,
         liq_sim::PLANNED_LIQUIDATION_MODULE,
         liq_sim::PLANNED_SWAP_MODULE,
+        liq_sim::PLANNED_DEX_MODULE,
     ];
     let t = GovTarget {
         executor: liq_sim::PLANNED_EXECUTOR,

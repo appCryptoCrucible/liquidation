@@ -79,14 +79,28 @@ Each callback contract does the same four things in its own ABI shape:
 
 ```solidity
 function _onFlashFunds(Plan memory p, uint256 borrowed, uint256 fee) internal {
-    _guard(p);                          // recheck health on-chain
-    _liquidateLegs(p);                  // N legs, try/catch, adapter dispatch
-    _swap(p);                           // EXACT_OUT -> debt asset (repay),
+    uint256 filled = _liquidateLegs(p); // N legs, try/catch, adapter dispatch;
+                                        // one bit per leg that filled. The
+                                        // protocol's own liquidation call is
+                                        // the on-chain health recheck (Step 3)
+    _swap(p, filled, fee);              // EXACT_OUT -> debt asset (repay),
+                                        // skipping the swaps tied to a leg
+                                        // that did not fill; the first pool
+                                        // EXACT_OUT also buys `fee`;
                                         // everything else -> WETH (profit)
     _settle(p, borrowed + fee);                         // provider-specific
     // WETH remainder is profit; the bid and sweep happen in execute()
 }
 ```
+
+**A beaten leg takes its repay swaps with it.** Each repay swap names the leg
+it repays (PLAN-ENCODING §1c), and `runLegs` returns which legs filled, so the
+swap module skips the swaps of a leg that did not: what they would sell never
+arrived. The fee the provider reports goes to the first pool exact output
+that runs (`T_FEE`), so the group buys it once whichever legs fill, and a fee
+that moved after simulation is bought as charged. Before both, a plan of
+several legs reverted when any one of them was beaten: the beaten leg's exact
+output still ran and its pool could not be paid.
 
 **Uniswap V4 is the odd one out** and needs care: there is no "borrowed amount"
 handed to you. You `take()` inside `unlockCallback`, and you must `settle()` such
@@ -96,20 +110,46 @@ whoever implements it, and it is also your cheapest source.
 
 ## Step 3 — Guard, and revert freely
 
+The guard is the protocol's own. Every protocol here works out the position's
+health inside its liquidation call and refuses a healthy one: Aave V3 and V4,
+Morpho, Euler, Silo, Fluid, Gearbox and Liquity revert, and a Compound CErc20
+returns an error code. Each leg runs inside try/catch, so a refusal is a
+skipped leg, and a group none of whose legs filled reverts `AllLegsFailed`.
+
 ```solidity
-function _guard(Plan memory p) internal view {
-    uint256 hf = _health(p);
-    if (hf >= 1e18) revert NotLiquidatable(hf);
+debtAsset.safeApprove(market, repay);
+try IAavePool(market).liquidationCall(collateral, debtAsset, borrower, repay, false) {
+    ok = true;
+} catch (bytes memory reason) {
+    emit LegFailed(adapter, market, borrower, ST_LIQUIDATE, reason);
 }
+debtAsset.safeApprove(market, 0);
 ```
+
+Do not ask the protocol's health view first. It repeats what the liquidation
+call does a few lines later, on every leg that fills: 26k–30k gas on Aave V3,
+36k on Aave V4, 39k on Compound, 63k on Euler, 90k on Silo (mainnet fork, whole
+transaction after refunds, with and without the view). The view's frame looks
+larger than that (106k–118k on Aave V3) because it pays the cold accesses the
+liquidation would otherwise pay. A leg that does not fill costs its approval
+and the reverted call instead of the view: about 27k more after refunds on
+Aave V3, when a filled leg of the same pool has already warmed its reserves.
+(Two Aave legs in one group: 60.9k less than before when both fill, 5.8k
+less when one is beaten.)
+
+Two checks a leg still makes itself, because the protocol's call would not: an
+Euler leg with a zero `minYieldBalance` is refused (a violator with no debt
+left makes `liquidate` a no-op, which would count as a filled leg), and a
+Gearbox full liquidation enforces its minimum seized collateral after the call.
 
 On mainnet you submit bundles (MEV-Share and direct to builders), where a
 reverting bundle is dropped and costs nothing. `revert` is therefore the correct
 policy — freely and early. The "early-return instead of revert" pattern is for
 priority-ordered L2 sequencers and does not apply here.
 
-Keep the check on-chain regardless. Your off-chain state can be one block stale,
-and this guard is what converts that into a dropped bundle instead of a loss.
+The check stays on-chain regardless. Your off-chain state can be one block
+stale, and the protocol's refusal is what converts that into a dropped bundle
+instead of a loss.
 
 ## Step 4 — Aave V4 specifics
 
@@ -233,6 +273,14 @@ spender's `transferFrom(exact)` leaves the allowance at zero with no second
 `SSTORE`. Approving a round number "to be safe" is what creates a standing
 allowance; approving the exact amount does not.
 
+`SafeTransfer.safeApprove` is built on that. It sets an allowance with one
+`approve` call, and falls back to zero-then-set only when the token refuses
+(USDT, over a leftover allowance). Afterwards it reads the allowance and writes
+a zero only if the spender left some: a protocol that clamps its pull, or a
+flash source that pulled less than it was owed. An `approve(spender, 0)` over an
+allowance already consumed changes nothing and still costs the call and its
+event, 2.4k–3.5k gas on mainnet tokens.
+
 Prefer pool-direct swaps with a swap callback over a router where the route
 allows it — same transfer-in-callback pattern, no approval, less gas.
 
@@ -260,6 +308,16 @@ surface. Verify both that a swap is in progress (transient flag) *and* that
 `msg.sender` is the canonical pool for `(token0, token1, fee)` by CREATE2 against
 the factory. Storing "the pool we called" does not generalize to N legs; address
 derivation does.
+
+The same callback has a second role, with its own authentication: a **flash
+swap** (provider `6`, PLAN-ENCODING §1b) is an exact-output swap `execute` makes
+on the pool that lends the group its debt, and the pool calls
+`uniswapV3SwapCallback` *outside* any swap leg. There the callback is a provider
+callback and is checked as one — `msg.sender` is the armed source, inside
+`execute`, and the stored group is a flash-swap group — before the group runs
+and the pool is paid its other token. A swap callback outside a swap leg from
+anyone else still reverts. The pool is locked while it swaps, so the group's
+swap legs can never use it; the encoder asserts that.
 
 Pool-direct V3 legs settle by transfer inside that callback — **no approval on
 that path at all**, which is both cheaper and a smaller surface than routing
@@ -415,6 +473,10 @@ expected provider is a free-money function for anyone who finds it.**
 - [ ] **Multi-group plan fork-tested**: two flash groups, different providers,
       different debt assets, one profit guard — and a test where group 1's legs
       all fail while group 2's succeed
+- [ ] **A beaten leg in a shared group**: two positions in one flash group,
+      each with its own tied exact-output repay, one beaten — the other lands
+      and the provider is repaid with its premium (`ExecutorBeatenLeg.t.sol`,
+      and on a mainnet fork)
 - [ ] Each callback gets its own group (stored by `execute` in transient storage):
       a three-group plan with a different flash amount per group passes
 - [ ] Wallet-funded bid: `msg.value` capped, remainder refunded, and a test

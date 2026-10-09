@@ -489,9 +489,40 @@ fn halt_logs_fold_before_the_pin_and_error_after() {
         DEPLOY_BLOCK + 1,
         T0,
     );
+    // A cToken's proxy event after the pin halts its fork, not the bot.
     assert_eq!(
         p.apply_log(&mut st, &after.view()),
-        Err(ProtocolError::HaltSignal)
+        Ok(DirtySet::ProtocolWide)
+    );
+}
+
+/// A halt-class log from one of a fork's cTokens blocks that fork's
+/// liquidations and ingest goes on. Oracle: the flag semantics in
+/// `layout.rs`; negative: the same position is liquidatable before it.
+#[test]
+fn a_ctoken_halt_log_blocks_its_fork() {
+    let d = Deploy::new();
+    let px = prices(RAY_ONE, RAY_ONE);
+    let (p, mut st) = full_store(&d, ALICE_DEBT_LIQ);
+    assert_eq!(
+        p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap().state,
+        HealthState::Liquidatable
+    );
+    let after = log(
+        d.ceth,
+        &halt::AdminChanged {
+            previousAdmin: Address::ZERO,
+            newAdmin: Address::repeat_byte(0x66),
+        },
+        DEPLOY_BLOCK + 1,
+        T0,
+    );
+    assert!(p.apply_log(&mut st, &after.view()).is_ok());
+    assert_eq!(
+        p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap().state,
+        HealthState::Blocked {
+            reason: liq_protocol::BlockReason::Paused
+        }
     );
 }
 

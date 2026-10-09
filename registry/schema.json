@@ -61,7 +61,7 @@
     },
     "flash_sources": {
       "type": "object",
-      "description": "Flash-loan sources (GUIDE 07). Empty until 07A fills them."
+      "description": "Flash-loan singletons the index binds (GUIDE 07 \u00a73a), keyed by address: kind singleton (Morpho Blue), pool_manager (Uniswap V4), dss_flash and mcd_end (Sky, from the Chainlog). Aave/Spark pools and V3 pools are bound from protocols and pools."
     },
     "routers": {
       "type": "object",
@@ -117,7 +117,8 @@
             "into": { "$ref": "#/$defs/address" },
             "yt": { "$ref": "#/$defs/address", "description": "pendle_pt only: PT.YT()." },
             "sy": { "$ref": "#/$defs/address", "description": "pendle_pt / pendle_market: YT.SY()." },
-            "market": { "$ref": "#/$defs/address", "description": "pendle_market only: the PT's V6 market." }
+            "market": { "$ref": "#/$defs/address", "description": "pendle_market only: the PT's V6 market." },
+            "cash_capped": { "type": "boolean", "description": "erc4626 only: redeem pays at most the vault's cash() (Euler EVK)." }
           },
           "additionalProperties": false
         }
@@ -164,7 +165,13 @@
       "type": "object",
       "required": ["venue", "token0", "token1", "fee", "factory", "deployed_block"],
       "properties": {
-        "venue": { "type": "string", "enum": ["univ3", "univ2", "curve", "curve_ng", "curve_crypto"] },
+        "venue": { "type": "string", "enum": ["univ3", "univ4", "univ2", "curve", "curve_ng", "curve_crypto", "balancer", "fluid"] },
+        "pool_id": { "$ref": "#/$defs/bytes32", "description": "balancer only: the Vault pool id; its first 20 bytes are the pool address." },
+        "balancer_kind": { "type": "string", "enum": ["weighted_v1", "weighted_v4"], "description": "balancer only: the deployed WeightedPool generation." },
+        "tick_spacing": { "type": "integer", "description": "univ4 only: the pool key's tickSpacing." },
+        "hooks": { "$ref": "#/$defs/address", "description": "univ4 only: the pool key's hook (zero for none)." },
+        "v4_id": { "$ref": "#/$defs/bytes32", "description": "univ4 only: keccak256(abi.encode(PoolKey)); the entry's key is its low 20 bytes." },
+        "native": { "type": "boolean", "description": "univ4: currency0 is native ETH, named WETH in token0. fluid: the coin named WETH is native ETH." },
         "token0": { "$ref": "#/$defs/address" },
         "token1": { "$ref": "#/$defs/address" },
         "fee": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
@@ -177,10 +184,11 @@
           "minItems": 2,
           "maxItems": 4
         },
+        "curve_d_once": { "type": "boolean" },
         "crypto_kind": {
           "description": "curve_crypto only: the deployed math the pool runs.",
           "type": "string",
-          "enum": ["two_v1", "two_v200", "two_v210", "tri"]
+          "enum": ["two_v1", "two_v200", "two_v210", "two_stable", "tri"]
         },
         "asset_types": {
           "description": "curve_ng only: each coin's NG asset_type (0 standard, 1 rate oracle, 3 ERC-4626). Rebasing (2) is not admitted.",
@@ -188,13 +196,27 @@
           "items": { "type": "integer", "enum": [0, 1, 3] },
           "minItems": 2,
           "maxItems": 4
+        },
+        "curve_handler": {
+          "description": "Every Curve venue: index of the MetaRegistry handler that holds the pool (get_registry(i), whose is_registered(pool) is true). The Executor asks that one handler; every Curve leg carries this index.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
         }
       },
       "allOf": [
         {
           "if": { "properties": { "venue": { "enum": ["curve", "curve_ng", "curve_crypto"] } } },
-          "then": { "required": ["coins"] },
-          "else": { "not": { "required": ["coins"] } }
+          "then": { "required": ["coins", "curve_handler"] },
+          "else": {
+            "if": { "properties": { "venue": { "const": "balancer" } } },
+            "then": { "required": ["coins", "pool_id", "balancer_kind"], "not": { "required": ["curve_handler"] } },
+            "else": {
+              "if": { "properties": { "venue": { "const": "fluid" } } },
+              "then": { "required": ["coins"], "not": { "anyOf": [{ "required": ["curve_handler"] }, { "required": ["pool_id"] }, { "required": ["balancer_kind"] }] } },
+              "else": { "not": { "anyOf": [{ "required": ["coins"] }, { "required": ["curve_handler"] }, { "required": ["pool_id"] }, { "required": ["balancer_kind"] }] } }
+            }
+          }
         },
         {
           "if": { "properties": { "venue": { "const": "curve_ng" } } },

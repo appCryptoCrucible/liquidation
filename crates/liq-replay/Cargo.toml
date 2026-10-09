@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "liq-replay"
 version.workspace = true
 edition.workspace = true
@@ -35,6 +35,21 @@ tracing = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
 revm = { workspace = true }
 uniswap_v3_math = { version = "=0.6.2", default-features = false }
+
+[dev-dependencies]
+# The historical-liquidations test only: blocking RPC to the upstream node.
+reqwest = { workspace = true, features = ["blocking"] }
+serde_json = { workspace = true }
+toml = { workspace = true }
+crossbeam-channel = { workspace = true }
+liq-exec = { path = "../liq-exec" }
+liq-adapters-aave-v3 = { path = "../liq-adapters/aave-v3" }
+liq-adapters-morpho-blue = { path = "../liq-adapters/morpho-blue" }
+liq-adapters-compound-v2 = { path = "../liq-adapters/compound-v2" }
+liq-adapters-euler-v2 = { path = "../liq-adapters/euler-v2" }
+liq-adapters-silo-v2 = { path = "../liq-adapters/silo-v2" }
+liq-plan = { path = "../liq-plan" }
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["std", "fmt", "registry"] }
 
 [[bin]]
 name = "liq-diff-health"

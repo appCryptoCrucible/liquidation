@@ -7,6 +7,10 @@ use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum EncodeError {
+    /// A chain leg (venue 10) is malformed: hop count, length, hop kind,
+    /// or not exact output.
+    #[error("malformed chain leg: {0}")]
+    BadChain(&'static str),
     #[error("plan has zero flash groups")]
     NoGroups,
     #[error("group has zero liquidation legs")]
@@ -23,9 +27,11 @@ pub enum EncodeError {
         closers: usize,
         need: usize,
     },
-    #[error("EXACT_OUT leg after TAKE_BALANCE in the same blob")]
-    ExactOutAfterTakeBalance,
-    #[error("repay swap tokenOut is not the group's debt asset {group}")]
+    #[error(
+        "a leg spends a set amount of {token} after a TAKE_BALANCE leg on it in the same blob"
+    )]
+    SpentAfterTakeBalance { token: Address },
+    #[error("repay swap tokenOut is neither the group's debt asset {group} nor WETH")]
     RepayTargetMismatch { group: Address },
     #[error("profit swap tokenOut is not WETH {weth}")]
     ProfitTargetNotWeth { weth: Address },
@@ -120,7 +126,7 @@ pub enum EncodeError {
     LiquityBorrowerMismatch { pinned: Address, got: Address },
     #[error("unknown swap venue {0}")]
     UnknownVenue(u8),
-    #[error("UniV3 pool-direct data must be 20 bytes, got {0}")]
+    #[error("UniV3 pool-direct data must be 20 bytes (21 with a factory id), got {0}")]
     BadPoolDataLen(usize),
     #[error("router data must start with a 20-byte target, got {0}")]
     BadRouterDataLen(usize),
@@ -128,7 +134,17 @@ pub enum EncodeError {
     BadV2DataLen(usize),
     #[error("UniV2 factory id {0} is not Uniswap (0) or SushiSwap (1)")]
     BadV2Factory(u8),
-    #[error("Curve pool data must be 22 bytes (pool ‖ i ‖ j), got {0}")]
+    #[error("Balancer pool data must be a 32-byte pool id, got {0}")]
+    BadBalancerData(usize),
+    #[error("Fluid DEX data must be 21 bytes (pool ‖ swap0to1 0/1), got {0}")]
+    BadFluidData(usize),
+    /// A venue-0 leg names a V3 factory id that is neither SushiSwap's nor
+    /// PancakeSwap's (Uniswap's is the absent byte, never written).
+    #[error("V3 pool leg names unknown factory id {0}")]
+    BadV3Factory(u8),
+    #[error(
+        "Curve pool data must be 23 bytes (pool ‖ i ‖ j ‖ MetaRegistry handler index), got {0}"
+    )]
     BadCurveDataLen(usize),
     #[error("Curve legs are exact input only")]
     CurveExactOut,
@@ -142,6 +158,12 @@ pub enum EncodeError {
     RewardGroupRepays,
     #[error("a reward-only group's legs pull nothing, got {pull}")]
     RewardGroupPulls { pull: u128 },
+    #[error("a flash-swap group holds one liquidation leg, got {legs}")]
+    FlashSwapLegs { legs: usize },
+    #[error("a flash-swap group's repay legs must not buy the debt {debt}: the lender pool did")]
+    FlashSwapRepaysDebt { debt: Address },
+    #[error("a flash-swap group's swap leg uses the lender pool {pool}, locked while it swaps")]
+    FlashSwapLegOnLender { pool: Address },
     #[error("an unwrap leg must come before every other repay leg")]
     UnwrapNotFirst,
     #[error("unwrapped {asset} is not closed to WETH by a TAKE_BALANCE leg")]
@@ -152,10 +174,36 @@ pub enum EncodeError {
     ZeroPull { pull: u128 },
     #[error("minProfit is zero (dust / multi-leg floor refused)")]
     ZeroMinProfit,
-    #[error("EXACT_OUT repay {exact_out} exceeds pull + flash premium {owed}")]
-    UnderSeizure { exact_out: u128, owed: u128 },
-    #[error("EXACT_OUT repay {exact_out} != pull + flash premium {owed}")]
-    RepayNotSizedToPull { exact_out: u128, owed: u128 },
+    #[error("leg {leg}'s EXACT_OUT repay {exact_out} exceeds its pull {pull} (the Executor adds the flash premium)")]
+    UnderSeizure {
+        leg: usize,
+        exact_out: u128,
+        pull: u128,
+    },
+    #[error("leg {leg}'s EXACT_OUT repay {exact_out} != its pull {pull} (the Executor adds the flash premium)")]
+    RepayNotSizedToPull {
+        leg: usize,
+        exact_out: u128,
+        pull: u128,
+    },
+    #[error(
+        "leg {leg}'s repay cannot carry the flash premium: no pool exact output, exact input or unwrap into the debt"
+    )]
+    PremiumUncovered { leg: usize },
+    #[error("an exact-output repay leg buys {token}, not the group's debt {debt}: the Executor adds the flash premium to it")]
+    ExactOutNotDebt { token: Address, debt: Address },
+    #[error("swap leg tied to liquidation leg {tie} of a group of {legs}")]
+    TieOutOfRange { tie: usize, legs: usize },
+    #[error("a set-amount repay leg on {token} in a group of {legs} legs is not tied to its leg")]
+    UntiedRepay { token: Address, legs: usize },
+    #[error(
+        "a TAKE_BALANCE leg on {token} is tied: it spends what arrived, whichever leg seized it"
+    )]
+    TiedTakeBalance { token: Address },
+    #[error("profit leg on {token} is tied: it runs after every group")]
+    TiedProfitLeg { token: Address },
+    #[error("a group of {legs} legs ties more than {max} can name")]
+    TooManyTiedLegs { legs: usize, max: usize },
     #[error("flash {flash} is below protocol pull {pull}")]
     FlashShort { flash: u128, pull: u128 },
     #[error("no pool fee for {provider:?} at {fee_bps} bps")]

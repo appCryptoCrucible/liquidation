@@ -131,6 +131,9 @@ pub fn rebuild(
 pub struct BandWarmInputs<'a> {
     snap: &'a BandInputsSnapshot,
     ladders: HashMap<AssetId, smallvec::SmallVec<[U256; liq_router::warm::BUCKETS]>>,
+    /// Collaterals the band has been asked about: terms exist for a pair
+    /// on them, viable or not.
+    evaluated: std::collections::HashSet<AssetId>,
 }
 
 /// `a^(3/4) · b^(1/4)` and `a^(1/4) · b^(3/4)` via integer square roots;
@@ -177,7 +180,12 @@ impl<'a> BandWarmInputs<'a> {
                 (c, smallvec::SmallVec::from_slice(&[lo, a, b, hi]))
             })
             .collect();
-        Self { snap, ladders }
+        let evaluated = snap.terms.keys().map(|&(_, c, _)| c).collect();
+        Self {
+            snap,
+            ladders,
+            evaluated,
+        }
     }
 }
 
@@ -199,6 +207,9 @@ impl liq_router::WarmInputs for BandWarmInputs<'_> {
     }
     fn block(&self) -> u64 {
         self.snap.block
+    }
+    fn evaluated(&self, coll: AssetId) -> bool {
+        self.evaluated.contains(&coll)
     }
 }
 

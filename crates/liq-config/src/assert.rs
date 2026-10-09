@@ -1,7 +1,8 @@
 //! Boot assertion (REGISTRY.md §4c). Re-reads `decimals`/`symbol` for every
 //! token (and `asset()` for every unwrappable one), `token0`/`token1`/`fee`
-//! for every pool, and `decimals`/`aggregator` for every oracle proxy from
-//! chain. Any mismatch or RPC failure refuses to
+//! for every pool (a Curve pool: its coins, and that the MetaRegistry
+//! handler the registry names holds it), and `decimals`/`aggregator` for
+//! every oracle proxy from chain. Any mismatch or RPC failure refuses to
 //! start.
 
 use crate::error::ConfigError;
@@ -20,11 +21,19 @@ const MULTICALL3: Address = address!("0xcA11bde05977b3631167028862bE2a173976CA11
 /// (`MainnetVenues.PENDLE_MARKET_FACTORY_V6`).
 const PENDLE_MARKET_FACTORY_V6: Address = address!("0x6d247b1c044fA1E22e6B04fA9F71Baf99EB29A9f");
 
+/// Curve MetaRegistry — the Executor's anchor for the Curve venues
+/// (`MainnetVenues.CURVE_META_REGISTRY`).
+const CURVE_META_REGISTRY: Address = address!("0xF98B45FA17DE75FB1aD0e7aFD971b0ca00e379fC");
+
 /// Inner calls per Multicall3 `eth_call`. Sized so a public RPC will accept
 /// the payload; accuracy does not depend on the size.
 const BATCH: usize = 64;
 
 sol! {
+    /// Uniswap V4 `StateView` (v4-periphery `lens/StateView.sol`).
+    interface IV4StateView {
+        function getSlot0(bytes32 poolId) external view returns (uint160 sqrtPriceX96, int24 tick, uint24 protocolFee, uint24 lpFee);
+    }
     interface IERC20 {
         function decimals() external view returns (uint8);
         function symbol() external view returns (string);
@@ -56,6 +65,12 @@ sol! {
     interface ICurvePool {
         function coins(uint256 i) external view returns (address);
     }
+    interface ICurveMetaRegistry {
+        function get_registry(uint256 i) external view returns (address);
+    }
+    interface ICurveRegistryHandler {
+        function is_registered(address pool) external view returns (bool);
+    }
     interface AggregatorV3Interface {
         function decimals() external view returns (uint8);
     }
@@ -76,7 +91,15 @@ sol! {
     }
 }
 
+/// Uniswap V4 `StateView` (v4 deployments, mainnet).
+const V4_STATE_VIEW: Address =
+    alloy_primitives::address!("7fFE42C4a5DEeA5b0feC41C94C136Cf115597227");
+
 enum Expect<'a> {
+    /// A Uniswap V4 pool's `getSlot0` must show it initialized.
+    V4Initialized {
+        pool: Address,
+    },
     Decimals {
         token: Address,
         expected: u8,
@@ -123,6 +146,12 @@ enum Expect<'a> {
         index: usize,
         expected: Address,
     },
+    /// `handler` (the MetaRegistry's handler at `index`) must hold `pool`.
+    CurveRegistered {
+        pool: Address,
+        index: u8,
+        handler: Address,
+    },
     OracleDecimals {
         proxy: Address,
         expected: u8,
@@ -157,6 +186,12 @@ pub(crate) async fn assert_registry_views<R: ChainRpc + Sync>(
     if reg.tokens.is_empty() {
         return Err(ConfigError::EmptyRegistry);
     }
+
+    // The Executor's own check on a Curve leg, in its two steps: the
+    // MetaRegistry's handler at the index the registry names, then that
+    // handler's `is_registered(pool)`. The handler addresses are read first;
+    // the per-pool views join the batch below.
+    let curve_handlers = read_curve_handlers(reg, rpc).await?;
 
     let mut calls: Vec<IMulticall3::Call3> = Vec::new();
     let mut expect: Vec<Expect<'_>> = Vec::new();
@@ -277,6 +312,47 @@ pub(crate) async fn assert_registry_views<R: ChainRpc + Sync>(
                     expected: *coin,
                 });
             }
+            let index = pool
+                .curve_handler
+                .ok_or(ConfigError::CurveHandlerMissing { pool: *addr })?;
+            let handler = curve_handlers.get(&index).copied().unwrap_or(Address::ZERO);
+            if handler.is_zero() {
+                return Err(ConfigError::CurveHandlerMismatch {
+                    pool: *addr,
+                    index,
+                    handler,
+                });
+            }
+            calls.push(call3(
+                handler,
+                Bytes::from(ICurveRegistryHandler::is_registeredCall { pool: *addr }.abi_encode()),
+            ));
+            expect.push(Expect::CurveRegistered {
+                pool: *addr,
+                index,
+                handler,
+            });
+            continue;
+        }
+        // A V4 pool has no contract of its own: its key must hash to its id,
+        // the entry's address must be that id's low 20 bytes, and StateView
+        // must find the pool initialized.
+        if pool.venue == PoolVenue::Univ4 {
+            let id = pool.v4_id.ok_or(ConfigError::CallFailed {
+                address: *addr,
+                what: "univ4 entry has no v4_id",
+            })?;
+            if pool.v4_key_id() != Some(id) || *addr != Address::from_word(id) {
+                return Err(ConfigError::CallFailed {
+                    address: *addr,
+                    what: "univ4 key does not hash to its id",
+                });
+            }
+            calls.push(call3(
+                V4_STATE_VIEW,
+                Bytes::from(IV4StateView::getSlot0Call { poolId: id }.abi_encode()),
+            ));
+            expect.push(Expect::V4Initialized { pool: *addr });
             continue;
         }
         if pool.venue == PoolVenue::Univ2 {
@@ -372,6 +448,61 @@ pub(crate) async fn assert_registry_views<R: ChainRpc + Sync>(
     Ok(())
 }
 
+/// The MetaRegistry's handler address at every index a Curve pool of `reg`
+/// names (`get_registry(i)`; the zero address past its list). One batch.
+async fn read_curve_handlers<R: ChainRpc + Sync>(
+    reg: &Registry,
+    rpc: &R,
+) -> Result<std::collections::BTreeMap<u8, Address>> {
+    let indices: std::collections::BTreeSet<u8> = reg
+        .pools
+        .values()
+        .filter(|p| p.venue.is_curve())
+        .filter_map(|p| p.curve_handler)
+        .collect();
+    let mut out = std::collections::BTreeMap::new();
+    if indices.is_empty() {
+        return Ok(out);
+    }
+    let calls: Vec<IMulticall3::Call3> = indices
+        .iter()
+        .map(|i| {
+            call3(
+                CURVE_META_REGISTRY,
+                Bytes::from(
+                    ICurveMetaRegistry::get_registryCall {
+                        i: alloy_primitives::U256::from(*i),
+                    }
+                    .abi_encode(),
+                ),
+            )
+        })
+        .collect();
+    let results = aggregate3(rpc, &calls).await?;
+    if results.len() != calls.len() {
+        return Err(ConfigError::CallFailed {
+            address: MULTICALL3,
+            what: "multicall result count",
+        });
+    }
+    for (index, row) in indices.iter().zip(&results) {
+        if !row.success {
+            return Err(ConfigError::CallFailed {
+                address: CURVE_META_REGISTRY,
+                what: "get_registry",
+            });
+        }
+        let handler =
+            ICurveMetaRegistry::get_registryCall::abi_decode_returns_validate(&row.returnData)
+                .map_err(|_| ConfigError::CallFailed {
+                    address: CURVE_META_REGISTRY,
+                    what: "get_registry decode",
+                })?;
+        out.insert(*index, handler);
+    }
+    Ok(out)
+}
+
 fn call3(target: Address, call_data: Bytes) -> IMulticall3::Call3 {
     IMulticall3::Call3 {
         target,
@@ -411,6 +542,8 @@ fn check_one(exp: &Expect<'_>, row: &IMulticall3::Result) -> Result<()> {
         | Expect::Fee { pool, .. }
         | Expect::Factory { pool, .. }
         | Expect::CurveCoin { pool, .. } => (*pool, "pool view"),
+        Expect::V4Initialized { .. } => (V4_STATE_VIEW, "v4 state view"),
+        Expect::CurveRegistered { handler, .. } => (*handler, "curve registry handler view"),
         Expect::OracleDecimals { proxy, .. } | Expect::Aggregator { proxy, .. } => {
             (*proxy, "oracle view")
         }
@@ -581,6 +714,39 @@ fn check_one(exp: &Expect<'_>, row: &IMulticall3::Result) -> Result<()> {
                     index: *index,
                     expected: *expected,
                     found,
+                });
+            }
+        }
+        Expect::CurveRegistered {
+            pool,
+            index,
+            handler,
+        } => {
+            let held = ICurveRegistryHandler::is_registeredCall::abi_decode_returns_validate(
+                &row.returnData,
+            )
+            .map_err(|_| ConfigError::CallFailed {
+                address: *handler,
+                what: "is_registered decode",
+            })?;
+            if !held {
+                return Err(ConfigError::CurveHandlerMismatch {
+                    pool: *pool,
+                    index: *index,
+                    handler: *handler,
+                });
+            }
+        }
+        Expect::V4Initialized { pool } => {
+            let s0 = IV4StateView::getSlot0Call::abi_decode_returns_validate(&row.returnData)
+                .map_err(|_| ConfigError::CallFailed {
+                    address: *pool,
+                    what: "v4 getSlot0 decode",
+                })?;
+            if s0.sqrtPriceX96.is_zero() {
+                return Err(ConfigError::CallFailed {
+                    address: *pool,
+                    what: "v4 pool not initialized",
                 });
             }
         }
@@ -778,6 +944,14 @@ mod tests {
                 coins: Vec::new(),
                 asset_types: Vec::new(),
                 crypto_kind: None,
+                pool_id: None,
+                balancer_kind: None,
+                curve_d_once: false,
+                curve_handler: None,
+                tick_spacing: None,
+                hooks: None,
+                v4_id: None,
+                native: false,
             },
         );
         Registry {
@@ -867,6 +1041,98 @@ mod tests {
                 assert_eq!(found, 6);
             }
             other => panic!("expected DecimalsMismatch, got {other}"),
+        }
+    }
+
+    const DAI: Address = address!("0x6B175474E89094C44Da98b954EedeAC495271d0F");
+    /// Curve 3pool: coins DAI, USDC, USDT, as the committed registry has it.
+    const CURVE_3POOL: Address = address!("0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
+
+    /// The 3pool and its coins, with `handler` as its MetaRegistry handler index.
+    fn curve_registry(handler: Option<u8>) -> Registry {
+        let mut tokens = tokens_weth_usdc_usdt_mkr();
+        tokens.insert(
+            DAI,
+            TokenEntry {
+                symbol: Some("DAI".into()),
+                decimals: 18,
+                quirks: vec![],
+                symbol_collision: None,
+                unwrap: None,
+            },
+        );
+        let mut reg = tiny_registry(tokens);
+        reg.pools.clear();
+        reg.pools.insert(
+            CURVE_3POOL,
+            PoolEntry {
+                venue: PoolVenue::Curve,
+                token0: DAI,
+                token1: USDC,
+                fee: 1_500_000,
+                factory: super::CURVE_META_REGISTRY,
+                deployed_block: 0,
+                derived_via: "metaregistry.pool_list+get_dy".into(),
+                coins: vec![DAI, USDC, USDT],
+                asset_types: Vec::new(),
+                crypto_kind: None,
+                pool_id: None,
+                balancer_kind: None,
+                curve_d_once: false,
+                curve_handler: handler,
+                tick_spacing: None,
+                hooks: None,
+                v4_id: None,
+                native: false,
+            },
+        );
+        reg
+    }
+
+    async fn boot(reg: &Registry) -> crate::Result<()> {
+        tokio::time::timeout(Duration::from_secs(45), assert_registry(reg, &live_rpc()))
+            .await
+            .expect("rpc timed out — fail closed")
+    }
+
+    /// Oracle: Curve's MetaRegistry on chain, asked as the Executor asks it
+    /// (`get_registry(i)`, then that handler's `is_registered(pool)`). The
+    /// 3pool sits in handler 0, the base registry's, and boots with that
+    /// index. Negative: the index of a handler that does not hold it (6, the
+    /// StableSwap-NG factory's), an index past the MetaRegistry's list, and no
+    /// index at all each refuse to start: the Executor would refuse every
+    /// leg through the pool, or the leg could not be encoded.
+    #[tokio::test(flavor = "current_thread")]
+    async fn curve_handler_index_is_checked_against_the_metaregistry() {
+        boot(&curve_registry(Some(0))).await.unwrap();
+
+        match boot(&curve_registry(Some(6))).await.unwrap_err() {
+            ConfigError::CurveHandlerMismatch {
+                pool,
+                index,
+                handler,
+            } => {
+                assert_eq!(pool, CURVE_3POOL);
+                assert_eq!(index, 6);
+                assert!(
+                    !handler.is_zero(),
+                    "handler 6 exists; it does not hold the 3pool"
+                );
+            }
+            other => panic!("expected CurveHandlerMismatch, got {other}"),
+        }
+
+        match boot(&curve_registry(Some(200))).await.unwrap_err() {
+            ConfigError::CurveHandlerMismatch { index, handler, .. } => {
+                assert_eq!(index, 200);
+                assert!(handler.is_zero(), "no handler at an index past the list");
+            }
+            other => panic!("expected CurveHandlerMismatch, got {other}"),
+        }
+
+        match boot(&curve_registry(None)).await.unwrap_err() {
+            ConfigError::CurveHandlerMissing { pool } => assert_eq!(pool, CURVE_3POOL),
+            other => panic!("expected CurveHandlerMissing, got {other}"),
         }
     }
 

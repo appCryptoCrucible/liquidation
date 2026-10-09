@@ -31,6 +31,8 @@ pub const T0: u64 = 1_700_000_000;
 pub const LT: u128 = 880_000_000_000_000_000;
 pub const TARGET_LTV: u128 = 870_000_000_000_000_000;
 pub const FEE: u128 = 40_000_000_000_000_000;
+/// silo1's `daoFee + deployerFee`: a tenth of its interest.
+pub const INTEREST_FEE: u128 = 100_000_000_000_000_000;
 pub const RAY_ONE: U256 = uint!(1_000_000_000_000_000_000_000_000_000_U256);
 pub const BOB_COLL: U256 = uint!(10_000_000_000_000_000_000_000_U256);
 pub const ALICE_COLL: U256 = uint!(1_000_000_000_000_000_000_000_U256);
@@ -95,6 +97,7 @@ impl Deploy {
                     lt: LT,
                     liquidation_fee: FEE,
                     liquidation_target_ltv: TARGET_LTV,
+                    interest_fee: 0,
                 },
                 silo1: SideConfig {
                     silo: self.silo1,
@@ -105,6 +108,7 @@ impl Deploy {
                     lt: 0,
                     liquidation_fee: 0,
                     liquidation_target_ltv: 0,
+                    interest_fee: INTEREST_FEE,
                 },
             }],
             assets: vec![

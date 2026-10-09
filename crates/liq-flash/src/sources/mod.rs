@@ -3,10 +3,12 @@
 
 #![allow(clippy::too_many_arguments)] // sol! event ctors mirror ABI arity
 
-use alloy_primitives::{Address, U256};
-use alloy_sol_types::{sol, SolEvent};
+use alloy_primitives::{Address, Bytes, U256};
+use alloy_sol_types::{sol, SolCall, SolEvent};
 use liq_protocol::DecodedLog;
 use liq_types::AssetId;
+
+use crate::SeedRead;
 
 pub mod aave;
 pub mod morpho;
@@ -23,7 +25,21 @@ pub use univ4::UniV4PoolManager;
 sol! {
     interface IERC20 {
         event Transfer(address indexed from, address indexed to, uint256 value);
+        function balanceOf(address who) external view returns (uint256);
     }
+}
+
+/// `token.balanceOf(holder)` as a seed read.
+fn balance_read(token: Address, holder: Address) -> SeedRead {
+    SeedRead {
+        to: token,
+        data: IERC20::balanceOfCall { who: holder }.abi_encode().into(),
+    }
+}
+
+/// A `balanceOf` answer; `None` when the call failed or did not decode.
+fn balance_answer(answer: Option<&Bytes>) -> Option<U256> {
+    IERC20::balanceOfCall::abi_decode_returns(answer?).ok()
 }
 
 /// One interned ERC-20 held at a single `holder` (V4 PoolManager, Morpho).
@@ -43,6 +59,8 @@ struct TokenSlot {
 
 struct SlotTable {
     slots: Vec<Option<TokenSlot>>,
+    /// Balances read from chain once (`FlashSource::seed_reads`).
+    seeded: bool,
 }
 
 impl SlotTable {
@@ -64,7 +82,34 @@ impl SlotTable {
                 });
             }
         }
-        Self { slots }
+        Self {
+            slots,
+            seeded: false,
+        }
+    }
+
+    /// One `balanceOf(holder)` per tracked token, until seeded.
+    fn seed_reads(&self) -> Vec<SeedRead> {
+        if self.seeded {
+            return Vec::new();
+        }
+        self.slots
+            .iter()
+            .flatten()
+            .map(|s| balance_read(s.token, s.holder))
+            .collect()
+    }
+
+    /// Balances from `seed_reads`' answers; a failed read leaves zero.
+    fn apply_seed(&mut self, answers: &[Option<Bytes>]) {
+        if self.seeded {
+            return;
+        }
+        for (i, slot) in self.slots.iter_mut().flatten().enumerate() {
+            slot.balance =
+                balance_answer(answers.get(i).and_then(Option::as_ref)).unwrap_or(U256::ZERO);
+        }
+        self.seeded = true;
     }
 
     #[inline]
@@ -178,6 +223,34 @@ pub(crate) mod fixtures {
     pub(crate) const MORPHO_WETH_26M: &str = "15880325145738137013578";
     /// `DssFlash.max()` at 26_000_000: 500 million DAI (wad).
     pub(crate) const DSS_MAX_26M: &str = "500000000000000000000000000";
+    /// `Pool.FLASHLOAN_PREMIUM_TOTAL()` at 26_000_000.
+    pub(crate) const PREMIUM_26M: u128 = 5;
+    /// `Pool.getReserveData(USDC).configuration` at 26_000_000. Aave's own
+    /// `AaveProtocolDataProvider` (`0x0a16…becd`) reads it as active, not
+    /// paused, flash loans enabled.
+    pub(crate) const USDC_CONFIG_26M: &str =
+        "100000000000000000000007d00b2d05e000a0eebb0003e8850628d21e781d4c";
+    /// `Pool.getReserveData(WETH).configuration` at 26_000_000: active, not
+    /// paused, flash loans enabled (same data provider).
+    pub(crate) const WETH_CONFIG_26M: &str =
+        "100000000000000000000103e80002932e0000249f0005dc85122904206c1f72";
+
+    /// An ABI-encoded `uint256` answer.
+    pub(crate) fn uint_answer(v: U256) -> Option<alloy_primitives::Bytes> {
+        Some(alloy_primitives::Bytes::from(
+            v.to_be_bytes::<32>().to_vec(),
+        ))
+    }
+
+    /// The `balanceOf(holder)` read on `token`, as a seed read.
+    pub(crate) fn balance_of(token: Address, holder: Address) -> crate::SeedRead {
+        let mut data = vec![0x70, 0xa0, 0x82, 0x31];
+        data.extend_from_slice(word(holder).as_slice());
+        crate::SeedRead {
+            to: token,
+            data: data.into(),
+        }
+    }
 
     pub(crate) const ID_USDC: AssetId = AssetId(0);
     pub(crate) const ID_WETH: AssetId = AssetId(1);

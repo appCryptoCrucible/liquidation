@@ -518,6 +518,67 @@ fn halt_logs_fold_before_the_pin_and_error_after() {
     );
 }
 
+/// A halt-class log from one vault halts that vault alone: ingest goes
+/// on (no `HaltSignal`), the debt vault's own liquidations are blocked,
+/// and a position holding a halted collateral vault's shares fails closed.
+/// The factory's halt-class logs still stop the protocol (the test above).
+/// Oracle: the flag semantics in `layout.rs`; negative: before either
+/// halt the same position is liquidatable.
+#[test]
+fn a_vault_halt_log_halts_that_vault_and_ingest_continues() {
+    let d = Deploy::new();
+    let px = prices(WETH_P8, USDC_P8);
+    let governor = ev::GovSetGovernorAdmin {
+        newGovernorAdmin: Address::repeat_byte(0x66),
+    };
+
+    let (p, mut st) = liq_store(&d);
+    assert_eq!(
+        p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap().state,
+        HealthState::Liquidatable
+    );
+    let after = log(d.debt_vault, &governor, DEPLOY_BLOCK + 1, T0);
+    assert!(matches!(
+        p.apply_log(&mut st, &after.view()),
+        Ok(DirtySet::MarketReprice(_))
+    ));
+    assert_eq!(
+        p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap().state,
+        HealthState::Blocked {
+            reason: BlockReason::Paused
+        }
+    );
+    assert_eq!(p.quote(st.view(ALICE_ID, T0).unwrap(), &px).unwrap(), None);
+
+    // The collateral vault halts instead: its shares are unpriced in the
+    // debt vault's market, also after a later GovSetLTV names them.
+    let (p, mut st) = liq_store(&d);
+    let after = log(d.coll_vault, &governor, DEPLOY_BLOCK + 1, T0);
+    assert!(p.apply_log(&mut st, &after.view()).is_ok());
+    assert_eq!(
+        p.health(st.view(ALICE_ID, T0).unwrap(), &px),
+        Err(ProtocolError::OracleSourceMismatch)
+    );
+    let relist = log(
+        d.debt_vault,
+        &ev::GovSetLTV {
+            collateral: d.coll_vault,
+            borrowLTV: BORROW_LTV,
+            liquidationLTV: LIQ_LTV,
+            initialLiquidationLTV: LIQ_LTV,
+            targetTimestamp: alloy_primitives::Uint::<48, 1>::from(T0),
+            rampDuration: 0,
+        },
+        DEPLOY_BLOCK + 1,
+        T0,
+    );
+    assert!(p.apply_log(&mut st, &relist.view()).is_ok());
+    assert_eq!(
+        p.health(st.view(ALICE_ID, T0).unwrap(), &px),
+        Err(ProtocolError::OracleSourceMismatch)
+    );
+}
+
 #[test]
 fn subscriptions_cover_tracked_topics() {
     let d = Deploy::new();
@@ -592,7 +653,7 @@ fn committed_toml_without_intern_bind_fails_closed() {
         std::fs::read_to_string(workspace_root().join("config/protocols/euler-v2.toml")).unwrap();
     let cfg = Config::from_toml(&raw).expect("euler-v2.toml parses");
     assert!(cfg.interned.is_empty());
-    assert_eq!(cfg.vaults.len(), 26);
+    assert!(!cfg.vaults.is_empty());
     assert_eq!(EulerV2::new(cfg).unwrap_err(), ConfigError::EmptyInterned);
 }
 
@@ -620,7 +681,26 @@ fn intern_binds_all_euler_vaults_from_registry() {
     let parsed = Config::from_toml(&raw).expect("euler-v2.toml");
     assert_eq!(parsed.catalog, CATALOG_MARKET);
     assert_eq!(parsed.first_market, FIRST_DISCOVERED_MARKET);
-    assert_eq!(parsed.vaults.len(), 26);
+    // Every registry vault is followed (plan 1B: no admission list), and
+    // every one is priced through its own pinned oracle.
+    let mut want: Vec<Address> = euler
+        .iter()
+        .map(|m| match m.key {
+            liq_config::OnChainId::Addr(a) => a,
+            _ => panic!("euler market key is an address"),
+        })
+        .collect();
+    want.sort();
+    let mut got = parsed.vaults.clone();
+    got.sort();
+    assert_eq!(
+        got, want,
+        "euler-v2.toml vaults = the registry's euler-v2 markets"
+    );
+    assert!(
+        !parsed.price_sources.is_empty(),
+        "oracle pins are generated"
+    );
     assert!(parsed.interned.is_empty());
     assert_eq!(
         EulerV2::new(parsed.clone()).unwrap_err(),
@@ -634,17 +714,18 @@ fn intern_binds_all_euler_vaults_from_registry() {
     assert_eq!(loaded.interned.len(), 884);
     assert_eq!(loaded.interned.len(), euler.len());
     for v in &loaded.vaults {
-        let id = loaded.interned_id(*v).expect("admitted vault is interned");
+        let id = loaded.interned_id(*v).expect("followed vault is interned");
         let rec = intern
             .markets()
             .iter()
             .find(|m| m.protocol == proto && m.key == liq_config::OnChainId::Addr(*v))
             .expect("registry row");
+        // `admitted` is the registry's interim borrowed-USD flag; the
+        // adapter follows every vault regardless (plan 1B).
         assert_eq!(id, rec.id);
-        assert!(rec.admitted);
         assert!(
             id.0 >= intern_min && id.0 <= intern_max,
-            "admitted vault MarketId {id:?} must be an intern euler-v2 id"
+            "vault MarketId {id:?} must be an intern euler-v2 id"
         );
         assert_ne!(id, CATALOG_MARKET);
         assert!(id.0 < FIRST_DISCOVERED_MARKET.0);

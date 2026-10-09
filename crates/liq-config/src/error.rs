@@ -69,6 +69,20 @@ pub enum ConfigError {
         expected: Address,
         found: Address,
     },
+    /// A Curve pool with no MetaRegistry handler index in the registry: its
+    /// legs could not be encoded.
+    #[error("curve pool {pool}: registry has no MetaRegistry handler index")]
+    CurveHandlerMissing { pool: Address },
+    /// The MetaRegistry handler the registry names for a Curve pool does not
+    /// hold it (`handler` is the zero address when the index is past the
+    /// MetaRegistry's list). The Executor asks that handler alone and would
+    /// refuse every leg through the pool.
+    #[error("curve pool {pool}: MetaRegistry handler {index} ({handler}) does not hold it")]
+    CurveHandlerMismatch {
+        pool: Address,
+        index: u8,
+        handler: Address,
+    },
     /// A wrapper's `asset()` is no longer the token the registry unwraps it into.
     #[error("wrapper {token}: asset() {found}, registry unwraps into {expected}")]
     UnwrapAssetMismatch {

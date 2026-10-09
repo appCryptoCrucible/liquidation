@@ -17,6 +17,27 @@ def depth(indent):
     return len(indent)
 
 
+def callback_gas(lines, at, d):
+    """Gas of the `uniswapV3SwapCallback` frame directly inside the frame at
+    `lines[at]` (depth `d`): a flash swap's. Zero for an ordinary swap, whose
+    callback only pays the pool and is the pool's own cost."""
+    child = None  # the trace nests a frame's children at one indent step
+    for k in range(at + 1, len(lines)):
+        n = FRAME.match(lines[k])
+        if not n:
+            continue
+        dk = depth(n.group("indent"))
+        if dk <= d:
+            return 0
+        if child is None:
+            child = dk
+        if dk == child and n.group("fn") == "uniswapV3SwapCallback":
+            gas = int(n.group("gas"))
+            # Our own transfer back to the pool is the pool's cost either way.
+            return gas if gas > 20_000 else 0
+    return 0
+
+
 def main(path):
     lines = open(path, encoding="utf-8", errors="replace").read().splitlines()
     test = None
@@ -38,7 +59,11 @@ def main(path):
                     if depth(n.group("indent")) <= d0:
                         break
                     if n.group("fn") in ("swap", "exchange"):
-                        swaps.append(int(n.group("gas")))
+                        # A flash swap's lender frame holds our callback, and
+                        # in it the liquidation and the other swaps: count
+                        # the pool's own work only (the frame net of the
+                        # callback), the rest is found as frames of its own.
+                        swaps.append(int(n.group("gas")) - callback_gas(lines, j, depth(n.group("indent"))))
                     elif n.group("fn") in LIQ and liq is None:
                         liq = int(n.group("gas"))
                 j += 1

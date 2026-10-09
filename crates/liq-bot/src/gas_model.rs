@@ -23,7 +23,7 @@ use liq_types::{FlashProvider, ProtocolId};
 pub struct BandGas {
     pub tx_base: u64,
     /// Per `FlashProvider as usize`, executor + flash. Excludes `tx_base`.
-    pub wrap: [u64; 5],
+    pub wrap: [u64; 7],
     /// Aave V3 flash wrapping an Aave V4 leg.
     pub wrap_aave_v4: u64,
     pub aave_v4: Option<ProtocolId>,
@@ -35,7 +35,7 @@ impl BandGas {
     pub const fn none() -> Self {
         Self {
             tx_base: 0,
-            wrap: [0; 5],
+            wrap: [0; 7],
             wrap_aave_v4: 0,
             aave_v4: None,
             liq: LiqGas::none(),
@@ -68,6 +68,9 @@ impl BandGas {
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct HopGas {
     pub univ3: u64,
+    /// Uniswap V4 swap leg (venue 9): the PoolManager `unlock` around
+    /// `swap`, `settle` and `take`.
+    pub univ4: u64,
     pub univ2: u64,
     pub curve: u64,
     /// StableSwap-NG `exchange`: dynamic fee, `stored_rates()` (external
@@ -75,6 +78,16 @@ pub struct HopGas {
     pub curve_ng: u64,
     /// Curve crypto `exchange`: the gamma-curve solve plus `tweak_price`.
     pub curve_crypto: u64,
+    /// PancakeSwap V3 pool swap (venue 0, factory id 2): Uniswap's swap plus
+    /// the liquidity-mining hook's `accumulateReward` and `crossLmTick`.
+    pub pancake_v3: u64,
+    /// Balancer V2 `Vault.swap` of a weighted pool (venue 11), the dex
+    /// module's delegatecall and the allowance included.
+    pub balancer: u64,
+    /// Fluid DEX T1 `swapIn` (venue 12): the two Liquidity-layer operations,
+    /// the pool's price and reserve math, the allowance, the dex module's
+    /// delegatecall and the pool authentication.
+    pub fluid: u64,
     /// ERC-4626 `redeem` of a seized wrapper (swap venue 5).
     pub unwrap_4626: u64,
     /// Expired Pendle PT: YT `redeemPY` + SY `redeem` (swap venue 6).
@@ -88,7 +101,7 @@ pub struct HopGas {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GasModel {
     pub tx_base: u64,
-    pub wrap: [u64; 5],
+    pub wrap: [u64; 7],
     pub wrap_aave_v4: u64,
     /// `(registry family, gas)` as committed.
     pub liquidation: Vec<(String, u64)>,
@@ -116,15 +129,20 @@ struct WrapToml {
     univ4: Option<u64>,
     morpho: Option<u64>,
     sky_dss: Option<u64>,
+    univ3_swap: Option<u64>,
 }
 
 #[derive(serde::Deserialize)]
 struct SwapToml {
     univ3: Option<u64>,
+    univ4: Option<u64>,
     univ2: Option<u64>,
     curve: Option<u64>,
     curve_ng: Option<u64>,
     curve_crypto: Option<u64>,
+    pancake_v3: Option<u64>,
+    balancer: Option<u64>,
+    fluid: Option<u64>,
     unwrap_4626: Option<u64>,
     pendle_pt: Option<u64>,
     curve_lp: Option<u64>,
@@ -150,13 +168,14 @@ impl GasModel {
                 return None;
             }
         };
-        let mut wrap = [0u64; 5];
+        let mut wrap = [0u64; 7];
         for (p, g) in [
             (FlashProvider::Aave, t.wrap.aave),
             (FlashProvider::UniV3, t.wrap.univ3),
             (FlashProvider::UniV4, t.wrap.univ4),
             (FlashProvider::Morpho, t.wrap.morpho),
             (FlashProvider::SkyDss, t.wrap.sky_dss),
+            (FlashProvider::UniV3Swap, t.wrap.univ3_swap),
         ] {
             if let Some(slot) = wrap.get_mut(p as usize) {
                 *slot = g.unwrap_or(0);
@@ -169,10 +188,14 @@ impl GasModel {
             liquidation: t.liquidation.into_iter().collect(),
             hop: HopGas {
                 univ3: t.swap.univ3.unwrap_or(0),
+                univ4: t.swap.univ4.unwrap_or(0),
                 univ2: t.swap.univ2.unwrap_or(0),
                 curve: t.swap.curve.unwrap_or(0),
                 curve_ng: t.swap.curve_ng.unwrap_or(0),
                 curve_crypto: t.swap.curve_crypto.unwrap_or(0),
+                pancake_v3: t.swap.pancake_v3.unwrap_or(0),
+                balancer: t.swap.balancer.unwrap_or(0),
+                fluid: t.swap.fluid.unwrap_or(0),
                 unwrap_4626: t.swap.unwrap_4626.unwrap_or(0),
                 pendle_pt: t.swap.pendle_pt.unwrap_or(0),
                 curve_lp: t.swap.curve_lp.unwrap_or(0),
@@ -262,6 +285,7 @@ mod tests {
                 "fluid" => Some(ProtocolId(10)),
                 "liquity-v2" => Some(ProtocolId(9)),
                 "gearbox" => Some(ProtocolId(11)),
+                "aave-v2" => Some(ProtocolId(12)),
                 _ => None,
             })
         };
@@ -270,7 +294,14 @@ mod tests {
             assert_eq!(m.liq_gas(&resolve).get(id).unwrap(), *gas);
         }
         assert!(m.tx_base > 21_000 && m.hop.univ3 > 0);
-        assert!(m.wrap.iter().all(|&w| w > 0), "every provider measured");
+        // Slot 5 is `FlashProvider::None`: nothing wraps a reward-only group.
+        assert!(
+            m.wrap
+                .iter()
+                .enumerate()
+                .all(|(i, &w)| i == FlashProvider::None as usize || w > 0),
+            "every provider measured"
+        );
         let w = m.select_wrap();
         assert_eq!(
             w.by_provider[FlashProvider::UniV4 as usize],
@@ -280,7 +311,7 @@ mod tests {
         let v3 = intern.protocol("aave-v3").unwrap();
         assert_eq!(
             band.fixed(v3, FlashProvider::Morpho),
-            m.tx_base + m.wrap[FlashProvider::Morpho as usize] + 480_742
+            m.tx_base + m.wrap[FlashProvider::Morpho as usize] + 453_511
         );
     }
 
@@ -290,7 +321,7 @@ mod tests {
         liq.set(ProtocolId(1), 120_000);
         let g = BandGas {
             tx_base: 100_000,
-            wrap: [200_000, 130_000, 0, 110_000, 0],
+            wrap: [200_000, 130_000, 0, 110_000, 0, 0, 0],
             wrap_aave_v4: 0,
             aave_v4: None,
             liq,

@@ -12,7 +12,12 @@ ERC-4626 vaults (swap venue 5, `{"kind": "erc4626", "into": <asset>}`):
     - a real holder's redeem(shares, holder, holder), simulated from that
       holder, pays exactly previewRedeem(shares) both for one share and for the
       holder's whole balance (no queue, cooldown, fee or liquidity shortfall at
-      that size).
+      that size);
+    - or, for an Euler EVK vault (a GenericFactory proxy), `OP_REDEEM` is not
+      hooked: its holders are borrowers whose redeem the EVC refuses, so no
+      holder can prove it, and by source it pays previewRedeem up to cash
+      (recorded as `"cash_capped": true`; the bot reads `cash()` with the
+      rate).
 
 Expired Pendle PTs (swap venue 6, `{"kind": "pendle_pt", "into", "yt", "sy"}`):
     - PT.YT() is a YT that names the PT back (YT.PT()) and is expired, and
@@ -184,6 +189,30 @@ def redeem_pays_preview(chain: Chain, url: str, vault: str, unit: int) -> dict |
     return None
 
 
+# Euler EVK (euler-vault-kit @ bfb325a6): the factory every EVK vault is a
+# proxy of, and `OP_REDEEM` in `Constants.sol`.
+EVK_FACTORY = "0x29a56a1b8214d9cf7c5561811750d5cbdb45cc8e"
+EVK_OP_REDEEM = 1 << 3
+
+
+def evk_redeem_open(chain: Chain, vault: str) -> bool | None:
+    """An EVK vault whose `redeem` is not hooked. EVK collateral is held by
+    borrowers, whose redeem the EVC's account check refuses, so no holder
+    proves the unwrap; a liquidator holding seized shares has no such check
+    (its liability is repaid). By source: `redeem` pays `previewRedeem` up to
+    the vault's cash, unless `OP_REDEEM` is hooked (a zero hook target
+    disables the op; any other may revert). `None`: not an EVK vault."""
+    is_proxy = word(chain.multicall([(EVK_FACTORY, sel("isProxy(address)")
+                                      + encode(["address"], [vault]))])[0], "bool")
+    if not is_proxy:
+        return None
+    ok, raw = chain.multicall([(vault, sel("hookConfig()"))])[0]
+    if not ok or len(raw) < 64:
+        return False
+    _target, ops = decode(["address", "uint32"], raw)
+    return ops & EVK_OP_REDEEM == 0
+
+
 def discover_4626(chain, url, tokens, cands, usable, routed) -> dict[str, dict]:
     found = {}
     for t in cands:
@@ -201,12 +230,20 @@ def discover_4626(chain, url, tokens, cands, usable, routed) -> dict[str, dict]:
         if not linear(vault_quote(chain, t), unit):
             print(f"  skip {sym:24} {t}: previewRedeem is not linear in size")
             continue
-        proof = redeem_pays_preview(chain, url, t, unit)
+        evk = evk_redeem_open(chain, t)
+        if evk is False:
+            print(f"  skip {sym:24} {t}: EVK vault with redeem hooked")
+            continue
+        proof = ({"holder": "none: EVK vault, redeem not hooked"} if evk
+                 else redeem_pays_preview(chain, url, t, unit))
         if proof is None:
             print(f"  skip {sym:24} {t}: no holder's redeem paid previewRedeem")
             continue
         print(f"  unwrap {sym:22} {t} -> {tokens[asset].get('symbol')} (holder {proof['holder']})")
         found[t] = {"kind": "erc4626", "into": asset}
+        if evk:
+            # EVK `withdrawAssets` pays only from cash: the bot reads it.
+            found[t]["cash_capped"] = True
     return found
 
 
@@ -507,7 +544,11 @@ def main() -> int:
                     help="registry.json to read and write (default: the repo's); its meta is the sibling registry.meta.json")
     ap.add_argument("--kinds", default="erc4626,pendle_pt,curve_lp,pendle_market")
     ap.add_argument("--recheck", action="store_true")
+    ap.add_argument("--tokens", default=None,
+                    help="comma-separated addresses: consider only these candidates, and "
+                         "rebuild only their entries (every other entry is kept)")
     args = ap.parse_args()
+    only = None if args.tokens is None else {t.strip().lower() for t in args.tokens.split(",")}
     global REG, META
     if args.registry is not None:
         REG = args.registry
@@ -525,8 +566,9 @@ def main() -> int:
     routed = set()
     for p in reg["pools"].values():
         routed.update(c.lower() for c in (p.get("coins") or [p["token0"], p["token1"]]))
-    cands = sorted(t for t in usable if t not in routed)
-    print(f"tokens {len(tokens)}, without a pool {len(cands)}")
+    cands = sorted(t for t in usable if t not in routed and (only is None or t in only))
+    print(f"tokens {len(tokens)}, without a pool {len(cands)}"
+          + ("" if only is None else f" (of the {len(only)} named)"))
 
     if args.recheck:
         dropped = []
@@ -560,7 +602,7 @@ def main() -> int:
         rest = [c for c in cands if c not in found]
         found.update(discover_4626(chain, url, tokens, rest, usable, routed))
     for t, e in tokens.items():
-        if e.get("unwrap", {}).get("kind") in kinds:
+        if e.get("unwrap", {}).get("kind") in kinds and (only is None or t in only):
             e.pop("unwrap")
         if t in found:
             e["unwrap"] = found[t]

@@ -2,10 +2,11 @@
 pragma solidity 0.8.28;
 
 import {SafeTransfer} from "./lib/SafeTransfer.sol";
+import {MainnetVenues} from "./lib/MainnetVenues.sol";
 import {Plan, FlashGroup, PlanDecoder} from "./lib/PlanDecoder.sol";
 import {IERC20, IWETH, IAavePool, IUniV3Pool, IMorpho, IPoolManager, IDssFlash} from "./lib/Interfaces.sol";
 import {
-    T_EXPECTED_CALLER, T_ENTERED, T_SWAPPING, T_FILLED,
+    T_EXPECTED_CALLER, T_ENTERED, T_SWAPPING, T_FILLED, T_FEE, T_V4_UNLOCKED,
     T_GROUP_SOURCE, T_GROUP_DEBT, T_GROUP_SPAN,
     ModuleIds, ILiquidationModule, ISwapModule
 } from "./lib/ExecutorShared.sol";
@@ -94,6 +95,19 @@ contract Executor {
     /// compensation, Sky keeper incentives); `flashAmount` and `flashSource`
     /// must be zero.
     uint8 private constant P_NONE    = 5;
+    /// Flash swap: `flashSource` is a Uniswap V3 pool holding `debtAsset`.
+    /// `execute` asks it for exactly `flashAmount` of the debt (an exact-
+    /// output swap). The pool pays first and calls `uniswapV3SwapCallback`,
+    /// where the group runs and the pool is then paid its other token: a
+    /// flash loan and the repay swap in one pool call, at the swap fee the
+    /// exit pays anyway. The pool is locked while it swaps, so the group's
+    /// own swap legs cannot use it.
+    uint8 private constant P_UNIV3_SWAP = 6;
+
+    /// `TickMath.MIN_SQRT_RATIO` / `MAX_SQRT_RATIO`: a flash swap's price
+    /// limit is the pool's whole range (SwapModule swaps with the same).
+    uint160 private constant TICK_MIN_SQRT = 4295128739;
+    uint160 private constant TICK_MAX_SQRT = 1461446703485210103287273052203988822378723970342;
 
     // Flags
     uint8 private constant F_SWEEP = 1 << 0; // sweep WETH after this plan
@@ -251,7 +265,7 @@ contract Executor {
             if (fg.provider == P_NONE) {
                 if (fg.flashAmount != 0 || fg.flashSource != address(0)) revert FlashMismatch();
                 // Reverts `AllLegsFailed` when nothing filled.
-                _core(fg, plan);
+                _core(fg, plan, 0);
                 continue;
             }
 
@@ -259,7 +273,8 @@ contract Executor {
             _storeGroup(fg);
             _arm(fg.flashSource);
             _initiate(fg, plan);     // returns only after the callback settled
-            if (fg.provider != P_UNIV3 && fg.provider != P_UNIV4) {
+            // The Uniswap paths are transfer-based: no allowance to clear.
+            if (fg.provider != P_UNIV3 && fg.provider != P_UNIV4 && fg.provider != P_UNIV3_SWAP) {
                 fg.debtAsset.safeApprove(fg.flashSource, 0);
             }
             _disarm();
@@ -363,6 +378,18 @@ contract Executor {
                 zeroForOne ? 0 : p.flashAmount,
                 plan
             );
+        } else if (provider == P_UNIV3_SWAP) {
+            // Exact output of the debt. The pool pays it, then calls
+            // `uniswapV3SwapCallback` for its other token; the group's legs
+            // run in between (`_flashSwap`).
+            bool zeroForOne = IUniV3Pool(p.flashSource).token0() != p.debtAsset;
+            IUniV3Pool(p.flashSource).swap(
+                address(this),
+                zeroForOne,
+                -int256(uint256(p.flashAmount)),
+                zeroForOne ? TICK_MIN_SQRT + 1 : TICK_MAX_SQRT - 1,
+                plan
+            );
         } else if (provider == P_MORPHO) {
             IMorpho(p.flashSource).flashLoan(p.debtAsset, p.flashAmount, plan);
         } else if (provider == P_SKY_DSS) {
@@ -445,8 +472,9 @@ contract Executor {
     // ──────────────────────────────────────────────────────────────────────
 
     /// Aave. Pull-based: approve exactly what is owed. The pull consumes the
-    /// allowance to zero, so safeApprove's leading zeroing write is same-value
-    /// and cheap in the normal case — and is what keeps USDT working.
+    /// allowance to zero, so the clear `execute` makes after `_initiate`
+    /// finds nothing to write; a provider that pulled less leaves an
+    /// allowance, and that clear removes it.
     function executeOperation(
         address asset, uint256 amount, uint256 premium, address initiator, bytes calldata params
     ) external returns (bool) {
@@ -454,7 +482,7 @@ contract Executor {
         if (initiator != address(this)) revert BadCallback();
         FlashGroup memory fg = _currentGroup();
         if (asset != fg.debtAsset || amount != fg.flashAmount) revert FlashMismatch();
-        _core(fg, params);
+        _core(fg, params, premium);
         asset.safeApprove(msg.sender, amount + premium);
         return true;
     }
@@ -465,7 +493,7 @@ contract Executor {
     function uniswapV3FlashCallback(uint256 fee0, uint256 fee1, bytes calldata data) external {
         _checkCallback();
         FlashGroup memory fg = _currentGroup();
-        _core(fg, data);
+        _core(fg, data, fee0 + fee1);
         fg.debtAsset.safeTransfer(msg.sender, uint256(fg.flashAmount) + fee0 + fee1);
     }
 
@@ -473,11 +501,24 @@ contract Executor {
     /// unlock() reverts unless every currency delta nets to zero before it
     /// returns, so a missed settle fails closed rather than stealing.
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
+        uint256 swapping;
+        assembly { swapping := tload(T_SWAPPING) }
+        // A V4 swap leg's own unlock: only the PoolManager, only mid-swap.
+        if (swapping != 0) {
+            if (msg.sender != MainnetVenues.V4_POOL_MANAGER) revert BadSwapCallback();
+            _delegate(SWAP_MODULE, abi.encodeCall(ISwapModule.v4SwapCallback, (data)));
+            return "";
+        }
         _checkCallback();
         FlashGroup memory fg = _currentGroup();
 
         IPoolManager(msg.sender).take(fg.debtAsset, address(this), fg.flashAmount);
-        _core(fg, data);
+        // Swap legs on the canonical PoolManager run inside this unlock.
+        if (msg.sender == MainnetVenues.V4_POOL_MANAGER) {
+            assembly { tstore(T_V4_UNLOCKED, 1) }
+        }
+        _core(fg, data, 0);
+        assembly { tstore(T_V4_UNLOCKED, 0) }
         IPoolManager(msg.sender).sync(fg.debtAsset);
         fg.debtAsset.safeTransfer(msg.sender, fg.flashAmount);
         IPoolManager(msg.sender).settle();
@@ -490,7 +531,7 @@ contract Executor {
         _checkCallback();
         FlashGroup memory fg = _currentGroup();
         if (assets != fg.flashAmount) revert FlashMismatch();
-        _core(fg, data);
+        _core(fg, data, 0);
         fg.debtAsset.safeApprove(msg.sender, assets);
     }
 
@@ -503,7 +544,7 @@ contract Executor {
         if (initiator != address(this)) revert BadCallback();
         FlashGroup memory fg = _currentGroup();
         if (token != fg.debtAsset || amount != fg.flashAmount) revert FlashMismatch();
-        _core(fg, data);
+        _core(fg, data, fee);
         token.safeApprove(msg.sender, amount + fee);
         return keccak256("ERC3156FlashBorrower.onFlashLoan");
     }
@@ -511,7 +552,12 @@ contract Executor {
     // ──────────────────────────────────────────────────────────────────────
     // Core: liquidate legs → repay swaps. Repayment is the caller's job.
     // ──────────────────────────────────────────────────────────────────────
-    function _core(FlashGroup memory fg, bytes calldata plan) internal {
+    /// `fee` is what the provider charges on top of `flashAmount`, as its
+    /// callback reported it. The repay legs' exact outputs buy what the
+    /// liquidations pulled; the first exact-output pool leg to run also buys
+    /// `fee`, so the group owes it once whichever legs filled, and a fee
+    /// that moved between simulation and inclusion is bought as it is.
+    function _core(FlashGroup memory fg, bytes calldata plan, uint256 fee) internal {
         if (fg.liqCount == 0) revert NoLegs();
 
         uint256 filled = abi.decode(
@@ -525,7 +571,12 @@ contract Executor {
         // to pay from: the flash could not be settled anyway. Revert here,
         // by name, before a repay swap fails with a misleading transfer error.
         if (filled == 0) revert AllLegsFailed();
-        assembly { tstore(T_FILLED, filled) }
+        // Which legs filled, for the swap legs tied to them; the fee, for the
+        // first exact-output pool leg to buy.
+        assembly {
+            tstore(T_FILLED, filled)
+            tstore(T_FEE, fee)
+        }
 
         // Only this group's repay swaps run here — exact-output into its debt
         // asset, sized to what it owes. Profit swaps run once, after every
@@ -535,6 +586,9 @@ contract Executor {
         if (fg.repaySwapCount != 0) {
             _runSwaps(fg.repaySwapOffset, fg.repaySwapCount, plan);
         }
+        // Unbought only when no exact-output pool leg ran: an exact-input
+        // repay's overshoot paid it, or the provider's pull now fails.
+        assembly { tstore(T_FEE, 0) }
     }
 
     /// `legs` swap legs from `offset`, by the swap module.
@@ -552,26 +606,108 @@ contract Executor {
         }
     }
 
-    /// Uniswap V3 swap callback. Distinct selector from the flash callback, and
-    /// it needs its own authentication: verify the caller IS the canonical pool
-    /// for (token0, token1, fee) by CREATE2, and that we are mid-swap. Storing
-    /// "the pool we called" does not generalize to N legs; derivation does.
+    /// Uniswap V3 swap callback (also SushiSwap V3's, which is Uniswap's code).
+    /// Distinct selector from the flash callback, and it needs its own
+    /// authentication: verify the caller IS the canonical pool for (token0,
+    /// token1, fee) by CREATE2, and that we are mid-swap. Storing "the pool
+    /// we called" does not generalize to N legs; derivation does.
     function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external {
         uint256 swapping;
         assembly { swapping := tload(T_SWAPPING) }
-        if (swapping == 0) revert BadSwapCallback();
+        // Outside a swap leg the only swap callback we take is the flash
+        // swap's, from the pool `execute` armed.
+        if (swapping == 0) {
+            _flashSwap(amount0Delta, amount1Delta, data);
+            return;
+        }
+        _v3SwapCallback(amount0Delta, amount1Delta, data);
+    }
 
-        (address tokenIn, address tokenOut, uint24 fee) = abi.decode(data, (address, address, uint24));
-        (address t0, address t1) = tokenIn < tokenOut ? (tokenIn, tokenOut) : (tokenOut, tokenIn);
-        address expected = address(uint160(uint256(keccak256(abi.encodePacked(
-            hex"ff", UNIV3_FACTORY, keccak256(abi.encode(t0, t1, fee)), UNIV3_POOL_INIT_HASH
-        )))));
+    /// PancakeSwap V3's swap callback: the same call under another name.
+    /// Pancake pools are never a flash-swap source, so outside a swap leg it
+    /// reverts.
+    function pancakeV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external {
+        uint256 swapping;
+        assembly { swapping := tload(T_SWAPPING) }
+        if (swapping == 0) revert BadSwapCallback();
+        _v3SwapCallback(amount0Delta, amount1Delta, data);
+    }
+
+    /// A V3-family swap callback inside a swap leg, by what the leg passed
+    /// the pool: 96 bytes (tokenIn, tokenOut, fee) is a Uniswap pool; 128
+    /// bytes, with the factory id of a fork as a fourth word, is that fork's
+    /// pool; anything longer is a chain hop (`S_CHAIN`), whose callback
+    /// carries the chain, not a triple. The caller must be the pool the id's
+    /// deployer derives for the triple. Either selector may carry either
+    /// fork's id: only a genuine pool of that deployer passes, and it calls
+    /// back under its own name.
+    function _v3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) private {
+        address tokenIn;
+        address expected;
+        if (data.length == 96) {
+            uint24 fee;
+            (tokenIn, expected, fee) = abi.decode(data, (address, address, uint24));
+            (address t0, address t1) = tokenIn < expected ? (tokenIn, expected) : (expected, tokenIn);
+            expected = address(uint160(uint256(keccak256(abi.encodePacked(
+                hex"ff", UNIV3_FACTORY, keccak256(abi.encode(t0, t1, fee)), UNIV3_POOL_INIT_HASH
+            )))));
+        } else if (data.length == 128) {
+            address tokenOut;
+            uint24 fee;
+            uint8 fid;
+            (tokenIn, tokenOut, fee, fid) = abi.decode(data, (address, address, uint24, uint8));
+            expected = MainnetVenues.v3ForkPool(fid, tokenIn, tokenOut, fee);
+        } else {
+            // The swap module continues a chain hop's callback and
+            // authenticates the caller as the hop in flight.
+            _delegate(SWAP_MODULE, abi.encodeCall(ISwapModule.v3ChainCallback, (amount0Delta, amount1Delta, data)));
+            return;
+        }
         if (msg.sender != expected) revert BadSwapCallback();
 
         // We called swap(zeroForOne = tokenIn < tokenOut), so the positive
         // delta is always tokenIn's side.
         uint256 owed = amount0Delta > 0 ? uint256(amount0Delta) : uint256(amount1Delta);
         tokenIn.safeTransfer(msg.sender, owed);
+    }
+
+    /// The flash swap's callback (`P_UNIV3_SWAP`): the pool has paid the
+    /// group's debt and is owed its other token. Authenticated as every
+    /// provider callback is — the armed source, inside `execute` — and only
+    /// for a flash-swap group. A stray swap callback outside a swap leg
+    /// still reverts `BadSwapCallback`.
+    function _flashSwap(int256 amount0Delta, int256 amount1Delta, bytes calldata plan) internal {
+        address expected;
+        uint256 entered;
+        assembly {
+            expected := tload(T_EXPECTED_CALLER)
+            entered  := tload(T_ENTERED)
+        }
+        if (msg.sender != expected || entered == 0) revert BadSwapCallback();
+        FlashGroup memory fg = _currentGroup();
+        if (fg.provider != P_UNIV3_SWAP) revert BadSwapCallback();
+
+        // Which side the pool paid, and which it is owed. The debt must have
+        // been paid in full: a pool whose liquidity runs out before
+        // `flashAmount` stops short, and the legs would repay less than the
+        // plan says.
+        address t0 = IUniV3Pool(msg.sender).token0();
+        address t1 = IUniV3Pool(msg.sender).token1();
+        int256 paid;
+        int256 owed;
+        address tokenIn;
+        if (t0 == fg.debtAsset) {
+            (paid, owed, tokenIn) = (amount0Delta, amount1Delta, t1);
+        } else if (t1 == fg.debtAsset) {
+            (paid, owed, tokenIn) = (amount1Delta, amount0Delta, t0);
+        } else {
+            revert FlashMismatch();
+        }
+        if (paid != -int256(uint256(fg.flashAmount)) || owed <= 0) revert FlashMismatch();
+
+        // No fee: the pool's price carries it.
+        _core(fg, plan, 0);
+        tokenIn.safeTransfer(msg.sender, uint256(owed));
     }
 
     /// Receives ETH: WETH unwrapped for a coinbase bid or a native-ETH leg,

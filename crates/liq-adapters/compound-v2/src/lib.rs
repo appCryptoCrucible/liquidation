@@ -75,8 +75,10 @@ impl LogSubscriber for CompoundV2 {
             halt::Upgraded::SIGNATURE_HASH,
             halt::AdminChanged::SIGNATURE_HASH,
         ];
-        const CT: [alloy_primitives::B256; 11] = [
+        const CT: [alloy_primitives::B256; 13] = [
             ctoken::AccrueInterest::SIGNATURE_HASH,
+            crate::events::ctoken_original::AccrueInterest::SIGNATURE_HASH,
+            crate::events::ctoken_reserves::AccrueInterest::SIGNATURE_HASH,
             ctoken::Mint::SIGNATURE_HASH,
             ctoken::Redeem::SIGNATURE_HASH,
             ctoken::Borrow::SIGNATURE_HASH,
@@ -286,6 +288,164 @@ impl Protocol for CompoundV2 {
         Err(ProtocolError::ProbeUnavailable)
     }
 
+    /// `borrowRatePerBlock()` on every listed cToken of every interned
+    /// Comptroller, each block: the rate the health projection accrues at.
+    /// A Fuse cToken also reads `totalFuseFees`, `totalAdminFees`,
+    /// `fuseFeeMantissa` and `adminFeeMantissa`: a fee withdrawal moves the
+    /// totals without an event. Tag = `kind << 16 | slot` ([`READ_RATE`]..).
+    fn state_reads(&self, rows: &dyn liq_protocol::MarketRows) -> Vec<liq_protocol::StateRead> {
+        let mut out = Vec::new();
+        for (_, market) in &self.cfg.interned {
+            if self.cfg.fork_by_market(*market).is_none() {
+                continue;
+            }
+            let Some(rs) = rows.rows(*market) else {
+                continue;
+            };
+            for (slot, row) in rs.iter().enumerate().skip(1) {
+                let Ok(body) = row.body::<layout::CTokenRow>() else {
+                    continue;
+                };
+                // A frozen market cannot accrue: nothing to read.
+                if body.flags & layout::CTokenRow::LISTED == 0
+                    || body.flags2 & layout::CTokenRow::FROZEN != 0
+                {
+                    continue;
+                }
+                let Ok(slot) = u64::try_from(slot) else {
+                    continue;
+                };
+                let target = math::addr_from(body.ctoken);
+                let mut read = |kind: u64, calldata: Vec<u8>| {
+                    out.push(liq_protocol::StateRead {
+                        market: *market,
+                        target,
+                        calldata: alloy_primitives::Bytes::from(calldata),
+                        tag: kind << 16 | slot,
+                    });
+                };
+                // The rate only moves interest, so only borrowed-from
+                // markets need it; the fees only move a collateral's
+                // exchange rate, so only supplied markets need them. Most
+                // Fuse markets are empty.
+                if body.total_borrows != 0 {
+                    read(READ_RATE, borrowRatePerBlockCall {}.abi_encode());
+                }
+                if body.total_supply != 0 && body.flags2 & layout::CTokenRow::FUSE != 0 {
+                    read(READ_FUSE_FEES, totalFuseFeesCall {}.abi_encode());
+                    read(READ_ADMIN_FEES, totalAdminFeesCall {}.abi_encode());
+                    read(READ_FUSE_FEE, fuseFeeMantissaCall {}.abi_encode());
+                    read(READ_ADMIN_FEE, adminFeeMantissaCall {}.abi_encode());
+                }
+                // Moma: the same four words under its own names.
+                if body.total_supply != 0 && body.flags2 & layout::CTokenRow::MOMA != 0 {
+                    read(READ_FUSE_FEES, totalFeesCall {}.abi_encode());
+                    read(READ_ADMIN_FEES, totalMomaFeesCall {}.abi_encode());
+                    read(READ_FUSE_FEE, feeFactorMantissaCall {}.abi_encode());
+                    read(READ_ADMIN_FEE, getMomaFeeFactorCall {}.abi_encode());
+                }
+            }
+        }
+        out
+    }
+
+    fn apply_state_reads(
+        &self,
+        st: &mut dyn StateWriter,
+        _timestamp: Timestamp,
+        answers: &[liq_protocol::StateAnswer<'_>],
+    ) -> Result<Vec<DirtySet>> {
+        // One cToken's answers together: the four Fuse words are written
+        // only when all four read.
+        #[derive(Default)]
+        struct Read {
+            target: alloy_primitives::Address,
+            words: [Option<alloy_primitives::U256>; 5],
+        }
+        let mut by_slot: Vec<(liq_protocol::MarketSlot, Read)> = Vec::new();
+        for a in answers {
+            if !a.success || a.data.len() < 32 {
+                continue;
+            }
+            let (kind, Ok(slot)) = (a.read.tag >> 16, u16::try_from(a.read.tag & 0xffff)) else {
+                continue;
+            };
+            let Some(i) = usize::try_from(kind).ok().filter(|k| *k < 5) else {
+                continue;
+            };
+            let at = liq_protocol::MarketSlot {
+                market: a.read.market,
+                slot,
+            };
+            let Some(head) = a.data.get(..32) else {
+                continue;
+            };
+            let word = alloy_primitives::U256::from_be_slice(head);
+            let r = match by_slot.iter().position(|(s, _)| *s == at) {
+                Some(p) => by_slot.get_mut(p).map(|(_, r)| r),
+                None => {
+                    by_slot.push((
+                        at,
+                        Read {
+                            target: a.read.target,
+                            ..Read::default()
+                        },
+                    ));
+                    by_slot.last_mut().map(|(_, r)| r)
+                }
+            };
+            if let Some(slot) = r.and_then(|r| r.words.get_mut(i)) {
+                *slot = Some(word);
+            }
+        }
+        let mut rows = liq_protocol::DirtyRows::new();
+        for (at, r) in by_slot {
+            let Ok(cur) = st.market(at) else { continue };
+            let mut row = *cur;
+            let body: &mut layout::CTokenRow = row.body_mut()?;
+            if math::addr_from(body.ctoken) != r.target {
+                continue;
+            }
+            let before = *body;
+            let w = |k: u64| {
+                usize::try_from(k)
+                    .ok()
+                    .and_then(|k| r.words.get(k).copied().flatten())
+            };
+            if let Some(rate) = w(READ_RATE).and_then(|w| u64::try_from(w).ok()) {
+                body.borrow_rate_per_block = rate;
+                body.flags |= layout::CTokenRow::RATE_KNOWN;
+            }
+            if body.flags2 & layout::CTokenRow::FEE_ACCUMULATORS != 0 {
+                if let (Some(f), Some(a), Some(ff), Some(af)) = (
+                    w(READ_FUSE_FEES),
+                    w(READ_ADMIN_FEES),
+                    w(READ_FUSE_FEE),
+                    w(READ_ADMIN_FEE),
+                ) {
+                    let fees = f.checked_add(a).and_then(|t| u128::try_from(t).ok());
+                    let rate = ff.checked_add(af).and_then(|t| u64::try_from(t).ok());
+                    if let (Some(fees), Some(rate)) = (fees, rate) {
+                        body.total_fees = fees;
+                        body.fee_mantissa = rate;
+                        body.flags2 |= layout::CTokenRow::FEES_KNOWN;
+                        apply::recompute_exrate(body)?;
+                    }
+                }
+            }
+            if *body == before {
+                continue;
+            }
+            st.set_market(at, row)?;
+            rows.push(at);
+        }
+        Ok(if rows.is_empty() {
+            Vec::new()
+        } else {
+            vec![DirtySet::MarketAccrual(rows)]
+        })
+    }
+
     /// `PriceOracle.getUnderlyingPrice(cToken)` per cToken of each interned
     /// comptroller (no batch getter). Tag = the underlying's decimals.
     fn price_reads(&self, _rows: &dyn liq_protocol::MarketRows) -> Vec<liq_protocol::PriceRead> {
@@ -352,7 +512,27 @@ impl Protocol for CompoundV2 {
 alloy_sol_types::sol! {
     /// Compound V2 `PriceOracle.getUnderlyingPrice`.
     function getUnderlyingPrice(address cToken) external view returns (uint256);
+    /// `CToken.borrowRatePerBlock` @ `a3214f67`: the model's rate on the
+    /// stored cash, borrows and reserves.
+    function borrowRatePerBlock() external view returns (uint256);
+    /// Fuse `CToken` (`0x67db14e7…`) fee accumulators and rates.
+    function totalFuseFees() external view returns (uint256);
+    function totalAdminFees() external view returns (uint256);
+    function fuseFeeMantissa() external view returns (uint256);
+    function adminFeeMantissa() external view returns (uint256);
+    /// Moma `MToken` (`0x1d0fcc81…`) fee accumulators and rates.
+    function totalFees() external view returns (uint256);
+    function totalMomaFees() external view returns (uint256);
+    function feeFactorMantissa() external view returns (uint256);
+    function getMomaFeeFactor() external view returns (uint256);
 }
+
+/// [`liq_protocol::StateRead::tag`] kinds (`kind << 16 | slot`).
+const READ_RATE: u64 = 0;
+const READ_FUSE_FEES: u64 = 1;
+const READ_ADMIN_FEES: u64 = 2;
+const READ_FUSE_FEE: u64 = 3;
+const READ_ADMIN_FEE: u64 = 4;
 
 /// `USD · 10^(36 − decimals)` → RAY (`USD · 10^27`): `m · 10^(decimals − 9)`.
 /// Zero is not a price.

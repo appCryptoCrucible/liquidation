@@ -34,10 +34,14 @@ pub fn addr_from(b: [u8; 20]) -> Address {
     Address::from(b)
 }
 
-/// Pin `_setCloseFactor` bounds: `min < closeFactor <= max`.
+/// A close factor the adapter can liquidate under: `0 < closeFactor <= 1e18`.
+/// The pin's `_setCloseFactor` bounds (`0.05e18 < cf <= 0.9e18`) are the
+/// official Comptroller's setter limits, not a property of every fork: Fuse
+/// pools run at `1e18` (the whole borrow), and a fork at `0` can never be
+/// liquidated.
 #[inline]
-pub fn close_factor_in_pin_bounds(mantissa: U256) -> bool {
-    mantissa > CLOSE_FACTOR_MIN_MANTISSA && mantissa <= CLOSE_FACTOR_MAX_MANTISSA
+pub fn close_factor_usable(mantissa: U256) -> bool {
+    !mantissa.is_zero() && mantissa <= EXP_SCALE
 }
 
 /// `mul_(Exp a, Exp b)` — `a.mantissa * b.mantissa / expScale` floor.
@@ -102,6 +106,49 @@ pub fn exchange_rate_stored(
         .checked_sub(reserves)
         .ok_or(FixedError::Underflow)?;
     mul_div_down(num, EXP_SCALE, supply)
+}
+
+/// Seconds per block since the merge: Compound V2 accrues per block, and a
+/// projection by time counts one block per slot.
+pub const SLOT_SECONDS: u64 = 12;
+
+/// `CToken.accrueInterest` @ `a3214f67`, run `blocks` blocks after the
+/// stored accrual at `borrow_rate` per block: the `(borrowIndex,
+/// totalBorrows, totalReserves)` it leaves.
+///
+/// ```text
+/// simpleInterestFactor = borrowRate · blockDelta
+/// interestAccumulated  = truncate(simpleInterestFactor · totalBorrows)
+/// totalBorrowsNew      = interestAccumulated + totalBorrows
+/// totalReservesNew     = truncate(reserveFactor · interestAccumulated) + totalReserves
+/// borrowIndexNew       = truncate(simpleInterestFactor · borrowIndex) + borrowIndex
+/// totalFeesNew         = truncate(feeFactor · interestAccumulated) + totalFees   (Fuse)
+/// ```
+///
+/// Returns `(borrowIndex, totalBorrows, totalReserves, totalFees)`; a plain
+/// fork passes a zero fee factor and zero fees.
+#[allow(clippy::too_many_arguments)]
+pub fn accrue(
+    borrow_index: U256,
+    total_borrows: U256,
+    total_reserves: U256,
+    reserve_factor: U256,
+    total_fees: U256,
+    fee_factor: U256,
+    borrow_rate: U256,
+    blocks: u64,
+) -> Result<(U256, U256, U256, U256)> {
+    let simple = borrow_rate
+        .checked_mul(U256::from(blocks))
+        .ok_or(FixedError::Overflow)?;
+    let interest = mul_scalar_truncate(simple, total_borrows)?;
+    let borrows = interest
+        .checked_add(total_borrows)
+        .ok_or(FixedError::Overflow)?;
+    let reserves = mul_scalar_truncate_add(reserve_factor, interest, total_reserves)?;
+    let fees = mul_scalar_truncate_add(fee_factor, interest, total_fees)?;
+    let index = mul_scalar_truncate_add(simple, borrow_index, borrow_index)?;
+    Ok((index, borrows, reserves, fees))
 }
 
 /// Pin `isDeprecated`.

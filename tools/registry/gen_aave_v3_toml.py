@@ -166,9 +166,7 @@ def main() -> int:
     for p in pools:
         lines += ["[[pools]]"] + [
             f'{k} = "{v}"' if isinstance(v, str)
-            else "tokens = [
-" + "".join(f'    "{t}",
-' for t in v) + "]" if k == "tokens"
+            else "tokens = [\n" + "".join(f'    "{t}",\n' for t in v) + "]" if k == "tokens"
             else f"{k} = {v}"
             for k, v in p.items()
         ] + [""]

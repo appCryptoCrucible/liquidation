@@ -67,6 +67,16 @@ pub struct TokenUnwrap {
     /// Live Pendle PT only: its market (a `PendleMarketFactoryV6` market).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub market: Option<Address>,
+    /// ERC-4626 only: `redeem` pays at most the vault's `cash()` (an Euler
+    /// EVK vault, whose assets are lent out; EVK `withdrawAssets` reverts
+    /// `E_InsufficientCash` above it). Read each block with the rate.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cash_capped: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if signature
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Unwrap mechanism.
@@ -173,6 +183,65 @@ pub struct PoolEntry {
     /// Curve crypto only: which deployed math the pool runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crypto_kind: Option<CryptoKind>,
+    /// Balancer only: the Vault's pool id (its first 20 bytes are the pool's
+    /// address, the entry's key). `coins` lists the Vault's tokens in its
+    /// (ascending) order; the swap fee is read, not stored (`fee` is 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool_id: Option<B256>,
+    /// Balancer only: which deployed `WeightedPool` the pool is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balancer_kind: Option<BalancerKind>,
+    /// A plain Curve pool whose `get_D` divides by `N^N` once (the crvUSD
+    /// stableswap factory's implementation), as NG does; absent on the
+    /// older plain pools, which divide by `x·N` per coin.
+    #[serde(default)]
+    pub curve_d_once: bool,
+    /// Curve only (every Curve venue): index of the MetaRegistry handler
+    /// that holds the pool — `get_registry(i)`, whose `is_registered(pool)`
+    /// is true. The Executor asks that one handler instead of the
+    /// MetaRegistry's walk over all of them, so every Curve leg carries
+    /// this index and a wrong one is refused on chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve_handler: Option<u8>,
+    /// Uniswap V4 only: the pool key's `tickSpacing`. With `token0`,
+    /// `token1`, `fee`, [`Self::hooks`] and [`Self::native`] it is the key;
+    /// the entry's address is the low 20 bytes of [`Self::v4_id`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tick_spacing: Option<i32>,
+    /// Uniswap V4 only: the pool key's hook (zero for none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<Address>,
+    /// Uniswap V4 only: the pool id, `keccak256(abi.encode(PoolKey))`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub v4_id: Option<B256>,
+    /// Uniswap V4 only: `currency0` is native ETH; `token0` names it WETH,
+    /// as the plan does.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub native: bool,
+}
+
+impl PoolEntry {
+    /// Uniswap V4: the pool key's currency0 (`0` for native ETH).
+    #[must_use]
+    pub fn v4_currency0(&self) -> Address {
+        if self.native {
+            Address::ZERO
+        } else {
+            self.token0
+        }
+    }
+
+    /// Uniswap V4: `keccak256(abi.encode(PoolKey))` of this entry's key.
+    #[must_use]
+    pub fn v4_key_id(&self) -> Option<B256> {
+        use alloy_sol_types::SolValue;
+        let ts = alloy_primitives::aliases::I24::try_from(self.tick_spacing?).ok()?;
+        let fee = alloy_primitives::aliases::U24::try_from(self.fee).ok()?;
+        let hooks = self.hooks?;
+        Some(alloy_primitives::keccak256(
+            (self.v4_currency0(), self.token1, fee, ts, hooks).abi_encode(),
+        ))
+    }
 }
 
 /// Curve crypto pool math (see `liq_router::crypto`).
@@ -185,8 +254,22 @@ pub enum CryptoKind {
     TwoV200,
     /// twocrypto-ng, `CurveTwocryptoMathOptimized` v2.1.0.
     TwoV210,
+    /// The 2025 Twocrypto pools (v2.1.0d, v3.0.0) whose MATH is the
+    /// stableswap adaptation (`StableswapMath`, `0xbfdd…ea13`).
+    TwoStable,
     /// tricrypto-ng, `CurveTricryptoMathOptimized` v2.0.0.
     Tri,
+}
+
+/// Balancer V2 weighted pool generation (see `liq_router::balancer`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BalancerKind {
+    /// `WeightedPool2Tokens` (2021): every power through `LogExpMath.pow`.
+    WeightedV1,
+    /// `WeightedPool` v4 (`20230320-weighted-pool-v4`): `powUp`/`powDown`
+    /// shortcut an exponent of exactly 1, 2 or 4.
+    WeightedV4,
 }
 
 /// Pool family. Unknown venues fail serde — we must not call `token0`/`fee`
@@ -195,6 +278,10 @@ pub enum CryptoKind {
 #[serde(rename_all = "lowercase")]
 pub enum PoolVenue {
     Univ3,
+    /// Uniswap V4 pool on the canonical PoolManager (swap venue 9), by its
+    /// key (`tick_spacing`, `hooks`, `v4_id`, `native`). Hookless or an
+    /// allowlisted hook only (decision 7).
+    Univ4,
     /// Uniswap V2 or SushiSwap pair (0.30 %); `factory` says which.
     Univ2,
     /// Curve StableSwap plain pool; `fee` is `fee()` at discovery (1e10).
@@ -207,6 +294,11 @@ pub enum PoolVenue {
     /// `exchange(uint256,uint256,uint256,uint256)`; `fee` is 0 (dynamic).
     #[serde(rename = "curve_crypto")]
     CurveCrypto,
+    /// Balancer V2 weighted pool (swap venue 11), by its Vault pool id.
+    Balancer,
+    /// Fluid DEX T1 pool (swap venue 12). `coins` are its token0/token1 in
+    /// the pool's order, native ETH named as WETH (`native` says so).
+    Fluid,
 }
 
 impl PoolVenue {
@@ -326,6 +418,7 @@ mod tests {
             .unwrap()
     }
 
+    const WETH_ADDR: Address = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
     const USDT: Address = address!("0xdAC17F958D2ee523a2206206994597C13D831ec7");
     const MKR: Address = address!("0x9f8F72aA9304c8B593d555F12eF6589cC3A579A2");
     const STETH: Address = address!("0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84");
@@ -348,6 +441,62 @@ mod tests {
                 assert!(
                     p.coins.len() >= 2 && p.coins[0] == p.token0 && p.coins[1] == p.token1,
                     "curve {addr:#x}: token0/token1 must be coins[0]/coins[1]"
+                );
+                assert!(
+                    p.curve_handler.is_some(),
+                    "curve {addr:#x}: no MetaRegistry handler index"
+                );
+                continue;
+            }
+            if p.venue == super::PoolVenue::Fluid {
+                assert!(
+                    p.coins.len() == 2 && p.coins[0] == p.token0 && p.coins[1] == p.token1,
+                    "fluid {addr:#x}: token0/token1 must be coins[0]/coins[1]"
+                );
+                assert!(
+                    p.native == p.coins.contains(&WETH_ADDR),
+                    "fluid {addr:#x}: `native` iff a coin is WETH (native ETH named as WETH)"
+                );
+                continue;
+            }
+            if p.venue == super::PoolVenue::Balancer {
+                assert!(
+                    p.coins.len() == 2 && p.coins[0] == p.token0 && p.coins[1] == p.token1,
+                    "balancer {addr:#x}: token0/token1 must be coins[0]/coins[1]"
+                );
+                assert!(
+                    p.token0 < p.token1,
+                    "balancer {addr:#x}: the Vault's token order is ascending"
+                );
+                let id = p.pool_id.expect("balancer entry has its pool id");
+                assert_eq!(
+                    *addr,
+                    Address::from_slice(&id[..20]),
+                    "balancer {addr:#x}: keyed by the pool id's first 20 bytes"
+                );
+                assert!(
+                    p.balancer_kind.is_some(),
+                    "balancer {addr:#x}: no pool kind"
+                );
+                continue;
+            }
+            assert!(
+                p.curve_handler.is_none(),
+                "{addr:#x}: a MetaRegistry handler index on a pool that is not Curve"
+            );
+            // V4: the key's currencies are ordered; a native-ETH pool names
+            // its currency0 (`0`) as WETH, and its key must hash to its id.
+            if p.venue == super::PoolVenue::Univ4 {
+                assert!(
+                    p.v4_currency0() < p.token1,
+                    "V4 key order is currency0 < currency1; registry {addr:#x}"
+                );
+                let id = p.v4_id.expect("univ4 entry has its id");
+                assert_eq!(p.v4_key_id(), Some(id), "{addr:#x}: key hashes to its id");
+                assert_eq!(
+                    *addr,
+                    Address::from_word(id),
+                    "{addr:#x}: keyed by the id's low 20 bytes"
                 );
                 continue;
             }

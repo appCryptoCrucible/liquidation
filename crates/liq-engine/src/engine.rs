@@ -176,8 +176,27 @@ struct Tables {
     /// First block a position was seen liquidatable on canonical state;
     /// `0` = not liquidatable at the last canonical fold.
     liq_since: Vec<BlockNum>,
+    /// Quotes of the positions canonical folds held `Unfundable`, since the
+    /// last [`Engine::take_unfunded`].
+    unfunded: Vec<Unfunded>,
     trace_seq: u64,
     stats: Stats,
+}
+
+/// A position below the boundary that the fold held [`Band::Unfundable`]
+/// (no funded debt leg with an exit), with the quote the fold computed.
+///
+/// These are the pairs a viability band must be computed for before they
+/// can ever be eligible: the warm route table only holds exits for
+/// collaterals that have a band, and a band is built from a pair's terms
+/// (bonus, price ratio, flash fee, measured gas). Candidates publish those
+/// terms, but a position whose collateral has no exit yet never becomes a
+/// candidate, so its quote is handed out here instead of discarded.
+#[derive(Clone, Debug)]
+pub struct Unfunded {
+    pub position: PositionId,
+    pub protocol: ProtocolId,
+    pub quote: Quote,
 }
 
 /// The health engine. One per node; driven from the ExEx thread.
@@ -214,6 +233,7 @@ impl Engine {
                 elig: Eligibility::new(cfg.positions),
                 queue: CandidateQueue::with_capacity(cfg.queue),
                 liq_since: Vec::with_capacity(cfg.positions),
+                unfunded: Vec::new(),
                 trace_seq: 0,
                 stats: Stats::default(),
             },
@@ -286,6 +306,14 @@ impl Engine {
     #[inline]
     pub fn candidates(&mut self) -> Drain<'_> {
         self.t.queue.drain()
+    }
+
+    /// The quotes of every position a canonical fold held `Unfundable`
+    /// since the last call (a position folded twice appears twice). Take
+    /// them every block: they are the inputs of the bands that let such a
+    /// position become eligible.
+    pub fn take_unfunded(&mut self) -> Vec<Unfunded> {
+        std::mem::take(&mut self.t.unfunded)
     }
 
     // ---- prices --------------------------------------------------------------
@@ -584,9 +612,10 @@ impl Engine {
         self.run(w, true, Cause::Landed, None)
     }
 
-    /// Flash liquidity moved materially: every `Unfundable` position is
-    /// re-evaluated and promoted if its debt is fundable now (GUIDE 07 §4b:
-    /// marked, never deleted).
+    /// Flash liquidity or the exits the route cache holds moved: every
+    /// `Unfundable` position is re-evaluated and promoted if it is fundable
+    /// and exitable now (GUIDE 07 §4b: marked, never deleted; re-evaluated
+    /// on either side's signal).
     pub fn on_flash_change(&mut self, w: &World<'_>) -> Result<(), EngineError> {
         self.batch.clear();
         self.batch
@@ -849,7 +878,14 @@ fn fold(
                 };
                 emit(t, id, pos.key.protocol, h, q, legs, route, cause, None)?;
             }
-            None => band = Band::Unfundable,
+            None => {
+                band = Band::Unfundable;
+                t.unfunded.push(Unfunded {
+                    position: id,
+                    protocol: pos.key.protocol,
+                    quote: q,
+                });
+            }
         }
     }
     if let Some(s) = t.liq_since.get_mut(i) {

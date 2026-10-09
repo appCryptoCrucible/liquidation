@@ -13,8 +13,11 @@ use liq_types::{MarketId, PositionId, PositionKey};
 use smallvec::SmallVec;
 
 use crate::config::{Config, Emitter};
-use crate::events::{cfg as ccfg, halt, oracle, pool, provider, sentinel, stable, token};
-use crate::layout::{EModeCat, PoolMeta, Reserve, UserExtra, UserReserve, META_ASSET};
+use crate::events::{cfg as ccfg, halt, oracle, pool, provider, sentinel, stable, token, v2};
+use crate::layout::{
+    emode_place, EModeCat, EModeRow, PoolMeta, Reserve, UserExtra, UserReserve, EMODE_ROWS,
+    FIRST_RESERVE, META_ASSET,
+};
 use crate::math::{debt_burn_scaled, debt_mint_scaled, supply_burn_scaled, supply_mint_scaled};
 
 #[inline]
@@ -84,11 +87,11 @@ fn emitter(cfg: &Config, st: &dyn StateWriter, address: Address) -> Result<Optio
         if p.sequencer_oracle != Address::ZERO && p.sequencer_oracle == address {
             return Ok(Some(Emitter::Sequencer(i)));
         }
+        if p.grace_sentinel != Address::ZERO && p.grace_sentinel == address {
+            return Ok(Some(Emitter::GraceSentinel(i)));
+        }
         if let Ok(rows) = st.markets(p.market) {
-            for (slot, row) in rows.iter().enumerate() {
-                if slot == 0 {
-                    continue;
-                }
+            for (slot, row) in rows.iter().enumerate().skip(usize::from(FIRST_RESERVE)) {
                 let Ok(r) = row.body::<Reserve>() else {
                     continue;
                 };
@@ -118,7 +121,7 @@ fn slot_by_underlying(
         .asset_by_underlying(underlying)
         .ok_or(ProtocolError::UnknownMarket(market))?;
     let rows = st.markets(market)?;
-    for (i, row) in rows.iter().enumerate().skip(1) {
+    for (i, row) in rows.iter().enumerate().skip(usize::from(FIRST_RESERVE)) {
         if row.asset == ac.asset {
             return u16::try_from(i).map_err(|_| ProtocolError::MalformedLog);
         }
@@ -232,11 +235,25 @@ pub(crate) fn apply_log(
     let Some(em) = emitter(cfg, st, log.address)? else {
         return Err(ProtocolError::UnexpectedLog);
     };
-    if HALT.contains(&topic0) {
-        return if log.block <= cfg.pinned_through {
-            Ok(DirtySet::None)
-        } else {
-            Err(ProtocolError::HaltSignal)
+    let v2 = cfg.liquidation.version == crate::config::AaveVersion::V2;
+    if HALT.contains(&topic0) || (v2 && HALT_V2.contains(&topic0)) {
+        if log.block <= cfg.pinned_through {
+            return Ok(DirtySet::None);
+        }
+        return halt_market(cfg, st, em, log.address, topic0);
+    }
+    if v2 {
+        return match em {
+            Emitter::Pool(market) => apply_pool_v2(cfg, st, market, topic0, log),
+            Emitter::Configurator(i) => apply_cfg_v2(cfg, st, i, topic0, log),
+            Emitter::Oracle(i) => apply_oracle(cfg, st, i, topic0, log),
+            Emitter::Provider(_) | Emitter::Sentinel(_) | Emitter::Sequencer(_) => {
+                Ok(DirtySet::None)
+            }
+            Emitter::GraceSentinel(i) => apply_grace_v2(cfg, st, i, topic0, log),
+            Emitter::AToken { pool, slot } => apply_atoken_v2(cfg, st, pool, slot, topic0, log),
+            Emitter::VToken { pool, slot } => apply_vtoken_v2(cfg, st, pool, slot, topic0, log),
+            Emitter::SToken { pool, slot } => apply_stoken(cfg, st, pool, slot, topic0, log),
         };
     }
     // Known-addr / unknown-topic (vToken BorrowAllowanceDelegated, aAAVE DelegateChanged).
@@ -247,10 +264,267 @@ pub(crate) fn apply_log(
         Emitter::Provider(_) => Ok(DirtySet::None),
         Emitter::Sentinel(i) => apply_sentinel(cfg, st, i, topic0, log),
         Emitter::Sequencer(i) => apply_sequencer(cfg, st, i, topic0, log),
+        Emitter::GraceSentinel(_) => Ok(DirtySet::None),
         Emitter::AToken { pool, slot } => apply_atoken(cfg, st, pool, slot, topic0, log),
         Emitter::VToken { pool, slot } => apply_vtoken(cfg, st, pool, slot, topic0, log),
         Emitter::SToken { pool, slot } => apply_stoken(cfg, st, pool, slot, topic0, log),
     }
+}
+
+/// Aave V2 halt-class logs beside [`HALT`]: the provider's address
+/// changes and the stable debt tokens' upgrades.
+const HALT_V2: &[alloy_primitives::B256] = &[
+    v2::provider::LendingPoolUpdated::SIGNATURE_HASH,
+    v2::provider::ConfigurationAdminUpdated::SIGNATURE_HASH,
+    v2::provider::EmergencyAdminUpdated::SIGNATURE_HASH,
+    v2::provider::LendingPoolConfiguratorUpdated::SIGNATURE_HASH,
+    v2::provider::LendingPoolCollateralManagerUpdated::SIGNATURE_HASH,
+    v2::provider::PriceOracleUpdated::SIGNATURE_HASH,
+    v2::provider::LendingRateOracleUpdated::SIGNATURE_HASH,
+    v2::provider::ProxyCreated::SIGNATURE_HASH,
+    v2::provider::AddressSet::SIGNATURE_HASH,
+    v2::cfg::StableDebtTokenUpgraded::SIGNATURE_HASH,
+];
+
+/// The market a halt-class log's emitter belongs to is halted
+/// ([`PoolMeta::halted`]): nothing in it is liquidated until a person
+/// re-pins the config. The bot and every other market keep running.
+fn halt_market(
+    cfg: &Config,
+    st: &mut dyn StateWriter,
+    em: Emitter,
+    emitter: Address,
+    topic0: alloy_primitives::B256,
+) -> Result<DirtySet> {
+    let pool = match em {
+        Emitter::Pool(m) => cfg.pools.iter().position(|p| p.market == m),
+        Emitter::Configurator(i)
+        | Emitter::Oracle(i)
+        | Emitter::Provider(i)
+        | Emitter::Sentinel(i)
+        | Emitter::Sequencer(i)
+        | Emitter::GraceSentinel(i)
+        | Emitter::AToken { pool: i, .. }
+        | Emitter::VToken { pool: i, .. }
+        | Emitter::SToken { pool: i, .. } => Some(i),
+    };
+    let Some(market) = pool.and_then(|i| cfg.pools.get(i)).map(|p| p.market) else {
+        return Err(ProtocolError::HaltSignal);
+    };
+    tracing::error!(
+        market = market.0,
+        %emitter,
+        %topic0,
+        "aave market emitted a halt-class log after the pin: this market is halted (no liquidations) until the config is re-pinned; other markets continue"
+    );
+    let at = MarketSlot { market, slot: 0 };
+    let Ok(cur) = st.market(at) else {
+        // No reserve listed yet: nothing to liquidate, nothing to mark.
+        return Ok(DirtySet::None);
+    };
+    let mut row = *cur;
+    row.body_mut::<PoolMeta>()?.halted = 1;
+    st.set_market(at, row)?;
+    Ok(DirtySet::ProtocolWide)
+}
+
+/// Aave V2 pool events. Balances come from the tokens' events (V2's
+/// `Repay` does not say which debt it repaid), so the pool's own events
+/// only mark the account for re-evaluation, beside the index and
+/// collateral-flag events V2 shares with V3.
+fn apply_pool_v2(
+    cfg: &Config,
+    st: &mut dyn StateWriter,
+    market: MarketId,
+    topic0: alloy_primitives::B256,
+    log: &DecodedLog<'_>,
+) -> Result<DirtySet> {
+    let user = match topic0 {
+        pool::ReserveDataUpdated::SIGNATURE_HASH
+        | pool::ReserveUsedAsCollateralEnabled::SIGNATURE_HASH
+        | pool::ReserveUsedAsCollateralDisabled::SIGNATURE_HASH => {
+            return apply_pool(cfg, st, market, topic0, log);
+        }
+        v2::pool::Paused::SIGNATURE_HASH | v2::pool::Unpaused::SIGNATURE_HASH => {
+            let at = MarketSlot { market, slot: 0 };
+            let Ok(cur) = st.market(at) else {
+                return Ok(DirtySet::None);
+            };
+            let mut row = *cur;
+            row.body_mut::<PoolMeta>()?.pool_paused =
+                u8::from(topic0 == v2::pool::Paused::SIGNATURE_HASH);
+            st.set_market(at, row)?;
+            return Ok(DirtySet::ProtocolWide);
+        }
+        pool::Withdraw::SIGNATURE_HASH => decode::<pool::Withdraw>(log)?.user,
+        pool::LiquidationCall::SIGNATURE_HASH => decode::<pool::LiquidationCall>(log)?.user,
+        v2::pool::Deposit::SIGNATURE_HASH => decode::<v2::pool::Deposit>(log)?.onBehalfOf,
+        v2::pool::Borrow::SIGNATURE_HASH => decode::<v2::pool::Borrow>(log)?.onBehalfOf,
+        v2::pool::Repay::SIGNATURE_HASH => decode::<v2::pool::Repay>(log)?.user,
+        v2::pool::Swap::SIGNATURE_HASH => decode::<v2::pool::Swap>(log)?.user,
+        v2::pool::RebalanceStableBorrowRate::SIGNATURE_HASH => {
+            decode::<v2::pool::RebalanceStableBorrowRate>(log)?.user
+        }
+        _ => return Ok(DirtySet::None),
+    };
+    let id = intern(cfg, st, market, user)?;
+    Ok(positions(&[id]))
+}
+
+/// Aave V2 configurator events: the two V3 shares, and V2's own on/off
+/// events for activity, freezing and borrowing.
+fn apply_cfg_v2(
+    cfg: &Config,
+    st: &mut dyn StateWriter,
+    idx: usize,
+    topic0: alloy_primitives::B256,
+    log: &DecodedLog<'_>,
+) -> Result<DirtySet> {
+    if topic0 == ccfg::ReserveInitialized::SIGNATURE_HASH
+        || topic0 == ccfg::CollateralConfigurationChanged::SIGNATURE_HASH
+    {
+        return apply_cfg(cfg, st, idx, topic0, log);
+    }
+    let p = cfg.pools.get(idx).ok_or(ProtocolError::UnexpectedLog)?;
+    let (asset, bit, on) = match topic0 {
+        v2::cfg::ReserveActivated::SIGNATURE_HASH => (
+            decode::<v2::cfg::ReserveActivated>(log)?.asset,
+            Reserve::ACTIVE,
+            true,
+        ),
+        v2::cfg::ReserveDeactivated::SIGNATURE_HASH => (
+            decode::<v2::cfg::ReserveDeactivated>(log)?.asset,
+            Reserve::ACTIVE,
+            false,
+        ),
+        v2::cfg::ReserveFrozen::SIGNATURE_HASH => (
+            decode::<v2::cfg::ReserveFrozen>(log)?.asset,
+            Reserve::FROZEN,
+            true,
+        ),
+        v2::cfg::ReserveUnfrozen::SIGNATURE_HASH => (
+            decode::<v2::cfg::ReserveUnfrozen>(log)?.asset,
+            Reserve::FROZEN,
+            false,
+        ),
+        v2::cfg::BorrowingEnabledOnReserve::SIGNATURE_HASH => (
+            decode::<v2::cfg::BorrowingEnabledOnReserve>(log)?.asset,
+            Reserve::BORROWING,
+            true,
+        ),
+        v2::cfg::BorrowingDisabledOnReserve::SIGNATURE_HASH => (
+            decode::<v2::cfg::BorrowingDisabledOnReserve>(log)?.asset,
+            Reserve::BORROWING,
+            false,
+        ),
+        _ => return Ok(DirtySet::None),
+    };
+    let slot = slot_by_underlying(cfg, st, p.market, asset)?;
+    let rows = update_reserve(st, p.market, slot, None, |r| {
+        if on {
+            r.flags |= bit;
+        } else {
+            r.flags &= !bit;
+        }
+        Ok(())
+    })?;
+    Ok(DirtySet::MarketReprice(rows))
+}
+
+/// Aave V2's grace sentinel: `GracePeriodSet(asset, until)` is the
+/// reserve's grace window, as V3's `LiquidationGracePeriodChanged` is.
+fn apply_grace_v2(
+    cfg: &Config,
+    st: &mut dyn StateWriter,
+    idx: usize,
+    topic0: alloy_primitives::B256,
+    log: &DecodedLog<'_>,
+) -> Result<DirtySet> {
+    if topic0 != v2::grace::GracePeriodSet::SIGNATURE_HASH {
+        return Ok(DirtySet::None);
+    }
+    let p = cfg.pools.get(idx).ok_or(ProtocolError::UnexpectedLog)?;
+    let ev: v2::grace::GracePeriodSet = decode(log)?;
+    let until = u32::try_from(ev.until).map_err(|_| ProtocolError::MalformedLog)?;
+    let slot = slot_by_underlying(cfg, st, p.market, ev.asset)?;
+    let rows = update_reserve(st, p.market, slot, None, |r| {
+        r.grace_until = until;
+        Ok(())
+    })?;
+    Ok(DirtySet::MarketReprice(rows))
+}
+
+/// Aave V2 aToken: `Mint` and `Burn` carry the amount and the index the
+/// token scaled it by (`amount.rayDiv(index)`, half-up), and V2's
+/// `BalanceTransfer` the unscaled amount with its index (V3's carries the
+/// scaled one) — `AToken` `0x1c050bca…` lines 114, 139, 332.
+fn apply_atoken_v2(
+    cfg: &Config,
+    st: &mut dyn StateWriter,
+    pool_i: usize,
+    slot: u16,
+    topic0: alloy_primitives::B256,
+    log: &DecodedLog<'_>,
+) -> Result<DirtySet> {
+    let p = cfg.pools.get(pool_i).ok_or(ProtocolError::UnexpectedLog)?;
+    let moves: SmallVec<[(Address, U256, bool); 2]> = match topic0 {
+        v2::atoken::Mint::SIGNATURE_HASH => {
+            let ev: v2::atoken::Mint = decode(log)?;
+            SmallVec::from_slice(&[(ev.from, crate::math::ray_div(ev.value, ev.index)?, true)])
+        }
+        v2::atoken::Burn::SIGNATURE_HASH => {
+            let ev: v2::atoken::Burn = decode(log)?;
+            SmallVec::from_slice(&[(ev.from, crate::math::ray_div(ev.value, ev.index)?, false)])
+        }
+        token::BalanceTransfer::SIGNATURE_HASH => {
+            let ev: token::BalanceTransfer = decode(log)?;
+            let scaled = crate::math::ray_div(ev.value, ev.index)?;
+            SmallVec::from_slice(&[(ev.from, scaled, false), (ev.to, scaled, true)])
+        }
+        _ => return Ok(DirtySet::None),
+    };
+    let mut ids: SmallVec<[PositionId; 2]> = SmallVec::new();
+    for (user, scaled, add) in moves {
+        if user == Address::ZERO {
+            continue;
+        }
+        let id = intern(cfg, st, p.market, user)?;
+        add_supply(st, id, slot, scaled, add)?;
+        ids.push(id);
+    }
+    Ok(positions(&ids))
+}
+
+/// Aave V2 variable debt token: `Mint(from, onBehalfOf, value, index)` and
+/// `Burn(user, amount, index)`, scaled as the token did
+/// (`VariableDebtToken` `0x1f57cc62…` lines 72, 95).
+fn apply_vtoken_v2(
+    cfg: &Config,
+    st: &mut dyn StateWriter,
+    pool_i: usize,
+    slot: u16,
+    topic0: alloy_primitives::B256,
+    log: &DecodedLog<'_>,
+) -> Result<DirtySet> {
+    let p = cfg.pools.get(pool_i).ok_or(ProtocolError::UnexpectedLog)?;
+    let (user, scaled, add) = match topic0 {
+        v2::vtoken::Mint::SIGNATURE_HASH => {
+            let ev: v2::vtoken::Mint = decode(log)?;
+            (
+                ev.onBehalfOf,
+                crate::math::ray_div(ev.value, ev.index)?,
+                true,
+            )
+        }
+        v2::vtoken::Burn::SIGNATURE_HASH => {
+            let ev: v2::vtoken::Burn = decode(log)?;
+            (ev.user, crate::math::ray_div(ev.amount, ev.index)?, false)
+        }
+        _ => return Ok(DirtySet::None),
+    };
+    let id = intern(cfg, st, p.market, user)?;
+    add_debt(st, id, slot, scaled, add)?;
+    Ok(positions(&[id]))
 }
 
 fn apply_pool(
@@ -481,6 +755,9 @@ fn apply_cfg(
                     ..bytemuck::Zeroable::zeroed()
                 };
                 st.push_market(market, meta)?;
+                for _ in 0..EMODE_ROWS {
+                    st.push_market(market, MarketRow::blank(META_ASSET, 0))?;
+                }
             }
             let ac = cfg.asset_by_underlying(ev.asset);
             let mut row = match ac {
@@ -520,8 +797,8 @@ fn apply_cfg(
             *row.body_mut::<Reserve>()? = body;
             row.flags = derive_flags(&body);
             row.last_update = last_update(log.timestamp)?;
-            st.push_market(market, row)?;
-            Ok(DirtySet::MarketReprice(row_at(market, have.max(1))))
+            let at = st.push_market(market, row)?;
+            Ok(DirtySet::MarketReprice(row_at(market, at.slot)))
         }
         ccfg::CollateralConfigurationChanged::SIGNATURE_HASH => {
             let ev: ccfg::CollateralConfigurationChanged = decode(log)?;
@@ -616,67 +893,44 @@ fn apply_cfg(
         }
         ccfg::EModeCategoryAdded::SIGNATURE_HASH => {
             let ev: ccfg::EModeCategoryAdded = decode(log)?;
-            let at = MarketSlot { market, slot: 0 };
-            let mut row = *st.market(at)?;
-            {
-                let meta: &mut PoolMeta = row.body_mut()?;
-                let slot = meta
-                    .emode_slot_for(ev.categoryId)
-                    .ok_or(ProtocolError::TableFull {
-                        table: "aave-v3 PoolMeta::emode",
-                        cap: PoolMeta::EMODE_CAP,
-                    })?;
-                if let Some(c) = meta.emode.get_mut(slot) {
-                    *c = EModeCat {
-                        id: ev.categoryId,
-                        isolated: c.isolated,
-                        ltv: narrow(ev.ltv)?,
-                        liq_threshold: narrow(ev.liquidationThreshold)?,
-                        liq_bonus: narrow(ev.liquidationBonus)?,
-                    };
-                }
-            }
-            st.set_market(at, row)?;
-            Ok(DirtySet::MarketReprice(row_at(market, 0)))
+            let id = ev.categoryId;
+            let (ltv, liq_threshold, liq_bonus) = (
+                narrow(ev.ltv)?,
+                narrow(ev.liquidationThreshold)?,
+                narrow(ev.liquidationBonus)?,
+            );
+            set_emode(st, market, id, |c| {
+                *c = EModeCat {
+                    id,
+                    isolated: c.isolated,
+                    ltv,
+                    liq_threshold,
+                    liq_bonus,
+                };
+            })?;
+            reprice(collateral_in(st, market, id)?)
         }
         ccfg::EModeCategoryIsolationChanged::SIGNATURE_HASH => {
             let ev: ccfg::EModeCategoryIsolationChanged = decode(log)?;
-            let at = MarketSlot { market, slot: 0 };
-            let mut row = *st.market(at)?;
-            {
-                let meta: &mut PoolMeta = row.body_mut()?;
-                if let Some(c) = meta.emode.iter_mut().find(|c| c.id == ev.categoryId) {
+            let id = ev.categoryId;
+            set_emode(st, market, id, |c| {
+                if c.id == id {
                     c.isolated = u8::from(ev.isolated);
                 }
-            }
-            st.set_market(at, row)?;
-            Ok(DirtySet::MarketReprice(row_at(market, 0)))
+            })?;
+            reprice(collateral_in(st, market, id)?)
         }
         ccfg::AssetCollateralInEModeChanged::SIGNATURE_HASH => {
-            emode_bit(cfg, st, market, log, topic0, |r, mask, on| {
-                if on {
-                    r.emode_coll |= mask;
-                } else {
-                    r.emode_coll &= !mask;
-                }
+            emode_bit(cfg, st, market, log, topic0, |r, id, on| {
+                r.emode_coll.set(id, on)
             })
         }
-        ccfg::AssetBorrowableInEModeChanged::SIGNATURE_HASH => {
-            emode_bit(cfg, st, market, log, topic0, |r, mask, on| {
-                if on {
-                    r.emode_borrow |= mask;
-                } else {
-                    r.emode_borrow &= !mask;
-                }
-            })
-        }
+        // Which assets an e-mode user may borrow does not change a
+        // liquidation, so the adapter does not keep it.
+        ccfg::AssetBorrowableInEModeChanged::SIGNATURE_HASH => Ok(DirtySet::None),
         ccfg::AssetLtvzeroInEModeChanged::SIGNATURE_HASH => {
-            emode_bit(cfg, st, market, log, topic0, |r, mask, on| {
-                if on {
-                    r.emode_ltv0 |= mask;
-                } else {
-                    r.emode_ltv0 &= !mask;
-                }
+            emode_bit(cfg, st, market, log, topic0, |r, id, on| {
+                r.emode_ltv0.set(id, on)
             })
         }
         ccfg::FlashloanPremiumTotalUpdated::SIGNATURE_HASH => {
@@ -734,32 +988,71 @@ fn emode_bit(
     market: MarketId,
     log: &DecodedLog<'_>,
     topic0: alloy_primitives::B256,
-    set: impl FnOnce(&mut Reserve, crate::layout::EModeBits, bool),
+    set: impl FnOnce(&mut Reserve, u8, bool),
 ) -> Result<DirtySet> {
     let (asset, cat, on) = if topic0 == ccfg::AssetCollateralInEModeChanged::SIGNATURE_HASH {
         let ev: ccfg::AssetCollateralInEModeChanged = decode(log)?;
         (ev.asset, ev.categoryId, ev.collateral)
-    } else if topic0 == ccfg::AssetBorrowableInEModeChanged::SIGNATURE_HASH {
-        let ev: ccfg::AssetBorrowableInEModeChanged = decode(log)?;
-        (ev.asset, ev.categoryId, ev.borrowable)
     } else {
         let ev: ccfg::AssetLtvzeroInEModeChanged = decode(log)?;
         (ev.asset, ev.categoryId, ev.ltvzero)
     };
-    let meta: PoolMeta = *st.market(MarketSlot { market, slot: 0 })?.body()?;
-    // The category must already be in the table: Aave emits
-    // `EModeCategoryAdded` before it can flag any asset into the category.
-    let i = meta.emode_index(cat).ok_or(ProtocolError::Internal)?;
-    let mask = PoolMeta::emode_mask(i).ok_or(ProtocolError::TableFull {
-        table: "aave-v3 PoolMeta::emode",
-        cap: PoolMeta::EMODE_CAP,
-    })?;
+    // `Pool.configureEModeCategory*Bitmap` refuses category 0.
+    if cat == 0 {
+        return Err(ProtocolError::MalformedLog);
+    }
     let slot = slot_by_underlying(cfg, st, market, asset)?;
     let rows = update_reserve(st, market, slot, None, |r| {
-        set(r, mask, on);
+        set(r, cat, on);
         Ok(())
     })?;
     Ok(DirtySet::MarketReprice(rows))
+}
+
+/// Rewrite category `id`'s entry in the e-mode rows.
+fn set_emode(
+    st: &mut dyn StateWriter,
+    market: MarketId,
+    id: u8,
+    f: impl FnOnce(&mut EModeCat),
+) -> Result<()> {
+    // Aave's category 0 is e-mode off; no event configures it.
+    let (slot, i) = emode_place(id).ok_or(ProtocolError::MalformedLog)?;
+    let at = MarketSlot { market, slot };
+    let mut row = *st.market(at)?;
+    f(row
+        .body_mut::<EModeRow>()?
+        .cats
+        .get_mut(i)
+        .ok_or(ProtocolError::Internal)?);
+    st.set_market(at, row)
+}
+
+/// A reprice of `rows`; nothing when no row is named.
+fn reprice(rows: DirtyRows) -> Result<DirtySet> {
+    Ok(if rows.is_empty() {
+        DirtySet::None
+    } else {
+        DirtySet::MarketReprice(rows)
+    })
+}
+
+/// The rows of the reserves that are collateral in category `id`: a change
+/// to the category moves the health of every account holding one of them.
+fn collateral_in(st: &dyn StateWriter, market: MarketId, id: u8) -> Result<DirtyRows> {
+    let mut out = DirtyRows::new();
+    for (i, row) in st
+        .markets(market)?
+        .iter()
+        .enumerate()
+        .skip(usize::from(FIRST_RESERVE))
+    {
+        if row.body::<Reserve>()?.emode_coll.contains(id) {
+            let slot = u16::try_from(i).map_err(|_| ProtocolError::Internal)?;
+            out.push(MarketSlot { market, slot });
+        }
+    }
+    Ok(out)
 }
 
 fn apply_oracle(

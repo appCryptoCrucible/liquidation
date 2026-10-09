@@ -13,11 +13,11 @@
 use alloy_primitives::{address, b256, Address, U256};
 use liq_plan::EncodeError;
 use liq_plan::{
-    col_per_unit_debt_1e18, decode_batch, ensure_surplus_borrow_profit_legs, BatchPlan,
-    CompoundMarketPin, EncodedPlan, FlashGroup, LiqLeg, LiquityTrovePin, MorphoMarketPin, SwapLeg,
-    V4ReservePin, ValidateCtx, FLAG_SWEEP, HEADER_LEN, LEG_EXACT_OUT, LEG_TAKE_BALANCE,
-    LIQ_LEG_LEN, SWAP_LEG_HEAD_LEN, VENUE_CURVE_POOL, VENUE_ROUTER, VENUE_UNIV2_POOL,
-    VENUE_UNIV3_POOL,
+    col_per_unit_debt_1e18, decode_batch, ensure_surplus_borrow_profit_legs, leg_tie, tie_flags,
+    BatchPlan, CompoundMarketPin, EncodedPlan, FlashGroup, LiqLeg, LiquityTrovePin,
+    MorphoMarketPin, SwapLeg, V4ReservePin, ValidateCtx, FLAG_SWEEP, HEADER_LEN, LEG_EXACT_OUT,
+    LEG_TAKE_BALANCE, LEG_TIE_MAX, LEG_TIE_SHIFT, LIQ_LEG_LEN, SWAP_LEG_HEAD_LEN, VENUE_CURVE_POOL,
+    VENUE_ROUTER, VENUE_UNIV2_POOL, VENUE_UNIV3_POOL,
 };
 use liq_protocol::ExecutorAdapter;
 use liq_types::fixed::{RAY, WAD};
@@ -635,6 +635,220 @@ fn liquity_wrong_trove_id_rejected() {
     ));
 }
 
+fn take_balance(token_in: Address, token_out: Address) -> SwapLeg {
+    SwapLeg {
+        venue: VENUE_UNIV3_POOL,
+        token_in,
+        token_out,
+        flags: LEG_TAKE_BALANCE,
+        amount: 0,
+        data: pool_data(USDC_WETH),
+    }
+}
+
+/// One Morpho-flashed (no fee) DAI group liquidating a wstETH position.
+fn hub_plan(repay: Vec<SwapLeg>) -> BatchPlan {
+    let pull = 1_000_000_000u128;
+    BatchPlan {
+        flags: FLAG_SWEEP,
+        bid_bps: 9_000,
+        gas_cost_wei: 12_345,
+        min_profit_wei: 1,
+        groups: vec![group(
+            FlashProvider::Morpho,
+            MORPHO,
+            DAI,
+            pull,
+            vec![v3_leg(WSTETH, pull, pull)],
+            repay,
+        )],
+        profit_swaps: vec![],
+    }
+}
+
+/// An exit through the hub: the repay blob sells the collateral into WETH
+/// (TAKE_BALANCE, which closes it) and then buys the debt with WETH
+/// (EXACT_OUT). A TAKE_BALANCE ahead of a set amount of another token is
+/// that order. A set amount of the same token after its TAKE_BALANCE would
+/// find none of it left, and a repay leg into neither the debt nor WETH
+/// strands what it buys.
+#[test]
+fn hub_exit_repay_blob_validates_and_its_mistakes_do_not() {
+    let c = ctx();
+    let pull = 1_000_000_000u128;
+    let p = hub_plan(vec![take_balance(WSTETH, WETH), exact_out(WETH, DAI, pull)]);
+    let bytes = EncodedPlan::encode(&p, &c).expect("hub exit").into_bytes();
+    assert!(wire_eq(&p, &decode_batch(&bytes).unwrap()));
+
+    let same_token = hub_plan(vec![
+        take_balance(WSTETH, WETH),
+        exact_out(WSTETH, DAI, pull),
+    ]);
+    assert!(matches!(
+        EncodedPlan::encode(&same_token, &c),
+        Err(EncodeError::SpentAfterTakeBalance { token }) if token == WSTETH
+    ));
+    let mut exact_in = exact_out(WSTETH, DAI, pull);
+    exact_in.flags = 0;
+    let after = hub_plan(vec![
+        take_balance(WSTETH, WETH),
+        exact_in,
+        exact_out(WETH, DAI, pull),
+    ]);
+    assert!(matches!(
+        EncodedPlan::encode(&after, &c),
+        Err(EncodeError::SpentAfterTakeBalance { token }) if token == WSTETH
+    ));
+    let elsewhere = hub_plan(vec![take_balance(WSTETH, USDC), exact_out(WETH, DAI, pull)]);
+    assert!(matches!(
+        EncodedPlan::encode(&elsewhere, &c),
+        Err(EncodeError::RepayTargetMismatch { .. })
+    ));
+}
+
+/// Uniswap V3 wstETH/WETH 0.01 %.
+const WSTETH_WETH_001: Address = address!("109830a1AAaD605BbF02a9dFA7B0B92EC2FB7dAa");
+
+fn take_balance_on(pool: Address, token_in: Address, token_out: Address) -> SwapLeg {
+    SwapLeg {
+        venue: VENUE_UNIV3_POOL,
+        token_in,
+        token_out,
+        flags: LEG_TAKE_BALANCE,
+        amount: 0,
+        data: pool_data(pool),
+    }
+}
+
+/// One flash-swap group: the USDC/WETH pool lends `pull` of USDC against a
+/// wstETH position, with `repay` as the repay blob and `profit` after.
+fn flash_swap_plan(
+    pull: u128,
+    liqs: Vec<LiqLeg>,
+    repay: Vec<SwapLeg>,
+    profit: Vec<SwapLeg>,
+) -> BatchPlan {
+    BatchPlan {
+        flags: FLAG_SWEEP,
+        bid_bps: 9_000,
+        gas_cost_wei: 12_345,
+        min_profit_wei: 1,
+        groups: vec![group(
+            FlashProvider::UniV3Swap,
+            USDC_WETH,
+            USDC,
+            pull,
+            liqs,
+            repay,
+        )],
+        profit_swaps: profit,
+    }
+}
+
+/// A flash-swap group buys its debt from the lender pool itself, so it
+/// carries no repay leg into the debt. Direct (the pool holds the
+/// collateral): no repay legs, the leftover collateral closes in the profit
+/// blob. Through WETH: the repay blob sells the collateral into WETH on
+/// another pool (TAKE_BALANCE, which closes it) and the pool is paid WETH.
+/// Both round-trip the wire. Refused: two legs (a beaten one would leave
+/// debt bought and unpaid for), a repay leg buying the debt, a leg on the
+/// lender pool (locked while it swaps), and a fee (the swap's is in the
+/// quote).
+#[test]
+fn flash_swap_groups_validate_and_their_mistakes_do_not() {
+    let c = ctx();
+    let pull = 1_000_000_000u128;
+    let direct = flash_swap_plan(pull, vec![v3_leg(WETH, pull, pull)], vec![], vec![]);
+    let bytes = EncodedPlan::encode(&direct, &c)
+        .expect("direct flash swap")
+        .into_bytes();
+    assert!(wire_eq(&direct, &decode_batch(&bytes).unwrap()));
+    let via_weth = flash_swap_plan(
+        pull,
+        vec![v3_leg(WSTETH, pull, pull)],
+        vec![take_balance_on(WSTETH_WETH_001, WSTETH, WETH)],
+        vec![],
+    );
+    let bytes = EncodedPlan::encode(&via_weth, &c)
+        .expect("flash swap through WETH")
+        .into_bytes();
+    assert!(wire_eq(&via_weth, &decode_batch(&bytes).unwrap()));
+
+    let two = flash_swap_plan(
+        2 * pull,
+        vec![v3_leg(WETH, pull, pull), v3_leg(WETH, pull, pull)],
+        vec![],
+        vec![],
+    );
+    assert!(matches!(
+        EncodedPlan::encode(&two, &c),
+        Err(EncodeError::FlashSwapLegs { legs: 2 })
+    ));
+    let buys = flash_swap_plan(
+        pull,
+        vec![v3_leg(WSTETH, pull, pull)],
+        vec![exact_out(WSTETH, USDC, pull)],
+        vec![profit_tb(WSTETH)],
+    );
+    assert!(matches!(
+        EncodedPlan::encode(&buys, &c),
+        Err(EncodeError::FlashSwapRepaysDebt { debt }) if debt == USDC
+    ));
+    let on_lender = flash_swap_plan(
+        pull,
+        vec![v3_leg(WSTETH, pull, pull)],
+        vec![take_balance(WSTETH, WETH)],
+        vec![],
+    );
+    assert!(matches!(
+        EncodedPlan::encode(&on_lender, &c),
+        Err(EncodeError::FlashSwapLegOnLender { pool }) if pool == USDC_WETH
+    ));
+    let mut fee = flash_swap_plan(pull, vec![v3_leg(WETH, pull, pull)], vec![], vec![]);
+    fee.groups[0].fee_bps = 5;
+    assert!(matches!(
+        EncodedPlan::encode(&fee, &c),
+        Err(EncodeError::UnpriceableFee {
+            provider: FlashProvider::UniV3Swap,
+            fee_bps: 5
+        })
+    ));
+}
+
+/// Two groups seize the same collateral. The first closes its own in its
+/// repay blob (an exit through the hub); the second runs after it, leaves
+/// some, and the profit blob closes that. Each is closed exactly once after
+/// its own liquidation. Two TAKE_BALANCE legs on it in one blob are not.
+#[test]
+fn a_collateral_closes_in_its_own_repay_blob_or_else_in_the_profit_blob() {
+    let c = ctx();
+    let pull = 1_000_000_000u128;
+    let mut p = hub_plan(vec![take_balance(WSTETH, WETH), exact_out(WETH, DAI, pull)]);
+    p.groups.push(group(
+        FlashProvider::UniV4,
+        UNIV4_PM,
+        USDC,
+        pull,
+        vec![v3_leg(WSTETH, pull, pull)],
+        vec![exact_out(WSTETH, USDC, pull)],
+    ));
+    p.profit_swaps = vec![profit_tb(WSTETH)];
+    EncodedPlan::encode(&p, &c).expect("closed once each");
+
+    let mut twice = hub_plan(vec![
+        take_balance(WSTETH, WETH),
+        take_balance(WSTETH, WETH),
+        exact_out(WETH, DAI, pull),
+    ]);
+    twice.profit_swaps = vec![];
+    match EncodedPlan::encode(&twice, &c) {
+        Err(EncodeError::BadCollateralClosure { closers, need, .. }) => {
+            assert_eq!((closers, need), (2, 1));
+        }
+        other => panic!("expected BadCollateralClosure, got {other:?}"),
+    }
+}
+
 #[test]
 fn weth_collateral_self_closer_is_rejected() {
     let c = ctx();
@@ -725,90 +939,314 @@ fn under_seizure_exact_out_is_rejected() {
         profit_swaps: vec![profit_tb(WETH)],
     };
     match EncodedPlan::encode(&p, &c) {
-        Err(liq_plan::EncodeError::UnderSeizure { exact_out, owed }) => {
-            assert_eq!(exact_out, pull + 1);
-            assert_eq!(owed, pull);
+        Err(liq_plan::EncodeError::UnderSeizure {
+            leg,
+            exact_out,
+            pull: p,
+        }) => {
+            assert_eq!((leg, exact_out, p), (0, pull + 1, pull));
         }
         other => panic!("expected UnderSeizure, got {other:?}"),
     }
 }
 
-/// Aave charges the premium on the borrowed amount. `exact_out == pull`
-/// is short by that premium; `exact_out == pull + fee` is the repay.
+/// Aave charges the premium on the borrowed amount, and the Executor buys
+/// it at run time: the first exact-output pool leg of the group to run buys
+/// the fee the provider's callback reported on top of its own amount
+/// (`SwapModule.runSwaps`, `T_FEE`). So the exact output is the pull. A
+/// plan that also bought the premium would buy it twice; one short of the
+/// pull buys too little. Oracle: the Executor's semantics, exercised on the
+/// EVM by `ExecutorBeatenLeg.t.sol` and every Aave-flash unit test.
 #[test]
-fn aave_exact_out_must_include_premium() {
+fn aave_exact_out_buys_the_pull_and_the_executor_adds_the_premium() {
     let c = ctx();
     let pull = 2_000_000u128;
     let bps = 5u16;
     let fee = liq_flash::fee_amount(FlashProvider::Aave, U256::from(pull), bps).unwrap();
     let fee_u = u128::try_from(fee).unwrap();
     assert_eq!(fee_u, 1_000);
-    let mut short = group(
-        FlashProvider::Aave,
-        AAVE_V3,
-        DAI,
-        pull,
-        vec![v3_leg(WETH, pull, pull)],
-        vec![exact_out(WETH, DAI, pull)],
-    );
-    short.fee_bps = bps;
-    let short_plan = BatchPlan {
-        flags: 0,
-        bid_bps: 1,
-        gas_cost_wei: 1,
-        min_profit_wei: 1,
-        groups: vec![short],
-        profit_swaps: vec![profit_tb(WETH)],
-    };
-    match EncodedPlan::encode(&short_plan, &c) {
-        Err(liq_plan::EncodeError::RepayNotSizedToPull { exact_out, owed }) => {
-            assert_eq!(exact_out, pull);
-            assert_eq!(owed, pull + fee_u);
+    let buying = |amount: u128| {
+        let mut g = group(
+            FlashProvider::Aave,
+            AAVE_V3,
+            DAI,
+            pull,
+            vec![v3_leg(WETH, pull, pull)],
+            vec![exact_out(WETH, DAI, amount)],
+        );
+        g.fee_bps = bps;
+        BatchPlan {
+            flags: 0,
+            bid_bps: 1,
+            gas_cost_wei: 1,
+            min_profit_wei: 1,
+            groups: vec![g],
+            profit_swaps: vec![],
         }
-        other => panic!("expected RepayNotSizedToPull, got {other:?}"),
-    }
-    let mut ok = group(
-        FlashProvider::Aave,
-        AAVE_V3,
-        DAI,
-        pull,
-        vec![v3_leg(WETH, pull, pull)],
-        vec![exact_out(WETH, DAI, pull + fee_u)],
-    );
-    ok.fee_bps = bps;
-    let ok_plan = BatchPlan {
-        flags: 0,
-        bid_bps: 1,
-        gas_cost_wei: 1,
-        min_profit_wei: 1,
-        groups: vec![ok],
-        profit_swaps: vec![],
     };
-    EncodedPlan::encode(&ok_plan, &c).unwrap();
-    let mut over = group(
-        FlashProvider::Aave,
-        AAVE_V3,
-        DAI,
-        pull,
-        vec![v3_leg(WETH, pull, pull)],
-        vec![exact_out(WETH, DAI, pull + fee_u + 1)],
-    );
-    over.fee_bps = bps;
-    let over_plan = BatchPlan {
-        flags: 0,
-        bid_bps: 1,
-        gas_cost_wei: 1,
-        min_profit_wei: 1,
-        groups: vec![over],
-        profit_swaps: vec![profit_tb(WETH)],
-    };
-    match EncodedPlan::encode(&over_plan, &c) {
-        Err(liq_plan::EncodeError::UnderSeizure { exact_out, owed }) => {
-            assert_eq!(exact_out, pull + fee_u + 1);
-            assert_eq!(owed, pull + fee_u);
-        }
+    EncodedPlan::encode(&buying(pull), &c).unwrap();
+    match EncodedPlan::encode(&buying(pull + fee_u), &c) {
+        Err(EncodeError::UnderSeizure {
+            leg,
+            exact_out,
+            pull: p,
+        }) => assert_eq!((leg, exact_out, p), (0, pull + fee_u, pull)),
         other => panic!("expected UnderSeizure, got {other:?}"),
     }
+    match EncodedPlan::encode(&buying(pull - 1), &c) {
+        Err(EncodeError::RepayNotSizedToPull {
+            leg,
+            exact_out,
+            pull: p,
+        }) => assert_eq!((leg, exact_out, p), (0, pull - 1, pull)),
+        other => panic!("expected RepayNotSizedToPull, got {other:?}"),
+    }
+}
+
+/// The Executor adds the premium to a pool exact output only (V3, V2): a
+/// router's output is fixed in its own calldata, and Curve has none. A leg
+/// repaid through a router alone under a fee-charging flash cannot buy the
+/// premium; one repaid on Curve sells an overshoot that does; with no fee
+/// there is nothing to carry.
+#[test]
+fn a_repay_that_cannot_carry_the_premium_is_refused() {
+    let c = ctx();
+    let pull = 2_000_000u128;
+    let routed = |bps: u16| {
+        let mut g = group(
+            FlashProvider::Aave,
+            AAVE_V3,
+            DAI,
+            pull,
+            vec![v3_leg(WETH, pull, pull)],
+            vec![SwapLeg {
+                venue: VENUE_ROUTER,
+                token_in: WETH,
+                token_out: DAI,
+                flags: LEG_EXACT_OUT,
+                amount: pull,
+                data: router_data(),
+            }],
+        );
+        g.fee_bps = bps;
+        BatchPlan {
+            flags: 0,
+            bid_bps: 1,
+            gas_cost_wei: 1,
+            min_profit_wei: 1,
+            groups: vec![g],
+            profit_swaps: vec![],
+        }
+    };
+    assert!(matches!(
+        EncodedPlan::encode(&routed(5), &c),
+        Err(EncodeError::PremiumUncovered { leg: 0 })
+    ));
+    EncodedPlan::encode(&routed(0), &c).unwrap();
+    let mut curve = routed(5);
+    curve.groups[0].repay_swaps[0] = SwapLeg {
+        venue: VENUE_CURVE_POOL,
+        token_in: WETH,
+        token_out: DAI,
+        flags: 0,
+        amount: pull,
+        data: curve_data(1, 0),
+    };
+    curve.profit_swaps.push(profit_tb(DAI));
+    EncodedPlan::encode(&curve, &c).unwrap();
+}
+
+/// The tie is the leg's index plus one in flags bits 2–7, as `SwapModule`
+/// reads it (`flags >> L_TIE_SHIFT`). Oracle: the constant in the
+/// contract's source.
+#[test]
+fn tie_bits_are_the_leg_index_plus_one_above_the_two_flag_bits() {
+    let sol = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../contracts/src/SwapModule.sol"
+    ))
+    .unwrap();
+    let line = sol
+        .lines()
+        .find(|l| l.contains("constant L_TIE_SHIFT"))
+        .expect("SwapModule declares L_TIE_SHIFT");
+    let shift: u8 = line
+        .split('=')
+        .nth(1)
+        .unwrap()
+        .trim()
+        .trim_end_matches(';')
+        .parse()
+        .unwrap();
+    assert_eq!(LEG_TIE_SHIFT, shift);
+    assert_eq!(tie_flags(LEG_EXACT_OUT, 0), Some(0b0000_0110));
+    assert_eq!(tie_flags(0, 1), Some(0b0000_1000));
+    assert_eq!(tie_flags(LEG_TAKE_BALANCE | LEG_EXACT_OUT, 62), Some(0xFF));
+    assert_eq!(tie_flags(LEG_EXACT_OUT, 63), None, "six bits name 63 legs");
+    assert_eq!(
+        tie_flags(tie_flags(LEG_EXACT_OUT, 5).unwrap(), 2),
+        Some(0b0000_1110),
+        "a new tie replaces the old"
+    );
+    assert_eq!(leg_tie(LEG_EXACT_OUT | LEG_TAKE_BALANCE), None);
+    assert_eq!(leg_tie(0xFF), Some(62));
+    for leg in 0..LEG_TIE_MAX {
+        assert_eq!(leg_tie(tie_flags(LEG_EXACT_OUT, leg).unwrap()), Some(leg));
+    }
+}
+
+/// An exact-output repay of `amount` from `coll`, tied to leg `leg`.
+fn tied(coll: Address, amount: u128, leg: usize) -> SwapLeg {
+    let mut s = exact_out(coll, DAI, amount);
+    s.flags = tie_flags(LEG_EXACT_OUT, leg).unwrap();
+    s
+}
+
+/// Two positions in one Aave group: leg 0 on WETH pulling 500, leg 1 on
+/// wstETH pulling 800.
+fn two_leg_plan(repay: Vec<SwapLeg>, profit: Vec<SwapLeg>) -> BatchPlan {
+    let mut g = group(
+        FlashProvider::Aave,
+        AAVE_V3,
+        DAI,
+        1_300,
+        vec![v3_leg(WETH, 500, 500), v3_leg(WSTETH, 800, 800)],
+        repay,
+    );
+    g.fee_bps = 5;
+    BatchPlan {
+        flags: 0,
+        bid_bps: 1,
+        gas_cost_wei: 1,
+        min_profit_wei: 1,
+        groups: vec![g],
+        profit_swaps: profit,
+    }
+}
+
+/// Each leg of a shared group is repaid by swaps tied to it, buying its own
+/// pull: the Executor skips the swaps of a leg that did not fill, and the
+/// other's still repay the flash. Each mistake an assembler could make is
+/// refused.
+#[test]
+fn ties_name_a_leg_of_their_group_and_their_mistakes_are_refused() {
+    let c = ctx();
+    let closer = || vec![profit_tb(WSTETH)];
+    let ok = two_leg_plan(vec![tied(WETH, 500, 0), tied(WSTETH, 800, 1)], closer());
+    let back = decode_batch(&EncodedPlan::encode(&ok, &c).unwrap().into_bytes()).unwrap();
+    assert!(wire_eq(&ok, &back));
+    let ties: Vec<_> = back.groups[0]
+        .repay_swaps
+        .iter()
+        .map(|s| leg_tie(s.flags))
+        .collect();
+    assert_eq!(ties, vec![Some(0), Some(1)]);
+    // A leg's exit split across pools: each part tied to it.
+    let split = two_leg_plan(
+        vec![tied(WETH, 200, 0), tied(WETH, 300, 0), tied(WSTETH, 800, 1)],
+        closer(),
+    );
+    EncodedPlan::encode(&split, &c).unwrap();
+
+    let untied = two_leg_plan(
+        vec![tied(WETH, 500, 0), exact_out(WSTETH, DAI, 800)],
+        closer(),
+    );
+    assert!(matches!(
+        EncodedPlan::encode(&untied, &c),
+        Err(EncodeError::UntiedRepay { token, legs: 2 }) if token == WSTETH
+    ));
+    let past = two_leg_plan(vec![tied(WETH, 500, 0), tied(WSTETH, 800, 2)], closer());
+    assert!(matches!(
+        EncodedPlan::encode(&past, &c),
+        Err(EncodeError::TieOutOfRange { tie: 2, legs: 2 })
+    ));
+    // Each leg's swaps sized to the other's pull.
+    let swapped = two_leg_plan(vec![tied(WETH, 800, 0), tied(WSTETH, 500, 1)], closer());
+    assert!(matches!(
+        EncodedPlan::encode(&swapped, &c),
+        Err(EncodeError::UnderSeizure {
+            leg: 0,
+            exact_out: 800,
+            pull: 500
+        })
+    ));
+    // Both on leg 0: should leg 1 alone fill, nothing would buy its pull.
+    let lumped = two_leg_plan(vec![tied(WETH, 500, 0), tied(WSTETH, 800, 0)], closer());
+    assert!(matches!(
+        EncodedPlan::encode(&lumped, &c),
+        Err(EncodeError::UnderSeizure {
+            leg: 0,
+            exact_out: 1_300,
+            pull: 500
+        })
+    ));
+    let mut tied_take = take_balance(WSTETH, WETH);
+    tied_take.flags = tie_flags(LEG_TAKE_BALANCE, 1).unwrap();
+    let take = two_leg_plan(
+        vec![tied(WETH, 500, 0), tied(WSTETH, 800, 1), tied_take],
+        vec![],
+    );
+    assert!(matches!(
+        EncodedPlan::encode(&take, &c),
+        Err(EncodeError::TiedTakeBalance { token }) if token == WSTETH
+    ));
+    let mut tied_closer = profit_tb(WSTETH);
+    tied_closer.flags = tie_flags(LEG_TAKE_BALANCE, 1).unwrap();
+    let profit = two_leg_plan(
+        vec![tied(WETH, 500, 0), tied(WSTETH, 800, 1)],
+        vec![tied_closer],
+    );
+    assert!(matches!(
+        EncodedPlan::encode(&profit, &c),
+        Err(EncodeError::TiedProfitLeg { token }) if token == WSTETH
+    ));
+    // An exact output into WETH: the Executor would add the premium, in
+    // DAI, to a WETH amount.
+    let mut into_weth = tied(WSTETH, 800, 1);
+    into_weth.token_out = WETH;
+    let wrong = two_leg_plan(vec![tied(WETH, 500, 0), into_weth], closer());
+    assert!(matches!(
+        EncodedPlan::encode(&wrong, &c),
+        Err(EncodeError::ExactOutNotDebt { token, debt }) if token == WETH && debt == DAI
+    ));
+    // Leg 1 repaid through a router alone: with leg 0 beaten, nothing
+    // would buy the premium.
+    let routed = two_leg_plan(
+        vec![
+            tied(WETH, 500, 0),
+            SwapLeg {
+                venue: VENUE_ROUTER,
+                token_in: WSTETH,
+                token_out: DAI,
+                flags: tie_flags(LEG_EXACT_OUT, 1).unwrap(),
+                amount: 800,
+                data: router_data(),
+            },
+        ],
+        closer(),
+    );
+    assert!(matches!(
+        EncodedPlan::encode(&routed, &c),
+        Err(EncodeError::PremiumUncovered { leg: 1 })
+    ));
+    // Leg 1 on Curve: its overshoot carries the premium, and the surplus
+    // debt is swept.
+    let curve = two_leg_plan(
+        vec![
+            tied(WETH, 500, 0),
+            SwapLeg {
+                venue: VENUE_CURVE_POOL,
+                token_in: WSTETH,
+                token_out: DAI,
+                flags: tie_flags(0, 1).unwrap(),
+                amount: 900,
+                data: curve_data(1, 0),
+            },
+        ],
+        vec![profit_tb(WSTETH), profit_tb(DAI)],
+    );
+    EncodedPlan::encode(&curve, &c).unwrap();
 }
 
 /// Morpho and UniV4 have no fee. A nonzero bps must not be treated as zero.
@@ -958,14 +1396,20 @@ fn arb_plan() -> impl Strategy<Value = BatchPlan> {
                             _ => unreachable!("proptest kinds are V3/V4/Morpho only"),
                         });
                     }
+                    // Each leg's pull, split over `n_r` exact outputs tied
+                    // to it.
                     let mut repay = Vec::new();
                     let n_r = if n_repay == 0 { 1 } else { n_repay };
-                    let part = pull_sum / u128::from(n_r);
-                    let mut left = pull_sum;
-                    for ri in 0..n_r {
-                        let amt = if ri + 1 == n_r { left } else { part.min(left) };
-                        left = left.saturating_sub(amt);
-                        repay.push(exact_out(coll0, debt, amt));
+                    for (k, l) in liqs.iter().enumerate() {
+                        let part = l.protocol_pull / u128::from(n_r);
+                        let mut left = l.protocol_pull;
+                        for ri in 0..n_r {
+                            let amt = if ri + 1 == n_r { left } else { part.min(left) };
+                            left = left.saturating_sub(amt);
+                            let mut s = exact_out(l.collateral_asset, debt, amt);
+                            s.flags = tie_flags(LEG_EXACT_OUT, k).unwrap();
+                            repay.push(s);
+                        }
                     }
                     groups.push(group(provider, src, debt, pull_sum, liqs, repay));
                 }
@@ -1055,26 +1499,32 @@ fn varied_case(i: u32) -> BatchPlan {
             (0..liq_n).map(|_| morpho_leg(pull, pull, &c)).collect(),
         ),
     };
-    let mut repay = Vec::with_capacity(usize::from(repay_n));
-    let mut acc = 0u128;
-    for k in 0..repay_n {
-        let amt = if k + 1 == repay_n {
-            total - acc
-        } else {
-            total / u128::from(repay_n)
-        };
-        acc = acc.saturating_add(amt);
-        if k % 2 == 1 {
-            repay.push(SwapLeg {
-                venue: VENUE_ROUTER,
-                token_in: coll,
-                token_out: debt,
-                flags: LEG_EXACT_OUT,
-                amount: amt,
-                data: router_data_padded(pad),
-            });
-        } else {
-            repay.push(exact_out(coll, debt, amt));
+    // Each leg's pull over `repay_n` exact outputs tied to it.
+    let mut repay = Vec::with_capacity(usize::from(repay_n) * usize::from(liq_n));
+    for leg in 0..usize::from(liq_n) {
+        let flags = tie_flags(LEG_EXACT_OUT, leg).unwrap();
+        let mut acc = 0u128;
+        for k in 0..repay_n {
+            let amt = if k + 1 == repay_n {
+                pull - acc
+            } else {
+                pull / u128::from(repay_n)
+            };
+            acc = acc.saturating_add(amt);
+            if k % 2 == 1 {
+                repay.push(SwapLeg {
+                    venue: VENUE_ROUTER,
+                    token_in: coll,
+                    token_out: debt,
+                    flags,
+                    amount: amt,
+                    data: router_data_padded(pad),
+                });
+            } else {
+                let mut s = exact_out(coll, debt, amt);
+                s.flags = flags;
+                repay.push(s);
+            }
         }
     }
     let mut profit = Vec::new();
@@ -1187,9 +1637,14 @@ fn v2_data(fid: u8) -> Vec<u8> {
     d
 }
 
+/// MetaRegistry handler index of the 3pool: the base registry's handler,
+/// `get_registry(0)` on mainnet.
+const CURVE_3POOL_HANDLER: u8 = 0;
+
+/// Venue 3 / 4 data: pool ‖ i ‖ j ‖ MetaRegistry handler index.
 fn curve_data(i: u8, j: u8) -> Vec<u8> {
     let mut d = CURVE_3POOL.to_vec();
-    d.extend_from_slice(&[i, j]);
+    d.extend_from_slice(&[i, j, CURVE_3POOL_HANDLER]);
     d
 }
 
@@ -1250,9 +1705,16 @@ fn curve_exact_in_repay_requires_surplus_sweep() {
         EncodedPlan::encode(&p, &c),
         Err(EncodeError::BadCurveDataLen(21))
     ));
+    // The layout before the handler byte (pool ‖ i ‖ j): the Executor
+    // refuses it, so the encoder does too.
+    p.groups[0].repay_swaps[0].data = curve_data(1, 0)[..22].to_vec();
+    assert!(matches!(
+        EncodedPlan::encode(&p, &c),
+        Err(EncodeError::BadCurveDataLen(22))
+    ));
 }
 
-/// Without an exact-in leg the old rule stands: exact-out buys exactly owed.
+/// Without an exact-in leg the exact outputs buy exactly the pull.
 #[test]
 fn exact_out_short_without_exact_in_leg_is_refused() {
     let c = ctx();
@@ -1347,7 +1809,7 @@ fn gov_spell_appends_the_address_and_excludes_a_payload() {
 }
 
 /// A Curve crypto leg (venue 4) is exact-in like a plain Curve leg: the same
-/// 22-byte data, the same surplus-sweep rule, exact-out refused.
+/// 23-byte data, the same surplus-sweep rule, exact-out refused.
 #[test]
 fn curve_crypto_leg_validates_like_curve() {
     let c = ctx();
@@ -1371,10 +1833,56 @@ fn curve_crypto_leg_validates_like_curve() {
         Err(EncodeError::CurveExactOut)
     ));
     p.groups[0].repay_swaps[0].flags = 0;
-    p.groups[0].repay_swaps[0].data = curve_data(2, 0)[..21].to_vec();
+    p.groups[0].repay_swaps[0].data = curve_data(2, 0)[..22].to_vec();
     assert!(matches!(
         EncodedPlan::encode(&p, &c),
-        Err(EncodeError::BadCurveDataLen(21))
+        Err(EncodeError::BadCurveDataLen(22))
+    ));
+}
+
+/// A Curve NG LP is withdrawn as one coin first (venue 7). Its data is the
+/// LP itself (the pool), the coin index and the pool's MetaRegistry handler
+/// index: 22 bytes. The layout before the handler byte is refused, as the
+/// Executor refuses it (`SwapModule._withdrawCurveLp`).
+#[test]
+fn curve_lp_withdrawal_leg_carries_the_handler_byte() {
+    const LP: Address = address!("3ee841f47947fefbe510366e4bbb49e145484195"); // NG USR/USDC
+    const NG_HANDLER: u8 = 6;
+    let c = ctx();
+    let mut p = plan_v3();
+    let owed = p.groups[0].repay_swaps[0].amount;
+    for l in &mut p.groups[0].liqs {
+        l.collateral_asset = LP;
+    }
+    let mut data = LP.to_vec();
+    data.extend_from_slice(&[1, NG_HANDLER]);
+    let withdraw = SwapLeg {
+        venue: liq_plan::VENUE_CURVE_LP_ONE_COIN,
+        token_in: LP,
+        token_out: USDC,
+        flags: LEG_TAKE_BALANCE,
+        amount: 0,
+        data,
+    };
+    p.groups[0].repay_swaps = vec![withdraw.clone(), exact_out(USDC, DAI, owed)];
+    p.profit_swaps = vec![profit_tb(USDC)];
+    let bytes = EncodedPlan::encode(&p, &c).expect("validate").into_bytes();
+    assert!(wire_eq(&p, &decode_batch(&bytes).unwrap()));
+
+    let mut old = withdraw.clone();
+    old.data.truncate(21);
+    p.groups[0].repay_swaps = vec![old, exact_out(USDC, DAI, owed)];
+    assert!(matches!(
+        EncodedPlan::encode(&p, &c),
+        Err(EncodeError::BadUnwrapData(21))
+    ));
+    // The data must name the LP being spent.
+    let mut other = withdraw;
+    other.data[..20].copy_from_slice(USDC.as_slice());
+    p.groups[0].repay_swaps = vec![other, exact_out(USDC, DAI, owed)];
+    assert!(matches!(
+        EncodedPlan::encode(&p, &c),
+        Err(EncodeError::BadUnwrapData(22))
     ));
 }
 

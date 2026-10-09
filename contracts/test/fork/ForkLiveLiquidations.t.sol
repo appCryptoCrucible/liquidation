@@ -77,6 +77,12 @@ interface IMorphoIrm {
     function borrowRateView(MarketParams memory, IMorpho.Market memory) external view returns (uint256);
 }
 
+interface ICurveMetaRegistryView {
+    function is_registered(address pool) external view returns (bool);
+    function get_registry(uint256 i) external view returns (address);
+    function get_registry_handlers_from_pool(address pool) external view returns (address[10] memory);
+}
+
 /*
  * 10C: real liquidatable position per adapter at PINNED_BLOCK, through
  * flash → liquidate → repay swap → profit swap → WETH to sink.
@@ -125,11 +131,24 @@ contract ForkLiveLiquidationsTest is Test {
     address constant CURVE_V1_WETH_CBETH = 0x5FAE7E604FC3e24fd43A72867ceBaC94c65b404A;
     address constant CBETH = 0xBe9895146f7AF43049ca1c1AE358B0541Ea49704;
     address constant CBETH_WETH_005 = 0x840DEEef2f115Cf50DA625F7368C24af6fE74410;
+    /// MetaRegistry handler index of each Curve pool above: the base
+    /// registry (0), the crypto factory (3), the tricrypto-ng factory (5)
+    /// and the StableSwap-NG factory (6). `_assertCurveHandler` checks each
+    /// against the MetaRegistry on the fork before a plan uses it.
+    uint8 constant H_3POOL = 0;
+    uint8 constant H_CRYPTO_V1 = 3;
+    uint8 constant H_TRICRYPTO = 5;
+    uint8 constant H_NG = 6;
     address curvePool;
     /// Whole collateral units for `collOverride` (default 50_000).
     uint256 collUnits = 50_000;
     int128 curveI;
     int128 curveJ;
+    /// MetaRegistry handler index the Curve repay leg names.
+    uint8 curveH;
+    /// Set by the negative tests: `curveH` is a handler that does not hold
+    /// the pool, and `execute` must refuse the leg.
+    bool curveRefused;
     bytes32 constant MORPHO_WSTETH_WETH = 0xC54D7ACF14DE29E0E5527CABD7A576506870346A78A11A6762E2CCA66322EC41;
 
     address operator = makeAddr("operator");
@@ -220,6 +239,16 @@ contract ForkLiveLiquidationsTest is Test {
         _runOne(PB.A_V3, PB.P_UNIV3, DAI, false);
     }
 
+    /// Flash swap on the real DAI/WETH 0.05 % pool: exact-out DAI, paid in
+    /// the seized WETH inside the swap callback.
+    function test_gas_v3_dai_univ3_swap() public onFork {
+        _runOne(PB.A_V3, PB.P_UNIV3_SWAP, DAI, false);
+    }
+
+    function test_gas_v3_usdt_univ3_swap() public onFork {
+        _runOne(PB.A_V3, PB.P_UNIV3_SWAP, USDT, false);
+    }
+
     function test_gas_v3_dai_univ4() public onFork {
         _runOne(PB.A_V3, PB.P_UNIV4, DAI, false);
     }
@@ -234,6 +263,12 @@ contract ForkLiveLiquidationsTest is Test {
 
     function test_gas_morpho_weth_univ3() public onFork {
         _runOne(PB.A_MORPHO, PB.P_UNIV3, WETH, false);
+    }
+
+    /// Flash swap on the real wstETH/WETH 0.01 % pool: exact-out WETH, paid
+    /// in the seized wstETH.
+    function test_gas_morpho_weth_univ3_swap() public onFork {
+        _runOne(PB.A_MORPHO, PB.P_UNIV3_SWAP, WETH, false);
     }
 
     function test_gas_morpho_weth_univ4() public onFork {
@@ -270,7 +305,7 @@ contract ForkLiveLiquidationsTest is Test {
         address cfg = IPoolAddressesProviderCfg(IPoolEx(AAVE_V3_POOL).ADDRESSES_PROVIDER()).getPoolConfigurator();
         vm.prank(0x5300A1a15135EA4dc7aD5a167152C01EFc9b192A);
         IPoolConfigurator(cfg).setSupplyCap(USDC, 0);
-        (repayVenue, curvePool, curveI, curveJ) = (4, CURVE_NG_USDC_USDT, 0, 1);
+        (repayVenue, curvePool, curveI, curveJ, curveH) = (4, CURVE_NG_USDC_USDT, 0, 1, H_NG);
         collOverride = USDC;
         _runOne(PB.A_V3, PB.P_MORPHO, USDT, false);
     }
@@ -281,7 +316,7 @@ contract ForkLiveLiquidationsTest is Test {
         address cfg = IPoolAddressesProviderCfg(IPoolEx(AAVE_V3_POOL).ADDRESSES_PROVIDER()).getPoolConfigurator();
         vm.prank(0x5300A1a15135EA4dc7aD5a167152C01EFc9b192A);
         IPoolConfigurator(cfg).setSupplyCap(USDC, 0);
-        (repayVenue, curvePool, curveI, curveJ) = (4, CURVE_NG_USDC_DAI, 0, 1);
+        (repayVenue, curvePool, curveI, curveJ, curveH) = (4, CURVE_NG_USDC_DAI, 0, 1, H_NG);
         collOverride = USDC;
         collUnits = 2_000; // the pool holds ~4.4k USDC / 5.6k DAI at the pin
         _runOne(PB.A_V3, PB.P_MORPHO, DAI, false);
@@ -290,7 +325,7 @@ contract ForkLiveLiquidationsTest is Test {
     /// Repay through a Curve crypto pool (venue 4): WETH collateral sold
     /// for USDT debt on tricrypto-ng, `exchange(uint256,uint256,…)`.
     function test_fork_v3_weth_coll_usdt_repay_via_tricrypto() public onFork {
-        (repayVenue, curvePool, curveI, curveJ) = (5, CURVE_TRICRYPTO_USDT, 2, 0);
+        (repayVenue, curvePool, curveI, curveJ, curveH) = (5, CURVE_TRICRYPTO_USDT, 2, 0, H_TRICRYPTO);
         _runOne(PB.A_V3, PB.P_MORPHO, USDT, false);
     }
 
@@ -299,10 +334,84 @@ contract ForkLiveLiquidationsTest is Test {
         address cfg = IPoolAddressesProviderCfg(IPoolEx(AAVE_V3_POOL).ADDRESSES_PROVIDER()).getPoolConfigurator();
         vm.prank(0x5300A1a15135EA4dc7aD5a167152C01EFc9b192A);
         IPoolConfigurator(cfg).setSupplyCap(CBETH, 0);
-        (repayVenue, curvePool, curveI, curveJ) = (5, CURVE_V1_WETH_CBETH, 1, 0);
+        (repayVenue, curvePool, curveI, curveJ, curveH) = (5, CURVE_V1_WETH_CBETH, 1, 0, H_CRYPTO_V1);
         collOverride = CBETH;
         collUnits = 10;
         _runOne(PB.A_V3, PB.P_MORPHO, WETH, false);
+    }
+
+    /// The NG fixture again, its leg naming the base registry's handler
+    /// (index 0), which does not hold an NG pool: the Executor asks only
+    /// the handler named and refuses, though the MetaRegistry as a whole
+    /// holds the pool. Oracles in `_assertCurveHandler`.
+    function test_fork_curve_leg_naming_another_handler_is_refused() public onFork {
+        address cfg = IPoolAddressesProviderCfg(IPoolEx(AAVE_V3_POOL).ADDRESSES_PROVIDER()).getPoolConfigurator();
+        vm.prank(0x5300A1a15135EA4dc7aD5a167152C01EFc9b192A);
+        IPoolConfigurator(cfg).setSupplyCap(USDC, 0);
+        (repayVenue, curvePool, curveI, curveJ, curveH) = (4, CURVE_NG_USDC_USDT, 0, 1, H_3POOL);
+        curveRefused = true;
+        collOverride = USDC;
+        _runOne(PB.A_V3, PB.P_MORPHO, USDT, false);
+    }
+
+    /// The same on the crypto venue: tricrypto-ng named with the
+    /// StableSwap-NG factory's handler.
+    function test_fork_curve_crypto_leg_naming_another_handler_is_refused() public onFork {
+        (repayVenue, curvePool, curveI, curveJ, curveH) = (5, CURVE_TRICRYPTO_USDT, 2, 0, H_NG);
+        curveRefused = true;
+        _runOne(PB.A_V3, PB.P_MORPHO, USDT, false);
+    }
+
+    /// A healthy Aave V4 position. The Executor asks no health view first:
+    /// the Spoke's own `liquidationCall` refuses the position, the leg is
+    /// skipped and the one-leg plan reverts whole. Oracle: the Spoke's
+    /// `getUserAccountData` reports a health factor of at least 1.
+    function test_fork_v4_healthy_position_is_refused_by_the_spoke() public onFork {
+        address user = makeAddr("v4-healthy");
+        _supplyBorrowV4(user, 5e18, 50);
+        IAaveV4Spoke.UserAccountData memory d = IAaveV4Spoke(AAVE_V4_SPOKE).getUserAccountData(user);
+        assertGe(d.healthFactor, 1e18, "chain: the position is not healthy");
+        assertGt(d.totalDebtValueRay, 0, "chain: the position has no debt");
+        uint128 repay = 0.1e18;
+        bytes memory plan = bytes.concat(
+            PB.header(PB.F_SWEEP, 0, 0, 0, 1),
+            PB.groupHead(PB.P_AAVE, AAVE_V3_POOL, WETH, repay, 1, 1),
+            PB.legV4(AAVE_V4_SPOKE, user, WSTETH, repay, 0, 1),
+            PB.poolSwap(WSTETH_WETH_001, WSTETH, WETH, PB.L_EXACT_OUT, repay),
+            PB.profit(1, PB.poolSwap(WSTETH_WETH_001, WSTETH, WETH, PB.L_TAKE_BALANCE, 0))
+        );
+        vm.prank(operator);
+        vm.expectRevert(Executor.AllLegsFailed.selector);
+        ex.execute(plan);
+    }
+
+    /// The same for Aave V3: `liquidationCall` on the real Pool refuses a
+    /// healthy position (ForkBeatenLeg shows the batch case, where the other
+    /// leg lands). Oracle: the Pool's `getUserAccountData`.
+    function test_fork_v3_healthy_position_is_refused_by_the_pool() public onFork {
+        address user = makeAddr("v3-healthy");
+        deal(WETH, user, 5e18);
+        _approve(WETH, user, AAVE_V3_POOL, 5e18);
+        vm.prank(user);
+        IPoolEx(AAVE_V3_POOL).supply(WETH, 5e18, user, 0);
+        (,, uint256 avail,,,) = IAavePool(AAVE_V3_POOL).getUserAccountData(user);
+        uint256 borrowAmt = avail * 1e18 / _aavePrice(DAI) / 2;
+        vm.prank(user);
+        IPoolEx(AAVE_V3_POOL).borrow(DAI, borrowAmt, 2, 0, user);
+        (, uint256 debtBase,,,, uint256 hf) = IAavePool(AAVE_V3_POOL).getUserAccountData(user);
+        assertGe(hf, 1e18, "chain: the position is not healthy");
+        assertGt(debtBase, 0, "chain: the position has no debt");
+        uint128 repay = uint128(borrowAmt / 4);
+        bytes memory plan = bytes.concat(
+            PB.header(PB.F_SWEEP, 0, 0, 0, 1),
+            PB.groupHead(PB.P_MORPHO, MORPHO, DAI, repay, 1, 1),
+            PB.legV3(AAVE_V3_POOL, user, WETH, repay),
+            PB.poolSwap(DAI_WETH_005, WETH, DAI, PB.L_EXACT_OUT, repay),
+            PB.profit(1, PB.poolSwap(DAI_WETH_005, DAI, WETH, PB.L_TAKE_BALANCE, 0))
+        );
+        vm.prank(operator);
+        vm.expectRevert(Executor.AllLegsFailed.selector);
+        ex.execute(plan);
     }
 
     function test_gas_morpho_weth_morpho() public onFork {
@@ -352,7 +461,10 @@ contract ForkLiveLiquidationsTest is Test {
         require(pulled > 0 && seized > 0, "probe empty");
 
         uint128 flash = uint128(surplus ? pulled + pulled / 5 : pulled);
-        address src = _flashSource(provider, debt);
+        // A flash swap lends from the collateral/debt pool itself and has
+        // no repay leg: the callback pays the pool the collateral.
+        bool flashSwap = provider == PB.P_UNIV3_SWAP;
+        address src = flashSwap ? _swapPool(coll, debt) : _flashSource(provider, debt);
         if (provider == PB.P_UNIV3) {
             uint256 depth = IERC20B(debt).balanceOf(src);
             if (flash > depth / 2) flash = uint128(depth / 2);
@@ -361,38 +473,47 @@ contract ForkLiveLiquidationsTest is Test {
             pulled = flash;
         }
         uint256 fee = _flashFee(provider, debt, flash);
+        // Curve sells exact-in, so its dx must cover the fee too; a pool or
+        // V2 exact output buys the pull and the Executor adds the fee.
         uint128 buyDebt = uint128(pulled + fee);
 
         bytes memory leg = _leg(adapter, user, coll, uint128(pulled));
         bytes memory repay;
-        if (repayVenue == 2) {
+        if (flashSwap) {
+            require(!surplus, "a flash swap buys the pull exactly");
+        } else if (repayVenue == 2) {
             require(coll == WETH && debt == DAI, "v2 venue fixture is WETH/DAI");
-            repay = PB.v2Swap(UNIV2_DAI_WETH, 0, coll, debt, PB.L_EXACT_OUT, buyDebt);
+            repay = PB.v2Swap(UNIV2_DAI_WETH, 0, coll, debt, PB.L_EXACT_OUT, uint128(pulled));
         } else if (repayVenue == 3) {
             require(coll == USDC && debt == DAI, "curve venue fixture is USDC/DAI");
-            repay = PB.curveSwap(CURVE_3POOL, 1, 0, coll, debt, 0, _curveDxFor(CURVE_3POOL, 1, 0, buyDebt));
+            _assertCurveHandler(CURVE_3POOL, H_3POOL);
+            repay = PB.curveSwap(CURVE_3POOL, 1, 0, H_3POOL, coll, debt, 0, _curveDxFor(CURVE_3POOL, 1, 0, buyDebt));
         } else if (repayVenue == 5) {
+            _assertCurveHandler(curvePool, curveH);
             repay = PB.curveCryptoSwap(
                 curvePool,
                 uint8(uint128(curveI)),
                 uint8(uint128(curveJ)),
+                curveH,
                 coll,
                 debt,
                 0,
                 _cryptoDxFor(curvePool, uint256(uint128(curveI)), uint256(uint128(curveJ)), buyDebt)
             );
         } else if (repayVenue == 4) {
+            _assertCurveHandler(curvePool, curveH);
             repay = PB.curveSwap(
                 curvePool,
                 uint8(uint128(curveI)),
                 uint8(uint128(curveJ)),
+                curveH,
                 coll,
                 debt,
                 0,
                 _curveDxFor(curvePool, curveI, curveJ, buyDebt)
             );
         } else {
-            repay = PB.poolSwap(_swapPool(coll, debt), coll, debt, PB.L_EXACT_OUT, buyDebt);
+            repay = PB.poolSwap(_swapPool(coll, debt), coll, debt, PB.L_EXACT_OUT, uint128(pulled));
         }
 
         bytes memory profitLegs;
@@ -408,13 +529,21 @@ contract ForkLiveLiquidationsTest is Test {
 
         bytes memory plan = bytes.concat(
             PB.header(PB.F_SWEEP, 0, 0, 0, 1),
-            PB.groupHead(provider, src, debt, flash, 1, 1),
+            PB.groupHead(provider, src, debt, flash, 1, flashSwap ? 0 : 1),
             leg,
             repay,
             PB.profit(nProfit, profitLegs)
         );
 
         uint256 sinkBefore = IERC20B(WETH).balanceOf(sink);
+        if (curveRefused) {
+            // Plain and NG pools are venue 3, crypto pools venue 4.
+            uint8 venue = repayVenue == 5 ? 4 : 3;
+            vm.prank(operator);
+            vm.expectRevert(abi.encodeWithSelector(Executor.BadPool.selector, venue, curvePool));
+            ex.execute(plan);
+            return;
+        }
         vm.prank(operator);
         ex.execute(plan);
 
@@ -477,6 +606,23 @@ contract ForkLiveLiquidationsTest is Test {
             else lo = mid;
         }
         return uint128(hi);
+    }
+
+    /// Oracle for a Curve leg's handler byte: the MetaRegistry's own
+    /// `is_registered` (the check the Executor made before) accepts the
+    /// pool, and its own list of the handlers that hold the pool does, or
+    /// does not, name the handler at index `h` (as the test expects).
+    function _assertCurveHandler(address pool, uint8 h) internal view {
+        ICurveMetaRegistryView meta = ICurveMetaRegistryView(MainnetVenues.CURVE_META_REGISTRY);
+        assertTrue(meta.is_registered(pool), "chain: MetaRegistry does not hold the pool");
+        address handler = meta.get_registry(h);
+        assertTrue(handler != address(0), "chain: no handler at that index");
+        address[10] memory holders = meta.get_registry_handlers_from_pool(pool);
+        bool found;
+        for (uint256 k; k < holders.length; ++k) {
+            if (holders[k] == handler) found = true;
+        }
+        assertEq(found, !curveRefused, "chain: whether the handler the leg names holds the pool");
     }
 
     function _swapPool(address a, address b) internal pure returns (address) {
@@ -558,7 +704,8 @@ contract ForkLiveLiquidationsTest is Test {
         require(ok && IERC20B(WSTETH).balanceOf(user) >= wstAmt, "wst whale");
     }
 
-    function _openAaveV4(address user, uint256 wstAmt) internal {
+    /// Supply `wstAmt` wstETH and borrow WETH worth `borrowPct` percent of it.
+    function _supplyBorrowV4(address user, uint256 wstAmt, uint256 borrowPct) internal {
         _fundWsteth(user, wstAmt);
         _approve(WSTETH, user, AAVE_V4_SPOKE, wstAmt);
         vm.prank(user);
@@ -572,9 +719,13 @@ contract ForkLiveLiquidationsTest is Test {
         require(d0.totalCollateralValue > 0, "v4 coll");
         uint256 pxW = _aavePrice(WETH);
         uint256 pxS = _aavePrice(WSTETH);
-        uint256 borrowAmt = wstAmt * pxS / pxW * 90 / 100;
+        uint256 borrowAmt = wstAmt * pxS / pxW * borrowPct / 100;
         vm.prank(user);
         ISpokeEx(AAVE_V4_SPOKE).borrow(1, borrowAmt, user);
+    }
+
+    function _openAaveV4(address user, uint256 wstAmt) internal {
+        _supplyBorrowV4(user, wstAmt, 90);
         IAaveV4Spoke.UserAccountData memory d = IAaveV4Spoke(AAVE_V4_SPOKE).getUserAccountData(user);
         // Local clock. Under via-IR `block.timestamp` can be read once and
         // reused, so `warp(block.timestamp + dt)` in a loop never advances.

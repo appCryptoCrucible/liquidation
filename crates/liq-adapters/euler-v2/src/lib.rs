@@ -279,8 +279,9 @@ impl Protocol for EulerV2 {
     }
 
     /// `getQuote` on the controller vault's oracle, one call per asset in
-    /// the market. Only the USD unit of account (`0x…0348`, 18 decimals)
-    /// is published; any other unit is skipped and logged.
+    /// the market. A USD unit of account (`0x…0348`, 18 decimals) is a
+    /// dollar price; a token unit (WETH, USDC, …) is a ratio read
+    /// ([`RATIO_READ_TAG`]) that the bot restates in USD.
     fn price_reads(&self, rows: &dyn liq_protocol::MarketRows) -> Vec<liq_protocol::PriceRead> {
         let mut markets = Vec::new();
         for (_, m) in &self.cfg.interned {
@@ -306,13 +307,29 @@ impl Protocol for EulerV2 {
     ) -> Result<()> {
         let answer = IEulerRouter::getQuoteCall::abi_decode_returns(ret)
             .map_err(|_| ProtocolError::ProbeDecode)?;
-        let Some(ray) = euler_quote_ray(answer) else {
-            return Ok(());
-        };
-        let [asset] = read.assets.as_slice() else {
-            return Err(ProtocolError::ProbeDecode);
-        };
-        out.push((*asset, Ray::from_raw(ray)));
+        match (read.tag, read.assets.as_slice()) {
+            (USD_READ_TAG, [asset]) => {
+                let Some(ray) = euler_quote_ray(answer) else {
+                    return Ok(());
+                };
+                out.push((*asset, Ray::from_raw(ray)));
+            }
+            (RATIO_READ_TAG, [unit, asset]) => {
+                let decimals = self
+                    .cfg
+                    .assets
+                    .iter()
+                    .find(|a| a.asset == *unit)
+                    .map(|a| a.decimals)
+                    .ok_or(ProtocolError::ProbeDecode)?;
+                let Some(ray) = unit_quote_ray(answer, decimals) else {
+                    return Ok(());
+                };
+                out.push((*unit, Ray::from_raw(liq_types::fixed::RAY)));
+                out.push((*asset, Ray::from_raw(ray)));
+            }
+            _ => return Err(ProtocolError::ProbeDecode),
+        }
         Ok(())
     }
 
@@ -357,12 +374,32 @@ impl Protocol for EulerV2 {
 /// USD unit of account. 18 decimals (`euler-vault-kit` whitepaper).
 const USD_UNIT: Address = address!("0000000000000000000000000000000000000348");
 
+/// [`liq_protocol::PriceRead::tag`] of a read in the USD unit: one asset,
+/// a dollar price.
+pub const USD_READ_TAG: u32 = 0;
+/// [`liq_protocol::PriceRead::tag`] of a read in a token unit of account:
+/// `assets = [unit, asset]`. The decode publishes the unit first at one RAY
+/// (one unit is worth one unit), then the asset in units; the bot restates
+/// both with the unit's USD price, which keeps the ratio Euler's health
+/// compares in.
+pub const RATIO_READ_TAG: u32 = 1;
+
 /// `getQuote` of one whole token in 18-decimal USD → RAY (`× 10^9`).
 pub(crate) fn euler_quote_ray(answer: U256) -> Option<U256> {
     if answer.is_zero() {
         return None;
     }
     answer.checked_mul(U256::from(1_000_000_000u64))
+}
+
+/// `getQuote` of one whole token in a token unit with `decimals` → RAY units
+/// of that token (`× 10^(27 − decimals)`).
+pub(crate) fn unit_quote_ray(answer: U256, decimals: u8) -> Option<U256> {
+    if answer.is_zero() {
+        return None;
+    }
+    let up = 27u8.checked_sub(decimals)?;
+    answer.checked_mul(U256::from(10u64).checked_pow(U256::from(up))?)
 }
 
 fn euler_quote_reads(
@@ -381,14 +418,18 @@ fn euler_quote_reads(
         return Vec::new();
     }
     let unit = Address::from(vault.unit_of_account);
-    if unit != USD_UNIT {
+    let ratio = if unit == USD_UNIT {
+        None
+    } else if let Some(u) = cfg.asset_by_underlying(unit) {
+        Some(u.asset)
+    } else {
         tracing::debug!(
             market = market.0,
             unit = %unit,
-            "euler vault unit of account is not USD; overlay skipped"
+            "euler vault unit of account is not a mapped token; overlay skipped"
         );
         return Vec::new();
-    }
+    };
     let oracle = Address::from(vault.oracle);
     if oracle.is_zero() {
         return Vec::new();
@@ -425,8 +466,15 @@ fn euler_quote_reads(
                 }
                 .abi_encode(),
             ),
-            tag: 0,
-            assets: vec![row.asset],
+            tag: if ratio.is_some() {
+                RATIO_READ_TAG
+            } else {
+                USD_READ_TAG
+            },
+            assets: match ratio {
+                Some(u) => vec![u, row.asset],
+                None => vec![row.asset],
+            },
         });
     }
     out
@@ -456,5 +504,23 @@ mod quote_ray {
     #[test]
     fn zero_quote_is_not_a_price() {
         assert_eq!(euler_quote_ray(U256::ZERO), None);
+        assert_eq!(super::unit_quote_ray(U256::ZERO, 18), None);
+    }
+
+    /// A WETH-unit vault quoting one token at 0.5 WETH (`5·10^17`) prices it
+    /// at half a RAY of WETH; a USDC-unit vault quoting 2,000 USDC
+    /// (`2·10^9`, 6 decimals) prices it at 2,000 RAY of USDC. Oracle: the
+    /// unit's decimals by hand.
+    #[test]
+    fn a_token_unit_quote_is_ray_units_of_that_token() {
+        assert_eq!(
+            super::unit_quote_ray(U256::from(500_000_000_000_000_000u64), 18),
+            Some(RAY / U256::from(2u8))
+        );
+        assert_eq!(
+            super::unit_quote_ray(U256::from(2_000_000_000u64), 6),
+            Some(RAY * U256::from(2_000u16))
+        );
+        assert_eq!(super::unit_quote_ray(U256::from(1u8), 28), None);
     }
 }

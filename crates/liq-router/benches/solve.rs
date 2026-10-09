@@ -78,12 +78,15 @@ fn v3(
         ]),
         hop_gas: 100_000,
         state: PoolState::V3(V3State {
+            factory: 0,
             sqrt_price_x96: Q96,
             tick: tick_math::get_tick_at_sqrt_ratio(Q96).unwrap(),
             liquidity,
             fee_pips: fee,
             tick_spacing: spacing,
             ticks,
+            v4: None,
+            window: None,
         }),
     }
 }
@@ -120,9 +123,11 @@ fn curve(n: u64, bal: U256) -> Pool {
             stale: false,
             stale_block: 0,
             ng: false,
+            d_once: false,
             offpeg_fee_multiplier: U256::ZERO,
             dynamic_rates: false,
             read_block: 0,
+            handler: 0,
         }),
     }
 }

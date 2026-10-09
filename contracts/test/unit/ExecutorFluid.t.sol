@@ -104,12 +104,11 @@ contract ExecutorFluidTest is ExecutorTestBase {
         uint128 repayWeth = 10e18;                 // 0.5 COLL at 20 WETH
         v.setPosition(repayWeth, COLL_OUT);
         uint256 colPer = uint256(COLL_OUT) * 1e18 / repayWeth;
-        uint128 owed = repayWeth + repayWeth * 5 / 10_000;
         bytes memory plan = bytes.concat(
             PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
             PB.groupHead(PB.P_AAVE, address(pool), address(weth), repayWeth, 1, 1),
             PB.legFluidT(address(v), address(v), address(coll), repayWeth, 1, PB.FL_NATIVE_DEBT | PB.FL_ABSORB, colPer, 0, 0),
-            PB.poolSwap(address(pCollWeth), address(coll), address(weth), PB.L_EXACT_OUT, owed),
+            PB.poolSwap(address(pCollWeth), address(coll), address(weth), PB.L_EXACT_OUT, repayWeth),
             PB.profit(1, _profitLeg())
         );
         _exec(plan);
@@ -130,7 +129,7 @@ contract ExecutorFluidTest is ExecutorTestBase {
             PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
             PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 1),
             PB.legFluidT(address(v), address(v), address(weth), REPAY, 1, PB.FL_NATIVE_COL, colEth * 1e18 / REPAY, 0, 0),
-            PB.poolSwap(address(pDebtWeth), address(weth), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.poolSwap(address(pDebtWeth), address(weth), address(debt), PB.L_EXACT_OUT, REPAY),
             PB.profit(0, "")
         );
         _exec(plan);
@@ -146,12 +145,11 @@ contract ExecutorFluidTest is ExecutorTestBase {
         uint128 repayWeth = 10e18;
         v.setPosition(5e18, COLL_OUT);             // 5 shares at 2 ETH
         v.setRates(2e18, 0, 0, 0);
-        uint128 owed = repayWeth + repayWeth * 5 / 10_000;
         bytes memory plan = bytes.concat(
             PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
             PB.groupHead(PB.P_AAVE, address(pool), address(weth), repayWeth, 1, 1),
             PB.legFluidT(address(v), address(v), address(coll), repayWeth, 3, PB.FL_NATIVE_DEBT, 1, 0.5e18, 0),
-            PB.poolSwap(address(pCollWeth), address(coll), address(weth), PB.L_EXACT_OUT, owed),
+            PB.poolSwap(address(pCollWeth), address(coll), address(weth), PB.L_EXACT_OUT, repayWeth),
             PB.profit(1, _profitLeg())
         );
         _exec(plan);

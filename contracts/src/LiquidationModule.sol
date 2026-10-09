@@ -7,7 +7,7 @@ import {
     IERC20, IWETH, IAavePool, IAaveV4Spoke, IMorpho, MarketParams,
     IEVault, IEVC, ISiloHook, ITroveManager, IFluidT1, IFluidT2, IFluidT3, IFluidT4,
     ICreditFacadeV3, ICreditFacadeV3Multicall, MultiCall, PriceUpdate,
-    ICToken, IComptroller, ICErc20, ICEther, IPayloadsController, IDssSpell, IDSPause
+    ICToken, ICErc20, ICEther, IPayloadsController, IDssSpell, IDSPause
 } from "./lib/Interfaces.sol";
 import {MainnetVenues} from "./lib/MainnetVenues.sol";
 import {T_ENTERED, ModuleIds} from "./lib/ExecutorShared.sol";
@@ -36,15 +36,17 @@ contract LiquidationModule {
     /// a direct call, not the Executor's delegatecall.
     address private immutable SELF;
 
-    uint256 private constant HF_THRESHOLD = 1e18;
     /// Morpho `SharesMathLib` virtual shares/assets (pin 8e26ca6a).
     uint256 private constant MORPHO_VIRTUAL_SHARES = 1e6;
     uint256 private constant MORPHO_VIRTUAL_ASSETS = 1;
 
-    // `stage` values for `LegFailed`. Guard stages are pre-call views; the
-    // LIQUIDATE stage is the protocol call itself.
-    uint8 private constant ST_GUARD      = 1; // health / max-liquidation view reverted
-    uint8 private constant ST_NOT_LIQ    = 2; // guard succeeded, position is not liquidatable
+    // `stage` values for `LegFailed`. The first two are reads a leg needs
+    // before it can call (Morpho's totals and position, Liquity's trove
+    // status, an EVC or credit manager address); the LIQUIDATE stage is the
+    // protocol call itself, which is also where a position that is not
+    // liquidatable is refused: `reason` then holds the protocol's own error.
+    uint8 private constant ST_GUARD      = 1; // a read the leg needs reverted or answered nothing
+    uint8 private constant ST_NOT_LIQ    = 2; // that read shows nothing to liquidate
     uint8 private constant ST_LIQUIDATE  = 3; // the liquidation call reverted
     uint8 private constant ST_SIZING     = 4; // pre-call sizing made the leg a no-op
     uint8 private constant ST_TAIL       = 5; // the leg tail is malformed or unset
@@ -104,8 +106,10 @@ contract LiquidationModule {
         _;
     }
 
-    /// One flash group's liquidation legs, from `liqOffset`. Returns how
-    /// many filled; the Executor reverts the group when none did.
+    /// One flash group's liquidation legs, from `liqOffset`. Returns which
+    /// filled, one bit per leg (bit i = leg i): the Executor reverts the
+    /// group when none did, and the swap module skips every swap leg tied to
+    /// a leg that did not.
     ///
     /// Each leg stands or falls alone. A competitor taking one position
     /// between simulation and inclusion must not cost us the others — that
@@ -121,7 +125,9 @@ contract LiquidationModule {
         for (uint256 i; i < liqCount; ++i) {
             (LiqLeg memory l, uint256 next) = plan.liqLeg(o);
             o = next;
-            if (_liquidateLeg(debtAsset, l, plan)) ++filled;
+            // Bit i for leg i: the shift is in the intended order.
+            // forge-lint: disable-next-line(incorrect-shift)
+            if (_liquidateLeg(debtAsset, l, plan)) filled |= 1 << i;
         }
     }
 
@@ -178,11 +184,19 @@ contract LiquidationModule {
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // On-chain adapters. Each: guard (protocol's own health view where one
-    // exists) → exact approval → try/catch the real liquidation call → zero
-    // the allowance unconditionally. Returns false — rather than reverting —
-    // when the position is gone or the protocol rejects, so the rest of the
-    // batch survives.
+    // On-chain adapters. Each: exact approval → try/catch the real
+    // liquidation call → clear the allowance. Returns false — rather than
+    // reverting — when the position is gone or the protocol rejects, so the
+    // rest of the batch survives.
+    //
+    // No health pre-check. Every protocol here computes the position's
+    // health inside its liquidation call and reverts (Compound: returns an
+    // error code) when it is not liquidatable, which the try/catch turns
+    // into a skipped leg. Asking its health view first repeated that work on
+    // every leg that filled: 26k–30k gas on Aave V3, 36k on Aave V4, 39k on
+    // Compound, 63k on Euler, 90k on Silo (mainnet fork, whole transaction
+    // after refunds, with and without the view). A leg that does not fill
+    // now costs its approval and the reverted call instead of the view.
     //
     // No `seized` return anywhere. With several collaterals in flight, sizing
     // swaps from per-leg deltas means a map; the swap blob takes whole balances
@@ -190,9 +204,10 @@ contract LiquidationModule {
     // that is also how "read back actual repaid/seized" (GUIDE 10 §4) is met:
     // nothing downstream trusts the requested amount.
     //
-    // The allowance is zeroed after EVERY call, success or failure: V3 clamps
+    // The allowance is cleared after EVERY call, success or failure: V3 clamps
     // `debtToCover` to its close factor and V4 to its target-HF maximum, so a
-    // successful pull can consume less than approved. GUIDE 10 §5.
+    // successful pull can consume less than approved. `safeApprove(…, 0)`
+    // reads the allowance and writes only when something is left. GUIDE 10 §5.
     //
     // `market` comes from the plan, so it is only ever a registry address the
     // operator encoded. try/catch does not bound gas, and a market that burns
@@ -215,14 +230,9 @@ contract LiquidationModule {
     }
 
     /// Aave V3 `Pool.liquidationCall(collateral, debt, user, debtToCover, false)`
-    /// pin 8305565ae. Guard: `getUserAccountData(user).healthFactor < 1e18`.
+    /// pin 8305565ae. The call is the guard: it computes the user's health
+    /// factor and reverts unless it is below 1 (`validateLiquidationCall`).
     function _liquidateAaveV3(address debtAsset, LiqLeg memory l) internal returns (bool ok) {
-        (,,,,, uint256 hf) = IAavePool(l.market).getUserAccountData(l.borrower);
-        if (hf >= HF_THRESHOLD) {
-            emit LegFailed(PlanDecoder.A_AAVE_V3, l.market, l.borrower, ST_NOT_LIQ, "");
-            return false;
-        }
-
         debtAsset.safeApprove(l.market, l.repayAmount);
         try IAavePool(l.market).liquidationCall(
             l.collateralAsset, debtAsset, l.borrower, l.repayAmount,
@@ -239,19 +249,13 @@ contract LiquidationModule {
     /// debtToCover, false)` pin 40232a0a. Reserve ids come from the leg tail;
     /// the encoder (`liq-plan::validate`) pins them to the leg's addresses via
     /// the adapter config — the contract has no address→id view to check
-    /// against and the profit guard bounds any mismatch. Guard:
-    /// `getUserAccountData(user).healthFactor < 1e18`. The protocol clamps
-    /// `debtToCover` to its target-HF maximum; the unconditional zeroing below
-    /// and the balance-based swaps are what make that safe.
+    /// against and the profit guard bounds any mismatch. The call is the
+    /// guard: the Spoke reverts unless the user's health factor is below 1.
+    /// The protocol clamps `debtToCover` to its target-HF maximum; the clear
+    /// below and the balance-based swaps are what make that safe.
     function _liquidateAaveV4(address debtAsset, LiqLeg memory l, bytes calldata plan)
         internal returns (bool ok)
     {
-        IAaveV4Spoke.UserAccountData memory d = IAaveV4Spoke(l.market).getUserAccountData(l.borrower);
-        if (d.healthFactor >= HF_THRESHOLD) {
-            emit LegFailed(PlanDecoder.A_AAVE_V4, l.market, l.borrower, ST_NOT_LIQ, "");
-            return false;
-        }
-
         (uint16 collId, uint16 debtId) = plan.tailV4(l.tailOffset);
         debtAsset.safeApprove(l.market, l.repayAmount);
         try IAaveV4Spoke(l.market).liquidationCall(
@@ -331,26 +335,22 @@ contract LiquidationModule {
     /// Euler V2 `IEVault.liquidate(violator, collateral, repayAssets, minYieldBalance)`
     /// pin `bfb325a6`. Target = debt vault (`market`). Tail vault is the
     /// collateral vault (shares). `collateralAsset` is the underlying the
-    /// swaps sell. Guard: `checkLiquidation` returns `(0,0)` when healthy;
-    /// HF==1 is liquidatable. The ABI has no receive-underlying flag, so the
-    /// seized shares are redeemed before the swap.
+    /// swaps sell. The ABI has no receive-underlying flag, so the seized
+    /// shares are redeemed before the swap.
+    ///
+    /// The call is the guard (deployed liquidation module
+    /// 0x16fa62D8c322a6156fb5eF267342A3C7952AD23C, Sourcify): a healthy
+    /// violator has a maximum repay of zero and `liquidate` reverts
+    /// `E_ExcessiveRepayAmount`; a yield under the tail's minimum reverts
+    /// `E_MinYield`. A violator with no debt left is a no-op there unless
+    /// that minimum is above zero, so a zero minimum is refused here: the
+    /// leg would count as filled having seized nothing.
     function _liquidateEulerV2(address debtAsset, LiqLeg memory l, bytes calldata plan)
         internal returns (bool ok)
     {
         (uint256 minYield, address vault) = plan.tailEuler(l.tailOffset);
-        if (vault == address(0)) {
+        if (vault == address(0) || minYield == 0) {
             emit LegFailed(PlanDecoder.A_EULER, l.market, l.borrower, ST_TAIL, "");
-            return false;
-        }
-        try IEVault(l.market).checkLiquidation(address(this), l.borrower, vault)
-            returns (uint256 maxRepay, uint256)
-        {
-            if (maxRepay == 0) {
-                emit LegFailed(PlanDecoder.A_EULER, l.market, l.borrower, ST_NOT_LIQ, "");
-                return false;
-            }
-        } catch (bytes memory r) {
-            emit LegFailed(PlanDecoder.A_EULER, l.market, l.borrower, ST_GUARD, _clip(r));
             return false;
         }
 
@@ -435,36 +435,20 @@ contract LiquidationModule {
     }
 
     /// Silo V2 `IPartialLiquidation.liquidationCall` pin `570a668a` topic0
-    /// `0x3a84f644…`. Target = hook receiver. Guard: `maxLiquidation`
-    /// `debtToRepay == 0`.
+    /// `0x3a84f644…`. Target = hook receiver. The call is the guard: the
+    /// hook reverts for a solvent borrower.
     ///
-    /// S3. `maxLiquidation` names whether the withdraw must land as sTokens
-    /// (insufficient underlying liquidity in the collateral silo) via its
-    /// third return, `sTokenRequired`. Calling `liquidationCall` with
-    /// `_receiveSToken = false` when the protocol requires `true` reverts the
-    /// leg; passing `true` back would "succeed" but leave the Executor
-    /// holding Silo shares this contract has no redeem path for, and the
-    /// downstream swap is built to sell the underlying it does not have —
-    /// stuck funds, not a skipped opportunity. Reading the flag and skipping
-    /// the leg when it is set is the fail-closed choice until an sToken
-    /// redeem path exists.
+    /// S3. `_receiveSToken` is always `false`. The hook then redeems the
+    /// seized shares to the caller itself, and a collateral silo short of
+    /// liquidity reverts that redeem (`NotEnoughLiquidity`) and the call
+    /// with it: the leg is skipped (deployed `SiloHookV1`
+    /// 0xc51f048279705a9427983DCB2813c06af1dA3f5b and `Silo`
+    /// 0xef1bc66e0ea9717a3f2c969633a989d6bf41024b, Blockscout). Passing
+    /// `true` would "succeed" and leave the Executor holding Silo shares it
+    /// has no redeem path for, with a swap built to sell the underlying it
+    /// does not have — stuck funds, not a skipped opportunity. `false`
+    /// fails closed until an sToken redeem path exists.
     function _liquidateSiloV2(address debtAsset, LiqLeg memory l) internal returns (bool ok) {
-        try ISiloHook(l.market).maxLiquidation(l.borrower)
-            returns (uint256, uint256 debtToRepay, bool sTokenRequired)
-        {
-            if (debtToRepay == 0) {
-                emit LegFailed(PlanDecoder.A_SILO, l.market, l.borrower, ST_NOT_LIQ, "");
-                return false;
-            }
-            if (sTokenRequired) {
-                emit LegFailed(PlanDecoder.A_SILO, l.market, l.borrower, ST_SIZING, "");
-                return false;
-            }
-        } catch (bytes memory r) {
-            emit LegFailed(PlanDecoder.A_SILO, l.market, l.borrower, ST_GUARD, _clip(r));
-            return false;
-        }
-
         debtAsset.safeApprove(l.market, l.repayAmount);
         try ISiloHook(l.market).liquidationCall(
             l.collateralAsset, debtAsset, l.borrower, l.repayAmount, false
@@ -696,8 +680,10 @@ contract LiquidationModule {
     }
 
     /// Compound V2 official Unitroller pin `a3214f67`. `market` = debt
-    /// cToken. Tail = cTokenCollateral ‖ isCEther. Guard:
-    /// `getAccountLiquidity` shortfall or `isDeprecated`. Never receive
+    /// cToken. Tail = cTokenCollateral ‖ isCEther. The call is the guard:
+    /// `liquidateBorrow` asks the Comptroller's `liquidateBorrowAllowed`
+    /// (a shortfall, or a deprecated market) and fails without it — a
+    /// CErc20 by return code, CEther by revert. Never receive
     /// cTokens as a flag — seize lands as cTokens. This leg redeems that
     /// delta to underlying (CEther: ETH, then wrapped) before the swaps.
     /// CEther debt: unwrap WETH, official 2-arg payable
@@ -709,33 +695,6 @@ contract LiquidationModule {
         (address cTokenColl, uint8 isCEther) = plan.tailCompound(l.tailOffset);
         if (isCEther > 1) {
             emit LegFailed(PlanDecoder.A_COMPOUND, l.market, l.borrower, ST_TAIL, "");
-            return false;
-        }
-
-        address unitroller;
-        try ICToken(l.market).comptroller() returns (address c) {
-            unitroller = c;
-        } catch (bytes memory r) {
-            emit LegFailed(PlanDecoder.A_COMPOUND, l.market, l.borrower, ST_GUARD, _clip(r));
-            return false;
-        }
-        try IComptroller(unitroller).getAccountLiquidity(l.borrower)
-            returns (uint256 err, uint256, uint256 shortfall)
-        {
-            if (err != 0) {
-                emit LegFailed(PlanDecoder.A_COMPOUND, l.market, l.borrower, ST_GUARD, "");
-                return false;
-            }
-            bool deprecated;
-            try IComptroller(unitroller).isDeprecated(l.market) returns (bool d) {
-                deprecated = d;
-            } catch {}
-            if (shortfall == 0 && !deprecated) {
-                emit LegFailed(PlanDecoder.A_COMPOUND, l.market, l.borrower, ST_NOT_LIQ, "");
-                return false;
-            }
-        } catch (bytes memory r) {
-            emit LegFailed(PlanDecoder.A_COMPOUND, l.market, l.borrower, ST_GUARD, _clip(r));
             return false;
         }
 

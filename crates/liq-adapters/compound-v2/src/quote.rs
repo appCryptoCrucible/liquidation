@@ -41,7 +41,7 @@ fn borrow_now(pos: PositionRef<'_>, slot: u16, body: &CTokenRow) -> Result<U256>
     }
     borrow_balance_stored(
         principal,
-        U256::from(body.borrow_index),
+        crate::health::projected(body, pos.timestamp)?.0,
         U256::from(snap.interest_index),
     )
 }
@@ -92,6 +92,11 @@ pub(crate) fn quote(cfg: &Config, pos: PositionRef<'_>, px: &PriceVector) -> Res
         if body.flags & CTokenRow::LISTED == 0 {
             continue;
         }
+        // A frozen market's `accrueInterest` reverts, and `liquidateBorrow`
+        // accrues both its markets: no leg on it can land.
+        if body.flags2 & CTokenRow::FROZEN != 0 {
+            continue;
+        }
         let borrow = borrow_now(pos, slot, body)?;
         if !borrow.is_zero() {
             let deprecated = is_deprecated(
@@ -129,7 +134,7 @@ pub(crate) fn quote(cfg: &Config, pos: PositionRef<'_>, px: &PriceVector) -> Res
                 return Err(ProtocolError::Internal);
             }
             let underlying =
-                ctokens_to_underlying(ctokens, U256::from(body.exchange_rate_mantissa))?;
+                ctokens_to_underlying(ctokens, crate::health::projected(body, pos.timestamp)?.1)?;
             // What reaches the liquidator: the protocol keeps its seize
             // share of every seized token, so both the bonus and the most
             // that can arrive shrink by it. Seizing the whole balance pays

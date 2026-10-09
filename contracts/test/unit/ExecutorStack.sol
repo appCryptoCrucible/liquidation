@@ -4,8 +4,10 @@ pragma solidity 0.8.28;
 import {Executor} from "../../src/Executor.sol";
 import {LiquidationModule} from "../../src/LiquidationModule.sol";
 import {SwapModule} from "../../src/SwapModule.sol";
+import {DexModule} from "../../src/DexModule.sol";
 
-/// Deploys the Executor with its two modules. The arguments are the
+/// Deploys the Executor with its modules (the swap module's dex module
+/// included). The arguments are the
 /// pre-split constructor's, in its order, so a test that built one Executor
 /// builds the same system with one call.
 library ExecutorStack {
@@ -19,7 +21,8 @@ library ExecutorStack {
     ) internal returns (Executor) {
         LiquidationModule liq = new LiquidationModule(weth);
         SwapModule swaps = new SwapModule(
-            weth, routerA, routerB, univ2Factory, univ2InitHash, sushiFactory, sushiInitHash, curveRegistry
+            weth, routerA, routerB, univ2Factory, univ2InitHash, sushiFactory, sushiInitHash, curveRegistry,
+            address(new DexModule(weth))
         );
         return new Executor(
             operator, backrunOperator, profitSink, weth, univ3Factory, univ3InitHash, address(liq), address(swaps)

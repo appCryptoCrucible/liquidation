@@ -27,18 +27,19 @@ contract ProviderGasTest is ExecutorTestBase {
         pool.setPosition(daiBorrower, 0.95e18, 30_000e18, COLL_OUT);
     }
 
-    function _planWith(uint8 provider, address src, uint128 owed) internal view returns (bytes memory) {
+    /// The repay leg buys the pull; the Executor adds the provider's fee.
+    function _planWith(uint8 provider, address src) internal view returns (bytes memory) {
         return bytes.concat(
             PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
             PB.groupHead(provider, src, address(debt), REPAY, 1, 1),
             PB.legV3(address(pool), borrower, address(coll), REPAY),
-            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, owed),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, REPAY),
             PB.profit(1, _profitLeg())
         );
     }
 
     function test_gas_provider_aave_v3() public {
-        _exec(_planWith(PB.P_AAVE, address(pool), OWED));
+        _exec(_planWith(PB.P_AAVE, address(pool)));
         assertEq(weth.balanceOf(sink), GROSS_WETH);
     }
 
@@ -50,7 +51,7 @@ contract ProviderGasTest is ExecutorTestBase {
             PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
             PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 1),
             PB.legV4(address(spoke), borrower, address(coll), REPAY, 1, 3),
-            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, REPAY),
             PB.profit(1, _profitLeg())
         );
         _exec(plan);
@@ -58,17 +59,29 @@ contract ProviderGasTest is ExecutorTestBase {
     }
 
     function test_gas_provider_morpho() public {
-        _exec(_planWith(PB.P_MORPHO, address(morpho), REPAY));
+        _exec(_planWith(PB.P_MORPHO, address(morpho)));
         assertEq(weth.balanceOf(sink), GROSS_0FEE);
     }
 
     function test_gas_provider_univ3() public {
-        _exec(_planWith(PB.P_UNIV3, address(pDebtWeth), OWED));
+        _exec(_planWith(PB.P_UNIV3, address(pDebtWeth)));
         assertEq(weth.balanceOf(sink), GROSS_WETH);
     }
 
+    /// Flash swap on the collateral/debt pool: no flash loan, no repay swap.
+    function test_gas_provider_univ3_swap() public {
+        bytes memory plan = bytes.concat(
+            PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
+            PB.groupHead(PB.P_UNIV3_SWAP, address(pCollDebt), address(debt), REPAY, 1, 0),
+            PB.legV3(address(pool), borrower, address(coll), REPAY),
+            PB.profit(1, _profitLeg())
+        );
+        _exec(plan);
+        assertEq(weth.balanceOf(sink), GROSS_0FEE);
+    }
+
     function test_gas_provider_univ4() public {
-        _exec(_planWith(PB.P_UNIV4, address(pm), REPAY));
+        _exec(_planWith(PB.P_UNIV4, address(pm)));
         assertEq(weth.balanceOf(sink), GROSS_0FEE);
     }
 
@@ -96,7 +109,7 @@ contract ProviderGasTest is ExecutorTestBase {
             PB.header(PB.F_SWEEP, 0, GAS_COST, 0.9e18, 1),
             PB.groupHead(PB.P_AAVE, address(pool), address(debt), REPAY, 1, 1),
             PB.legEuler(address(euler), borrower, address(coll), REPAY, 1, address(coll)),
-            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, REPAY),
             PB.profit(1, _profitLeg())
         );
         _exec(plan);

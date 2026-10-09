@@ -160,10 +160,35 @@ impl<P: Provider> RpcPoll<P> {
         if !self.topic0s.is_empty() {
             filter = filter.event_signature(self.topic0s.clone());
         }
-        match self.provider.get_logs(&filter).await {
-            Ok(logs) => Ok(logs),
-            Err(e) if e.is_error_resp() => Err(WatchError::Truncated { from, to }),
-            Err(e) => Err(WatchError::Rpc(e.to_string())),
+        // A rate limit (HTTP 429, or JSON-RPC 429) is not a range too
+        // large: wait and ask again for the same range, a few times, before
+        // giving up. Halving on it shrank the page to one block and failed.
+        let mut wait = core::time::Duration::from_millis(250);
+        let mut tries = 0u8;
+        loop {
+            match self.provider.get_logs(&filter).await {
+                Ok(logs) => return Ok(logs),
+                // HTTP 429, or a JSON-RPC error with code 429 (Alchemy's
+                // "compute units per second").
+                Err(e)
+                    if tries < RATE_LIMIT_RETRIES
+                        && (e.as_error_resp().is_some_and(|p| p.code == 429)
+                            || e.to_string().contains("429")) =>
+                {
+                    tries = tries.saturating_add(1);
+                    tokio::time::sleep(wait).await;
+                    wait = wait
+                        .saturating_mul(2)
+                        .min(core::time::Duration::from_secs(8));
+                }
+                Err(e) if e.is_error_resp() => {
+                    // The node refused the range; halving it is the answer to
+                    // a size cap, and the reason says whether it was one.
+                    tracing::warn!(from, to, error = %e, "eth_getLogs refused");
+                    return Err(WatchError::Truncated { from, to });
+                }
+                Err(e) => return Err(WatchError::Rpc(e.to_string())),
+            }
         }
     }
 
@@ -279,3 +304,6 @@ fn rpc_to_owned(rpc: &RpcLog, timestamp: u64, block_hash: B256) -> Result<OwnedL
         log_index,
     })
 }
+
+/// Retries of one range on a rate limit before it counts as refused.
+const RATE_LIMIT_RETRIES: u8 = 8;

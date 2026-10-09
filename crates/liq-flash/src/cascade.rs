@@ -459,7 +459,7 @@ mod tests {
         let need = e18(295_000);
         let mut m = CostModel::FEE_ONLY;
         m.gas_price_in_debt = e18(2);
-        m.failure_premium_gas = [1; 5];
+        m.failure_premium_gas = [1; 7];
         let c = plan(&idx, ID_WETH, need, &m, 0).unwrap();
         check_shape(&idx, &c, need);
         assert_eq!(c.groups.len(), 2);

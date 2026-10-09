@@ -26,15 +26,45 @@ use smallvec::SmallVec;
 const REGISTRY_DAI: Address =
     alloy_primitives::address!("0x6B175474E89094C44Da98b954EedeAC495271d0F");
 
-/// Uniswap V3 factory `enableFeeAmount` mapping. Fee is committed on each
+/// The V3 factories' `feeAmountTickSpacing`: Uniswap and SushiSwap enable
+/// 100, 500, 3000 and 10000; PancakeSwap 100, 500, 2500 and 10000 (read
+/// from each factory on chain, 2026-10-08). Fee is committed on each
 /// `PoolEntry`; unknown fees are omitted (no guessed spacing).
 fn univ3_tick_spacing(fee: u32) -> Option<i32> {
     match fee {
         100 => Some(1),
         500 => Some(10),
+        2500 => Some(50),
         3000 => Some(60),
         10_000 => Some(200),
         _ => None,
+    }
+}
+
+/// Uniswap V3 factory.
+const UNIV3_FACTORY: Address =
+    alloy_primitives::address!("0x1F98431c8aD98523631AE4a59f267346ea31F984");
+/// SushiSwap V3 factory: Uniswap's code, its own pools (`getPool` and the
+/// CREATE2 derivation from Uniswap's init hash agree on 11 of 11 live pools).
+const SUSHI_V3_FACTORY: Address =
+    alloy_primitives::address!("0xbACEB8eC6b9355Dfc0269C18bac9d6E2Bdc29C4F");
+/// PancakeSwap V3 factory. Its pools are deployed by the `PoolDeployer`
+/// the Executor derives them from.
+const PANCAKE_V3_FACTORY: Address =
+    alloy_primitives::address!("0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865");
+
+/// Executor factory id for a V3 pool's committed factory; `None` = a factory
+/// the Executor cannot verify (the pool is omitted, as an unknown V2 fork
+/// is).
+fn v3_factory_id(factory: Address) -> Option<u8> {
+    if factory == UNIV3_FACTORY {
+        Some(liq_plan::V3_FACTORY_UNISWAP)
+    } else if factory == SUSHI_V3_FACTORY {
+        Some(liq_plan::V3_FACTORY_SUSHI)
+    } else if factory == PANCAKE_V3_FACTORY {
+        Some(liq_plan::V3_FACTORY_PANCAKE)
+    } else {
+        None
     }
 }
 
@@ -95,13 +125,19 @@ fn intern_held(intern: &Intern) -> Vec<HeldAsset> {
         .collect()
 }
 
-fn spark_configurator(config_dir: &Path, pool: Address) -> Option<Address> {
-    let path = config_dir.join("protocols/spark.toml");
-    let toml = AaveV3Toml::from_path(&path).ok()?;
-    toml.pools
+/// The pool's `PoolConfigurator` from the protocol TOML that binds it
+/// (`aave-v3.toml` or `spark.toml`, generated from the provider's
+/// `getPoolConfigurator()`). The registry does not carry it.
+fn toml_configurator(config_dir: &Path, pool: Address) -> Option<Address> {
+    ["protocols/aave-v3.toml", "protocols/spark.toml"]
         .iter()
-        .find(|p| p.address == pool)
-        .map(|p| p.configurator)
+        .filter_map(|f| AaveV3Toml::from_path(&config_dir.join(f)).ok())
+        .find_map(|toml| {
+            toml.pools
+                .iter()
+                .find(|p| p.address == pool)
+                .map(|p| p.configurator)
+        })
         .filter(|a| !a.is_zero())
 }
 
@@ -115,7 +151,12 @@ fn nonzero_filters(filters: Vec<LogFilter>) -> Vec<LogFilter> {
 fn univ3_factory(reg: &Registry) -> Option<Address> {
     let mut found = None;
     for p in reg.pools.values() {
-        if p.venue != PoolVenue::Univ3 || p.factory.is_zero() {
+        // A fork's pools are Executor-verified by their own factory id; this
+        // agreement is about Uniswap's.
+        if p.venue != PoolVenue::Univ3
+            || p.factory.is_zero()
+            || v3_factory_id(p.factory).is_some_and(|f| f != liq_plan::V3_FACTORY_UNISWAP)
+        {
             continue;
         }
         match found {
@@ -470,7 +511,7 @@ pub fn leak_index(load: IndexLoad) -> &'static BoundIndex {
     Box::leak(Box::new(load.into_bound()))
 }
 
-fn wrap_of(wrap: &[u64; 5], p: FlashProvider) -> u64 {
+fn wrap_of(wrap: &[u64; 7], p: FlashProvider) -> u64 {
     wrap.get(p as usize).copied().unwrap_or(0)
 }
 
@@ -478,7 +519,7 @@ fn load_flash(
     config_dir: &Path,
     intern: &Intern,
     registry: &Registry,
-    wrap: &[u64; 5],
+    wrap: &[u64; 7],
     omitted: &mut Vec<(&'static str, String)>,
 ) -> Vec<Box<dyn FlashSource>> {
     let mut sources: Vec<Box<dyn FlashSource>> = Vec::new();
@@ -507,7 +548,7 @@ fn load_flash(
             }
         };
         let configurator =
-            extra_addr(proto, "configurator").or_else(|| spark_configurator(config_dir, pool));
+            extra_addr(proto, "configurator").or_else(|| toml_configurator(config_dir, pool));
         if configurator.is_none() {
             tracing::error!(
                 family = proto.family.as_str(),
@@ -515,9 +556,15 @@ fn load_flash(
                 "aave configurator missing — premium/reserve-flag logs unsubscribed"
             );
         }
+        // Reserves, premium, flags and balances come from chain at startup
+        // (`flash_seed`); until then the pool funds nothing.
         sources.push(Box::new(
-            AavePool::new(pool, configurator.unwrap_or(Address::ZERO), 0, &[])
-                .with_overhead(wrap_of(wrap, FlashProvider::Aave)),
+            AavePool::unseeded(
+                pool,
+                configurator.unwrap_or(Address::ZERO),
+                &intern_held(intern),
+            )
+            .with_overhead(wrap_of(wrap, FlashProvider::Aave)),
         ));
     }
 
@@ -656,6 +703,9 @@ fn load_book(
         || hops.curve == 0
         || hops.curve_ng == 0
         || hops.curve_crypto == 0
+        || hops.pancake_v3 == 0
+        || hops.balancer == 0
+        || hops.fluid == 0
         || hops.unwrap_4626 == 0
         || hops.pendle_pt == 0
         || hops.curve_lp == 0
@@ -677,8 +727,18 @@ fn load_book(
         }
         assets.insert(rec.address, rec.id);
     }
-    let factory = univ3_factory(registry);
-    let mut book = PoolBook::new(assets, factory, hops.univ3);
+    // No pool joins the book while the bot runs: Uniswap V3 `PoolCreated`
+    // discovery is off (decision 2026-10-07). New pools are proposed by the
+    // daily refresh for review and admitted to the registry by hand, then
+    // take effect at a restart. The factory is still checked for agreement.
+    let _ = univ3_factory(registry);
+    let mut book = PoolBook::new(assets, None, hops.univ3);
+    // Exits may route through WETH: the deep pools are against it, and a
+    // collateral's own pool into its debt can be thin, or missing.
+    match intern.asset(crate::bind::REGISTRY_WETH) {
+        Some(weth) => book.set_hub(weth),
+        None => tracing::error!("WETH not interned — exits route direct only"),
+    }
     for (addr, entry) in &registry.pools {
         match build_pool(intern, registry, hops, *addr, entry) {
             Ok(pool) => {
@@ -696,6 +756,10 @@ fn load_book(
     book
 }
 
+/// The sentinel the Fluid pools and the Liquidity layer name native ETH by.
+pub(crate) const FLUID_NATIVE: Address =
+    alloy_primitives::address!("0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE");
+
 /// One registry pool as an unseeded book pool (V3 / V2 zero state, Curve
 /// and crypto stale until read). `Err` names why it cannot be routed.
 pub(crate) fn build_pool(
@@ -706,10 +770,14 @@ pub(crate) fn build_pool(
     entry: &liq_config::PoolEntry,
 ) -> Result<Pool, String> {
     let tokens: SmallVec<[Address; liq_router::MAX_COINS]> = match entry.venue {
-        PoolVenue::Curve | PoolVenue::CurveNg | PoolVenue::CurveCrypto => {
-            entry.coins.iter().copied().collect()
+        PoolVenue::Curve
+        | PoolVenue::CurveNg
+        | PoolVenue::CurveCrypto
+        | PoolVenue::Balancer
+        | PoolVenue::Fluid => entry.coins.iter().copied().collect(),
+        PoolVenue::Univ3 | PoolVenue::Univ4 | PoolVenue::Univ2 => {
+            SmallVec::from_slice(&[entry.token0, entry.token1])
         }
-        PoolVenue::Univ3 | PoolVenue::Univ2 => SmallVec::from_slice(&[entry.token0, entry.token1]),
     };
     if addr.is_zero()
         || tokens.len() < 2
@@ -717,6 +785,15 @@ pub(crate) fn build_pool(
         || tokens.iter().any(|t| t.is_zero())
     {
         return Err(format!("zero address on pool {addr:#x}"));
+    }
+    // A V4 ETH/WETH pool holds WETH on both sides to the plan: a self-loop,
+    // not a swap (and its book address is not a contract to flash from).
+    if tokens
+        .iter()
+        .enumerate()
+        .any(|(i, t)| tokens.iter().skip(i.saturating_add(1)).any(|u| u == t))
+    {
+        return Err(format!("pool {addr:#x} holds one token twice"));
     }
     let mut ids = SmallVec::new();
     let mut rates = SmallVec::new();
@@ -739,20 +816,76 @@ pub(crate) fn build_pool(
             "pool {addr:#x} has a coin not interned / no decimals"
         ));
     }
+    // Every Curve venue: the MetaRegistry handler that holds the pool. Its
+    // legs carry the index, so a pool without one cannot be encoded.
+    let curve_handler = || {
+        entry
+            .curve_handler
+            .ok_or_else(|| format!("curve pool {addr:#x}: no MetaRegistry handler index"))
+    };
     let (hop_gas, state) = match entry.venue {
         PoolVenue::Univ3 => {
             let Some(spacing) = univ3_tick_spacing(entry.fee) else {
                 return Err(format!("unknown univ3 fee {} on {addr:#x}", entry.fee));
             };
+            let Some(factory) = v3_factory_id(entry.factory) else {
+                return Err(format!(
+                    "v3 pool {addr:#x} factory {:#x} not verifiable",
+                    entry.factory
+                ));
+            };
             (
-                hops.univ3,
+                // Pancake's pool calls its `lmPool` in every swap (measured
+                // in `liq-gas.toml`); Sushi's swap is Uniswap's.
+                if factory == liq_plan::V3_FACTORY_PANCAKE {
+                    hops.pancake_v3
+                } else {
+                    hops.univ3
+                },
                 PoolState::V3(V3State {
+                    factory,
                     sqrt_price_x96: U256::ZERO,
                     tick: 0,
                     liquidity: 0,
                     fee_pips: entry.fee,
                     tick_spacing: spacing,
                     ticks: Vec::new(),
+                    v4: None,
+                    window: None,
+                }),
+            )
+        }
+        PoolVenue::Univ4 => {
+            let (Some(tick_spacing), Some(hooks), Some(id)) =
+                (entry.tick_spacing, entry.hooks, entry.v4_id)
+            else {
+                return Err(format!(
+                    "univ4 pool {addr:#x}: no tick spacing, hooks or id"
+                ));
+            };
+            if entry.v4_key_id() != Some(id) || liq_router::V4Key::book_address_of(id).0 != *addr {
+                return Err(format!("univ4 pool {addr:#x}: key does not hash to its id"));
+            }
+            (
+                hops.univ4,
+                PoolState::V3(V3State {
+                    factory: 0,
+                    sqrt_price_x96: U256::ZERO,
+                    tick: 0,
+                    liquidity: 0,
+                    // The swap fee is read with the slot0 (protocol fee).
+                    fee_pips: entry.fee,
+                    tick_spacing,
+                    ticks: Vec::new(),
+                    v4: Some(liq_router::V4Key {
+                        currency0: entry.v4_currency0(),
+                        currency1: entry.token1,
+                        fee: entry.fee,
+                        tick_spacing,
+                        hooks,
+                        id,
+                    }),
+                    window: None,
                 }),
             )
         }
@@ -783,9 +916,11 @@ pub(crate) fn build_pool(
                 stale: true,
                 stale_block: 0,
                 ng: false,
+                d_once: entry.curve_d_once,
                 offpeg_fee_multiplier: U256::ZERO,
                 dynamic_rates: false,
                 read_block: 0,
+                handler: curve_handler()?,
             }),
         ),
         PoolVenue::CurveCrypto => {
@@ -793,6 +928,7 @@ pub(crate) fn build_pool(
                 Some(liq_config::CryptoKind::TwoV1) => CryptoKind::TwoV1,
                 Some(liq_config::CryptoKind::TwoV200) => CryptoKind::TwoV200,
                 Some(liq_config::CryptoKind::TwoV210) => CryptoKind::TwoV210,
+                Some(liq_config::CryptoKind::TwoStable) => CryptoKind::TwoStable,
                 Some(liq_config::CryptoKind::Tri) => CryptoKind::Tri,
                 None => return Err(format!("curve crypto {addr:#x}: no crypto_kind")),
             };
@@ -820,6 +956,86 @@ pub(crate) fn build_pool(
                     stale: true,
                     stale_block: 0,
                     read_block: 0,
+                    handler: curve_handler()?,
+                    tweak: None,
+                }),
+            )
+        }
+        PoolVenue::Balancer => {
+            let (Some(pool_id), Some(kind)) = (entry.pool_id, entry.balancer_kind) else {
+                return Err(format!("balancer {addr:#x}: no pool id or kind"));
+            };
+            // The entry's key is the pool id's first 20 bytes.
+            let keyed = pool_id
+                .first_chunk::<20>()
+                .is_some_and(|head| Address::from(*head) == addr);
+            if tokens.len() != 2 || !keyed {
+                return Err(format!(
+                    "balancer {addr:#x}: not a two-token pool keyed by its id"
+                ));
+            }
+            // `10^(18 − decimals)`: a Balancer pool scales every token to 18.
+            let scaling = tokens
+                .iter()
+                .map(|t| {
+                    registry
+                        .tokens
+                        .get(t)
+                        .and_then(|e| 18u8.checked_sub(e.decimals))
+                        .map(|d| U256::from(10u64).pow(U256::from(d)))
+                })
+                .collect::<Option<SmallVec<[U256; liq_router::MAX_COINS]>>>();
+            let Some(scaling) = scaling else {
+                return Err(format!(
+                    "balancer {addr:#x}: a token has no decimals or more than 18"
+                ));
+            };
+            (
+                hops.balancer,
+                PoolState::Balancer(liq_router::BalancerState {
+                    pool_id,
+                    tokens: tokens.clone(),
+                    balances: tokens.iter().map(|_| U256::ZERO).collect(),
+                    weights: tokens.iter().map(|_| U256::ZERO).collect(),
+                    scaling,
+                    swap_fee: U256::ZERO,
+                    fast_pow: kind == liq_config::BalancerKind::WeightedV4,
+                    stale: true,
+                    stale_block: 0,
+                    read_block: 0,
+                }),
+            )
+        }
+        PoolVenue::Fluid => {
+            if tokens.len() != 2 {
+                return Err(format!("fluid {addr:#x}: not a two-token pool"));
+            }
+            // Native ETH is a coin named WETH to the plan; the pool and the
+            // Liquidity layer's logs name it by the 0xEeee… sentinel.
+            let native_side = |t: &Address| entry.native && *t == crate::bind::REGISTRY_WETH;
+            let on_chain: SmallVec<[Address; liq_router::MAX_COINS]> = tokens
+                .iter()
+                .map(|t| if native_side(t) { FLUID_NATIVE } else { *t })
+                .collect();
+            let mut native = [false; 2];
+            for (n, t) in native.iter_mut().zip(&tokens) {
+                *n = native_side(t);
+            }
+            (
+                hops.fluid,
+                PoolState::Fluid(liq_router::FluidState {
+                    prec: [U256::ZERO; 4],
+                    native,
+                    deployer: Address::ZERO,
+                    tokens: on_chain,
+                    dex_vars: U256::ZERO,
+                    dex_vars2: U256::ZERO,
+                    center_ext: None,
+                    liq: [liq_router::LiqToken::default(); 2],
+                    exec_ts: 0,
+                    stale: true,
+                    stale_block: 0,
+                    read_block: 0,
                 }),
             )
         }
@@ -842,9 +1058,11 @@ pub(crate) fn build_pool(
                     stale: true,
                     stale_block: 0,
                     ng: true,
+                    d_once: true,
                     offpeg_fee_multiplier: U256::ZERO,
                     dynamic_rates: entry.asset_types.iter().any(|t| *t == 1 || *t == 3),
                     read_block: 0,
+                    handler: curve_handler()?,
                 }),
             )
         }
@@ -956,6 +1174,7 @@ pub(crate) fn build_unwrap(
             _ => scale,
         },
         read_block: 0,
+        cash_capped: u.cash_capped && kind == liq_router::UnwrapKind::Erc4626,
         gas: match kind {
             liq_router::UnwrapKind::Erc4626 => hops.unwrap_4626,
             liq_router::UnwrapKind::PendlePt { .. } => hops.pendle_pt,
@@ -1100,12 +1319,14 @@ mod tests {
             }
         }
         a.extend(reg.flash_sources.keys().copied());
-        if let Ok(t) = AaveV3Toml::from_path(&config_dir.join("protocols/spark.toml")) {
-            for p in t.pools {
-                a.insert(p.address);
-                a.insert(p.configurator);
-                a.insert(p.oracle);
-                a.insert(p.provider);
+        for f in ["protocols/aave-v3.toml", "protocols/spark.toml"] {
+            if let Ok(t) = AaveV3Toml::from_path(&config_dir.join(f)) {
+                for p in t.pools {
+                    a.insert(p.address);
+                    a.insert(p.configurator);
+                    a.insert(p.oracle);
+                    a.insert(p.provider);
+                }
             }
         }
         a
@@ -1116,13 +1337,15 @@ mod tests {
         let (intern, reg) = committed();
         let cfg = root().join("config");
         let load = load_index(&cfg, &intern, &reg);
-        assert!(
-            load.omitted.iter().any(|(n, _)| *n == "univ4"),
-            "univ4 must omit without a committed PoolManager: {:?}",
-            load.omitted
-        );
-        assert!(load.omitted.iter().any(|(n, _)| *n == "morpho"));
-        assert!(load.omitted.iter().any(|(n, _)| *n == "sky-dss"));
+        // The registry's flash-source rows bind the singletons
+        // (`registry_binds_the_flash_singletons`); none is omitted.
+        for group in ["univ4", "morpho", "sky-dss"] {
+            assert!(
+                !load.omitted.iter().any(|(n, _)| *n == group),
+                "{group} omitted: {:?}",
+                load.omitted
+            );
+        }
         assert!(
             load.omitted.iter().any(|(n, _)| *n == "derived"),
             "derived specs are not committed: {:?}",
@@ -1255,6 +1478,78 @@ mod tests {
         assert!(!prod.contains("SelectReady"));
     }
 
+    /// Oracle: `getPoolConfigurator()` on each pool's addresses provider,
+    /// read on chain (2026-10-04) — the same values `aave-v3.toml` and
+    /// `spark.toml` carry. Every committed Aave/Spark flash pool subscribes
+    /// to its configurator's premium and reserve-flag logs. The registry
+    /// carries no configurator; before the TOML lookup covered `aave-v3.toml`
+    /// only Spark's pool had one, and the three Aave V3 pools followed none.
+    #[test]
+    fn every_aave_flash_pool_follows_its_configurator() {
+        use alloy_primitives::{address, b256};
+        let (intern, reg) = committed();
+        let load = load_index(&root().join("config"), &intern, &reg);
+        // `FlashloanPremiumTotalUpdated(uint128,uint128)`.
+        let premium = b256!("71aba182c9d0529b516de7a78bed74d49c207ef7e152f52f7ea5d8730138f643");
+        for (pool, configurator) in [
+            (
+                address!("0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2"),
+                address!("0x64b761d848206f447fe2dd461b0c635ec39ebb27"),
+            ),
+            (
+                address!("0x4e033931ad43597d96d6bcc25c280717730b58b1"),
+                address!("0x342631c6cefc9cfbf97b2fe4aa242a236e1fd517"),
+            ),
+            (
+                address!("0x0aa97c284e98396202b6a04024f5e2c65026f3c0"),
+                address!("0x8438f4d29d895d75c86bdc25360c25ef0607e65d"),
+            ),
+            (
+                address!("0xc13e21b648a5ee794902342038ff3adab66be987"),
+                address!("0x542dba469bde58faee189ffb60c6b49ce60e0738"),
+            ),
+        ] {
+            let s = load
+                .sources
+                .iter()
+                .find(|s| s.provider() == FlashProvider::Aave && s.source() == pool)
+                .unwrap_or_else(|| panic!("{pool:#x} not bound"));
+            assert!(
+                s.subscriptions()
+                    .iter()
+                    .any(|f| f.address == configurator && f.topic0 == premium),
+                "{pool:#x} does not follow {configurator:#x}"
+            );
+        }
+    }
+
+    /// The registry's flash-source rows bind the singletons the index needs:
+    /// Morpho, the V4 PoolManager and Sky's DssFlash with its End. Before
+    /// the rows existed all three were omitted and only Aave and V3 pools
+    /// could fund a liquidation.
+    #[test]
+    fn registry_binds_the_flash_singletons() {
+        let (intern, reg) = committed();
+        let load = load_index(&root().join("config"), &intern, &reg);
+        for p in [
+            FlashProvider::Morpho,
+            FlashProvider::UniV4,
+            FlashProvider::SkyDss,
+        ] {
+            assert_eq!(
+                load.sources.iter().filter(|s| s.provider() == p).count(),
+                1,
+                "{p:?}"
+            );
+        }
+        for group in ["morpho", "univ4", "sky-dss"] {
+            assert!(
+                !load.omitted.iter().any(|(g, _)| *g == group),
+                "{group} omitted"
+            );
+        }
+    }
+
     #[test]
     fn empty_book_still_empty_until_logs() {
         let (intern, reg) = committed();
@@ -1282,6 +1577,15 @@ mod tests {
                     venues[3] += 1;
                     assert!(s.stale, "crypto starts stale until read");
                     assert_eq!(s.precisions.len(), p.tokens.len());
+                }
+                // None are admitted until reviewed; any that is starts stale.
+                PoolState::Balancer(s) => {
+                    assert!(s.stale, "balancer starts stale until read");
+                    assert_eq!(s.scaling.len(), p.tokens.len());
+                }
+                PoolState::Fluid(s) => {
+                    assert!(s.stale, "fluid starts stale until read");
+                    assert_eq!(s.tokens.len(), p.tokens.len());
                 }
             }
         }

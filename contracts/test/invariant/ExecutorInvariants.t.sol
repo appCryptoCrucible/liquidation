@@ -48,7 +48,7 @@ contract Handler is ExecutorTestBase {
             PB.header(PB.F_SWEEP, 0, 0, 0, 1),
             PB.groupHead(PB.P_AAVE, address(lazy), address(debt), REPAY, 1, 1),
             PB.legV3(address(pool), b, address(coll), REPAY),
-            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, OWED),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, REPAY),
             PB.profit(1, _profitLeg())
         );
         vm.prank(operator);
@@ -92,7 +92,9 @@ contract Handler is ExecutorTestBase {
 
         // Collateral yielded at 60_000 DEBT/COLL plus bonus, floored to raw units.
         uint128 collOut = uint128(uint256(size) * 1e8 / 60_000e6 * (10_000 + bonusBps) / 10_000);
-        uint128 owed = size + uint128(uint256(size) * 5 / 10_000);          // Aave premium, 5 bps (floor, as the mock)
+        // What the repay leg buys: the pull, plus the premium the Executor
+        // adds (5 bps, floored as the mock does).
+        uint128 owed = size + uint128(uint256(size) * 5 / 10_000);
         uint128 spent = uint128((uint256(owed) * 1e8 + 60_000e6 - 1) / 60_000e6);
         if (spent > collOut) return; // sub-unit sizes where the bonus does not cover the fee
 
@@ -105,7 +107,7 @@ contract Handler is ExecutorTestBase {
             PB.header(sweepFlag ? PB.F_SWEEP : 0, bidBps, 0, 0, 1),
             PB.groupHead(PB.P_AAVE, flash, address(debt), size, 1, 1),
             PB.legV3(address(pool), b, address(coll), size),
-            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, owed),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, size),
             PB.profit(1, _profitLeg())
         );
         uint256 gross = uint256(collOut - spent) * 2e11;

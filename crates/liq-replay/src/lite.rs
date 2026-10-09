@@ -123,8 +123,18 @@ sol! {
         uint120 suppliedShares;
         uint32 dynamicConfigKey;
     }
+    struct UserAccountData {
+        uint256 riskPremium;
+        uint256 avgCollateralFactor;
+        uint256 healthFactor;
+        uint256 totalCollateralValue;
+        uint256 totalDebtValueRay;
+        uint256 activeCollateralCount;
+        uint256 borrowCount;
+    }
     interface ISpokeViews {
         function ORACLE() external view returns (address);
+        function getUserAccountData(address user) external view returns (UserAccountData memory);
         function getReserveCount() external view returns (uint256);
         function getReserve(uint256 reserveId) external view returns (SpokeReserve memory);
         function getReserveConfig(uint256 reserveId) external view returns (SpokeReserveConfig memory);
@@ -331,6 +341,81 @@ pub struct LiteReport {
     pub flags: Vec<Flag>,
     pub liquidations: usize,
     pub matches: MatchTable,
+    /// Plan Phase 3, item 3: at the snapshot block, each seeded borrower's
+    /// health against the spoke's own `getUserAccountData`.
+    pub health: HealthCheck,
+}
+
+/// Our health factor against the spoke's for the window's borrowers.
+#[derive(Clone, Debug, Default)]
+pub struct HealthCheck {
+    /// Borrowers with debt compared.
+    pub compared: usize,
+    /// Equal to the wei of WAD.
+    pub exact: usize,
+    /// Largest |ours − spoke| / spoke, in parts per billion.
+    pub max_err_ppb: U256,
+    /// The worst borrower: (user, ours WAD, spoke WAD).
+    pub worst: Option<(Address, U256, U256)>,
+    /// Borrowers the adapter refused to value, with why (an unpinned
+    /// source fails closed): not compared.
+    pub refused: Vec<(Address, String)>,
+}
+
+/// [`HealthCheck`] at `block` (`ts`) for every seeded borrower that owes.
+#[allow(clippy::too_many_arguments)] // each input is a distinct snapshot term
+async fn check_health<P: Provider>(
+    provider: &P,
+    adapter: &AaveV4,
+    spoke: Address,
+    st: &JournalStore,
+    px: &PriceVector,
+    ids: &BTreeMap<Address, PositionId>,
+    block: u64,
+    ts: u64,
+) -> Result<HealthCheck, LiteError> {
+    let mut out = HealthCheck::default();
+    for (&user, &id) in ids {
+        let raw = eth_call(
+            provider,
+            spoke,
+            Bytes::from(ISpokeViews::getUserAccountDataCall { user }.abi_encode()),
+            block,
+        )
+        .await?;
+        let chain = ISpokeViews::getUserAccountDataCall::abi_decode_returns(&raw)
+            .map_err(|e| LiteError::Call(e.to_string()))?;
+        if chain.borrowCount.is_zero() {
+            continue;
+        }
+        let h = match adapter.health(st.view(id, ts)?, px) {
+            Ok(h) => h,
+            Err(e) => {
+                out.refused.push((user, e.to_string()));
+                continue;
+            }
+        };
+        // Ours is RAY; the spoke's WAD.
+        let ours =
+            h.hf.raw()
+                .checked_div(U256::from(1_000_000_000u64))
+                .unwrap_or_default();
+        let theirs = chain.healthFactor;
+        out.compared = out.compared.saturating_add(1);
+        if ours == theirs {
+            out.exact = out.exact.saturating_add(1);
+        }
+        let diff = ours.abs_diff(theirs);
+        let ppb = diff
+            .saturating_mul(U256::from(1_000_000_000u64))
+            .checked_div(theirs.max(U256::ONE))
+            .unwrap_or(U256::MAX);
+        if ppb > out.max_err_ppb || out.worst.is_none() {
+            out.max_err_ppb = out.max_err_ppb.max(ppb);
+            out.worst = Some((user, ours, theirs));
+        }
+    }
+    Ok(out)
 }
 
 struct SpokeSel {
@@ -388,12 +473,10 @@ async fn run_on<P: Provider + Clone>(
     let mut filters = adapter.subscriptions();
     let ans = chainlink::AnswerUpdated::SIGNATURE_HASH;
     for pin in &adapter.config().price_sources {
-        let rec = feed_rec(&intern, pin.source).ok_or_else(|| {
-            LiteError::Config(format!(
-                "SourcePin {:#x} reserve {} not interned",
-                pin.source, pin.reserve_id
-            ))
-        })?;
+        // A source that is not a registry feed keeps its snapshot price.
+        let Some(rec) = feed_rec(&intern, pin.source) else {
+            continue;
+        };
         filters.push(LogFilter {
             address: rec.aggregator,
             topic0: ans,
@@ -405,6 +488,32 @@ async fn run_on<P: Provider + Clone>(
 
     let mut ids = BTreeMap::new();
     seed_universe_positions(&provider, &sel, &mut st, &universe, snap_at, &mut ids).await?;
+    let health = check_health(
+        &provider, &adapter, sel.spoke, &st, &px, &ids, snap_at, snap_ts,
+    )
+    .await?;
+    tracing::info!(
+        compared = health.compared,
+        exact = health.exact,
+        max_err_ppb = %health.max_err_ppb,
+        worst = ?health.worst,
+        "aave-v4 health against the spoke's getUserAccountData at the snapshot"
+    );
+    // `LIQ_LITE_HEALTH_ONLY`: stop at the health check (Phase 3 item 3),
+    // before folding the window.
+    if std::env::var_os("LIQ_LITE_HEALTH_ONLY").is_some() {
+        return Ok(LiteReport {
+            instance: sel.instance,
+            spoke: sel.spoke,
+            from,
+            to,
+            universe: universe.len(),
+            flags: Vec::new(),
+            liquidations: liqs.len(),
+            matches: MatchTable::default(),
+            health,
+        });
+    }
 
     let mut flags = Vec::new();
     let mut seen_flags = BTreeSet::new();
@@ -441,6 +550,7 @@ async fn run_on<P: Provider + Clone>(
         flags,
         liquidations: liqs.len(),
         matches,
+        health,
     })
 }
 
@@ -930,8 +1040,16 @@ async fn snapshot_config_store<P: Provider>(
         .await?;
         sources.push(src);
         let rid_u16 = u16::try_from(rid).map_err(|_| LiteError::Call("reserve id".into()))?;
-        if let Some(rec) = feed_rec(intern, src) {
+        // Every reserve whose token is interned is pinned at the source the
+        // oracle names now, as the committed config pins it; health prices
+        // it at the oracle's own `getReservePrice` below. A source the
+        // registry lists as a feed keeps that feed (its `AnswerUpdated`
+        // moves the price during the fold); one it does not gets a feed no
+        // aggregator maps to, and keeps the snapshot price.
+        {
             if let Some(asset) = intern.asset(r.underlying) {
+                let feed =
+                    feed_rec(intern, src).map_or(liq_protocol::FeedId(u16::MAX), |rec| rec.id);
                 pins.push(SourcePin {
                     spoke: sel.spoke,
                     reserve_id: rid_u16,
@@ -940,7 +1058,7 @@ async fn snapshot_config_store<P: Provider>(
                 assets_map.entry(r.underlying).or_insert(AssetConfig {
                     underlying: r.underlying,
                     asset,
-                    feed: rec.id,
+                    feed,
                 });
                 let p8 = call_u256(
                     provider,
@@ -1497,11 +1615,22 @@ async fn eth_call<P: Provider>(
         input: TransactionInput::new(data),
         ..Default::default()
     };
-    let out = provider
-        .call(tx)
-        .number(block)
-        .await
-        .map_err(|e| LiteError::Rpc(e.to_string()))?;
+    // A rate limit (429) is waited out, a few times, not failed on.
+    let mut wait = std::time::Duration::from_millis(250);
+    let mut tries = 0u8;
+    let out = loop {
+        match provider.call(tx.clone()).number(block).await {
+            Ok(out) => break out,
+            Err(e) if tries < 8 && e.to_string().contains("429") => {
+                tries = tries.saturating_add(1);
+                tokio::time::sleep(wait).await;
+                wait = wait
+                    .saturating_mul(2)
+                    .min(std::time::Duration::from_secs(8));
+            }
+            Err(e) => return Err(LiteError::Rpc(e.to_string())),
+        }
+    };
     if out.is_empty() {
         return Err(LiteError::Call(format!("{to:#x} empty")));
     }

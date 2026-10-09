@@ -1,7 +1,8 @@
 //! `BatchPlan` assembly (GUIDE 12 §4c–§4e, PLAN-ENCODING).
 //!
-//! Over-borrow, `minProfit` as the worst-acceptable-partial floor, UniV3
-//! pool-direct swaps from the exact quote, profit TAKE_BALANCE to WETH.
+//! Over-borrow, `minProfit` as the worst-landing floor, UniV3 pool-direct
+//! swaps from the exact quote, each tied to its liquidation leg, profit
+//! TAKE_BALANCE to WETH. The flash premium is bought at run time.
 //! Seized WETH is not closed by a swap: it is already the profit asset.
 //! The plan is refused unless [`liq_plan::validate`] accepts it.
 //!
@@ -9,23 +10,24 @@
 //! allowlisted router **only** when the caller supplies calldata. Kyber is
 //! not a [`crate::Venue`] variant and is never emitted (05E N1).
 
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, I256, U256};
 use liq_flash::fallback_chain;
 use liq_flash::{fee_amount, FlashIndex, Haircut};
 use liq_plan::{
-    col_per_unit_debt_1e18, ensure_surplus_borrow_profit_legs, validate, BatchPlan, FlashGroup,
-    LiqLeg, SwapLeg, ValidateCtx, LEG_EXACT_OUT, LEG_TAKE_BALANCE, VENUE_CURVE_CRYPTO_POOL,
-    VENUE_CURVE_LP_ONE_COIN, VENUE_CURVE_POOL, VENUE_PENDLE_MARKET_SELL, VENUE_PENDLE_PT_REDEEM,
-    VENUE_UNIV2_POOL, VENUE_UNIV3_POOL, VENUE_UNWRAP_4626,
+    col_per_unit_debt_1e18, ensure_surplus_borrow_profit_legs, tie_flags, validate, BatchPlan,
+    FlashGroup, LiqLeg, SwapLeg, ValidateCtx, LEG_EXACT_OUT, LEG_TAKE_BALANCE, LEG_TIE_MAX,
+    VENUE_CURVE_CRYPTO_POOL, VENUE_CURVE_LP_ONE_COIN, VENUE_CURVE_POOL, VENUE_PENDLE_MARKET_SELL,
+    VENUE_PENDLE_PT_REDEEM, VENUE_UNIV2_POOL, VENUE_UNIV3_POOL, VENUE_UNIV4_POOL,
+    VENUE_UNWRAP_4626,
 };
 use liq_protocol::{ExecutorAdapter, FlashRoute, Quote};
 use liq_types::fixed::{mul_div, Rounding};
-use liq_types::{AssetId, PositionId};
+use liq_types::{AssetId, FlashProvider, PositionId};
 use liq_wire::wire::LegTail;
 use smallvec::SmallVec;
 
 use crate::bid::{searcher_net, Bid};
-use crate::exact::{Allocation, ExitQuote, GasTerms};
+use crate::exact::{Allocation, ExitQuote, GasTerms, HubUse};
 use crate::profit::ProfitError;
 use crate::select::{Scored, SelectCfg, SelectedPlan};
 use crate::solver::{PoolBook, PoolId, PoolState, RouteError, UnwrapKind, Venue};
@@ -396,62 +398,103 @@ fn token(view: &dyn AssembleView, a: AssetId) -> Result<Address, AssembleError> 
     }
 }
 
-/// Worst-acceptable-partial floor in **wei** (D29 / GUIDE 12 §4d).
+/// One assembled flash group as [`min_profit_floor`] sees it.
+struct FloorGroup<'a> {
+    legs: SmallVec<[&'a Scored; 4]>,
+    /// Raw debt units per 1e18 wei; 1e18 for a reward-only group, whose
+    /// legs' values are wei already.
+    per_eth: U256,
+    /// What its source charges on the whole flash, in debt units.
+    premium: U256,
+}
+
+/// Worst-landing floor in **wei** (D29 / GUIDE 12 §4d).
 ///
-/// The per-leg numerator is debt-numeraire `contribution − expected gas`
-/// (`swap_out − flash_owed`, then gas). Converted with `per_eth(debt)` —
-/// raw debt units per 1e18 wei. That is the debt/ETH oracle, **not** a
-/// coll→WETH exact quote of leftover collateral after EXACT_OUT. Leftover
-/// coll is unknown until the swaps run; inventing a leftover size to quote
-/// coll→WETH would fabricate the floor. When debt is WETH, `per_eth` is
-/// 1e18 and the conversion is identity. Stable-debt / volatile-coll
-/// divergence versus execution TAKE_BALANCE is priced in the band
-/// (GUIDE 12 §4d), not guessed here. A missing conversion fails closed.
-pub fn min_profit_floor(
-    plan: &SelectedPlan,
+/// The plan lands when every flash group fills at least one leg: a group
+/// that fills none reverts `AllLegsFailed`, and the plan with it. Its worst
+/// landing is then each group's weakest leg alone. That leg's exit sells
+/// its seize into `swap_out` of the debt, `s` of which buys back its pull;
+/// besides, the group owes its source's premium on the whole flash, which
+/// the Executor buys whichever legs fill (a beaten leg's share of the flash
+/// goes back unspent; its premium does not). So a group lands at least
+/// `min_k (swap_out_k − s_k − slack_k) − premium`, and the plan at least
+/// their sum less `gasCostWei`, the gas `execute` subtracts before it takes
+/// the bid. The floor is what we keep of that after the bid. Below zero it
+/// is 1 wei: `execute` refuses a net loss itself (`gross − gasCostWei`
+/// underflows), and a floor of 0 is refused.
+///
+/// Values convert with `per_eth(debt)` — raw debt units per 1e18 wei, the
+/// debt/ETH oracle, **not** a coll→WETH exact quote of leftover collateral
+/// after EXACT_OUT. Leftover coll is unknown until the swaps run; inventing
+/// a leftover size to quote coll→WETH would fabricate the floor. When debt
+/// is WETH, `per_eth` is 1e18 and the conversion is identity. Gains round
+/// down and costs up. Stable-debt / volatile-coll divergence versus
+/// execution TAKE_BALANCE is priced in the band (GUIDE 12 §4d), not
+/// guessed here. A missing conversion fails closed.
+///
+/// A floor, not the expectation (GUIDE 12 "Set `minProfit` as a floor";
+/// GUIDE 10: "from the quoted economics with a tolerance band"). The swaps
+/// and seizes are guarded `tol_bps` under their quoted outputs, so a leg
+/// may realize that much less of the value its exit sells and still be one
+/// we accept: `slack_k`. Set to the exact quoted keep, any shortfall at
+/// all reverted the plan: block 26,098,187's WBTC leg kept 0.000185 ETH
+/// against a 0.000186 floor, 0.5 % short.
+fn min_profit_floor(
+    groups: &[FloorGroup<'_>],
     bid: &Bid,
-    view: &dyn AssembleView,
-    gas_price_in_debt: U256,
+    gas_cost_wei: u128,
+    tol_bps: u16,
 ) -> Result<u128, AssembleError> {
-    let mut worst: Option<U256> = None;
-    for g in &plan.groups {
-        // A reward-only group's contribution is already WETH wei.
-        let per_eth = if g.reward_only {
-            WEI
-        } else {
-            view.per_eth(g.debt)
-                .ok_or(AssembleError::Missing("per_eth"))?
-        };
-        if per_eth.is_zero() {
-            return Err(AssembleError::Missing("per_eth"));
-        }
-        for s in &g.legs {
-            // `gas_price_in_debt` comes from the plan-level WETH-numeraire
-            // terms, i.e. wei per gas; convert the debt-unit contribution to
-            // wei before subtracting it, never mix the two.
-            let cost_wei = U256::from(s.expected_gas)
-                .checked_mul(gas_price_in_debt)
-                .ok_or(RouteError::Math)?;
-            let contribution_wei = crate::solver::mul_div_512(s.leg.contribution, WEI, per_eth)?;
-            let wei = contribution_wei.saturating_sub(cost_wei);
-            let keep = searcher_net(wei, bid.coinbase_bps)
-                .ok_or(AssembleError::Missing("searcher_net"))?;
-            worst = Some(match worst {
-                Some(w) => w.min(keep),
-                None => keep,
-            });
-        }
-    }
-    let Some(w) = worst else {
-        return Err(AssembleError::Missing("no legs"));
+    let wei = |v: U256, per_eth: U256, r: Rounding| {
+        mul_div(v, WEI, per_eth, r).map_err(|_| AssembleError::Missing("per_eth"))
     };
-    u128_of(w)
+    let signed = |v: U256| I256::try_from(v).map_err(|_| AssembleError::AmountTooLarge);
+    let math = || AssembleError::Route(RouteError::Math);
+    let mut worst = I256::ZERO;
+    for fg in groups {
+        let mut weakest: Option<I256> = None;
+        for s in &fg.legs {
+            let moved = wei(s.leg.swap_out, fg.per_eth, Rounding::Down)?;
+            let owed = wei(s.leg.s, fg.per_eth, Rounding::Up)?;
+            let slack = mul_div(
+                moved,
+                U256::from(tol_bps),
+                U256::from(10_000u32),
+                Rounding::Up,
+            )
+            .map_err(|_| AssembleError::Missing("profit tolerance"))?;
+            let v = signed(moved)?
+                .checked_sub(signed(owed)?)
+                .and_then(|v| v.checked_sub(signed(slack).ok()?))
+                .ok_or_else(math)?;
+            weakest = Some(weakest.map_or(v, |w| w.min(v)));
+        }
+        let weakest = weakest.ok_or(AssembleError::Missing("no legs"))?;
+        let premium = signed(wei(fg.premium, fg.per_eth, Rounding::Up)?)?;
+        worst = worst
+            .checked_add(weakest)
+            .and_then(|w| w.checked_sub(premium))
+            .ok_or_else(math)?;
+    }
+    if groups.is_empty() {
+        return Err(AssembleError::Missing("no legs"));
+    }
+    let worst = worst
+        .checked_sub(signed(U256::from(gas_cost_wei))?)
+        .ok_or_else(math)?;
+    if !worst.is_positive() {
+        return Ok(1);
+    }
+    let keep = searcher_net(worst.into_raw(), bid.coinbase_bps)
+        .ok_or(AssembleError::Missing("searcher_net"))?;
+    Ok(u128_of(keep)?.max(1))
 }
 
 /// Pool-direct wire data for a swap through `pool_id` from coin `i` to coin
 /// `j`. Every venue is pool-direct and verified on chain by the Executor:
 /// V3 by the callback's CREATE2 check, V2 by CREATE2 against the pair's
-/// factory, Curve by MetaRegistry + coin indices.
+/// factory, Curve by the MetaRegistry handler the leg names (the pool's
+/// own, from the registry) + coin indices.
 fn venue_bytes(
     book: &PoolBook,
     pool_id: PoolId,
@@ -461,20 +504,55 @@ fn venue_bytes(
     let pool = book.get(pool_id).ok_or(AssembleError::Missing("pool"))?;
     let mut d = pool.address.to_vec();
     match &pool.state {
-        PoolState::V3(_) => Ok((VENUE_UNIV3_POOL, d)),
+        // A V4 pool is named by its key; the PoolManager is fixed.
+        PoolState::V3(s) => match &s.v4 {
+            Some(k) => Ok((VENUE_UNIV4_POOL, k.leg_data())),
+            // A fork's pool names its factory in a 21st byte; Uniswap's is
+            // the bare address.
+            None => {
+                if s.factory != crate::solver::V3_FACTORY_UNISWAP {
+                    d.push(s.factory);
+                }
+                Ok((VENUE_UNIV3_POOL, d))
+            }
+        },
         PoolState::V2(v2) => {
             d.push(v2.factory);
             Ok((VENUE_UNIV2_POOL, d))
         }
-        PoolState::Curve(_) => {
-            d.extend_from_slice(&[i, j]);
+        PoolState::Curve(c) => {
+            d.extend_from_slice(&[i, j, c.handler]);
             Ok((VENUE_CURVE_POOL, d))
         }
-        PoolState::Crypto(_) => {
-            d.extend_from_slice(&[i, j]);
+        PoolState::Crypto(c) => {
+            d.extend_from_slice(&[i, j, c.handler]);
             Ok((VENUE_CURVE_CRYPTO_POOL, d))
         }
+        // The Vault's pool id; the Vault takes the direction from the tokens.
+        PoolState::Balancer(b) => Ok((liq_plan::VENUE_BALANCER, b.pool_id.to_vec())),
+        // The pool and the direction: coin 0 is the pool's token0 (native
+        // ETH is named as WETH, wrapped and unwrapped by the module).
+        PoolState::Fluid(_) => {
+            d.push(u8::from(i == 0 && j == 1));
+            Ok((liq_plan::VENUE_FLUID, d))
+        }
     }
+}
+
+/// Wire data for withdrawing the Curve LP `lp` as coin `i` (venue 7): the
+/// LP is its own pool, in the book, and the leg names that pool's
+/// MetaRegistry handler.
+fn curve_lp_bytes(book: &PoolBook, lp: Address, i: u8) -> Result<Vec<u8>, AssembleError> {
+    let pool = book
+        .by_address(lp)
+        .and_then(|id| book.get(id))
+        .ok_or(AssembleError::Missing("curve lp pool"))?;
+    let PoolState::Curve(c) = &pool.state else {
+        return Err(AssembleError::Missing("curve lp pool"));
+    };
+    let mut d = lp.to_vec();
+    d.extend_from_slice(&[i, c.handler]);
+    Ok(d)
 }
 
 /// Split `pull` across every nonzero `ExitQuote` allocation. Each share is
@@ -551,36 +629,19 @@ fn swaps_for_leg(
     coll_addr: Address,
     overshoot_bps: u16,
 ) -> Result<(Vec<SwapLeg>, Option<SwapLeg>), AssembleError> {
-    let shares = shares_of_pull(&s.leg.exit, pull)?;
-    let mut repay = Vec::with_capacity(shares.len());
-    let mut last: Option<(u8, Vec<u8>)> = None;
-    for (a, amount) in &shares {
-        let (venue, data) = venue_bytes(book, a.leg.pool, a.leg.i, a.leg.j)?;
-        let (flags, amount) = if venue == VENUE_CURVE_POOL || venue == VENUE_CURVE_CRYPTO_POOL {
-            (0, curve_exact_in(a, *amount, overshoot_bps)?)
-        } else {
-            (LEG_EXACT_OUT, *amount)
-        };
-        repay.push(SwapLeg {
-            venue,
-            token_in: coll_addr,
-            token_out: debt_addr,
-            flags,
-            amount,
-            data: data.clone(),
-        });
-        last = Some((venue, data));
-    }
+    let (repay, last) = repay_legs(&s.leg.exit, book, pull, coll_addr, debt_addr, overshoot_bps)?;
     // Residual seized WETH is the profit asset. A closer would name a
     // WETH→WETH pool, which does not exist, and the liquidation would revert
     // instead of sweeping.
     if coll_addr == weth {
         return Ok((repay, None));
     }
-    let (venue, data) = match closer_pair(book, coll_addr, weth) {
-        Ok(v) => v,
-        Err(_) => last.ok_or(AssembleError::Missing("allocation"))?,
-    };
+    // The closer sells what the repay swaps leave into WETH. It used to
+    // fall back to the last repay pool, which holds the debt, not WETH: a
+    // leg the Executor's callback check refuses. Without a pool into WETH
+    // there is no closer, and no plan.
+    let (venue, data) = closer_pair(book, coll_addr, weth, residual_after(&s.leg, pull))?;
+    let _ = last;
     let profit = SwapLeg {
         venue,
         token_in: coll_addr,
@@ -590,6 +651,302 @@ fn swaps_for_leg(
         data,
     };
     Ok((repay, Some(profit)))
+}
+
+/// A swap leg's venue id and its wire data ([`venue_bytes`]).
+type VenueData = (u8, Vec<u8>);
+
+/// The legs buying `pull` of the debt with `token_in`: each pool of `exit`
+/// its share, exact-out (Curve, which has no exact output, exact-in with
+/// `overshoot_bps`). Also the last pool's venue and data.
+fn repay_legs(
+    exit: &ExitQuote,
+    book: &PoolBook,
+    pull: u128,
+    token_in: Address,
+    debt_addr: Address,
+    overshoot_bps: u16,
+) -> Result<(Vec<SwapLeg>, Option<VenueData>), AssembleError> {
+    // Each chain buys its part of the pull along its path, exact output: the
+    // whole pull alone, or, split with direct pools or other chains, the
+    // part in proportion to what it buys of the exit's output (the pools
+    // share the rest).
+    let mut chain_legs: Vec<SwapLeg> = Vec::new();
+    let mut pull = pull;
+    if let Some(c) = &exit.chain {
+        let direct = exit.allocs.iter().any(|a| !a.amount_out.is_zero());
+        let all: Vec<&crate::exact::ChainUse> =
+            core::iter::once(c.as_ref()).chain(c.with.iter()).collect();
+        let total = pull;
+        // An exact-input chain is sized on the book as it stands when its
+        // leg runs: after the direct legs, and the chains before it, have
+        // moved the pools they share. Sized on the untouched book it
+        // delivers less than quoted and the flash lender is left short
+        // (block 25,791,740: a third of a $3.2M sale through crvUSD).
+        let mut displaced = if all.iter().any(|ch| !ch.exact_out) {
+            let mut work = book.clone();
+            for a in exit.allocs.iter().filter(|a| !a.amount_in.is_zero()) {
+                if let Some(p) = work.get_mut(a.leg.pool) {
+                    let _ = p.apply_exact_in(a.leg.i, a.leg.j, a.amount_in);
+                }
+            }
+            Some(work)
+        } else {
+            None
+        };
+        for (k, ch) in all.iter().enumerate() {
+            // Without direct pools the last chain takes what is left, so the
+            // parts add to the pull exactly.
+            let part = if !direct && k.saturating_add(1) == all.len() {
+                pull
+            } else if exit.amount_out.is_zero() {
+                0
+            } else {
+                u128_of(crate::solver::mul_div_512(
+                    U256::from(total),
+                    ch.amount_out,
+                    exit.amount_out,
+                )?)?
+                .min(pull)
+            };
+            if part != 0 {
+                // Through a V4 or Curve hop the chain sells exact input: what
+                // buys its part on the book, raised by `overshoot_bps` as a
+                // Curve leg's is; the surplus debt is swept to WETH.
+                let (flags, amount) = if ch.exact_out {
+                    if let Some(work) = displaced.as_mut() {
+                        if let Some(need) =
+                            crate::exact::path_in_for(work, &ch.hops, U256::from(part))
+                        {
+                            let mut x = need;
+                            for l in &ch.hops {
+                                match work.get_mut(l.pool).map(|p| p.apply_exact_in(l.i, l.j, x)) {
+                                    Some(Ok(o)) => x = o,
+                                    _ => break,
+                                }
+                            }
+                        }
+                    }
+                    (LEG_EXACT_OUT, part)
+                } else {
+                    let on = displaced.as_ref().unwrap_or(book);
+                    let need = crate::exact::path_in_for(on, &ch.hops, U256::from(part))
+                        .ok_or(AssembleError::Missing("chain input"))?;
+                    if let Some(work) = displaced.as_mut() {
+                        let mut x = need;
+                        for l in &ch.hops {
+                            match work.get_mut(l.pool).map(|p| p.apply_exact_in(l.i, l.j, x)) {
+                                Some(Ok(o)) => x = o,
+                                _ => break,
+                            }
+                        }
+                    }
+                    let keep = U256::from(10_000u32.saturating_add(u32::from(overshoot_bps)));
+                    let with = mul_div(need, keep, U256::from(10_000u32), Rounding::Up)
+                        .map_err(|_| RouteError::Math)?;
+                    (0, u128_of(with)?)
+                };
+                chain_legs.push(SwapLeg {
+                    venue: liq_plan::VENUE_CHAIN,
+                    token_in,
+                    token_out: debt_addr,
+                    flags,
+                    amount,
+                    data: ch.data.clone(),
+                });
+            }
+            pull = pull
+                .checked_sub(part)
+                .ok_or(AssembleError::AmountTooLarge)?;
+        }
+        if pull == 0 {
+            if chain_legs.is_empty() {
+                return Err(AssembleError::Missing("chain share"));
+            }
+            return Ok((chain_legs, Some((liq_plan::VENUE_CHAIN, c.data.clone()))));
+        }
+    }
+    let shares = shares_of_pull(exit, pull)?;
+    let mut repay = Vec::with_capacity(shares.len());
+    let mut last: Option<VenueData> = None;
+    for (a, amount) in &shares {
+        let (venue, data) = venue_bytes(book, a.leg.pool, a.leg.i, a.leg.j)?;
+        let (flags, amount) = if venue == VENUE_CURVE_POOL
+            || venue == VENUE_CURVE_CRYPTO_POOL
+            || venue == liq_plan::VENUE_FLUID
+        {
+            (0, curve_exact_in(a, *amount, overshoot_bps)?)
+        } else {
+            (LEG_EXACT_OUT, *amount)
+        };
+        repay.push(SwapLeg {
+            venue,
+            token_in,
+            token_out: debt_addr,
+            flags,
+            amount,
+            data: data.clone(),
+        });
+        last = Some((venue, data));
+    }
+    repay.extend(chain_legs);
+    Ok((repay, last))
+}
+
+/// The repay legs of an exit through a hub token (`hub_addr`: WETH, or an
+/// intermediate token the graph proposed): what is sold (`sell_addr`, the
+/// collateral or what it unwrapped into) into the hub ([`hub_sell_legs`]),
+/// then the hub for `pull` of the debt ([`repay_legs`]). What hub the
+/// second step leaves is profit: already WETH, or closed into WETH through
+/// one more pool (the returned profit leg).
+#[allow(clippy::too_many_arguments)] // each input is a distinct plan term
+fn hub_swaps_for_leg(
+    exit: &ExitQuote,
+    hub: &HubUse,
+    book: &PoolBook,
+    weth: Address,
+    hub_addr: Address,
+    pull: u128,
+    debt_addr: Address,
+    sell_addr: Address,
+    overshoot_bps: u16,
+    tol_bps: u16,
+) -> Result<(Vec<SwapLeg>, Option<SwapLeg>), AssembleError> {
+    let mut legs = hub_sell_legs(hub, book, hub_addr, sell_addr, tol_bps)?;
+    let (repay, _) = repay_legs(exit, book, pull, hub_addr, debt_addr, overshoot_bps)?;
+    legs.extend(repay);
+    if hub_addr == weth {
+        return Ok((legs, None));
+    }
+    // The hub left over: its share of what was bought beyond the pull.
+    let left = if exit.amount_out.is_zero() {
+        hub.amount_out
+    } else {
+        crate::solver::mul_div_512(
+            hub.amount_out,
+            exit.amount_out.saturating_sub(U256::from(pull)),
+            exit.amount_out,
+        )
+        .unwrap_or(hub.amount_out)
+    };
+    let (venue, data) = closer_pair(book, hub_addr, weth, left)?;
+    Ok((
+        legs,
+        Some(SwapLeg {
+            venue,
+            token_in: hub_addr,
+            token_out: weth,
+            flags: LEG_TAKE_BALANCE,
+            amount: 0,
+            data,
+        }),
+    ))
+}
+
+/// The swap legs of a leg funded by a flash swap: the lender pool takes
+/// what it is owed, in its own token, inside its callback, so no repay leg
+/// buys the debt. Through WETH, the repay blob sells all the collateral
+/// into WETH ([`hub_sell_legs`], which closes it) and the pool is paid
+/// WETH. On the collateral's own pool nothing is sold before the pool is
+/// paid; what collateral is left closes in the profit blob, or is WETH
+/// already.
+fn flash_swap_swaps_for_leg(
+    s: &Scored,
+    book: &PoolBook,
+    weth: Address,
+    pull: u128,
+    sell_addr: Address,
+    tol_bps: u16,
+) -> Result<(Vec<SwapLeg>, Option<SwapLeg>), AssembleError> {
+    if let Some(hub) = &s.leg.exit.hub {
+        // A flash swap's lender is paid in WETH (`lender_of` refuses other
+        // hubs): the WETH hub only.
+        if Some(hub.hub) != book.hub() {
+            return Err(AssembleError::Missing(
+                "flash swap through a hub other than WETH",
+            ));
+        }
+        return Ok((hub_sell_legs(hub, book, weth, sell_addr, tol_bps)?, None));
+    }
+    if sell_addr == weth {
+        return Ok((Vec::new(), None));
+    }
+    let (venue, data) = closer_pair(book, sell_addr, weth, residual_after(&s.leg, pull))?;
+    Ok((
+        Vec::new(),
+        Some(SwapLeg {
+            venue,
+            token_in: sell_addr,
+            token_out: weth,
+            flags: LEG_TAKE_BALANCE,
+            amount: 0,
+            data,
+        }),
+    ))
+}
+
+/// What the repay swaps leave of the seized collateral: the seize less the
+/// share the exit sells for `pull`.
+fn residual_after(leg: &crate::profit::SizedLeg, pull: u128) -> U256 {
+    let sold = if leg.exit.amount_out.is_zero() {
+        leg.seized
+    } else {
+        crate::solver::mul_div_512(leg.seized, U256::from(pull), leg.exit.amount_out)
+            .unwrap_or(leg.seized)
+    };
+    leg.seized.saturating_sub(sold)
+}
+
+/// The first step of an exit through a hub: `sell_addr` (the collateral,
+/// or what it unwrapped into) into `hub_addr`. Every pool but the largest sells
+/// its allocation exact-in, lowered by `tol_bps` because the seize can come
+/// in a little under its quote; the largest then sells the whole balance
+/// (TAKE_BALANCE), which closes the collateral, so no profit closer
+/// follows.
+fn hub_sell_legs(
+    hub: &HubUse,
+    book: &PoolBook,
+    hub_addr: Address,
+    sell_addr: Address,
+    tol_bps: u16,
+) -> Result<Vec<SwapLeg>, AssembleError> {
+    let sold: SmallVec<[&Allocation; 6]> = hub
+        .allocs
+        .iter()
+        .filter(|a| !a.amount_in.is_zero())
+        .collect();
+    let close = sold
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, a)| a.amount_in)
+        .map(|(i, _)| i)
+        .ok_or(AssembleError::Missing("hub allocation"))?;
+    let mut legs = Vec::with_capacity(sold.len());
+    let mut closer = None;
+    for (i, a) in sold.iter().enumerate() {
+        let (venue, data) = venue_bytes(book, a.leg.pool, a.leg.i, a.leg.j)?;
+        if i == close {
+            closer = Some(SwapLeg {
+                venue,
+                token_in: sell_addr,
+                token_out: hub_addr,
+                flags: LEG_TAKE_BALANCE,
+                amount: 0,
+                data,
+            });
+            continue;
+        }
+        legs.push(SwapLeg {
+            venue,
+            token_in: sell_addr,
+            token_out: hub_addr,
+            flags: 0,
+            amount: u128_of(with_min_out_tolerance(a.amount_in, tol_bps)?)?,
+            data,
+        });
+    }
+    legs.extend(closer);
+    Ok(legs)
 }
 
 /// Collateral sold exact-in on Curve to buy `share` of debt: the quoted
@@ -606,44 +963,83 @@ fn curve_exact_in(a: &Allocation, share: u128, overshoot_bps: u16) -> Result<u12
     u128_of(with)
 }
 
-/// A live pool holding both tokens, for a take-balance closer: UniV3 first,
-/// then V2, then Curve. Fail closed when none exists — do not invent a pool.
+/// The pool a TAKE_BALANCE closer sells `token_in` into `token_out`
+/// through: the one quoting the most out for `amount` on the book's state
+/// (best zero-size marginal when `amount` is zero).
+///
+/// The closer sells its whole balance at no minimum, so its pool decides
+/// what the leftover is worth. It used to be the first live pool in book
+/// order, however thin: at block 26,103,141 the leftover 8.11 LINK went
+/// through the 1 % LINK/WETH pool for 0.0243 WETH, about 43 % under the
+/// oracle price, and the plan failed its own profit check.
 fn closer_pair(
     book: &PoolBook,
     token_in: Address,
     token_out: Address,
+    amount: U256,
 ) -> Result<(u8, Vec<u8>), AssembleError> {
-    for want in [
-        Venue::UniV3,
-        Venue::UniV2,
-        Venue::CurveStable,
-        Venue::CurveCrypto,
-    ] {
-        for p in book.pools() {
-            if p.venue() != want || !p.is_live() {
-                continue;
-            }
-            let (Some(i), Some(j)) = (
-                p.tokens.iter().position(|t| *t == token_in),
-                p.tokens.iter().position(|t| *t == token_out),
-            ) else {
-                continue;
-            };
-            let (Ok(i), Ok(j)) = (u8::try_from(i), u8::try_from(j)) else {
-                continue;
-            };
-            let Some(id) = book.by_address(p.address) else {
-                continue;
-            };
-            return venue_bytes(book, id, i, j);
+    let mut best: Option<(U256, PoolId, u8, u8)> = None;
+    for p in book.pools() {
+        if !matches!(
+            p.venue(),
+            Venue::UniV3
+                | Venue::UniV2
+                | Venue::CurveStable
+                | Venue::CurveCrypto
+                | Venue::Balancer
+                | Venue::Fluid
+        ) || !p.is_live()
+        {
+            continue;
+        }
+        let (Some(i), Some(j)) = (
+            p.tokens.iter().position(|t| *t == token_in),
+            p.tokens.iter().position(|t| *t == token_out),
+        ) else {
+            continue;
+        };
+        let (Ok(i), Ok(j)) = (u8::try_from(i), u8::try_from(j)) else {
+            continue;
+        };
+        let Some(id) = book.by_address(p.address) else {
+            continue;
+        };
+        let score = if amount.is_zero() {
+            p.rho_at_zero(i, j).unwrap_or(U256::ZERO)
+        } else {
+            p.quote_exact_in(i, j, amount).unwrap_or(U256::ZERO)
+        };
+        if best.as_ref().is_none_or(|(b, ..)| score > *b) {
+            best = Some((score, id, i, j));
         }
     }
-    Err(AssembleError::Missing("pair pool"))
+    if let Some((_, id, i, j)) = best {
+        return venue_bytes(book, id, i, j);
+    }
+    // No pool between them: an exact-input chain through the graph (venue
+    // 10), which the closer's TAKE_BALANCE sells the whole balance along.
+    let (Some(from), Some(to)) = (book.asset_id(token_in), book.asset_id(token_out)) else {
+        return Err(AssembleError::Missing("pair pool"));
+    };
+    let free = GasTerms {
+        base_fee_wei: 0,
+        priority_fee_wei: 0,
+        out_per_eth: crate::exact::OUT_PER_ETH_WETH,
+    };
+    let amount = if amount.is_zero() {
+        U256::from(1u64)
+    } else {
+        amount
+    };
+    match crate::graph::best_chain(book, from, to, amount, &free, 1) {
+        Some((_, _, data, _)) => Ok((liq_plan::VENUE_CHAIN, data)),
+        None => Err(AssembleError::Missing("pair pool")),
+    }
 }
 
 fn univ3_addr_for(book: &PoolBook, a: Address, b: Address) -> Option<Address> {
     book.pools().iter().find_map(|p| {
-        if p.venue() != Venue::UniV3 || !p.is_live() {
+        if !p.is_v3_contract() || !p.is_live() {
             return None;
         }
         let has_a = p.tokens.contains(&a);
@@ -663,96 +1059,36 @@ fn flash_premium(
     u128_of(fee)
 }
 
-/// Add `premium` onto the exact-out repay legs so they sum to
-/// `pull + premium`. Shares stay proportional; the last leg takes the
-/// remainder so the sum is exact.
-fn fund_premium(swaps: &mut [SwapLeg], premium: u128) -> Result<(), AssembleError> {
-    if premium == 0 {
-        return Ok(());
-    }
-    let mut n = 0u32;
-    let mut total = U256::ZERO;
-    for s in swaps.iter() {
-        if s.flags & LEG_EXACT_OUT == 0 {
-            continue;
-        }
-        n = n.checked_add(1).ok_or(AssembleError::AmountTooLarge)?;
-        total = total
-            .checked_add(U256::from(s.amount))
-            .ok_or(AssembleError::AmountTooLarge)?;
-    }
-    if n == 0 || total.is_zero() {
-        // Exact-in (Curve) repay legs carry the premium in their overshoot;
-        // an unwrap into the debt carries it in the seize bonus.
-        if swaps.iter().any(|s| {
-            s.flags & (LEG_EXACT_OUT | LEG_TAKE_BALANCE) == 0 || liq_plan::is_unwrap_venue(s.venue)
-        }) {
-            return Ok(());
-        }
-        return Err(AssembleError::Missing("repay swap"));
-    }
-    let prem = U256::from(premium);
-    let mut left = premium;
-    let mut seen = 0u32;
-    for s in swaps.iter_mut() {
-        if s.flags & LEG_EXACT_OUT == 0 {
-            continue;
-        }
-        seen = seen.checked_add(1).ok_or(AssembleError::AmountTooLarge)?;
-        let add = if seen == n {
-            left
-        } else {
-            let share = mul_div(U256::from(s.amount), prem, total, Rounding::Down)
-                .map_err(|_| RouteError::Math)?;
-            let share_u = u128_of(share)?;
-            left = left
-                .checked_sub(share_u)
-                .ok_or(AssembleError::AmountTooLarge)?;
-            share_u
-        };
-        s.amount = s
-            .amount
-            .checked_add(add)
-            .ok_or(AssembleError::AmountTooLarge)?;
-    }
-    Ok(())
+/// Whether `legs` hold an exact output the Executor adds the flash premium
+/// to: a pool-direct V3, V2 or V4 one (`SwapModule.runSwaps`). A router's
+/// output is fixed in its own calldata, and Curve has no exact output.
+fn buys_premium(legs: &[SwapLeg]) -> bool {
+    legs.iter().any(|s| {
+        s.flags & LEG_EXACT_OUT != 0
+            && (s.venue == VENUE_UNIV3_POOL
+                || s.venue == VENUE_UNIV2_POOL
+                || s.venue == VENUE_UNIV4_POOL
+                || s.venue == liq_plan::VENUE_CHAIN)
+    })
 }
 
-/// Move an already-funded premium when a fallback source charges a different fee.
-fn shift_premium(swaps: &mut [SwapLeg], old_fee: u128, new_fee: u128) -> Result<(), AssembleError> {
-    if old_fee == new_fee {
-        return Ok(());
+/// `premium` in bps of `pull`, rounded up: what an exact-input repay of
+/// `pull` overshoots by to buy the whole premium too.
+fn premium_bps_of(premium: u128, pull: u128) -> Result<u16, AssembleError> {
+    if premium == 0 {
+        return Ok(0);
     }
-    if !swaps.iter().any(|s| s.flags & LEG_EXACT_OUT != 0)
-        && swaps.iter().any(|s| liq_plan::is_unwrap_venue(s.venue))
-    {
-        // Every repay is an unwrap straight into the debt: the premium comes
-        // out of the unwrapped surplus, whatever the fee.
-        return Ok(());
+    if pull == 0 {
+        return Ok(u16::MAX);
     }
-    let last = swaps
-        .iter_mut()
-        .rev()
-        .find(|s| s.flags & LEG_EXACT_OUT != 0)
-        .ok_or(AssembleError::Missing("repay swap"))?;
-    if new_fee > old_fee {
-        let d = new_fee
-            .checked_sub(old_fee)
-            .ok_or(AssembleError::AmountTooLarge)?;
-        last.amount = last
-            .amount
-            .checked_add(d)
-            .ok_or(AssembleError::AmountTooLarge)?;
-    } else {
-        let d = old_fee
-            .checked_sub(new_fee)
-            .ok_or(AssembleError::AmountTooLarge)?;
-        last.amount = last
-            .amount
-            .checked_sub(d)
-            .ok_or(AssembleError::Missing("premium headroom"))?;
-    }
-    Ok(())
+    let bps = mul_div(
+        U256::from(premium),
+        U256::from(10_000u32),
+        U256::from(pull),
+        Rounding::Up,
+    )
+    .map_err(|_| RouteError::Math)?;
+    Ok(u16::try_from(bps).unwrap_or(u16::MAX))
 }
 
 /// Assemble every selected plan. Empty `plans` → empty output (a skipped
@@ -765,7 +1101,6 @@ pub fn assemble(
     view: &dyn AssembleView,
     validate_ctx: &ValidateCtx,
     bid: &Bid,
-    gas_price_in_debt: U256,
     gas_terms: &GasTerms,
     flags: u8,
     flash: &FlashIndex,
@@ -783,7 +1118,6 @@ pub fn assemble(
             view,
             validate_ctx,
             bid,
-            gas_price_in_debt,
             gas_terms,
             flags,
             flash,
@@ -801,19 +1135,19 @@ fn assemble_one(
     view: &dyn AssembleView,
     validate_ctx: &ValidateCtx,
     bid: &Bid,
-    gas_price_in_debt: U256,
     gas_terms: &GasTerms,
     flags: u8,
     flash: &FlashIndex,
     haircut: Haircut,
 ) -> Result<Assembled, AssembleError> {
-    let min_profit_wei = min_profit_floor(p, bid, view, gas_price_in_debt)?;
     let gas_cost_wei = u128_of(
         U256::from(p.hop_and_wrap_gas)
             .checked_mul(U256::from(gas_terms.accounting_wei_per_gas()?))
             .ok_or(RouteError::Math)?,
     )?;
+    let tol = cfg.min_out_tolerance_bps;
     let mut groups = Vec::new();
+    let mut floor_groups: Vec<FloorGroup<'_>> = Vec::new();
     let mut profit_swaps: Vec<SwapLeg> = Vec::new();
     let mut fallbacks: SmallVec<[SmallVec<[FlashRoute; 6]>; 4]> = SmallVec::new();
     let mut group_fee_bps: SmallVec<[u16; 4]> = SmallVec::new();
@@ -821,22 +1155,39 @@ fn assemble_one(
 
     for g in &p.groups {
         let debt_addr = token(view, g.debt)?;
+        // A reward-only group's values are WETH wei already.
+        let per_eth = if g.reward_only {
+            WEI
+        } else {
+            view.per_eth(g.debt)
+                .filter(|p| !p.is_zero())
+                .ok_or(AssembleError::Missing("per_eth"))?
+        };
         let mut assigned = vec![false; g.legs.len()];
         for cg in &g.cascade.groups {
+            let flash_swap = cg.provider == FlashProvider::UniV3Swap;
+            // The legs this source funds: in rank order while they fit, and
+            // no more than a repay swap's tie can name.
             let mut capacity = cg.amount;
-            let mut liqs = Vec::new();
-            let mut repay_swaps = Vec::new();
+            let mut members: SmallVec<[&Scored; 4]> = SmallVec::new();
             for (i, s) in g.legs.iter().enumerate() {
-                if assigned.get(i).copied().unwrap_or(true) {
-                    continue;
+                if members.len() >= LEG_TIE_MAX {
+                    break;
                 }
-                if s.leg.s > capacity {
+                if assigned.get(i).copied().unwrap_or(true) || s.leg.s > capacity {
                     continue;
                 }
                 capacity = capacity.saturating_sub(s.leg.s);
                 if let Some(flag) = assigned.get_mut(i) {
                     *flag = true;
                 }
+                members.push(s);
+            }
+            if members.is_empty() {
+                continue;
+            }
+            let mut liqs = Vec::with_capacity(members.len());
+            for s in &members {
                 let meta = view
                     .meta(s.position)
                     .ok_or(AssembleError::Missing("leg meta"))?;
@@ -869,9 +1220,37 @@ fn assemble_one(
                     tail: meta.tail,
                     protocol_pull: pull,
                 });
+            }
+            let pull_sum: u128 = liqs.iter().try_fold(0u128, |a, l| {
+                a.checked_add(l.protocol_pull)
+                    .ok_or(AssembleError::AmountTooLarge)
+            })?;
+            let take = u128_of(cg.amount)?;
+            // Borrow the pull, plus over-borrow dust the source can spare.
+            // The premium is not borrowed: the lender pulls
+            // `flash_amount + fee(flash_amount)`, so an extra `fee` of
+            // principal comes straight back out and the fee is still unpaid.
+            // The repay swaps buy each leg's pull; the Executor buys the fee
+            // its provider reports, with the group's first exact-output pool
+            // leg to run.
+            let spare = take
+                .checked_sub(pull_sum)
+                .ok_or(AssembleError::Missing("flash depth"))?;
+            let extra = u128_of(cfg.over_borrow)?;
+            // A flash swap buys the pull exactly: the pool is paid for every
+            // unit it sells, surplus included.
+            let add = if flash_swap { 0 } else { extra.min(spare) };
+            let flash_amt = pull_sum
+                .checked_add(add)
+                .ok_or(AssembleError::AmountTooLarge)?;
+            let premium = flash_premium(cg.provider, cg.fee_bps, flash_amt)?;
+            let mut repay_swaps: Vec<SwapLeg> = Vec::new();
+            for (k, (s, l)) in members.iter().zip(liqs.iter()).enumerate() {
+                let coll_addr = l.collateral_asset;
+                let pull = l.protocol_pull;
                 if g.reward_only {
                     // Nothing to repay: every paid asset closes to WETH.
-                    for &(asset, _) in &s.leg.rewards {
+                    for &(asset, paid) in &s.leg.rewards {
                         let addr = token(view, asset)?;
                         if addr == weth
                             || profit_swaps
@@ -880,7 +1259,7 @@ fn assemble_one(
                         {
                             continue;
                         }
-                        let (venue, data) = closer_pair(book, addr, weth)?;
+                        let (venue, data) = closer_pair(book, addr, weth, paid)?;
                         profit_swaps.push(SwapLeg {
                             venue,
                             token_in: addr,
@@ -892,7 +1271,6 @@ fn assemble_one(
                     }
                     continue;
                 }
-                let overshoot = cfg.min_out_tolerance_bps.saturating_add(cg.fee_bps);
                 // A wrapper with no pool of its own is unwrapped first (the
                 // whole balance, ahead of every selling leg) and what it
                 // unwraps into is sold instead.
@@ -908,9 +1286,7 @@ fn assemble_one(
                                     (VENUE_PENDLE_PT_REDEEM, yt.to_vec())
                                 }
                                 UnwrapKind::CurveLp { i } => {
-                                    let mut d = coll_addr.to_vec();
-                                    d.push(i);
-                                    (VENUE_CURVE_LP_ONE_COIN, d)
+                                    (VENUE_CURVE_LP_ONE_COIN, curve_lp_bytes(book, coll_addr, i)?)
                                 }
                                 UnwrapKind::PendleMarket { market, .. } => {
                                     (VENUE_PENDLE_MARKET_SELL, market.to_vec())
@@ -933,12 +1309,49 @@ fn assemble_one(
                     None => coll_addr,
                 };
                 // Unwrapped straight into the debt: nothing to sell; the
-                // surplus debt is swept by `route_surplus_debt`.
-                let (repay, profit) = if sell_addr == debt_addr {
-                    (Vec::new(), None)
-                } else {
-                    swaps_for_leg(s, book, weth, pull, debt_addr, sell_addr, overshoot)?
+                // surplus debt is swept by `route_surplus_debt`. Through the
+                // hub, the repay legs close the collateral themselves.
+                let legs_at = |overshoot: u16| -> Result<_, AssembleError> {
+                    if sell_addr == debt_addr {
+                        Ok((Vec::new(), None))
+                    } else if flash_swap {
+                        flash_swap_swaps_for_leg(s, book, weth, pull, sell_addr, tol)
+                    } else if let Some(hub) = &s.leg.exit.hub {
+                        // Sold into the hub token, bought from it; a hub
+                        // other than WETH closes its leftover into WETH.
+                        let hub_addr = token(view, hub.hub)?;
+                        hub_swaps_for_leg(
+                            &s.leg.exit,
+                            hub,
+                            book,
+                            weth,
+                            hub_addr,
+                            pull,
+                            debt_addr,
+                            sell_addr,
+                            overshoot,
+                            tol,
+                        )
+                    } else {
+                        swaps_for_leg(s, book, weth, pull, debt_addr, sell_addr, overshoot)
+                    }
                 };
+                // Curve's exact-input legs overshoot by the tolerance. Should
+                // this leg be the only one of its group to fill, one of its
+                // own legs must buy the premium too: the Executor adds it to
+                // a pool exact output, and with none here the Curve legs
+                // overshoot by the whole premium.
+                let (mut repay, profit) = legs_at(tol)?;
+                if premium != 0 && !buys_premium(&repay) {
+                    (repay, _) = legs_at(tol.saturating_add(premium_bps_of(premium, pull)?))?;
+                }
+                // Tied to their leg: the Executor skips them should it not
+                // fill. What takes a whole balance spends what arrived.
+                for r in &mut repay {
+                    if r.flags & LEG_TAKE_BALANCE == 0 {
+                        r.flags = tie_flags(r.flags, k).ok_or(AssembleError::Missing("tie"))?;
+                    }
+                }
                 repay_swaps.extend(repay);
                 // One TAKE_BALANCE closer per non-WETH collateral across the
                 // whole plan. WETH collateral has no closer.
@@ -951,29 +1364,6 @@ fn assemble_one(
                     }
                 }
             }
-            if liqs.is_empty() {
-                continue;
-            }
-            let pull_sum: u128 = liqs.iter().try_fold(0u128, |a, l| {
-                a.checked_add(l.protocol_pull)
-                    .ok_or(AssembleError::AmountTooLarge)
-            })?;
-            let take = u128_of(cg.amount)?;
-            // Borrow the pull, plus over-borrow dust the source can spare.
-            // The premium is not borrowed: the lender pulls
-            // `flash_amount + fee(flash_amount)`, so an extra `fee` of
-            // principal comes straight back out and the fee is still unpaid.
-            // The repay swap buys `pull + fee(flash_amount)`.
-            let spare = take
-                .checked_sub(pull_sum)
-                .ok_or(AssembleError::Missing("flash depth"))?;
-            let extra = u128_of(cfg.over_borrow)?;
-            let add = extra.min(spare);
-            let flash_amt = pull_sum
-                .checked_add(add)
-                .ok_or(AssembleError::AmountTooLarge)?;
-            let premium = flash_premium(cg.provider, cg.fee_bps, flash_amt)?;
-            fund_premium(&mut repay_swaps, premium)?;
             groups.push(FlashGroup {
                 provider: cg.provider,
                 flash_source: cg.source,
@@ -983,8 +1373,17 @@ fn assemble_one(
                 liqs,
                 repay_swaps,
             });
+            floor_groups.push(FloorGroup {
+                legs: members,
+                per_eth,
+                premium: U256::from(premium),
+            });
             group_fee_bps.push(cg.fee_bps);
-            if g.reward_only {
+            // Nothing to fall back to: a reward-only group borrows nothing,
+            // and a flash swap's repay blob has no leg a loan could stand
+            // behind (re-encoding it onto a source would leave the debt
+            // unbought).
+            if g.reward_only || flash_swap {
                 fallbacks.push(SmallVec::new());
                 continue;
             }
@@ -1002,6 +1401,7 @@ fn assemble_one(
     if groups.is_empty() {
         return Err(AssembleError::Missing("groups"));
     }
+    let min_profit_wei = min_profit_floor(&floor_groups, bid, gas_cost_wei, tol)?;
     let mut plan = BatchPlan {
         flags,
         bid_bps: bid.coinbase_bps,
@@ -1047,7 +1447,8 @@ fn route_surplus_debt(
         if has {
             continue;
         }
-        match closer_pair(book, g.debt_asset, weth) {
+        let surplus = U256::from(g.flash_amount.saturating_sub(pull));
+        match closer_pair(book, g.debt_asset, weth, surplus) {
             Ok((venue, data)) => {
                 plan.profit_swaps.push(SwapLeg {
                     venue,
@@ -1075,7 +1476,9 @@ fn route_surplus_debt(
 
 /// 07B deferred criterion: on sim `InsufficientLiquidity`, rebuild the
 /// named group against the next source in its fallback chain. A higher
-/// fee is refused (`FeeIncreased`) so minProfit cannot silently overstate.
+/// fee is refused (`FeeIncreased`): the floor and any Curve overshoot were
+/// sized for this one. The swaps stay as they are; the Executor buys
+/// whatever premium the new source charges.
 pub fn reencode_next_source(
     assembled: &Assembled,
     group_idx: usize,
@@ -1102,12 +1505,9 @@ pub fn reencode_next_source(
     if next.amount < need && next.amount < U256::from(pull) {
         return Err(AssembleError::NextSourceTooShallow);
     }
-    let old_fee = flash_premium(g.provider, g.fee_bps, g.flash_amount)?;
     g.provider = next.provider;
     g.flash_source = next.source;
     g.fee_bps = next.fee_bps;
-    let new_fee = flash_premium(g.provider, g.fee_bps, g.flash_amount)?;
-    shift_premium(&mut g.repay_swaps, old_fee, new_fee)?;
     validate(&plan, validate_ctx)?;
     Ok(plan)
 }
@@ -1150,6 +1550,9 @@ pub fn reencode_with(
     }
     g.provider = next.provider;
     g.flash_source = next.source;
+    // Off the wire, but validation prices the premium with it: kept at the
+    // old source's, a fee-free next source would be an unpriceable fee.
+    g.fee_bps = next.fee_bps;
     validate(&plan, validate_ctx)?;
     Ok(plan)
 }
@@ -1167,10 +1570,10 @@ mod tests {
     use crate::bid::{bid, BidConfig};
     use crate::exact::{solve_pair, GasTerms};
     use crate::fixtures::*;
-    use crate::profit::{gas_price_in_debt, MarketView};
+    use crate::profit::MarketView;
     use crate::select::{learning_p, select, PositionInput, SelectCfg};
     use crate::solver::Pool;
-    use alloy_primitives::{Address, B256, U256};
+    use alloy_primitives::{Address, B256, I256, U256};
     use liq_flash::{
         AavePool, AaveReserve, CostModel, FlashIndex, FlashSource, HeldAsset, MorphoBlue,
     };
@@ -1181,6 +1584,37 @@ mod tests {
     use liq_types::fixed::RAY;
     use liq_types::{MarketId, PositionKey, ProtocolId, Ray, TriggerKind, Wad};
     use std::collections::HashMap;
+
+    /// The closer's pool decides what the leftover is worth, since it sells
+    /// the whole balance at no minimum. Two pools at the same price: a thin
+    /// one listed first, a deep one second. For a 5-token leftover the deep
+    /// pool pays more (oracle: the constant-product formula on each). The
+    /// first-listed pool used to win however thin (block 26,103,141: the 1 %
+    /// LINK/WETH pool, 43 % under the oracle price).
+    #[test]
+    fn the_closer_sells_through_the_pool_that_pays_most() {
+        let mut assets = std::collections::HashMap::new();
+        assets.insert(tok(0), A0);
+        assets.insert(tok(1), A1);
+        let mut bk = PoolBook::new(assets, None, HOP_GAS);
+        bk.add(v2(1, e18(10), e18(10))).unwrap();
+        bk.add(v2(2, e18(10_000), e18(10_000))).unwrap();
+        let (venue, data) = closer_pair(&bk, tok(0), tok(1), e18(5)).unwrap();
+        assert_eq!(venue, VENUE_UNIV2_POOL);
+        assert_eq!(&data[..20], addr(2).as_slice(), "the deep pool");
+        // 5 in: thin pays 10·5·0.997/(10+5·0.997) ≈ 3.33, deep ≈ 4.98.
+        let thin = bk
+            .get(PoolId(0))
+            .unwrap()
+            .quote_exact_in(0, 1, e18(5))
+            .unwrap();
+        let deep = bk
+            .get(PoolId(1))
+            .unwrap()
+            .quote_exact_in(0, 1, e18(5))
+            .unwrap();
+        assert!(deep > thin + e18(1), "{deep} vs {thin}");
+    }
 
     const PROTO: ProtocolId = ProtocolId(0);
     const WEI: U256 = U256::from_limbs([1_000_000_000_000_000_000, 0, 0, 0]);
@@ -1323,7 +1757,7 @@ mod tests {
             legs_per_plan: u8::MAX,
             nonce_slots: 4,
             header_gas_limit: 30_000_000,
-            wrap_gas: [366_332, 355_632, 460_032, 370_435, 384_134],
+            wrap_gas: [366_332, 355_632, 460_032, 370_435, 384_134, 0, 0],
             wrap_aave_v4: 496_704,
             aave_v4: None,
             liq_gas: crate::select::LiqGas::uniform(80_000),
@@ -1381,6 +1815,20 @@ mod tests {
         ])
     }
 
+    fn v2_ab(
+        n: u64,
+        a: liq_types::AssetId,
+        b: liq_types::AssetId,
+        ta: Address,
+        tb: Address,
+        reserve: U256,
+    ) -> Pool {
+        let mut p = crate::fixtures::v2(n, reserve, reserve);
+        p.assets = smallvec::SmallVec::from_slice(&[a, b]);
+        p.tokens = smallvec::SmallVec::from_slice(&[ta, tb]);
+        p
+    }
+
     fn v3_ab(
         n: u64,
         a: liq_types::AssetId,
@@ -1398,6 +1846,25 @@ mod tests {
         p.assets = smallvec::SmallVec::from_slice(&[a, b]);
         p.tokens = smallvec::SmallVec::from_slice(&[ta, tb]);
         p
+    }
+
+    /// A pool-direct V3 leg is the pool address, then for a fork the factory
+    /// id of its deployer (1 SushiSwap, 2 PancakeSwap); a Uniswap pool is the
+    /// bare address (`liq_wire::wire::V3_FACTORY_*`). A V4 pool is untouched.
+    #[test]
+    fn a_v3_leg_names_the_factory_of_a_fork_pool() {
+        for (factory, tail) in [(0u8, None), (1, Some(1u8)), (2, Some(2))] {
+            let mut p = v3_ab(7, A0, A1, tok(0), tok(1));
+            if let crate::solver::PoolState::V3(s) = &mut p.state {
+                s.factory = factory;
+            }
+            let bk = book(vec![p]);
+            let (venue, data) = venue_bytes(&bk, PoolId(0), 0, 1).unwrap();
+            assert_eq!(venue, VENUE_UNIV3_POOL);
+            let mut want = addr(7).to_vec();
+            want.extend(tail);
+            assert_eq!(data, want, "factory {factory}");
+        }
     }
 
     fn idx_aave() -> (Vec<Box<dyn FlashSource>>, FlashIndex) {
@@ -1473,11 +1940,44 @@ mod tests {
         }
     }
 
-    /// Units regression: `contribution` is in debt units, gas cost is in
-    /// wei. A non-WETH debt (here priced like USDC: 3000e6 raw per ETH)
-    /// must be converted to wei *before* gas is subtracted.
+    /// The floor's terms in wei, worked by hand from the assembled plan's
+    /// own legs: `swap_out` (rounded down) and `s` (rounded up) through
+    /// `per_eth`, the tolerance slack on what moved, the group's premium,
+    /// and the plan's gas cost once.
+    fn floor_by_hand(
+        legs: &[&crate::profit::SizedLeg],
+        per_eth: U256,
+        premium: U256,
+        gas_cost_wei: u128,
+        bid_bps: u16,
+        tol: u16,
+    ) -> u128 {
+        let weakest = legs
+            .iter()
+            .map(|l| {
+                let moved = l.swap_out * WEI / per_eth;
+                let owed = (l.s * WEI).div_ceil(per_eth);
+                let slack = (moved * U256::from(tol)).div_ceil(U256::from(10_000u32));
+                I256::from_raw(moved) - I256::from_raw(owed) - I256::from_raw(slack)
+            })
+            .min()
+            .unwrap();
+        let premium_wei = (premium * WEI).div_ceil(per_eth);
+        let worst =
+            weakest - I256::from_raw(premium_wei) - I256::from_raw(U256::from(gas_cost_wei));
+        if !worst.is_positive() {
+            return 1;
+        }
+        let keep =
+            worst.into_raw() * U256::from(10_000 - u32::from(bid_bps)) / U256::from(10_000u32);
+        u128::try_from(keep).unwrap().max(1)
+    }
+
+    /// Units regression: a leg's value is in debt units and the gas cost in
+    /// wei. A non-WETH debt (here priced like USDC: 3000e6 raw per ETH) is
+    /// converted to wei *before* gas is subtracted.
     #[test]
-    fn profit_floor_converts_debt_contribution_before_subtracting_wei_gas() {
+    fn profit_floor_converts_debt_value_before_subtracting_wei_gas() {
         struct Usdc<'a>(&'a World);
         impl AssembleView for Usdc<'_> {
             fn token(&self, a: AssetId) -> Option<Address> {
@@ -1493,30 +1993,144 @@ mod tests {
         let bk = book(vec![deep()]);
         let (_s, flash) = idx();
         let quote = q(1);
-        let input = PositionInput {
-            position: quote.position,
-            protocol: PROTO,
-            health: health(),
-            quote: &quote,
-            cause: TriggerKind::Stale,
-            p: learning_p(),
-            gas_success: None,
-            gas_failed: 50_000,
-        };
-        let world = World {
-            tokens: HashMap::new(),
-            metas: HashMap::new(),
-        };
-        let plans = select(&[input], &cfg(), &flash, H, &bk, None, &world, &GAS).unwrap();
-        let leg = &plans[0].groups[0].legs[0];
+        let world = world_one(&quote);
+        let plans = select(
+            &[input_of(&quote)],
+            &cfg(),
+            &flash,
+            H,
+            &bk,
+            None,
+            &world,
+            &GAS,
+        )
+        .unwrap();
         let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
-        let wei_per_gas = U256::from(10_000_000_000u64);
-        let floor = min_profit_floor(&plans[0], &bd, &Usdc(&world), wei_per_gas).unwrap();
-        let contribution_wei = leg.leg.contribution * WEI / U256::from(3_000_000_000u64);
-        let cost_wei = U256::from(leg.expected_gas) * wei_per_gas;
-        let want =
-            searcher_net(contribution_wei.saturating_sub(cost_wei), bd.coinbase_bps).unwrap();
-        assert_eq!(U256::from(floor), want);
+        let tol = cfg().min_out_tolerance_bps;
+        let assembled = assemble(
+            &plans,
+            &cfg(),
+            &bk,
+            &Usdc(&world),
+            &vctx(tok(1)),
+            &bd,
+            &GAS,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let plan = &assembled[0].plan;
+        let leg = &plans[0].groups[0].legs[0].leg;
+        assert_eq!(
+            plan.groups[0].provider,
+            liq_types::FlashProvider::Morpho,
+            "no premium"
+        );
+        let want = floor_by_hand(
+            &[leg],
+            U256::from(3_000_000_000u64),
+            U256::ZERO,
+            plan.gas_cost_wei,
+            bd.coinbase_bps,
+            tol,
+        );
+        assert_eq!(plan.min_profit_wei, want);
+        assert!(want > 1, "a real floor, not the 1-wei stop");
+    }
+
+    /// Two positions in one Aave group (5 bps). Each leg's repay swaps are
+    /// tied to it and buy its own pull; none buys the premium, which the
+    /// Executor adds on chain. The floor is the worst landing: the weaker
+    /// leg alone, less the premium on the whole flash (a beaten leg's share
+    /// goes back unspent, its premium does not) and the plan's gas once.
+    /// Oracle: the arithmetic from the legs' quoted values, and Aave's
+    /// `percentMulCeil` premium on the flash amount.
+    #[test]
+    fn a_shared_group_ties_each_leg_and_floors_at_its_weakest_leg_alone() {
+        let bk = book(vec![deep()]);
+        let (_s, flash) = idx_aave();
+        let big = q(1);
+        let mut small = q(2);
+        small.repay_options[0].max_repay = e18(4);
+        small.seize_options[0].max_seize = e18(8);
+        let mut world = world_one(&big);
+        world.metas.insert(
+            small.position,
+            LegMeta {
+                adapter: ExecutorAdapter::AaveV3,
+                market: addr(0x51),
+                borrower: small.key.user,
+                tail: LegTail::None,
+                protocol_pull: None,
+            },
+        );
+        let inputs = [input_of(&big), input_of(&small)];
+        let plans = select(&inputs, &cfg(), &flash, H, &bk, None, &world, &GAS).unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].groups[0].legs.len(), 2, "one debt group of two");
+        let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
+        let assembled = assemble(
+            &plans,
+            &cfg(),
+            &bk,
+            &world,
+            &vctx(tok(1)),
+            &bd,
+            &GAS,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let plan = &assembled[0].plan;
+        assert_eq!(plan.groups.len(), 1, "one flash group");
+        let g = &plan.groups[0];
+        assert_eq!(g.liqs.len(), 2);
+        assert_eq!(g.fee_bps, 5);
+        for (k, l) in g.liqs.iter().enumerate() {
+            let bought: u128 = g
+                .repay_swaps
+                .iter()
+                .filter(|s| liq_plan::leg_tie(s.flags) == Some(k))
+                .map(|s| {
+                    assert_ne!(s.flags & LEG_EXACT_OUT, 0);
+                    s.amount
+                })
+                .sum();
+            assert_eq!(
+                bought, l.protocol_pull,
+                "leg {k} buys its own pull, no premium"
+            );
+        }
+        assert!(
+            g.repay_swaps
+                .iter()
+                .all(|s| liq_plan::leg_tie(s.flags).is_some()),
+            "every repay swap is tied"
+        );
+        // Aave's percentMulCeil on the flash.
+        let premium =
+            (U256::from(g.flash_amount) * U256::from(5u32)).div_ceil(U256::from(10_000u32));
+        let by_pos = |p: PositionId| {
+            &plans[0].groups[0]
+                .legs
+                .iter()
+                .find(|s| s.position == p)
+                .unwrap()
+                .leg
+        };
+        let legs = [by_pos(big.position), by_pos(small.position)];
+        let tol = cfg().min_out_tolerance_bps;
+        let want = floor_by_hand(&legs, WEI, premium, plan.gas_cost_wei, bd.coinbase_bps, tol);
+        assert_eq!(plan.min_profit_wei, want);
+        // The floor is the smaller leg alone: what the larger one alone would
+        // keep is above it, and so is the two together.
+        let alone = |l: &crate::profit::SizedLeg| {
+            floor_by_hand(&[l], WEI, premium, plan.gas_cost_wei, bd.coinbase_bps, tol)
+        };
+        assert_eq!(want, alone(legs[1]));
+        assert!(alone(legs[0]) > want);
     }
 
     /// Curve-only exit: the repay share is sold exact-in (Curve has no exact
@@ -1562,7 +2176,6 @@ mod tests {
         let plans = select(&[input], &cfg(), &flash, H, &bk, None, &world, &GAS).unwrap();
         assert_eq!(plans.len(), 1);
         let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
-        let price = gas_price_in_debt(&GAS).unwrap();
         let assembled = assemble(
             &plans,
             &cfg(),
@@ -1570,7 +2183,6 @@ mod tests {
             &world,
             &vctx(tok(1)),
             &bd,
-            price,
             &GAS,
             FLAG_SWEEP,
             &flash,
@@ -1583,7 +2195,11 @@ mod tests {
         assert_eq!(repay.len(), 1);
         assert_eq!(repay[0].venue, VENUE_CURVE_POOL);
         assert_eq!(repay[0].flags & LEG_EXACT_OUT, 0, "curve is exact-in");
-        assert_eq!(&repay[0].data[20..], &[0u8, 1u8], "coin i = coll, j = debt");
+        assert_eq!(
+            &repay[0].data[20..],
+            &[0u8, 1u8, CURVE_HANDLER],
+            "coin i = coll, j = debt, then the pool's MetaRegistry handler"
+        );
         // Sells the collateral that buys the pull at the quoted rate, plus the
         // overshoot (min-out tolerance + the Morpho source's 0 bps fee); the
         // take-balance closer sells the rest.
@@ -1605,6 +2221,1164 @@ mod tests {
             .any(|s| s.venue == VENUE_CURVE_POOL && s.flags & LEG_TAKE_BALANCE != 0));
     }
 
+    /// A Curve-only exit under Aave's 5 bps. Nothing in the leg's repay is a
+    /// pool exact output, which is all the Executor adds the premium to, so
+    /// the Curve leg's overshoot carries the whole premium on the flash
+    /// (pull and over-borrow) beside the min-out tolerance: should the leg
+    /// fill alone, its own sale buys it. Oracle: at the quoted rate, what
+    /// the leg sells buys the pull and the premium; Aave's `percentMulCeil`
+    /// premium.
+    #[test]
+    fn a_curve_only_leg_overshoots_by_the_whole_premium() {
+        use liq_plan::VENUE_CURVE_POOL;
+        let bk = book(vec![crate::fixtures::curve(
+            7,
+            &[e18(10_000_000), e18(10_000_000)],
+            100_000,
+            4_000_000,
+        )]);
+        let (_s, flash) = idx_aave();
+        let quote = q(1);
+        let mut world = world_one(&quote);
+        world.tokens.remove(&A2);
+        let plans = select(
+            &[input_of(&quote)],
+            &cfg(),
+            &flash,
+            H,
+            &bk,
+            None,
+            &world,
+            &GAS,
+        )
+        .unwrap();
+        let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
+        let assembled = assemble(
+            &plans,
+            &cfg(),
+            &bk,
+            &world,
+            &vctx(tok(1)),
+            &bd,
+            &GAS,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let g = &assembled[0].plan.groups[0];
+        assert_eq!((g.provider, g.fee_bps), (liq_types::FlashProvider::Aave, 5));
+        let repay = &g.repay_swaps;
+        assert_eq!(repay.len(), 1);
+        assert_eq!(repay[0].venue, VENUE_CURVE_POOL);
+        assert_eq!(
+            repay[0].flags,
+            tie_flags(0, 0).unwrap(),
+            "exact-in, tied to its leg"
+        );
+        let leg = &plans[0].groups[0].legs[0].leg;
+        let pull = g.liqs[0].protocol_pull;
+        let premium =
+            (U256::from(g.flash_amount) * U256::from(5u32)).div_ceil(U256::from(10_000u32));
+        let premium_bps = (premium * U256::from(10_000u32)).div_ceil(U256::from(pull));
+        let alloc = &leg.exit.allocs[0];
+        let base = mul_div(alloc.amount_in, leg.s, alloc.amount_out, Rounding::Up).unwrap();
+        let tol = U256::from(cfg().min_out_tolerance_bps);
+        let want = mul_div(
+            base,
+            U256::from(10_000u32) + tol + premium_bps,
+            U256::from(10_000u32),
+            Rounding::Up,
+        )
+        .unwrap();
+        assert_eq!(U256::from(repay[0].amount), want);
+        let bought = mul_div(want, alloc.amount_out, alloc.amount_in, Rounding::Down).unwrap();
+        assert!(
+            bought >= U256::from(pull) + premium,
+            "at the quoted rate the sale buys the pull and the premium"
+        );
+        validate(&assembled[0].plan, &vctx(tok(1))).unwrap();
+    }
+
+    /// An exit through WETH, end to end. A0 collateral, A1 debt, A2 WETH,
+    /// and no pool between A0 and A1, so the exit is the hub's. The repay
+    /// blob sells all the collateral into WETH (one pool, the whole
+    /// balance: TAKE_BALANCE, which closes it), then buys exactly the pull
+    /// of A1 with WETH. No profit leg sells A0. Oracle: PLAN-ENCODING's leg
+    /// semantics and `validate`; the Executor runs this shape at block
+    /// 26,106,490 in the historical replay.
+    #[test]
+    fn an_exit_through_weth_sells_the_collateral_then_buys_the_debt() {
+        let mut bk = book(vec![
+            v3_ab(1, A0, A2, tok(0), tok(2)),
+            v3_ab(2, A2, A1, tok(2), tok(1)),
+        ]);
+        bk.set_hub(A2);
+        let (_s, flash) = idx();
+        let quote = q(1);
+        let world = world_one(&quote);
+        let mut c = cfg();
+        c.weth = Some(A2);
+        let plans = select(&[input_of(&quote)], &c, &flash, H, &bk, None, &world, &GAS).unwrap();
+        assert!(
+            plans[0].groups[0].legs[0].leg.exit.hub.is_some(),
+            "the hub's exit"
+        );
+        let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
+        let assembled = assemble(
+            &plans,
+            &c,
+            &bk,
+            &world,
+            &vctx(tok(2)),
+            &bd,
+            &GAS,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let plan = &assembled[0].plan;
+        let g = &plan.groups[0];
+        let pull = g.liqs[0].protocol_pull;
+        let r = &g.repay_swaps;
+        assert_eq!(r.len(), 2, "{r:?}");
+        assert_eq!(
+            (r[0].token_in, r[0].token_out, r[0].flags),
+            (tok(0), tok(2), LEG_TAKE_BALANCE)
+        );
+        assert_eq!(&r[0].data[..20], addr(1).as_slice());
+        assert_eq!(
+            (r[1].token_in, r[1].token_out, r[1].amount),
+            (tok(2), tok(1), pull),
+            "exactly the pull"
+        );
+        assert_eq!(
+            r[1].flags,
+            tie_flags(LEG_EXACT_OUT, 0).unwrap(),
+            "exact output, tied to its leg"
+        );
+        assert_eq!(&r[1].data[..20], addr(2).as_slice());
+        assert!(
+            plan.profit_swaps.iter().all(|s| s.token_in != tok(0)),
+            "the repay blob closed A0"
+        );
+        validate(plan, &vctx(tok(2))).unwrap();
+    }
+
+    /// An exit through a token the graph proposes, end to end. A0
+    /// collateral, A1 debt, A2 WETH, A3 the intermediate: A0 trades only
+    /// against A3, and A3 against A1 and WETH (A1 has its WETH pool, as a
+    /// debt does). Without the graph there is
+    /// no exit; with it the repay blob sells all A0 into A3 (TAKE_BALANCE),
+    /// buys exactly the pull of A1 with A3, and the profit blob closes the
+    /// A3 left into WETH (TAKE_BALANCE). Oracle: PLAN-ENCODING's leg
+    /// semantics and `validate`.
+    #[test]
+    fn an_exit_through_a_graph_hub_closes_its_leftover_into_weth() {
+        const A3: AssetId = AssetId(3);
+        let mut assets = HashMap::new();
+        for (t, a) in [(tok(0), A0), (tok(1), A1), (tok(2), A2), (tok(3), A3)] {
+            assets.insert(t, a);
+        }
+        let mut bk = PoolBook::new(assets, None, HOP_GAS);
+        for pool in [
+            v3_ab(1, A0, A3, tok(0), tok(3)),
+            v3_ab(2, A3, A1, tok(3), tok(1)),
+            v3_ab(3, A3, A2, tok(3), tok(2)),
+            // The debt's own WETH pool (the plan routes surplus debt there).
+            v3_ab(4, A1, A2, tok(1), tok(2)),
+        ] {
+            bk.add(pool).unwrap();
+        }
+        bk.set_hub(A2);
+        assert!(
+            solve_pair(&bk, A0, A1, e18(10), &GAS, &B).is_err(),
+            "no exit without the graph"
+        );
+        let g = crate::graph::GraphRoutes::build(&bk, |_| true, 3).unwrap();
+        bk.set_graph(Some(std::sync::Arc::new(g)));
+        let exit = solve_pair(&bk, A0, A1, e18(10), &GAS, &B).unwrap();
+        assert_eq!(exit.hub.as_ref().map(|h| h.hub), Some(A3));
+        let (_s, flash) = idx();
+        let quote = q(1);
+        let mut world = world_one(&quote);
+        world.tokens.insert(A3, tok(3));
+        let mut c = cfg();
+        c.weth = Some(A2);
+        let plans = select(&[input_of(&quote)], &c, &flash, H, &bk, None, &world, &GAS).unwrap();
+        assert_eq!(
+            plans[0].groups[0].legs[0]
+                .leg
+                .exit
+                .hub
+                .as_ref()
+                .map(|h| h.hub),
+            Some(A3)
+        );
+        let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
+        let assembled = assemble(
+            &plans,
+            &c,
+            &bk,
+            &world,
+            &vctx(tok(2)),
+            &bd,
+            &GAS,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let plan = &assembled[0].plan;
+        let g = &plan.groups[0];
+        let pull = g.liqs[0].protocol_pull;
+        let r = &g.repay_swaps;
+        assert_eq!(r.len(), 2, "{r:?}");
+        assert_eq!(
+            (r[0].token_in, r[0].token_out, r[0].flags),
+            (tok(0), tok(3), LEG_TAKE_BALANCE)
+        );
+        assert_eq!(
+            (r[1].token_in, r[1].token_out, r[1].amount),
+            (tok(3), tok(1), pull)
+        );
+        assert_eq!(r[1].flags, tie_flags(LEG_EXACT_OUT, 0).unwrap());
+        assert!(
+            plan.profit_swaps.iter().any(|s| s.token_in == tok(3)
+                && s.token_out == tok(2)
+                && s.flags & LEG_TAKE_BALANCE != 0),
+            "the A3 left closes into WETH: {:?}",
+            plan.profit_swaps
+        );
+        validate(plan, &vctx(tok(2))).unwrap();
+    }
+
+    /// A chain exit, end to end. A0 collateral, A1 debt, A2 WETH; A0
+    /// reaches A1 only through A3 and A4 (A0→A3 V3, A3→A4 V2, A4→A1 V3).
+    /// With the graph the exit is the chain: the repay blob is one
+    /// exact-output venue-10 leg of exactly the pull, whose data names its
+    /// three hops (V3 0.05 %, V2 Uniswap, V3 0.05 %) and A3 and A4; the
+    /// profit blob closes the A0 left into WETH. Oracle: the venue-10
+    /// layout (`liq_wire`) and `validate`.
+    #[test]
+    fn a_chain_exit_buys_the_pull_along_its_path() {
+        const A3: AssetId = AssetId(3);
+        const A4: AssetId = AssetId(4);
+        let mut assets = HashMap::new();
+        for (t, a) in [
+            (tok(0), A0),
+            (tok(1), A1),
+            (tok(2), A2),
+            (tok(3), A3),
+            (tok(4), A4),
+        ] {
+            assets.insert(t, a);
+        }
+        let mut bk = PoolBook::new(assets, None, HOP_GAS);
+        let mut pair = crate::fixtures::v2(5, e18(1_000_000), e18(1_000_000));
+        pair.assets = smallvec::SmallVec::from_slice(&[A3, A4]);
+        pair.tokens = smallvec::SmallVec::from_slice(&[tok(3), tok(4)]);
+        for pool in [
+            v3_ab(1, A0, A3, tok(0), tok(3)),
+            pair,
+            v3_ab(6, A4, A1, tok(4), tok(1)),
+            // The collateral's and the debt's WETH pools, shallow.
+            v2_ab(7, A0, A2, tok(0), tok(2), e18(10)),
+            v2_ab(8, A1, A2, tok(1), tok(2), e18(10)),
+        ] {
+            bk.add(pool).unwrap();
+        }
+        bk.set_hub(A2);
+        let g = crate::graph::GraphRoutes::build(&bk, |_| true, 4).unwrap();
+        bk.set_graph(Some(std::sync::Arc::new(g)));
+        let exit = solve_pair(&bk, A0, A1, e18(10), &GAS, &B).unwrap();
+        let c = exit.chain.as_ref().unwrap();
+        assert_eq!(c.hops.len(), 3);
+        let (_s, flash) = idx();
+        let quote = q(1);
+        let mut world = world_one(&quote);
+        world.tokens.insert(A3, tok(3));
+        world.tokens.insert(A4, tok(4));
+        let mut cfgc = cfg();
+        cfgc.weth = Some(A2);
+        let plans = select(
+            &[input_of(&quote)],
+            &cfgc,
+            &flash,
+            H,
+            &bk,
+            None,
+            &world,
+            &GAS,
+        )
+        .unwrap();
+        assert!(plans[0].groups[0].legs[0].leg.exit.chain.is_some());
+        let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
+        let assembled = assemble(
+            &plans,
+            &cfgc,
+            &bk,
+            &world,
+            &vctx(tok(2)),
+            &bd,
+            &GAS,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let plan = &assembled[0].plan;
+        let g0 = &plan.groups[0];
+        let pull = g0.liqs[0].protocol_pull;
+        let r = &g0.repay_swaps;
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert_eq!(
+            (r[0].venue, r[0].token_in, r[0].token_out, r[0].amount),
+            (liq_plan::VENUE_CHAIN, tok(0), tok(1), pull)
+        );
+        assert_eq!(r[0].flags & LEG_EXACT_OUT, LEG_EXACT_OUT);
+        let mut want = vec![3u8, 0, 0x00, 0x01, 0xf4, 2, 0, 0, 0, 0, 0x00, 0x01, 0xf4];
+        want.extend_from_slice(tok(3).as_slice());
+        want.extend_from_slice(tok(4).as_slice());
+        assert_eq!(r[0].data, want);
+        assert!(plan.profit_swaps.iter().any(|s| s.token_in == tok(0)
+            && s.token_out == tok(2)
+            && s.flags & LEG_TAKE_BALANCE != 0));
+        validate(plan, &vctx(tok(2))).unwrap();
+    }
+
+    /// The venue-10 data of a V3 (0.05 %) hop then a V2 (Uniswap) hop
+    /// through `mid`.
+    fn v3_v2_data(mid: Address) -> Vec<u8> {
+        let mut d = vec![2u8, 0, 0x00, 0x01, 0xf4, 2, 0, 0, 0];
+        d.extend_from_slice(mid.as_slice());
+        d
+    }
+
+    /// A collateral with no pool into WETH closes its leftover along an
+    /// exact-input chain. A0 collateral, A1 debt, A2 WETH; A0 sells into
+    /// A1 directly, and reaches WETH only through A3 (A0→A3 V3, A3→A2 V2).
+    /// Without the graph there is no closer and no plan; with it the profit
+    /// blob sells the whole A0 balance (TAKE_BALANCE, exact input) along
+    /// the chain. Oracle: the venue-10 layout (`liq_wire`) and `validate`.
+    #[test]
+    fn a_leftover_without_a_weth_pool_closes_along_a_chain() {
+        const A3: AssetId = AssetId(3);
+        let mut assets = HashMap::new();
+        for (t, a) in [(tok(0), A0), (tok(1), A1), (tok(2), A2), (tok(3), A3)] {
+            assets.insert(t, a);
+        }
+        let mut bk = PoolBook::new(assets, None, HOP_GAS);
+        for pool in [
+            v3_ab(1, A0, A1, tok(0), tok(1)),
+            v3_ab(2, A0, A3, tok(0), tok(3)),
+            v2_ab(3, A3, A2, tok(3), tok(2), e18(1_000_000)),
+            v2_ab(4, A1, A2, tok(1), tok(2), e18(10)),
+        ] {
+            bk.add(pool).unwrap();
+        }
+        bk.set_hub(A2);
+        let (_s, flash) = idx();
+        let quote = q(1);
+        let mut world = world_one(&quote);
+        world.tokens.insert(A3, tok(3));
+        let mut cfgc = cfg();
+        cfgc.weth = Some(A2);
+        let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
+        let run = |bk: &PoolBook| {
+            let plans = select(
+                &[input_of(&quote)],
+                &cfgc,
+                &flash,
+                H,
+                bk,
+                None,
+                &world,
+                &GAS,
+            )
+            .ok()?;
+            assemble(
+                &plans,
+                &cfgc,
+                bk,
+                &world,
+                &vctx(tok(2)),
+                &bd,
+                &GAS,
+                FLAG_SWEEP,
+                &flash,
+                H,
+            )
+            .ok()
+        };
+        assert!(run(&bk).is_none(), "no closer without the graph");
+        let g = crate::graph::GraphRoutes::build(&bk, |_| true, 4).unwrap();
+        bk.set_graph(Some(std::sync::Arc::new(g)));
+        let assembled = run(&bk).unwrap();
+        let plan = &assembled[0].plan;
+        let r = &plan.groups[0].repay_swaps;
+        assert!(r.iter().all(|l| l.venue == VENUE_UNIV3_POOL), "{r:?}");
+        let closers: Vec<_> = plan
+            .profit_swaps
+            .iter()
+            .filter(|l| l.token_in == tok(0))
+            .collect();
+        assert_eq!(closers.len(), 1, "{plan:?}");
+        let c = closers[0];
+        assert_eq!(
+            (c.venue, c.token_out, c.flags, c.amount),
+            (liq_plan::VENUE_CHAIN, tok(2), LEG_TAKE_BALANCE, 0)
+        );
+        assert_eq!(c.data, v3_v2_data(tok(3)));
+        validate(plan, &vctx(tok(2))).unwrap();
+    }
+
+    /// Unwrap, then a chain, then a chain closer. A2 wraps A0 (ERC-4626,
+    /// 1.1); A1 debt; A4 WETH. A0 reaches A1 only along three hops
+    /// (A0→A3 V3, A3→A5 V2, A5→A1 V3), so no hub exit exists, and reaches
+    /// WETH only through A3 (A0→A3 V3, A3→A4 V2). The exit unwraps the
+    /// seize, buys the pull along the three hops exact output, and is
+    /// charged the unwrap's gas, the three hops' and the closer chain's two.
+    /// The repay blob is the unwrap then the venue-10 leg from A0; the
+    /// profit blob closes A0 along the two-hop chain. Oracle: the venue-10
+    /// layout, the pools' hop gas, and `validate`.
+    #[test]
+    fn a_wrapped_collateral_unwraps_then_chains() {
+        const A3: AssetId = AssetId(3);
+        const A4: AssetId = AssetId(4);
+        const A5: AssetId = AssetId(5);
+        let mut assets = HashMap::new();
+        for n in 0..6u64 {
+            assets.insert(tok(n), AssetId(u16::try_from(n).unwrap()));
+        }
+        let mut bk = PoolBook::new(assets, None, HOP_GAS);
+        for pool in [
+            v3_ab(1, A0, A3, tok(0), tok(3)),
+            v2_ab(2, A3, A5, tok(3), tok(5), e18(1_000_000)),
+            v3_ab(3, A5, A1, tok(5), tok(1)),
+            v2_ab(4, A3, A4, tok(3), tok(4), e18(1_000_000)),
+            v2_ab(5, A1, A4, tok(1), tok(4), e18(10)),
+        ] {
+            bk.add(pool).unwrap();
+        }
+        bk.set_hub(A4);
+        bk.add_unwrap(unwrap_a2(A0));
+        let g = crate::graph::GraphRoutes::build(&bk, |_| true, 4).unwrap();
+        bk.set_graph(Some(std::sync::Arc::new(g)));
+
+        let exit = solve_pair(&bk, A2, A1, e18(10), &GAS, &B).unwrap();
+        let u = exit.unwrap.unwrap();
+        assert_eq!((u.wrapper, u.into), (A2, A0));
+        let c = exit.chain.as_ref().unwrap();
+        assert_eq!(c.hops.len(), 3);
+        let hop = |k: usize| bk.pools()[k].hop_gas;
+        assert_eq!(
+            exit.hop_gas,
+            60_000 + hop(0) + hop(1) + hop(2) + hop(0) + hop(3) + 2 * crate::graph::CHAIN_LEG_GAS,
+            "unwrap, three hops, the two-hop closer, and each chain leg's own gas"
+        );
+
+        let (_s, flash) = idx();
+        let mut quote = q(1);
+        quote.seize_options[0].asset = A2;
+        let mut world = world_one(&quote);
+        for (a, n) in [(A3, 3), (A4, 4), (A5, 5)] {
+            world.tokens.insert(a, tok(n));
+        }
+        let mut cfgc = cfg();
+        cfgc.weth = Some(A4);
+        let plans = select(
+            &[input_of(&quote)],
+            &cfgc,
+            &flash,
+            H,
+            &bk,
+            None,
+            &world,
+            &GAS,
+        )
+        .unwrap();
+        let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
+        let assembled = assemble(
+            &plans,
+            &cfgc,
+            &bk,
+            &world,
+            &vctx(tok(4)),
+            &bd,
+            &GAS,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let plan = &assembled[0].plan;
+        let g0 = &plan.groups[0];
+        let pull = g0.liqs[0].protocol_pull;
+        let r = &g0.repay_swaps;
+        assert_eq!(r.len(), 2, "{r:?}");
+        assert_eq!((r[0].venue, r[0].token_in), (VENUE_UNWRAP_4626, tok(2)));
+        assert_eq!(
+            (r[1].venue, r[1].token_in, r[1].token_out, r[1].amount),
+            (liq_plan::VENUE_CHAIN, tok(0), tok(1), pull)
+        );
+        assert_eq!(
+            r[1].flags & (LEG_EXACT_OUT | LEG_TAKE_BALANCE),
+            LEG_EXACT_OUT
+        );
+        assert_eq!(liq_plan::leg_tie(r[1].flags), Some(0), "tied to its leg");
+        let mut want = vec![3u8, 0, 0x00, 0x01, 0xf4, 2, 0, 0, 0, 0, 0x00, 0x01, 0xf4];
+        want.extend_from_slice(tok(3).as_slice());
+        want.extend_from_slice(tok(5).as_slice());
+        assert_eq!(r[1].data, want);
+        let closers: Vec<_> = plan
+            .profit_swaps
+            .iter()
+            .filter(|l| l.token_in == tok(0))
+            .collect();
+        assert_eq!(closers.len(), 1, "{plan:?}");
+        assert_eq!(
+            (closers[0].venue, closers[0].token_out, closers[0].flags),
+            (liq_plan::VENUE_CHAIN, tok(4), LEG_TAKE_BALANCE)
+        );
+        assert_eq!(closers[0].data, v3_v2_data(tok(3)));
+        validate(plan, &vctx(tok(4))).unwrap();
+    }
+
+    /// Output of a Uniswap V2 swap (0.3 % fee), by hand.
+    fn v2_out(r_in: U256, r_out: U256, x: U256) -> U256 {
+        let xf = x * U256::from(997u64);
+        r_out * xf / (r_in * U256::from(1000u64) + xf)
+    }
+
+    /// A seize too large for either route alone splits between them (4E).
+    /// A0 collateral, A1 debt, A2 WETH; a direct A0/A1 V2 pool and a chain
+    /// A0→A3→A1 through two V2 pools, all of 1,000 a side. Selling 400 A0,
+    /// either alone leaves much on the curve. The split's output equals the
+    /// direct pool's quote of its part plus the chain's of the rest, both by
+    /// the V2 formula; it beats either route alone, and moving 1 % of the
+    /// sale either way does no better. The repay blob is one exact-output
+    /// V2 leg and one chain leg whose amounts add to the pull. Oracle: the
+    /// V2 formula by hand and `validate`.
+    #[test]
+    fn a_large_exit_splits_between_the_pool_and_a_chain() {
+        const A3: AssetId = AssetId(3);
+        let mut assets = HashMap::new();
+        for (t, a) in [(tok(0), A0), (tok(1), A1), (tok(2), A2), (tok(3), A3)] {
+            assets.insert(t, a);
+        }
+        let mut bk = PoolBook::new(assets, None, HOP_GAS);
+        let r = e18(1_000);
+        for pool in [
+            v2_ab(1, A0, A1, tok(0), tok(1), r),
+            v2_ab(2, A0, A3, tok(0), tok(3), r),
+            v2_ab(3, A3, A1, tok(3), tok(1), r),
+            v2_ab(4, A0, A2, tok(0), tok(2), e18(10)),
+            v2_ab(5, A1, A2, tok(1), tok(2), e18(10)),
+        ] {
+            bk.add(pool).unwrap();
+        }
+        bk.set_hub(A2);
+        let g = crate::graph::GraphRoutes::build(&bk, |_| true, 4).unwrap();
+        bk.set_graph(Some(std::sync::Arc::new(g)));
+        let sold = e18(400);
+        let direct = |x: U256| v2_out(r, r, x);
+        let chain = |y: U256| v2_out(r, r, v2_out(r, r, y));
+        let exit = crate::exact::refine_exit(
+            &bk,
+            A0,
+            A1,
+            &FREE,
+            &B,
+            solve_pair(&bk, A0, A1, sold, &FREE, &B).unwrap(),
+        )
+        .unwrap();
+        let c = exit.chain.as_ref().unwrap();
+        assert_eq!(c.hops.len(), 2);
+        let x = exit
+            .allocs
+            .iter()
+            .map(|a| a.amount_in)
+            .fold(U256::ZERO, |a, b| a + b);
+        assert!(!x.is_zero() && x < sold, "both sides sell: {x}");
+        assert_eq!(c.amount_out, chain(sold - x), "the chain's part, by hand");
+        assert_eq!(exit.amount_out, direct(x) + chain(sold - x));
+        assert!(exit.amount_out > direct(sold) && exit.amount_out > chain(sold));
+        let step = sold / U256::from(100u64);
+        for y in [x - step, x + step] {
+            assert!(
+                direct(y) + chain(sold - y) <= exit.amount_out,
+                "no better 1 % away"
+            );
+        }
+
+        let (_s, flash) = idx();
+        let quote = q(1);
+        let mut world = world_one(&quote);
+        world.tokens.insert(A3, tok(3));
+        let mut cfgc = cfg();
+        cfgc.weth = Some(A2);
+        let plans = select(
+            &[input_of(&quote)],
+            &cfgc,
+            &flash,
+            H,
+            &bk,
+            None,
+            &world,
+            &FREE,
+        )
+        .unwrap();
+        let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
+        let assembled = assemble(
+            &plans,
+            &cfgc,
+            &bk,
+            &world,
+            &vctx(tok(2)),
+            &bd,
+            &FREE,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let plan = &assembled[0].plan;
+        let g0 = &plan.groups[0];
+        let pull = g0.liqs[0].protocol_pull;
+        let r = &g0.repay_swaps;
+        let venues: Vec<u8> = r.iter().map(|l| l.venue).collect();
+        assert_eq!(
+            venues,
+            vec![VENUE_UNIV2_POOL, liq_plan::VENUE_CHAIN],
+            "{r:?}"
+        );
+        assert!(r.iter().all(|l| l.flags & LEG_EXACT_OUT != 0));
+        assert_eq!(r[0].amount + r[1].amount, pull, "the parts add to the pull");
+        validate(plan, &vctx(tok(2))).unwrap();
+    }
+
+    /// A sale too large for any two routes splits across three (4E): the
+    /// direct A0/A1 pool and two chains, A0→A3→A1 and A0→A4→A1, sharing no
+    /// pool, every pool V2 with 1,000 a side. Selling 600 A0, each route's
+    /// output is the V2 formula on its part and the parts add up; the total
+    /// beats every split across two of them on a 1 % grid; the repay blob is one V2 leg
+    /// and two chain legs whose amounts add to the pull. Oracle: the V2
+    /// formula by hand and `validate`.
+    #[test]
+    fn a_larger_exit_splits_across_the_pool_and_two_chains() {
+        const A3: AssetId = AssetId(3);
+        const A4: AssetId = AssetId(4);
+        let mut assets = HashMap::new();
+        for (t, a) in [
+            (tok(0), A0),
+            (tok(1), A1),
+            (tok(2), A2),
+            (tok(3), A3),
+            (tok(4), A4),
+        ] {
+            assets.insert(t, a);
+        }
+        let mut bk = PoolBook::new(assets, None, HOP_GAS);
+        let r = e18(1_000);
+        for pool in [
+            v2_ab(1, A0, A1, tok(0), tok(1), r),
+            v2_ab(2, A0, A3, tok(0), tok(3), r),
+            v2_ab(3, A3, A1, tok(3), tok(1), r),
+            v2_ab(4, A0, A4, tok(0), tok(4), r),
+            v2_ab(5, A4, A1, tok(4), tok(1), r),
+            v2_ab(6, A0, A2, tok(0), tok(2), e18(10)),
+            v2_ab(7, A1, A2, tok(1), tok(2), e18(10)),
+        ] {
+            bk.add(pool).unwrap();
+        }
+        bk.set_hub(A2);
+        let g = crate::graph::GraphRoutes::build(&bk, |_| true, 4).unwrap();
+        bk.set_graph(Some(std::sync::Arc::new(g)));
+        let sold = e18(600);
+        let direct = |x: U256| v2_out(r, r, x);
+        let chain = |y: U256| v2_out(r, r, v2_out(r, r, y));
+        let exit = crate::exact::refine_exit(
+            &bk,
+            A0,
+            A1,
+            &FREE,
+            &B,
+            solve_pair(&bk, A0, A1, sold, &FREE, &B).unwrap(),
+        )
+        .unwrap();
+        let c = exit.chain.as_ref().unwrap();
+        assert_eq!(c.with.len(), 1, "two chains");
+        let x = exit
+            .allocs
+            .iter()
+            .map(|a| a.amount_in)
+            .fold(U256::ZERO, |a, b| a + b);
+        let parts = [c.amount_out, c.with[0].amount_out];
+        assert!(
+            !x.is_zero() && parts.iter().all(|p| !p.is_zero()),
+            "all three sell"
+        );
+        assert_eq!(exit.amount_out, direct(x) + parts[0] + parts[1]);
+        // Each chain's part is the V2 formula on what it sold (found by
+        // bisection: the formula is monotone): the two chains sold `sold -
+        // x` between them.
+        let sold_by = |part: U256| {
+            let (mut lo, mut hi) = (U256::ZERO, sold - x);
+            while lo < hi {
+                let mid = (lo + hi) / U256::from(2u64);
+                if chain(mid) < part {
+                    lo = mid + U256::ONE;
+                } else {
+                    hi = mid;
+                }
+            }
+            assert_eq!(
+                chain(lo),
+                part,
+                "a chain's output is the V2 formula on its share"
+            );
+            lo
+        };
+        // The formula is flat over a few wei of input: the smallest input
+        // paying each part may sit a wei or two under the share.
+        let shares = sold_by(parts[0]) + sold_by(parts[1]);
+        assert!(
+            shares <= sold - x && sold - x - shares <= U256::from(2u64),
+            "the chains' shares add to the rest: {shares} vs {}",
+            sold - x
+        );
+        // No split across only two routes does better.
+        let step = sold / U256::from(100u64);
+        let mut best_two = U256::ZERO;
+        let mut y = U256::ZERO;
+        while y <= sold {
+            best_two = best_two
+                .max(direct(sold - y) + chain(y))
+                .max(chain(sold - y) + chain(y));
+            y += step;
+        }
+        assert!(
+            exit.amount_out > best_two,
+            "{} vs {}",
+            exit.amount_out,
+            best_two
+        );
+
+        let (_s, flash) = idx();
+        let quote = q(1);
+        let mut world = world_one(&quote);
+        world.tokens.insert(A3, tok(3));
+        world.tokens.insert(A4, tok(4));
+        let mut cfgc = cfg();
+        cfgc.weth = Some(A2);
+        let plans = select(
+            &[input_of(&quote)],
+            &cfgc,
+            &flash,
+            H,
+            &bk,
+            None,
+            &world,
+            &FREE,
+        )
+        .unwrap();
+        let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
+        let assembled = assemble(
+            &plans,
+            &cfgc,
+            &bk,
+            &world,
+            &vctx(tok(2)),
+            &bd,
+            &FREE,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let plan = &assembled[0].plan;
+        let g0 = &plan.groups[0];
+        let pull = g0.liqs[0].protocol_pull;
+        let rl = &g0.repay_swaps;
+        let venues: Vec<u8> = rl.iter().map(|l| l.venue).collect();
+        assert_eq!(
+            venues,
+            vec![
+                VENUE_UNIV2_POOL,
+                liq_plan::VENUE_CHAIN,
+                liq_plan::VENUE_CHAIN
+            ],
+            "{rl:?}"
+        );
+        assert!(rl.iter().all(|l| l.flags & LEG_EXACT_OUT != 0));
+        assert_eq!(
+            rl.iter().map(|l| l.amount).sum::<u128>(),
+            pull,
+            "the parts add to the pull"
+        );
+        validate(plan, &vctx(tok(2))).unwrap();
+    }
+
+    /// A chain through a Curve pool repays exact input (plan 4F, full
+    /// graph). A0 reaches the debt A1 only through Curve (A0/A3, a 2-coin
+    /// stable pool) then a V2 pair (A3/A1). The repay blob is one venue-10
+    /// leg without the exact-output flag; its amount is the least input whose
+    /// quoted path output covers the pull, raised by the overshoot; its data
+    /// names the Curve hop's extra by offset (pool, i, j, handler) after the
+    /// V2 hop; the surplus debt is swept to WETH. Oracle: the path quote
+    /// (the pools' own math), the venue-10 layout and `validate`.
+    #[test]
+    fn a_chain_through_curve_repays_exact_input() {
+        const A3: AssetId = AssetId(3);
+        let mut assets = HashMap::new();
+        for (t, a) in [(tok(0), A0), (tok(1), A1), (tok(2), A2), (tok(3), A3)] {
+            assets.insert(t, a);
+        }
+        let mut bk = PoolBook::new(assets, None, HOP_GAS);
+        let mut c = crate::fixtures::curve(1, &[e18(1_000_000), e18(1_000_000)], 20_000, 4_000_000);
+        c.assets = smallvec::SmallVec::from_slice(&[A0, A3]);
+        c.tokens = smallvec::SmallVec::from_slice(&[tok(0), tok(3)]);
+        for pool in [
+            c,
+            v2_ab(2, A3, A1, tok(3), tok(1), e18(1_000_000)),
+            v2_ab(3, A0, A2, tok(0), tok(2), e18(1_000)),
+            v2_ab(4, A1, A2, tok(1), tok(2), e18(1_000)),
+        ] {
+            bk.add(pool).unwrap();
+        }
+        bk.set_hub(A2);
+        let g = crate::graph::GraphRoutes::build(&bk, |_| true, 4).unwrap();
+        bk.set_graph(Some(std::sync::Arc::new(g)));
+        let exit = solve_pair(&bk, A0, A1, e18(10), &GAS, &B).unwrap();
+        let ch = exit.chain.as_ref().unwrap();
+        assert!(!ch.exact_out, "a Curve hop sells exact input");
+
+        let (_s, flash) = idx();
+        let quote = q(1);
+        let mut world = world_one(&quote);
+        world.tokens.insert(A3, tok(3));
+        let mut cfgc = cfg();
+        cfgc.weth = Some(A2);
+        let plans = select(
+            &[input_of(&quote)],
+            &cfgc,
+            &flash,
+            H,
+            &bk,
+            None,
+            &world,
+            &GAS,
+        )
+        .unwrap();
+        let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
+        let assembled = assemble(
+            &plans,
+            &cfgc,
+            &bk,
+            &world,
+            &vctx(tok(2)),
+            &bd,
+            &GAS,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let plan = &assembled[0].plan;
+        let g0 = &plan.groups[0];
+        let pull = g0.liqs[0].protocol_pull;
+        let r = &g0.repay_swaps;
+        assert_eq!(r.len(), 1, "{r:?}");
+        let leg = &r[0];
+        assert_eq!(
+            (leg.venue, leg.token_in, leg.token_out),
+            (liq_plan::VENUE_CHAIN, tok(0), tok(1))
+        );
+        assert_eq!(
+            leg.flags & (LEG_EXACT_OUT | LEG_TAKE_BALANCE),
+            0,
+            "exact input"
+        );
+        // The least input covering the pull, then the overshoot.
+        let out = |x: U256| crate::exact::path_out(&bk, &ch.hops, x).unwrap();
+        let need = crate::exact::path_in_for(&bk, &ch.hops, U256::from(pull)).unwrap();
+        assert!(out(need) >= U256::from(pull) && out(need - U256::ONE) < U256::from(pull));
+        let tol = U256::from(10_000u32 + u32::from(crate::select::MIN_OUT_TOLERANCE_BPS));
+        assert_eq!(
+            U256::from(leg.amount),
+            (need * tol).div_ceil(U256::from(10_000u32)),
+            "the input plus the overshoot"
+        );
+        // Data: 2 hops, the Curve hop's extra at 1 + 2 * 4 + 20 = 29.
+        let mut want = vec![2u8, 3, 0, 0, 29, 2, 0, 0, 0];
+        want.extend_from_slice(tok(3).as_slice());
+        want.extend_from_slice(addr(1).as_slice());
+        want.extend_from_slice(&[0, 1, crate::fixtures::CURVE_HANDLER]);
+        assert_eq!(leg.data, want);
+        assert!(
+            plan.profit_swaps.iter().any(|s| s.token_in == tok(1)
+                && s.token_out == tok(2)
+                && s.flags & LEG_TAKE_BALANCE != 0),
+            "the surplus debt is swept to WETH"
+        );
+        validate(plan, &vctx(tok(2))).unwrap();
+    }
+
+    /// A sale worth 5 ETH or more is routed as a flow (4E): slices go to
+    /// whichever path pays most on the pools the earlier slices moved, so
+    /// one hop is spread across parallel pools and paths share a pool. A0
+    /// collateral, A1 debt (WETH-priced: `FREE` gas, one debt unit per ETH),
+    /// every pool V2-priced with 1,000 a side: a direct A0/A1 pool, two A0/A3
+    /// pools in parallel (Uniswap V2 and SushiSwap), and one A3/A1 pool both
+    /// of those feed. Selling 900 A0, the flow uses all three A0 pools; its
+    /// output is at least the best on a 5 % grid over how much each A0 pool
+    /// takes (the shared A3/A1 pool takes the two chains' A3 one after the
+    /// other, as two chain legs do), and beats every split that leaves one
+    /// of them out. Oracle: the V2 formula by hand.
+    #[test]
+    fn a_large_sale_flows_across_parallel_and_shared_pools() {
+        const A3: AssetId = AssetId(3);
+        let mut assets = HashMap::new();
+        for (t, a) in [(tok(0), A0), (tok(1), A1), (tok(2), A2), (tok(3), A3)] {
+            assets.insert(t, a);
+        }
+        let mut bk = PoolBook::new(assets, None, HOP_GAS);
+        let r = e18(1_000);
+        // The second A0/A3 pool is a SushiSwap pair: one factory has one pair
+        // per token pair, and a chain hop names it by factory.
+        let mut sushi = v2_ab(3, A0, A3, tok(0), tok(3), r);
+        if let crate::solver::PoolState::V2(st) = &mut sushi.state {
+            st.factory = 1;
+        }
+        for pool in [
+            v2_ab(1, A0, A1, tok(0), tok(1), r),
+            v2_ab(2, A0, A3, tok(0), tok(3), r),
+            sushi,
+            v2_ab(4, A3, A1, tok(3), tok(1), r),
+            v2_ab(5, A0, A2, tok(0), tok(2), e18(10)),
+            v2_ab(6, A1, A2, tok(1), tok(2), e18(10)),
+        ] {
+            bk.add(pool).unwrap();
+        }
+        bk.set_hub(A2);
+        let g = crate::graph::GraphRoutes::build(&bk, |_| true, 4).unwrap();
+        bk.set_graph(Some(std::sync::Arc::new(g)));
+        let sold = e18(900);
+        // As `profit::evaluate` does once a leg is sized.
+        let exit = crate::exact::refine_exit(
+            &bk,
+            A0,
+            A1,
+            &FREE,
+            &B,
+            solve_pair(&bk, A0, A1, sold, &FREE, &B).unwrap(),
+        )
+        .unwrap();
+        let c = exit.chain.as_ref().unwrap();
+        // The direct pool rides in `allocs` (the water-fill as one route),
+        // the two-hop paths as chains.
+        let first_pools: std::collections::HashSet<_> = std::iter::once(c.as_ref())
+            .chain(c.with.iter())
+            .filter_map(|ch| ch.hops.first().map(|l| l.pool))
+            .chain(exit.allocs.iter().map(|a| a.leg.pool))
+            .collect();
+        assert_eq!(first_pools.len(), 3, "every A0 pool sells: {first_pools:?}");
+        // By hand: x to the direct pool, a and b to the two A0/A3 pools; the
+        // A3/A1 pool sells what each delivers, one chain after the other.
+        let v2 = |x: U256| v2_out(r, r, x);
+        let total = |x: U256, a: U256, b: U256| {
+            let (ya, yb) = (v2(a), v2(b));
+            let first = v2(ya);
+            v2(x) + first + v2_out(r + ya, r - first, yb)
+        };
+        let step = sold / U256::from(20u64);
+        let (mut grid_best, mut without_one) = (U256::ZERO, U256::ZERO);
+        let mut x = U256::ZERO;
+        while x <= sold {
+            let mut a = U256::ZERO;
+            while x + a <= sold {
+                let b = sold - x - a;
+                let t = total(x, a, b);
+                grid_best = grid_best.max(t);
+                if x.is_zero() || a.is_zero() || b.is_zero() {
+                    without_one = without_one.max(t);
+                }
+                a += step;
+            }
+            x += step;
+        }
+        assert!(
+            exit.amount_out >= grid_best,
+            "{} vs grid {}",
+            exit.amount_out,
+            grid_best
+        );
+        assert!(
+            exit.amount_out > without_one,
+            "{} vs {}",
+            exit.amount_out,
+            without_one
+        );
+    }
+
+    /// An exit through WETH buys its debt with WETH, which does not run out
+    /// when its own liquidation is beaten, so in a group with another leg
+    /// its WETH→debt leg would spend that leg's WETH or the Executor's. It
+    /// never shares a flash group: two such positions on one debt are two
+    /// plans, where two direct ones share a group.
+    #[test]
+    fn exits_through_weth_never_share_a_flash_group() {
+        let (_s, flash) = idx();
+        let (q1, q2) = (q(1), q(2));
+        let mut world = world_one(&q1);
+        let meta = LegMeta {
+            borrower: q2.key.user,
+            ..world.metas[&q1.position].clone()
+        };
+        world.metas.insert(q2.position, meta);
+        let inputs = [input_of(&q1), input_of(&q2)];
+        let mut c = cfg();
+        c.weth = Some(A2);
+        let direct = book(vec![v3_ab(3, A0, A1, tok(0), tok(1))]);
+        let plans = select(&inputs, &c, &flash, H, &direct, None, &world, &GAS).unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].groups.len(), 1);
+        assert_eq!(
+            plans[0].groups[0].legs.len(),
+            2,
+            "direct legs share a group"
+        );
+
+        let mut hub = book(vec![
+            v3_ab(1, A0, A2, tok(0), tok(2)),
+            v3_ab(2, A2, A1, tok(2), tok(1)),
+        ]);
+        hub.set_hub(A2);
+        let plans = select(&inputs, &c, &flash, H, &hub, None, &world, &GAS).unwrap();
+        assert_eq!(plans.len(), 2, "a plan each");
+        for p in &plans {
+            assert_eq!(p.groups.len(), 1);
+            assert_eq!(p.groups[0].legs.len(), 1);
+            assert!(p.groups[0].legs[0].leg.exit.hub.is_some());
+        }
+    }
+
+    /// A leg funded by a flash swap assembles as a group the pool lends:
+    /// provider `UniV3Swap`, the pool as source, the pull as the amount, no
+    /// fee, no repay leg (the pool is paid the collateral inside its
+    /// callback), the leftover collateral closed in the profit blob, no
+    /// fallback source. Through WETH (the WETH/debt pool lends), the repay
+    /// blob sells all the collateral into WETH and no profit leg sells it.
+    /// Both validate.
+    #[test]
+    fn a_flash_swap_group_assembles_without_a_repay_leg() {
+        let (_s, flash) = idx();
+        let quote = q(1);
+        let world = world_one(&quote);
+        let mut c = cfg();
+        c.wrap_gas[liq_types::FlashProvider::UniV3Swap as usize] = 300_000;
+        let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
+
+        let bk = book(vec![deep()]);
+        let plans = select(&[input_of(&quote)], &c, &flash, H, &bk, None, &world, &GAS).unwrap();
+        let leg = &plans[0].groups[0].legs[0].leg;
+        assert_eq!(leg.route.provider, liq_types::FlashProvider::UniV3Swap);
+        let assembled = assemble(
+            &plans,
+            &c,
+            &bk,
+            &world,
+            &vctx(tok(1)),
+            &bd,
+            &GAS,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let plan = &assembled[0].plan;
+        let g = &plan.groups[0];
+        assert_eq!(g.provider, liq_types::FlashProvider::UniV3Swap);
+        assert_eq!(g.flash_source, addr(1));
+        assert_eq!((g.fee_bps, g.flash_amount), (0, g.liqs[0].protocol_pull));
+        assert!(g.repay_swaps.is_empty(), "{:?}", g.repay_swaps);
+        assert!(
+            plan.profit_swaps
+                .iter()
+                .any(|s| s.token_in == tok(0) && s.flags & LEG_TAKE_BALANCE != 0),
+            "the leftover collateral closes in the profit blob"
+        );
+        assert!(
+            assembled[0].fallbacks[0].is_empty(),
+            "no source to fall back to"
+        );
+        validate(plan, &vctx(tok(1))).unwrap();
+
+        let mut hub = book(vec![
+            v3_ab(1, A0, A2, tok(0), tok(2)),
+            v3_ab(2, A2, A1, tok(2), tok(1)),
+        ]);
+        hub.set_hub(A2);
+        c.weth = Some(A2);
+        let plans = select(&[input_of(&quote)], &c, &flash, H, &hub, None, &world, &GAS).unwrap();
+        let leg = &plans[0].groups[0].legs[0].leg;
+        assert_eq!(leg.route.provider, liq_types::FlashProvider::UniV3Swap);
+        assert_eq!(leg.route.source, addr(2), "the WETH/debt pool lends");
+        let assembled = assemble(
+            &plans,
+            &c,
+            &hub,
+            &world,
+            &vctx(tok(2)),
+            &bd,
+            &GAS,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let plan = &assembled[0].plan;
+        let g = &plan.groups[0];
+        assert_eq!(
+            (g.provider, g.flash_source),
+            (liq_types::FlashProvider::UniV3Swap, addr(2))
+        );
+        assert_eq!(g.repay_swaps.len(), 1, "{:?}", g.repay_swaps);
+        let r = &g.repay_swaps[0];
+        assert_eq!(
+            (r.token_in, r.token_out, r.flags),
+            (tok(0), tok(2), LEG_TAKE_BALANCE)
+        );
+        assert_eq!(&r.data[..20], addr(1).as_slice());
+        assert!(plan.profit_swaps.iter().all(|s| s.token_in != tok(0)));
+        validate(plan, &vctx(tok(2))).unwrap();
+    }
+
+    /// Two positions on one debt, both funded by flash swaps, are two
+    /// plans of one leg each: a flash swap's lender must be paid whatever
+    /// filled, so its leg is never beside another.
+    #[test]
+    fn flash_swap_legs_never_share_a_flash_group() {
+        let (_s, flash) = idx();
+        let (q1, q2) = (q(1), q(2));
+        let world = world_one(&q1);
+        let mut c = cfg();
+        c.wrap_gas[liq_types::FlashProvider::UniV3Swap as usize] = 300_000;
+        let bk = book(vec![deep()]);
+        let inputs = [input_of(&q1), input_of(&q2)];
+        let plans = select(&inputs, &c, &flash, H, &bk, None, &world, &GAS).unwrap();
+        assert_eq!(plans.len(), 2, "a plan each");
+        for p in &plans {
+            assert_eq!(p.groups.len(), 1);
+            assert_eq!(p.groups[0].legs.len(), 1);
+            let leg = &p.groups[0].legs[0].leg;
+            assert_eq!(leg.route.provider, liq_types::FlashProvider::UniV3Swap);
+            assert_eq!(p.groups[0].cascade.groups.as_slice(), &[leg.route]);
+        }
+    }
+
     /// A2 is an ERC-4626 wrapper of `into` at 1.1 assets per share.
     fn unwrap_a2(into: AssetId) -> crate::solver::Unwrap {
         crate::solver::Unwrap {
@@ -1615,12 +3389,43 @@ mod tests {
             into_token: if into == A0 { tok(0) } else { tok(1) },
             rate: crate::solver::UnwrapRate::Linear {
                 assets_per_scale: e18(11) / U256::from(10u64),
+                max_into: None,
             },
             scale: e18(1),
             read_block: 1,
             gas: 60_000,
             expiry_gas: 0,
+            cash_capped: false,
         }
+    }
+
+    /// An EVK vault pays at most its cash: 10 shares at 1.1 need 11 assets,
+    /// so a cash of 10.9 refuses the unwrap (EVK `E_InsufficientCash`) and
+    /// a cash of 11 pays it, less the rate haircut. Oracle: the rate by
+    /// hand.
+    #[test]
+    fn a_cash_capped_unwrap_refuses_more_than_the_vault_holds() {
+        let bk = book(vec![deep()]);
+        let capped = |cap: U256| crate::solver::Unwrap {
+            rate: crate::solver::UnwrapRate::Linear {
+                assets_per_scale: e18(11) / U256::from(10u64),
+                max_into: Some(cap),
+            },
+            cash_capped: true,
+            ..unwrap_a2(A0)
+        };
+        let need = e18(11);
+        assert!(matches!(
+            capped(need - U256::ONE).convert(e18(10), &bk),
+            Err(RouteError::InsufficientLiquidity)
+        ));
+        let paid = capped(need).convert(e18(10), &bk).unwrap();
+        assert_eq!(paid, need - need / U256::from(1_000_000u64) - U256::ONE);
+        assert_eq!(
+            unwrap_a2(A0).convert(e18(10), &bk).unwrap(),
+            paid,
+            "uncapped pays the same"
+        );
     }
 
     fn assemble_a2_exit(bk: &PoolBook) -> (SmallVec<[SelectedPlan; 4]>, BatchPlan) {
@@ -1641,7 +3446,6 @@ mod tests {
         .unwrap();
         assert_eq!(plans.len(), 1);
         let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
-        let price = gas_price_in_debt(&GAS).unwrap();
         let assembled = assemble(
             &plans,
             &cfg(),
@@ -1649,7 +3453,6 @@ mod tests {
             &world,
             &vctx(tok(1)),
             &bd,
-            price,
             &GAS,
             FLAG_SWEEP,
             &flash,
@@ -1759,7 +3562,6 @@ mod tests {
         );
 
         let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
-        let price = gas_price_in_debt(&GAS).unwrap();
         let assembled = assemble(
             &plans,
             &cfg(),
@@ -1767,7 +3569,6 @@ mod tests {
             &world,
             &vctx(tok(1)),
             &bd,
-            price,
             &GAS,
             FLAG_SWEEP,
             &flash,
@@ -1852,8 +3653,9 @@ mod tests {
         let repay = &plan.groups[0].repay_swaps;
         assert_eq!(repay[0].venue, VENUE_CURVE_LP_ONE_COIN);
         assert_eq!((repay[0].token_in, repay[0].token_out), (tok(2), tok(0)));
+        // The LP, coin 0, and the MetaRegistry handler of the LP's own pool.
         let mut want = tok(2).to_vec();
-        want.push(0);
+        want.extend_from_slice(&[0, CURVE_HANDLER]);
         assert_eq!(repay[0].data, want);
     }
 
@@ -1936,7 +3738,8 @@ mod tests {
         assert!(bk.set_unwrap_rate(
             A2,
             crate::solver::UnwrapRate::Linear {
-                assets_per_scale: e18(1100)
+                assets_per_scale: e18(1100),
+                max_into: None,
             },
             2
         ));
@@ -1947,6 +3750,53 @@ mod tests {
         let repay = &plan.groups[0].repay_swaps;
         assert_eq!(repay[0].venue, VENUE_PENDLE_PT_REDEEM);
         assert_eq!(repay[0].data, yt.to_vec());
+    }
+
+    /// Collateral seized in the debt asset itself (an Aave WETH/WETH loop,
+    /// replay 26087344) needs no exit at all: the seize repays the flash
+    /// and the surplus is the profit, with no swap and no hop gas.
+    #[test]
+    fn a_seize_in_the_debt_asset_needs_no_swap() {
+        let bk = book(vec![deep()]);
+        let exit = solve_pair(&bk, A1, A1, e18(10), &GAS, &B).unwrap();
+        assert!(exit.allocs.is_empty() && exit.unwrap.is_none() && exit.hub.is_none());
+        assert_eq!(
+            (exit.amount_in, exit.amount_out, exit.hop_gas),
+            (e18(10), e18(10), 0)
+        );
+        let (_s, flash) = idx();
+        let mut quote = q(1);
+        quote.seize_options[0].asset = A1;
+        let world = world_one(&quote);
+        let plans = select(
+            &[input_of(&quote)],
+            &cfg(),
+            &flash,
+            H,
+            &bk,
+            None,
+            &world,
+            &GAS,
+        )
+        .unwrap();
+        assert_eq!(plans.len(), 1);
+        let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
+        let assembled = assemble(
+            &plans,
+            &cfg(),
+            &bk,
+            &world,
+            &vctx(tok(1)),
+            &bd,
+            &GAS,
+            FLAG_SWEEP,
+            &flash,
+            H,
+        )
+        .unwrap();
+        let plan = &assembled[0].plan;
+        validate(plan, &vctx(tok(1))).unwrap();
+        assert!(plan.groups[0].repay_swaps.is_empty());
     }
 
     /// A wrapper of the debt asset itself needs no pool: the unwrap pays the
@@ -2005,7 +3855,6 @@ mod tests {
         assert_eq!(plans.len(), 1);
         let bcfg = BidConfig::new(9_900, 9_900, 0, 0).unwrap();
         let bd = bid(&bcfg, 0, 1).unwrap();
-        let price = gas_price_in_debt(&GAS).unwrap();
         let assembled = assemble(
             &plans,
             &cfg(),
@@ -2013,7 +3862,6 @@ mod tests {
             &world,
             &vctx(tok(1)),
             &bd,
-            price,
             &GAS,
             FLAG_SWEEP,
             &flash,
@@ -2080,7 +3928,6 @@ mod tests {
         let mut c = cfg();
         c.over_borrow = U256::ZERO;
         let bd = bid(&BidConfig::new(7_500, 7_500, 0, 0).unwrap(), 0, 1).unwrap();
-        let price = gas_price_in_debt(&GAS).unwrap();
         let weth = tok(0);
         let assembled = assemble(
             &plans,
@@ -2089,7 +3936,6 @@ mod tests {
             &world,
             &vctx(weth),
             &bd,
-            price,
             &GAS,
             FLAG_SWEEP,
             &flash,
@@ -2157,7 +4003,6 @@ mod tests {
             &world,
             &vctx(tok(1)),
             &bd,
-            gas_price_in_debt(&GAS).unwrap(),
             &GAS,
             0,
             &flash,
@@ -2202,7 +4047,6 @@ mod tests {
             &world,
             &vctx(tok(1)),
             &bd,
-            gas_price_in_debt(&GAS).unwrap(),
             &GAS,
             0,
             &flash,
@@ -2272,7 +4116,6 @@ mod tests {
             &world,
             &vctx(tok(1)),
             &bd,
-            gas_price_in_debt(&GAS).unwrap(),
             &GAS,
             0,
             &flash,
@@ -2346,7 +4189,6 @@ mod tests {
             &world,
             &vctx(tok(1)),
             &bd,
-            gas_price_in_debt(&FREE).unwrap(),
             &FREE,
             FLAG_SWEEP,
             &flash,
@@ -2370,12 +4212,15 @@ mod tests {
         assert!(g.repay_swaps.iter().all(|s| s.amount > 0));
     }
 
-    /// H4: Aave 5 bps is bought by the repay swap.
-    /// `exact_out == pull + fee(flash_amount)`. Over-borrow is the 1 wei
-    /// dust, not the premium: borrowing the premium raises the debt by
-    /// the same amount the callback still has to pay.
+    /// H4: Aave charges 5 bps on the flash amount, and the Executor buys it
+    /// at run time with the group's first exact-output pool leg
+    /// (`SwapModule.runSwaps`), so the plan's exact output is the pull
+    /// alone: `exact_out == pull`, the premium `fee(flash_amount)` left out.
+    /// Over-borrow is the 1 wei dust, not the premium: borrowing the
+    /// premium raises the debt by the same amount the callback still has
+    /// to pay.
     #[test]
-    fn aave_premium_is_bought_by_exact_out() {
+    fn aave_premium_is_left_to_the_executor() {
         let bk = book(vec![deep()]);
         let (_s, flash) = idx_aave();
         let quote = q(1);
@@ -2400,7 +4245,6 @@ mod tests {
             &world,
             &vctx(tok(1)),
             &bd,
-            gas_price_in_debt(&GAS).unwrap(),
             &GAS,
             FLAG_SWEEP,
             &flash,
@@ -2421,17 +4265,15 @@ mod tests {
             .sum();
         let fee = fee_amount(g.provider, U256::from(g.flash_amount), g.fee_bps).unwrap();
         assert!(!fee.is_zero(), "Aave 5 bps is nonzero");
-        assert_eq!(
-            U256::from(exact_out),
-            U256::from(pull) + fee,
-            "exact_out must be pull + the premium charged on flash_amount"
-        );
+        assert_eq!(exact_out, pull, "the exact output buys the pull alone");
         assert_eq!(g.flash_amount, pull + 1, "over-borrow stays 1 wei of dust");
         assert!(
             fee > U256::from(1u8),
             "the premium is larger than the dust, so it is not inside flash_amount"
         );
-        let balance = U256::from(g.flash_amount) - U256::from(pull) + U256::from(exact_out);
+        // What the callback holds once the swaps ran: the unspent flash, the
+        // pull bought back, and the premium the Executor adds to it.
+        let balance = U256::from(g.flash_amount) - U256::from(pull) + U256::from(exact_out) + fee;
         let owed = U256::from(g.flash_amount) + fee;
         assert_eq!(balance, owed, "callback can pay amount + premium");
         assert_eq!(assembled[0].group_fee_bps[0], 5);
@@ -2470,7 +4312,6 @@ mod tests {
             &world,
             &vctx(weth),
             &bd,
-            gas_price_in_debt(&GAS).unwrap(),
             &GAS,
             FLAG_SWEEP,
             &flash,
@@ -2520,7 +4361,6 @@ mod tests {
             &world,
             &vctx(tok(1)),
             &bd,
-            gas_price_in_debt(&GAS).unwrap(),
             &GAS,
             FLAG_SWEEP,
             &flash,

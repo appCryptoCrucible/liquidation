@@ -1,0 +1,2778 @@
+{
+ "block": 26149877,
+ "executions": {
+  "1": [
+   {
+    "zero_to_one": true,
+    "amount": "4335149704709247356",
+    "chain": "5399524728201000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "43351497047092473566",
+    "chain": "53995191165620000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "433514970470924735666",
+    "chain": "539946300088235000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "2167574852354623678330",
+    "chain": "2699606805987684000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "4335149704709247356661",
+    "chain": "5398901908236176000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "8670299409418494713323",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "17340598818836989426647",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1047253926996461721",
+    "chain": "840646945791000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "10472539269964617218",
+    "chain": "8406467763532000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "104725392699646172189",
+    "chain": "84064508201610000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "523626963498230860949",
+    "chain": "420318775856700000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1047253926996461721899",
+    "chain": "840628139024787000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "2094507853992923443799",
+    "chain": "1681218628559841000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "4189015707985846887598",
+    "chain": null
+   }
+  ],
+  "2": [
+   {
+    "zero_to_one": true,
+    "amount": "1634650668",
+    "chain": "1635665969"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "16346506688",
+    "chain": "16356651703"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "163465066884",
+    "chain": "163565716779"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "817325334423",
+    "chain": "817810800839"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1634650668847",
+    "chain": "1635577146208"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "3269301337695",
+    "chain": "3270976485032"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "6538602675390",
+    "chain": "6541241856486"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3163160650",
+    "chain": "3161152430"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "31631606503",
+    "chain": "31611494398"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "316316065033",
+    "chain": "316111953079"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1581580325165",
+    "chain": "1580493304278"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3163160650330",
+    "chain": "3160820471483"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6326321300661",
+    "chain": "6320976499442"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "12652642601322",
+    "chain": "12639296062654"
+   }
+  ],
+  "3": [
+   {
+    "zero_to_one": true,
+    "amount": "4780123",
+    "chain": "4773450"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "47801233",
+    "chain": "47734326"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "478012338",
+    "chain": "477324480"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "2390061690",
+    "chain": "2386204743"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "4780123380",
+    "chain": "4771365750"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "9560246760",
+    "chain": "9538559289"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "19120493520",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1658775",
+    "chain": "1660942"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "16587756",
+    "chain": "16609412"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "165877567",
+    "chain": "166091863"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "829387838",
+    "chain": "830408815"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1658775677",
+    "chain": "1660691381"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3317551354",
+    "chain": "3320877873"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6635102708",
+    "chain": "6639737111"
+   }
+  ],
+  "4": [
+   {
+    "zero_to_one": true,
+    "amount": "808651677792725046001",
+    "chain": "808120631"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "8086516777927250460019",
+    "chain": "8081205021"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "80865167779272504600198",
+    "chain": "80811920373"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "404325838896362523000990",
+    "chain": "404056716287"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "808651677792725046001981",
+    "chain": "808106218741"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1617303355585450092003962",
+    "chain": "1616183582917"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "3234606711170900184007924",
+    "chain": "3232251753750"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668",
+    "chain": "1635397639986191000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "16346506688",
+    "chain": "16353971092870064000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "163465066884",
+    "chain": "163539179435341771000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "817325334423",
+    "chain": "817684086336298294000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668847",
+    "chain": "1635338646524657849000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3269301337695",
+    "chain": "3270559194851373049000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6538602675390",
+    "chain": "6540646048075009695000000"
+   }
+  ],
+  "9": [
+   {
+    "zero_to_one": true,
+    "amount": "459700885312897971",
+    "chain": "507914815995000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "4597008853128979712",
+    "chain": "5079145105914000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "45970088531289797126",
+    "chain": "50791145655723000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "229850442656448985634",
+    "chain": "253948941757904000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "459700885312897971268",
+    "chain": "507880918234112000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "919401770625795942537",
+    "chain": "1015693982141262000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1838803541251591885074",
+    "chain": "2031116601360584000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1047253926996461721",
+    "chain": "947541523241000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "10472539269964617218",
+    "chain": "9475403486801000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "104725392699646172189",
+    "chain": "94752860322235000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "523626963498230860949",
+    "chain": "473738202355109000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1047253926996461721899",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "2094507853992923443799",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "4189015707985846887598",
+    "chain": null
+   }
+  ],
+  "11": [
+   {
+    "zero_to_one": false,
+    "amount": "1047253926996461721",
+    "chain": "824230639974803000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "10472539269964617218",
+    "chain": "8226172471472061000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "104725392699646172189",
+    "chain": "80682404480624725000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "523626963498230860949",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1047253926996461721899",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "2094507853992923443799",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "4189015707985846887598",
+    "chain": null
+   }
+  ],
+  "12": [
+   {
+    "zero_to_one": true,
+    "amount": "1634650668",
+    "chain": "663711947090000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "16346506688",
+    "chain": "6633975154237000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "163465066884",
+    "chain": "66026950422479000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "817325334423",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1634650668847",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "3269301337695",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "6538602675390",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1047253926996461721",
+    "chain": "2573767853"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "10472539269964617218",
+    "chain": "25718465335"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "104725392699646172189",
+    "chain": "255278993387"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "523626963498230860949",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1047253926996461721899",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "2094507853992923443799",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "4189015707985846887598",
+    "chain": null
+   }
+  ],
+  "13": [
+   {
+    "zero_to_one": true,
+    "amount": "175670206211651844",
+    "chain": "189482096896000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1756702062116518447",
+    "chain": "1894819176901000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "17567020621165184478",
+    "chain": "18948012563333000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "87835103105825922390",
+    "chain": "94736080673085000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "175670206211651844780",
+    "chain": "189462206928666000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "351340412423303689560",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "702680824846607379120",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1047253926996461721",
+    "chain": "969557128053000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "10472539269964617218",
+    "chain": "9695520635244000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "104725392699646172189",
+    "chain": "96950142113718000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "523626963498230860949",
+    "chain": "484638203926278000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1047253926996461721899",
+    "chain": "968995288083406000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "2094507853992923443799",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "4189015707985846887598",
+    "chain": null
+   }
+  ],
+  "14": [
+   {
+    "zero_to_one": true,
+    "amount": "69953203068160821",
+    "chain": "74280048858000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "699532030681608211",
+    "chain": "742798946359000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "6995320306816082118",
+    "chain": "7427835244337000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "34976601534080410592",
+    "chain": "37135749514237000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "69953203068160821184",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "139906406136321642368",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "279812812272643284736",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1047253926996461721",
+    "chain": "985261486677000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "10472539269964617218",
+    "chain": "9852326611500000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "104725392699646172189",
+    "chain": "98494449860721000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "523626963498230860949",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1047253926996461721899",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "2094507853992923443799",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "4189015707985846887598",
+    "chain": null
+   }
+  ],
+  "15": [
+   {
+    "zero_to_one": true,
+    "amount": "74400768871562247345",
+    "chain": "93150752"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "744007688715622473455",
+    "chain": "931503797"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "7440076887156224734555",
+    "chain": "9314665110"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "37200384435781123672776",
+    "chain": "46565041414"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "74400768871562247345553",
+    "chain": "93109380773"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "148801537743124494691107",
+    "chain": "186136008521"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "297603075486248989382214",
+    "chain": "371941445840"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3163160650",
+    "chain": "2525409548778533000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "31631606503",
+    "chain": "25250663838673078000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "316316065033",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1581580325165",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3163160650330",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6326321300661",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "12652642601322",
+    "chain": null
+   }
+  ],
+  "16": [
+   {
+    "zero_to_one": true,
+    "amount": "227408",
+    "chain": "227722"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "2274085",
+    "chain": "2277227"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "22740851",
+    "chain": "22772047"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "113704259",
+    "chain": "113855183"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "227408518",
+    "chain": "227697718"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "454817037",
+    "chain": "455344848"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "909634074",
+    "chain": "910487409"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1658775",
+    "chain": "1654826"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "16587756",
+    "chain": "16548152"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "165877567",
+    "chain": "165469486"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "829387838",
+    "chain": "827079829"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1658775677",
+    "chain": "1653491129"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3317551354",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6635102708",
+    "chain": null
+   }
+  ],
+  "17": [
+   {
+    "zero_to_one": true,
+    "amount": "63748",
+    "chain": "63837"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "637480",
+    "chain": "638365"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "6374803",
+    "chain": "6382996"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "31874017",
+    "chain": "31900185"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "63748035",
+    "chain": "63763411"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "127496070",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "254992140",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1658775",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "16587756",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "165877567",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "829387838",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1658775677",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3317551354",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6635102708",
+    "chain": null
+   }
+  ],
+  "18": [
+   {
+    "zero_to_one": true,
+    "amount": "70084666361403330513",
+    "chain": "70107158"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "700846663614033305130",
+    "chain": "701071190"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "7008466636140333051302",
+    "chain": "7010672160"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "35042333180701665256510",
+    "chain": "35052477737"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "70084666361403330513021",
+    "chain": "70102747932"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "140169332722806661026042",
+    "chain": "140196666529"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "280338665445613322052084",
+    "chain": "280358022388"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3163160650",
+    "chain": "3161504237924731000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "31631606503",
+    "chain": "31614233925031964000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "316316065033",
+    "chain": "316061516267305982000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1581580325165",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3163160650330",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6326321300661",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "12652642601322",
+    "chain": null
+   }
+  ],
+  "19": [
+   {
+    "zero_to_one": true,
+    "amount": "13855787177264299189",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "138557871772642991894",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1385578717726429918947",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "6927893588632149594735",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "13855787177264299189470",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "27711574354528598378941",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "55423148709057196757882",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668",
+    "chain": "1636913018852618000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "16346506688",
+    "chain": "16366511178437512000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "163465066884",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "817325334423",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668847",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3269301337695",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6538602675390",
+    "chain": null
+   }
+  ],
+  "20": [
+   {
+    "zero_to_one": true,
+    "amount": "701912472546239810",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "7019124725462398100",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "70191247254623981009",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "350956236273119905048",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "701912472546239810097",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1403824945092479620195",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "2807649890184959240391",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668",
+    "chain": "1635703046687621000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "16346506688",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "163465066884",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "817325334423",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668847",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3269301337695",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6538602675390",
+    "chain": null
+   }
+  ],
+  "21": [
+   {
+    "zero_to_one": true,
+    "amount": "15636810836557452",
+    "chain": "16964037236000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "156368108365574527",
+    "chain": "169640241917000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1563681083655745271",
+    "chain": "1696389373845000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "7818405418278726359",
+    "chain": "8481656984927000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "15636810836557452718",
+    "chain": "16962589314821000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "31273621673114905437",
+    "chain": "33922280380947000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "62547243346229810875",
+    "chain": "67832970737789000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1047253926996461721",
+    "chain": "964348996670000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "10472539269964617218",
+    "chain": "9643032407713000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "104725392699646172189",
+    "chain": "96384592046571000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "523626963498230860949",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1047253926996461721899",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "2094507853992923443799",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "4189015707985846887598",
+    "chain": null
+   }
+  ],
+  "23": [
+   {
+    "zero_to_one": true,
+    "amount": "468564407873301713",
+    "chain": "467951"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "4685644078733017132",
+    "chain": "4679508"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "46856440787330171321",
+    "chain": "46794770"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "234282203936650856609",
+    "chain": "233966790"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "468564407873301713218",
+    "chain": "467915930"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "937128815746603426436",
+    "chain": "935761264"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1874257631493206852873",
+    "chain": "1871240206"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668",
+    "chain": "1635379794760833000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "16346506688",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "163465066884",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "817325334423",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668847",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3269301337695",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6538602675390",
+    "chain": null
+   }
+  ],
+  "24": [
+   {
+    "zero_to_one": true,
+    "amount": "443659002726704892",
+    "chain": "443780"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "4436590027267048922",
+    "chain": "4437806"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "44365900272670489224",
+    "chain": "44377936"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "221829501363352446120",
+    "chain": "221886879"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "443659002726704892241",
+    "chain": "443766755"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "887318005453409784483",
+    "chain": "887505498"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1774636010906819568967",
+    "chain": "1774898955"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668",
+    "chain": "1633685416065625000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "16346506688",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "163465066884",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "817325334423",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668847",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3269301337695",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6538602675390",
+    "chain": null
+   }
+  ],
+  "28": [
+   {
+    "zero_to_one": true,
+    "amount": "177091353668922075",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1770913536689220750",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "17709135366892207507",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "88545676834461037538",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "177091353668922075077",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "354182707337844150155",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "708365414675688300310",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668",
+    "chain": "1270115551747034000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "16346506688",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "163465066884",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "817325334423",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668847",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3269301337695",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6538602675390",
+    "chain": null
+   }
+  ],
+  "30": [
+   {
+    "zero_to_one": true,
+    "amount": "4780123",
+    "chain": "4761634"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "47801233",
+    "chain": "47613298"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "478012338",
+    "chain": "475827816"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "2390061690",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "4780123380",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "9560246760",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "19120493520",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "63748",
+    "chain": "63982"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "637480",
+    "chain": "639822"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6374803",
+    "chain": "6398168"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "31874017",
+    "chain": "31989621"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "63748035",
+    "chain": "63976193"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "127496070",
+    "chain": "127940181"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "254992140",
+    "chain": "255831560"
+   }
+  ],
+  "32": [
+   {
+    "zero_to_one": true,
+    "amount": "80011318229410538",
+    "chain": "80123"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "800113182294105385",
+    "chain": "801224"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "8001131822941053851",
+    "chain": "8011370"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "40005659114705269256",
+    "chain": "40037348"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "80011318229410538512",
+    "chain": "80025989"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "160022636458821077025",
+    "chain": "159857506"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "320045272917642154051",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "40421",
+    "chain": "40348255514000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "404215",
+    "chain": "403485315180000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "4042156",
+    "chain": "4034636057689000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "20210781",
+    "chain": "20168225372459000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "40421563",
+    "chain": "40324068803131000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "80843126",
+    "chain": "80598651438224000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "161686252",
+    "chain": "160999722137690000000"
+   }
+  ],
+  "33": [
+   {
+    "zero_to_one": true,
+    "amount": "808651677792725046001",
+    "chain": "645768748850033000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "8086516777927250460019",
+    "chain": "6457483932103452000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "80865167779272504600198",
+    "chain": "64554490737178757000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "404325838896362523000990",
+    "chain": "322321037641991267000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "808651677792725046001981",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1617303355585450092003962",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "3234606711170900184007924",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "74400768871562247345",
+    "chain": "93147956555451000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "744007688715622473455",
+    "chain": "931476182959798000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "7440076887156224734555",
+    "chain": "9314423583636218000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "37200384435781123672776",
+    "chain": "46564602827066719000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "74400768871562247345553",
+    "chain": "93110424746238730000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "148801537743124494691107",
+    "chain": "186145771292012426000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "297603075486248989382214",
+    "chain": "371991592718630592000000"
+   }
+  ],
+  "34": [
+   {
+    "zero_to_one": true,
+    "amount": "1634650668",
+    "chain": "1635431202"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "16346506688",
+    "chain": "16352012467"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "163465066884",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "817325334423",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1634650668847",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "3269301337695",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "6538602675390",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3163160650",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "31631606503",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "316316065033",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1581580325165",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3163160650330",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6326321300661",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "12652642601322",
+    "chain": null
+   }
+  ],
+  "35": [
+   {
+    "zero_to_one": true,
+    "amount": "759795816666117269",
+    "chain": "759485152543000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "7597958166661172696",
+    "chain": "7594844805279000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "75979581666611726967",
+    "chain": "75947776042938000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "379897908333058634837",
+    "chain": "379723947381459000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "759795816666117269675",
+    "chain": "759410565982765000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1519591633332234539350",
+    "chain": "1518671838860395000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "3039183266664469078701",
+    "chain": "3036746681363510000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "70084666361403330513",
+    "chain": "70042596362644000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "700846663614033305130",
+    "chain": "700368806504725000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "7008466636140333051302",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "35042333180701665256510",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "70084666361403330513021",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "140169332722806661026042",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "280338665445613322052084",
+    "chain": null
+   }
+  ],
+  "36": [
+   {
+    "zero_to_one": true,
+    "amount": "70084666361403330513",
+    "chain": "70079211968741000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "700846663614033305130",
+    "chain": "700785391418167000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "7008466636140333051302",
+    "chain": "7007181158306586000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "35042333180701665256510",
+    "chain": "35020963471599648000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "70084666361403330513021",
+    "chain": "70004606970640888000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "140169332722806661026042",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "280338665445613322052084",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "26458942984726257387",
+    "chain": "26455671519557000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "264589429847262573871",
+    "chain": "264555756291394000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "2645894298472625738719",
+    "chain": "2645461676318720000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "13229471492363128693596",
+    "chain": "13225177988772935000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "26458942984726257387193",
+    "chain": "26445031925163991000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "52917885969452514774386",
+    "chain": "52868780495430019000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "105835771938905029548772",
+    "chain": null
+   }
+  ],
+  "37": [
+   {
+    "zero_to_one": true,
+    "amount": "808651677792725046001",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "8086516777927250460019",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "80865167779272504600198",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "404325838896362523000990",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "808651677792725046001981",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1617303355585450092003962",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "3234606711170900184007924",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "70084666361403330513",
+    "chain": "70061384382132000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "700846663614033305130",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "7008466636140333051302",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "35042333180701665256510",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "70084666361403330513021",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "140169332722806661026042",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "280338665445613322052084",
+    "chain": null
+   }
+  ],
+  "38": [
+   {
+    "zero_to_one": true,
+    "amount": "1634650668",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "16346506688",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "163465066884",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "817325334423",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1634650668847",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "3269301337695",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "6538602675390",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1903619952530",
+    "chain": "1"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "19036199525302",
+    "chain": "19"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "190361995253024",
+    "chain": "190"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "951809976265120",
+    "chain": "954"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1903619952530241",
+    "chain": "1909"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3807239905060482",
+    "chain": "3818"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "7614479810120965",
+    "chain": "7637"
+   }
+  ],
+  "39": [
+   {
+    "zero_to_one": true,
+    "amount": "4330443",
+    "chain": "5136171"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "43304432",
+    "chain": "51361710"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "433044325",
+    "chain": "513616154"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "2165221628",
+    "chain": "2568059527"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "4330443257",
+    "chain": "5136065936"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "8660886514",
+    "chain": "10271919399"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "17321773028",
+    "chain": "20542988954"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668",
+    "chain": "1376830486"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "16346506688",
+    "chain": "13767489554"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "163465066884",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "817325334423",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668847",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3269301337695",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6538602675390",
+    "chain": null
+   }
+  ],
+  "40": [
+   {
+    "zero_to_one": true,
+    "amount": "1315278",
+    "chain": "1505504"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "13152785",
+    "chain": "15051081"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "131527856",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "657639284",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1315278568",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "2630557136",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "5261114272",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3163160650",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "31631606503",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "316316065033",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1581580325165",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3163160650330",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6326321300661",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "12652642601322",
+    "chain": null
+   }
+  ],
+  "41": [
+   {
+    "zero_to_one": true,
+    "amount": "70084666361403330513",
+    "chain": "64900218603034000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "700846663614033305130",
+    "chain": "648871983005642000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "7008466636140333051302",
+    "chain": "6475728203564566000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "35042333180701665256510",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "70084666361403330513021",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "140169332722806661026042",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "280338665445613322052084",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "899344970334837096",
+    "chain": "970971494889000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "8993449703348370962",
+    "chain": "9709687952637000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "89934497033483709629",
+    "chain": "97094179981038000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "449672485167418548145",
+    "chain": "485410919088259000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "899344970334837096290",
+    "chain": "970671927813142000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1798689940669674192580",
+    "chain": "1940744491869605000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3597379881339348385160",
+    "chain": "3879093747888007000000"
+   }
+  ],
+  "42": [
+   {
+    "zero_to_one": true,
+    "amount": "354048334526934551",
+    "chain": "366003210847000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "3540483345269345511",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "35404833452693455114",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "177024167263467275573",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "354048334526934551146",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "708096669053869102292",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1416193338107738204584",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "70084666361403330513",
+    "chain": "67778966595197000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "700846663614033305130",
+    "chain": "677526181335134000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "7008466636140333051302",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "35042333180701665256510",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "70084666361403330513021",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "140169332722806661026042",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "280338665445613322052084",
+    "chain": null
+   }
+  ],
+  "43": [
+   {
+    "zero_to_one": true,
+    "amount": "1047253926996461721",
+    "chain": "972294871974000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "10472539269964617218",
+    "chain": "9722911577261000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "104725392699646172189",
+    "chain": "97225401679278000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "523626963498230860949",
+    "chain": "486044490151093000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1047253926996461721899",
+    "chain": "971882763462524000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "2094507853992923443799",
+    "chain": "1942941184300460000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "4189015707985846887598",
+    "chain": "3882589189749305000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "410630231733940917",
+    "chain": "442022162105000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "4106302317339409172",
+    "chain": "4420214491875000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "41063023173394091726",
+    "chain": "44201432011722000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "205315115866970458634",
+    "chain": "220991319070884000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "410630231733940917269",
+    "chain": "441943042058624000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "821260463467881834538",
+    "chain": "883727742344775000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1642520926935763669077",
+    "chain": "1766822457867076000000"
+   }
+  ],
+  "44": [
+   {
+    "zero_to_one": true,
+    "amount": "3285854768561219086326",
+    "chain": "3635884673"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "32858547685612190863265",
+    "chain": "36358716115"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "328585476856121908632651",
+    "chain": "363574100197"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1642927384280609543163256",
+    "chain": "1817580314232"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "3285854768561219086326513",
+    "chain": "3634435422091"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "6571709537122438172653027",
+    "chain": "7265971754118"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "13143419074244876345306055",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3163160650",
+    "chain": "2857494840140099000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "31631606503",
+    "chain": "28574859116360110000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "316316065033",
+    "chain": "285739662698098953000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1581580325165",
+    "chain": "1428499936833974763000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3163160650330",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6326321300661",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "12652642601322",
+    "chain": null
+   }
+  ],
+  "45": [
+   {
+    "zero_to_one": true,
+    "amount": "4620167063",
+    "chain": "5256021675"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "46201670631",
+    "chain": "52559165480"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "462016706314",
+    "chain": "525486550476"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "2310083531574",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "4620167063149",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "9240334126299",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "18480668252598",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668",
+    "chain": "1436317619"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "16346506688",
+    "chain": "14363086869"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "163465066884",
+    "chain": "143621936337"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "817325334423",
+    "chain": "717911251902"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668847",
+    "chain": "1435326737647"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3269301337695",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6538602675390",
+    "chain": null
+   }
+  ],
+  "46": [
+   {
+    "zero_to_one": true,
+    "amount": "7225845947076634860096",
+    "chain": "8070382297"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "72258459470766348600960",
+    "chain": "80703269365"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "722584594707663486009604",
+    "chain": "806977336948"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "3612922973538317430048024",
+    "chain": "4033656995009"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "7225845947076634860096048",
+    "chain": "8064241872944"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "14451691894153269720192096",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "28903383788306539440384193",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668",
+    "chain": "1463003662812824000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "16346506688",
+    "chain": "14630016311690303000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "163465066884",
+    "chain": "146298130791749243000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "817325334423",
+    "chain": "731445494516204712000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668847",
+    "chain": "1462778106101370756000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3269301337695",
+    "chain": "2925104784986136833000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6538602675390",
+    "chain": "5848404696732755336000000"
+   }
+  ],
+  "47": [
+   {
+    "zero_to_one": true,
+    "amount": "16056839125431578708",
+    "chain": "16057942"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "160568391254315787088",
+    "chain": "160579369"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1605683912543157870887",
+    "chain": "1605788408"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "8028419562715789354439",
+    "chain": "8028824582"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "16056839125431578708878",
+    "chain": "16057355523"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "32113678250863157417757",
+    "chain": "32113536542"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "64227356501726314835514",
+    "chain": "64222375582"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668",
+    "chain": "1633878483357494000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "16346506688",
+    "chain": "16338237477082768000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "163465066884",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "817325334423",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668847",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3269301337695",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6538602675390",
+    "chain": null
+   }
+  ],
+  "48": [
+   {
+    "zero_to_one": true,
+    "amount": "7225845947076634860096",
+    "chain": "8072470623"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "72258459470766348600960",
+    "chain": "80724096148"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "722584594707663486009604",
+    "chain": "807179958362"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "3612922973538317430048024",
+    "chain": "4034544724490"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "7225845947076634860096048",
+    "chain": "8065704338800"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "14451691894153269720192096",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "28903383788306539440384193",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3163160650",
+    "chain": "2830278887007975000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "31631606503",
+    "chain": "28302705073410049000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "316316065033",
+    "chain": "283018671074302759000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1581580325165",
+    "chain": "1414907170662664477000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3163160650330",
+    "chain": "2829349017323008016000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6326321300661",
+    "chain": "5656837656529253486000000"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "12652642601322",
+    "chain": null
+   }
+  ],
+  "49": [
+   {
+    "zero_to_one": true,
+    "amount": "5878",
+    "chain": "5875"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "58782",
+    "chain": "58757"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "587821",
+    "chain": "587568"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "2939108",
+    "chain": "2937765"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "5878216",
+    "chain": "5875336"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "11756432",
+    "chain": "11749895"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "23512864",
+    "chain": "23496681"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "16346506688",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "163465066884",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "817325334423",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "1634650668847",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "3269301337695",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "6538602675390",
+    "chain": null
+   }
+  ],
+  "50": [
+   {
+    "zero_to_one": true,
+    "amount": "1634650668",
+    "chain": "1636465817138916000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "16346506688",
+    "chain": "16364521255013222000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "163465066884",
+    "chain": "163631521375771737000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "817325334423",
+    "chain": "817853497008254390000000"
+   },
+   {
+    "zero_to_one": true,
+    "amount": "1634650668847",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "3269301337695",
+    "chain": null
+   },
+   {
+    "zero_to_one": true,
+    "amount": "6538602675390",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "238571821588946467120",
+    "chain": "238259287"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "2385718215889464671202",
+    "chain": "2382589970"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "23857182158894646712029",
+    "chain": "23825609104"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "119285910794473233560147",
+    "chain": "119121588261"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "238571821588946467120294",
+    "chain": "238227035339"
+   },
+   {
+    "zero_to_one": false,
+    "amount": "477143643177892934240589",
+    "chain": null
+   },
+   {
+    "zero_to_one": false,
+    "amount": "954287286355785868481178",
+    "chain": null
+   }
+  ]
+ }
+}

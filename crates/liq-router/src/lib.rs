@@ -60,12 +60,15 @@
 #![forbid(unsafe_code)]
 
 pub mod assemble;
+pub mod balancer;
 pub mod band;
 pub mod bid;
 pub mod cache;
 pub mod crypto;
 pub mod exact;
+pub mod fluid;
 pub mod gas;
+pub mod graph;
 pub mod pendle;
 pub mod profit;
 pub mod select;
@@ -80,6 +83,7 @@ pub use assemble::{
     leg_meta_from_pins, reencode_with, AssembleError, AssembleView, Assembled, FluidPins,
     FluidTailFigures, LegMeta, TailPins,
 };
+pub use balancer::{BalancerRead, BalancerState};
 pub use band::{
     build_table, compute_band, next_base_fee, BandCtx, BandInputs, BandTable, PairTerms,
     ViabilityBand,
@@ -88,11 +92,12 @@ pub use bid::{
     beta_of, bid, debt_notional_eth_wei, searcher_net, Bid, BidConfig, BidError, BidSchedule,
 };
 pub use cache::WarmRouteCache;
-pub use crypto::{CryptoKind, CryptoRead, CryptoState};
+pub use crypto::{CryptoKind, CryptoRead, CryptoState, TweakState};
 pub use exact::{
-    solve_batch, solve_on, solve_pair, Allocation, BatchQuote, ExitQuote, GasTerms, SolveBudget,
-    OUT_PER_ETH_WETH,
+    exit_rho0, solve_batch, solve_on, solve_pair, Allocation, BatchQuote, ExitQuote, GasTerms,
+    HubUse, SolveBudget, OUT_PER_ETH_WETH,
 };
+pub use fluid::{FluidRead, FluidState, LiqToken};
 pub use gas::{header_gas_limit, GasError, GasOracle, PRIORITY_FEE_WEI};
 pub use profit::{
     best_plan, delta_net, evaluate, expected_contrib_per_gas, historical_profit_parity, min4,
@@ -103,8 +108,9 @@ pub use select::{
     EXACT_K, NONCE_SLOTS,
 };
 pub use solver::{
-    ng_withdraw_one_coin, CurveState, ExitSource, Leg, Pool, PoolBook, PoolId, PoolState,
-    RouteError, Tick, Unwrap, UnwrapKind, UnwrapRate, V2State, V3State, Venue, MAX_COINS,
+    ng_withdraw_one_coin, v4_swap_fee, CurveState, ExitSource, HubRoute, Leg, Pool, PoolBook,
+    PoolId, PoolState, RouteError, Tick, Unwrap, UnwrapKind, UnwrapRate, V2State, V3State, V4Key,
+    Venue, MAX_COINS, V4_POOL_MANAGER,
 };
 pub use warm::{Bucket, RouteEntry, RouteTable, WarmBuilder, WarmConfig, WarmInputs};
 

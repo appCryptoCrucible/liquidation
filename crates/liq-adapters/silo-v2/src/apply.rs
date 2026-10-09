@@ -12,6 +12,7 @@ use liq_types::{MarketId, PositionId, PositionKey};
 use crate::config::{Config, Emitter, ShareKind, ShareLoc};
 use crate::events::{factory, halt, hook, silo};
 use crate::layout::{SiloRow, UserExtra, SLOT0, SLOT1};
+use crate::math::rate_ray;
 
 #[inline]
 fn decode<E: SolEvent>(log: &DecodedLog<'_>) -> Result<E> {
@@ -93,6 +94,9 @@ fn set_extra(st: &mut dyn StateWriter, pos: PositionId, e: UserExtra) -> Result<
     st.set_extra(pos, repr)
 }
 
+/// Patch one silo's row. With a timestamp, the totals first grow to it at
+/// the read rates (Silo accrues interest before every state change), then
+/// `f` applies the change and `last_update` moves to `ts`.
 fn patch_row(
     st: &mut dyn StateWriter,
     market: MarketId,
@@ -102,17 +106,83 @@ fn patch_row(
 ) -> Result<()> {
     let at = MarketSlot { market, slot };
     let mut row = *st.market(at)?;
+    if let Some(t) = ts {
+        let dt = u64::from(t.saturating_sub(row.last_update));
+        accrue(row.body_mut::<SiloRow>()?, dt)?;
+    }
     f(row.body_mut::<SiloRow>()?)?;
     if let Some(t) = ts {
         row.last_update = t;
     }
-    let viewed = row.body::<SiloRow>()?.flags;
-    row.flags = if viewed & SiloRow::PRICED == 0 {
-        MarketFlags::UNPRICED
-    } else {
-        MarketFlags::NONE
-    };
+    row.flags = row_flags(row.body::<SiloRow>()?);
     st.set_market(at, row)
+}
+
+/// `b`'s totals grown by `dt` seconds of the read interest rate: the debt
+/// by the interest, the collateral by the interest less its fees
+/// (`SiloMathLib.getCollateralAmountsWithInterest`: `accrued − accrued ×
+/// (daoFee + deployerFee) / 1e18`).
+pub(crate) fn accrue(b: &mut SiloRow, dt: u64) -> Result<()> {
+    if b.flags & SiloRow::GROWTH_KNOWN == 0 {
+        return Ok(());
+    }
+    let debt = crate::math::grown(b.total_debt_assets, b.debt_rate_ray, dt)?;
+    let accrued = U256::from(debt.saturating_sub(b.total_debt_assets));
+    let fees =
+        crate::math::mul_div_down(accrued, U256::from(b.interest_fee), crate::math::PRECISION)?;
+    b.total_debt_assets = debt;
+    b.total_collateral_assets = add_u128(
+        b.total_collateral_assets,
+        accrued.saturating_sub(fees),
+        true,
+    )?;
+    Ok(())
+}
+
+/// The row flags a body implies: unpriced without its pinned oracle,
+/// paused once halted.
+pub(crate) fn row_flags(b: &SiloRow) -> MarketFlags {
+    let mut f = MarketFlags::NONE;
+    if b.flags & SiloRow::PRICED == 0 {
+        f = MarketFlags(f.0 | MarketFlags::UNPRICED.0);
+    }
+    if b.flags & SiloRow::HALTED != 0 {
+        f = MarketFlags(f.0 | MarketFlags::PAUSED.0);
+    }
+    f
+}
+
+/// Mark pair `pair_i` halted ([`SiloRow::HALTED`] on both silos): it refuses
+/// liquidation until the config is re-pinned; other pairs continue. State,
+/// not a flag in memory: a reorg that drops the log unwinds it.
+fn halt_pair(
+    cfg: &Config,
+    st: &mut dyn StateWriter,
+    pair_i: usize,
+    emitter: Address,
+    topic0: B256,
+) -> Result<DirtySet> {
+    let pair = cfg.pair(pair_i).ok_or(ProtocolError::Internal)?;
+    tracing::error!(
+        market = pair.market.0,
+        %emitter,
+        %topic0,
+        "silo pair emitted a halt-class log after the pin: this pair is halted (no liquidations) until the config is re-pinned; other pairs continue"
+    );
+    match st.markets(pair.market) {
+        Ok(rows) if rows.len() == usize::from(crate::layout::PAIR_SLOTS) => {}
+        // Not listed yet: nothing to liquidate, and `NewSilo` precedes the
+        // pin for every configured pair.
+        Ok(_) | Err(ProtocolError::UnknownMarket(_)) => return Ok(DirtySet::None),
+        Err(e) => return Err(e),
+    }
+    for slot in [SLOT0, SLOT1] {
+        patch_row(st, pair.market, slot, None, |b| {
+            b.flags |= SiloRow::HALTED;
+            Ok(())
+        })?;
+    }
+    Ok(DirtySet::MarketReprice(rows_of(pair.market)))
 }
 
 const HALT: &[B256] = &[
@@ -131,10 +201,20 @@ pub(crate) fn apply_log(
     };
     let topic0 = *log.topics.first().ok_or(ProtocolError::MalformedLog)?;
     if HALT.contains(&topic0) {
-        return if log.block <= cfg.pinned_through {
-            Ok(DirtySet::None)
-        } else {
-            Err(ProtocolError::HaltSignal)
+        if log.block <= cfg.pinned_through {
+            return Ok(DirtySet::None);
+        }
+        // One pair's silo, hook, share token or config: halt that pair, not
+        // the bot. The factories are shared by every pair, so theirs stop
+        // the protocol's ingest as before.
+        return match em {
+            Emitter::Factory(_) => Err(ProtocolError::HaltSignal),
+            Emitter::Hook(i)
+            | Emitter::SiloConfig(i)
+            | Emitter::Silo { pair: i, .. }
+            | Emitter::Share(ShareLoc { pair: i, .. }) => {
+                halt_pair(cfg, st, i, log.address, topic0)
+            }
         };
     }
     match em {
@@ -160,14 +240,14 @@ fn factory_log(
     {
         if topic0 == factory::NewSiloHook::SIGNATURE_HASH {
             let ev = decode::<factory::NewSiloHook>(log)?;
-            if let Some((_, p)) = cfg
+            if let Some((i, p)) = cfg
                 .pairs
                 .iter()
                 .enumerate()
                 .find(|(_, p)| p.silo0.silo == ev.silo || p.silo1.silo == ev.silo)
             {
                 if ev.hook != p.hook_receiver && log.block > cfg.pinned_through {
-                    return Err(ProtocolError::HaltSignal);
+                    return halt_pair(cfg, st, i, log.address, topic0);
                 }
             }
         }
@@ -209,9 +289,11 @@ fn new_silo(cfg: &Config, st: &mut dyn StateWriter, log: &DecodedLog<'_>) -> Res
         row.last_update = ts;
         {
             let b: &mut SiloRow = row.body_mut()?;
-            b.lt = side.lt;
-            b.liquidation_fee = side.liquidation_fee;
-            b.liquidation_target_ltv = side.liquidation_target_ltv;
+            let wad = |v: u128| u64::try_from(v).map_err(|_| ProtocolError::AmountTooLarge);
+            b.lt = wad(side.lt)?;
+            b.liquidation_fee = wad(side.liquidation_fee)?;
+            b.liquidation_target_ltv = wad(side.liquidation_target_ltv)?;
+            b.interest_fee = wad(side.interest_fee)?;
             b.hook = *pair.hook_receiver.as_ref();
             b.silo = *side.silo.as_ref();
             b.config = *pair.silo_config.as_ref();
@@ -366,25 +448,22 @@ fn silo_log(
         return Ok(positions(&[pos]));
     }
     if topic0 == silo::AccruedInterest::SIGNATURE_HASH {
-        // T8. This bumped `last_update` and wrote nothing, which freezes
-        // share price while making the row look fresh — debt is monotonically
-        // understated and the position fails OPEN: it reads `Healthy` across
-        // a real band of genuinely liquidatable positions.
+        // `Silo.sol:825` emits `Δ totalAssets[Debt]` for this accrual (see
+        // the rename in `events.rs`).
         //
-        // The event carries exactly what is needed: `Silo.sol:825` emits it
-        // as `Δ totalAssets[Debt]` for this accrual (see the rename in
-        // `events.rs`).
-        //
-        // Known limitation, not guessed at: the collateral side also accrues
-        // by `accruedInterest − totalFees`, and `SiloRow` has no fee field to
-        // net that out. Leaving collateral frozen biases LTV UPWARD — the
-        // fail-safe direction for a liquidator — so this is exact for debt
-        // and conservative for collateral. Wiring `daoFee`/`deployerFee` from
-        // `ISiloConfig.getConfig` is the correct follow-up; do not
-        // approximate the fee split here.
+        // Once a state read has measured the silo's growth, `patch_row`
+        // already grew both totals to `ts` (debt by the interest, collateral
+        // by the interest net of fees), and adding the event's amount again
+        // would count it twice; each block's read then sets both totals to
+        // the chain's own `getDebtAssets()` / `getCollateralAssets()`.
+        // Before the first read (backfill), the event is all there is: debt
+        // takes it, and collateral stays put (LTV biased upward, the
+        // fail-safe direction) until the read.
         let ev = decode::<silo::AccruedInterest>(log)?;
         patch_row(st, market, slot, Some(ts), |b| {
-            b.total_debt_assets = add_u128(b.total_debt_assets, ev.accruedInterest, true)?;
+            if b.flags & SiloRow::GROWTH_KNOWN == 0 {
+                b.total_debt_assets = add_u128(b.total_debt_assets, ev.accruedInterest, true)?;
+            }
             Ok(())
         })?;
         return Ok(DirtySet::MarketAccrual(rows_of(market)));
@@ -511,4 +590,140 @@ fn share_transfer(
     }
     let ids = dirty.get(..n).ok_or(ProtocolError::Internal)?;
     Ok(positions(ids))
+}
+
+/// Debt units of growth that measure a rate to a percent.
+const RESOLVED_GROWTH: u128 = 100;
+/// The oldest accrual whose storage totals start a measurement (seconds).
+const AVERAGE_WINDOW: u64 = 3_600;
+
+/// Fold one block's totals reads ([`crate::SiloV2`]'s `state_reads`): per
+/// silo, both totals become the chain's with-interest values at
+/// `timestamp`, and the debt's growth rate is re-measured.
+///
+/// The rate is the debt's growth from a base point (`base_debt` at
+/// `base_at`) to now, taken once it has grown by [`RESOLVED_GROWTH`] units
+/// (the integer growth then resolves it to a percent), after which now is
+/// the next base. A busy silo is measured block to block, the rate now; a
+/// quiet one over as many blocks as its growth needs. Between accruals only
+/// interest moves the totals, so the growth is the rate. Silo's rate model
+/// moves the rate while utilization stays away from its target, so a long
+/// average is not the rate now: a silo unaccrued for 71 days at 100 %
+/// utilization grew at twice its average, another at an eighteenth of it.
+///
+/// An accrual (a new `interestRateTimestamp`) restarts the base: at the
+/// accrual itself (its storage totals) when it is under
+/// [`AVERAGE_WINDOW`] old, else now. Until a rate is measured the totals
+/// are the chain's at each read and do not grow between reads (short by
+/// under [`RESOLVED_GROWTH`] units). An accrual changes utilization, but
+/// the rate model is continuous through it, so a measured rate stays until
+/// the next one.
+///
+/// A silo missing any of its four answers, or whose read target is not the
+/// row's silo, is left as it was.
+pub(crate) fn apply_totals(
+    st: &mut dyn StateWriter,
+    timestamp: u64,
+    answers: &[liq_protocol::StateAnswer<'_>],
+) -> Result<Vec<DirtySet>> {
+    #[derive(Default)]
+    struct Words {
+        target: Address,
+        debt: Option<U256>,
+        coll: Option<U256>,
+        stored: Option<(U256, U256)>,
+        accrued_at: Option<u64>,
+    }
+    let mut by_slot: Vec<(MarketSlot, Words)> = Vec::new();
+    for a in answers {
+        if !a.success {
+            continue;
+        }
+        let Ok(slot) = u16::try_from(a.read.tag & 0xffff) else {
+            continue;
+        };
+        let at = MarketSlot {
+            market: a.read.market,
+            slot,
+        };
+        let i = match by_slot.iter().position(|(s, _)| *s == at) {
+            Some(i) => i,
+            None => {
+                by_slot.push((
+                    at,
+                    Words {
+                        target: a.read.target,
+                        ..Words::default()
+                    },
+                ));
+                by_slot.len().saturating_sub(1)
+            }
+        };
+        let Some((_, w)) = by_slot.get_mut(i) else {
+            continue;
+        };
+        let word = |k: usize| {
+            a.data
+                .get(k.saturating_mul(32)..k.saturating_add(1).saturating_mul(32))
+                .map(U256::from_be_slice)
+        };
+        match a.read.tag >> 16 {
+            0 => w.debt = word(0),
+            1 => w.coll = word(0),
+            2 => w.stored = word(0).zip(word(1)),
+            3 => w.accrued_at = word(2).and_then(|t| u64::try_from(t).ok()),
+            _ => {}
+        }
+    }
+    let ts = last_update(timestamp)?;
+    let mut rows = DirtyRows::new();
+    for (at, w) in by_slot {
+        let (Some(debt), Some(coll), Some((_, stored_debt)), Some(accrued_at)) =
+            (w.debt, w.coll, w.stored, w.accrued_at)
+        else {
+            continue;
+        };
+        let Ok(cur) = st.market(at) else { continue };
+        let mut row = *cur;
+        let before = row;
+        let b: &mut SiloRow = row.body_mut()?;
+        if Address::from(b.silo) != w.target {
+            continue;
+        }
+        if b.flags & SiloRow::READ_BASE == 0 || b.accrued_at != accrued_at {
+            let since_accrual = timestamp.saturating_sub(accrued_at);
+            if since_accrual > 0 && since_accrual <= AVERAGE_WINDOW {
+                b.base_debt = narrow(stored_debt)?;
+                b.base_at = last_update(accrued_at)?;
+            } else {
+                b.base_debt = narrow(debt)?;
+                b.base_at = ts;
+            }
+        }
+        let window = timestamp.saturating_sub(u64::from(b.base_at));
+        let resolved = U256::from(b.base_debt)
+            .checked_add(U256::from(RESOLVED_GROWTH))
+            .is_some_and(|t| debt >= t);
+        if window > 0 && resolved {
+            b.debt_rate_ray = rate_ray(U256::from(b.base_debt), debt, window)?;
+            b.flags |= SiloRow::GROWTH_KNOWN;
+            b.base_debt = narrow(debt)?;
+            b.base_at = ts;
+        }
+        b.total_debt_assets = narrow(debt)?;
+        b.total_collateral_assets = narrow(coll)?;
+        b.accrued_at = accrued_at;
+        b.flags |= SiloRow::READ_BASE;
+        row.last_update = ts;
+        row.flags = row_flags(row.body::<SiloRow>()?);
+        if row != before {
+            st.set_market(at, row)?;
+            rows.push(at);
+        }
+    }
+    Ok(if rows.is_empty() {
+        Vec::new()
+    } else {
+        vec![DirtySet::MarketAccrual(rows)]
+    })
 }

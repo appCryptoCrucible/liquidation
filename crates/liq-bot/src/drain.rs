@@ -24,7 +24,7 @@ use liq_flash::{CostModel, FlashIndex, Haircut};
 use liq_node::{as_dirty_sets, AfterBlock, AfterBlockCtx};
 use liq_oracle::{CanonicalBook, DerivedBook};
 use liq_plan::{EncodedPlan, ValidateCtx, FLAG_SWEEP};
-use liq_protocol::{DirtySet, Protocol};
+use liq_protocol::{DirtySet, Protocol, Quote};
 use liq_router::{
     assemble, bid, debt_notional_eth_wei, select, Bid, BidConfig, BidSchedule, GasTerms,
     MarketView, PoolBook, PositionInput, SelectCfg, SelectedPlan, SolveBudget, EXACT_K,
@@ -36,7 +36,7 @@ use liq_sim::{
     PLANNED_EXECUTOR,
 };
 use liq_state::StateView;
-use liq_types::{AssetId, FlashProvider, PriceTick, PriceVector, TriggerKind};
+use liq_types::{AssetId, FlashProvider, PriceTick, PriceVector, ProtocolId, TriggerKind};
 use parking_lot::{Mutex, RwLock};
 
 use crate::assemble_view::{require_meta, require_token, ProcessAssembleView};
@@ -156,6 +156,26 @@ impl DrainSim for LiveSim {
     }
 }
 
+/// `plan` charging `gas` at `wei_per_gas` where that costs more than it
+/// budgeted, with its profit floor lowered by our share of the difference
+/// (what is left of it after the bid), to 1 wei at least: `execute` refuses
+/// a net loss itself, and a floor of 0 is refused. `None` when the budget
+/// covers it.
+fn charge_measured_gas(
+    plan: &liq_plan::BatchPlan,
+    gas: u64,
+    wei_per_gas: u128,
+) -> Option<liq_plan::BatchPlan> {
+    let cost = u128::from(gas).checked_mul(wei_per_gas)?;
+    let extra = cost.checked_sub(plan.gas_cost_wei).filter(|e| *e > 0)?;
+    let keep_bps = u128::from(10_000u16.saturating_sub(plan.bid_bps));
+    let ours = extra.checked_mul(keep_bps)?.checked_div(10_000)?;
+    let mut p = plan.clone();
+    p.gas_cost_wei = cost;
+    p.min_profit_wei = p.min_profit_wei.saturating_sub(ours).max(1);
+    Some(p)
+}
+
 /// Gas limit for a simulated job: what its calls needed available plus a
 /// fifth (call depth forwards 63/64 of what is left), at most what the
 /// simulation itself ran with. `None` when nothing was spent.
@@ -181,6 +201,35 @@ pub struct DrainStats {
 
 /// Hot-thread join. Empty protocols / empty view / unbound exec is a
 /// live no-op — nothing is fabricated.
+/// Where one block's time went on the hot thread, from `after_block`'s
+/// first line to the last job handed to the exec thread (signing, on that
+/// thread, is not in it). Every stage is summed over the block's candidates
+/// and plans. Read with [`DrainJoin::last_timing`]; measured on every block
+/// (a clock read per stage boundary).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BlockTiming {
+    /// Before the engine: flash index, header and fee observation, select
+    /// inputs, snapshots.
+    pub setup: std::time::Duration,
+    /// The engine: prices, protocol prices, folds, health, candidates.
+    pub engine: std::time::Duration,
+    /// Pins, quote tails, pair terms and bands for the candidates.
+    pub prepare: std::time::Duration,
+    /// `select`: sizing, exits, flash sources, grouping.
+    pub select: std::time::Duration,
+    /// `assemble`: the plans' legs and bytes.
+    pub assemble: std::time::Duration,
+    /// Plan encoding and the in-process simulations (both passes), whether
+    /// they pass or refuse the plan.
+    pub sim: std::time::Duration,
+    /// Building the exec job and handing it over.
+    pub handoff: std::time::Duration,
+    /// `after_block` start to its end.
+    pub total: std::time::Duration,
+    pub candidates: u32,
+    pub jobs: u32,
+}
+
 pub struct DrainJoin {
     pub engine: Engine,
     protocols: &'static [BoundProtocol],
@@ -213,6 +262,14 @@ pub struct DrainJoin {
     /// Block each band key was first seen; the warm table is trusted for a
     /// key once it was built after that block.
     band_registered: HashMap<crate::bands::BandKey, u64>,
+    /// The flash index was republished since `Unfundable` positions were
+    /// last re-evaluated.
+    flash_moved: bool,
+    /// This block's [`BlockTiming`], filled as it runs.
+    timing: std::cell::Cell<BlockTiming>,
+    /// Block of the warm route table `Unfundable` positions were last
+    /// re-evaluated against.
+    routes_seen: u64,
     /// Protocol-reported prices: the engine's per-market overlay.
     protocol_prices: crate::protocol_prices::ProtocolPriceBook,
     /// Moves from the last applied batch. Reused each block.
@@ -301,6 +358,20 @@ impl PriceFeed {
     }
 }
 
+/// Seconds from one Ethereum slot to the next.
+const SLOT_SECONDS: u64 = 12;
+
+/// When a job built now executes: the next block, one slot after the tip.
+/// Health, quotes and sizes are judged then, not at the tip, so a position
+/// that crosses by interest alone in the next block is a candidate now (the
+/// winner of block N+1 saw it at block N). Accrual is per second for most
+/// adapters and per block for Compound; both read this as one block on.
+/// State reads, resyncs and the simulation's parent stay at the tip.
+#[inline]
+const fn eval_ts(tip_ts: u64) -> u64 {
+    tip_ts.saturating_add(SLOT_SECONDS)
+}
+
 /// Raw units of `asset` per 1e18 wei: `10^decimals · P(ETH) / P(asset)`,
 /// both prices per whole token in the same numeraire. `None` when either
 /// price or the decimals are unknown — never a guessed rate.
@@ -383,9 +454,11 @@ fn coll_per_debt_from_prices(
     coll_per_debt_from_rays(coll.price, debt.price, dec_coll, dec_debt)
 }
 
-/// Publish [`MarketView::pair_terms`] for every `(repay, seize)` leg of the
-/// candidates about to be selected. `bonus` is the quote's (sizing overlays
-/// it anyway); `flash_fee_bps` is the cheapest live source holding the debt;
+/// Publish [`MarketView::pair_terms`] for every `(repay, seize)` leg of
+/// `quotes`: the candidates about to be selected, and the positions the
+/// engine held `Unfundable` this block (their bands are what can make them
+/// eligible). `bonus` is the quote's (sizing overlays it anyway);
+/// `flash_fee_bps` is the cheapest live source holding the debt;
 /// `fixed_gas` is the measured non-swap gas with that same source's wrap,
 /// `0` = not measured (the band refuses such a pair rather than
 /// under-charging gas).
@@ -394,13 +467,13 @@ fn publish_pair_terms(
     book: &crate::protocol_prices::ProtocolPriceBook,
     flash: &FlashIndex,
     gas: &crate::gas_model::BandGas,
-    cands: &[&Candidate],
+    quotes: &[(ProtocolId, &Quote)],
     view: &mut ProcessAssembleView,
 ) {
     let bands = view.bands().cloned();
     let mut shared = bands.as_ref().map(|b| b.inputs.lock());
-    for c in cands {
-        for r in &c.quote.repay_options {
+    for &(protocol, quote) in quotes {
+        for r in &quote.repay_options {
             let Some(dp0) = feed.merged.0.get(usize::from(r.asset.0)) else {
                 continue;
             };
@@ -412,15 +485,17 @@ fn publish_pair_terms(
             };
             let cheapest = flash.entries(r.asset).first();
             let flash_fee_bps = cheapest.map_or(0, |e| e.fee_bps);
-            let fixed_gas = cheapest.map_or(0, |e| gas.fixed(c.protocol, e.provider));
-            for s in &c.quote.seize_options {
+            let fixed_gas = cheapest.map_or(0, |e| gas.fixed(protocol, e.provider));
+            for s in &quote.seize_options {
                 let (Some(cp0), Some(&dc)) = (
                     feed.merged.0.get(usize::from(s.asset.0)),
                     feed.decimals.get(usize::from(s.asset.0)),
                 ) else {
                     continue;
                 };
-                let Some(cp) = sizing_ray(cp0, book.usd(s.asset)) else {
+                let Some(cp) =
+                    sizing_ray(cp0, book.usd_or_market(s.asset, protocol, quote.key.market))
+                else {
                     tracing::error!(
                         coll = s.asset.0,
                         debt = r.asset.0,
@@ -442,9 +517,9 @@ fn publish_pair_terms(
                     flash_fee_bps,
                     fixed_gas,
                 };
-                view.insert_pair_terms(c.protocol, s.asset, r.asset, terms);
+                view.insert_pair_terms(protocol, s.asset, r.asset, terms);
                 if let Some(i) = shared.as_mut() {
-                    i.terms.insert((c.protocol, s.asset, r.asset), terms);
+                    i.terms.insert((protocol, s.asset, r.asset), terms);
                 }
             }
         }
@@ -474,7 +549,9 @@ fn publish_per_eth(
         let Some(&dec) = feed.decimals.get(usize::from(p.asset.0)) else {
             continue;
         };
-        let Some(asset_ray) = sizing_ray(p, book.usd(p.asset)) else {
+        // A token only markets price (no feed, no getter) takes their
+        // median, as sizing takes its own market's price.
+        let Some(asset_ray) = sizing_ray(p, book.usd_or_markets(p.asset)) else {
             continue;
         };
         if let Some(per) = per_eth_from_rays(asset_ray, eth, dec) {
@@ -590,6 +667,9 @@ impl DrainJoin {
             band_gas: crate::gas_model::BandGas::none(),
             liq_gas: liq_router::LiqGas::none(),
             band_registered: HashMap::new(),
+            flash_moved: false,
+            timing: std::cell::Cell::new(BlockTiming::default()),
+            routes_seen: 0,
             protocol_prices: crate::protocol_prices::ProtocolPriceBook::default(),
             protocol_moves: Vec::new(),
             price_reader: None,
@@ -918,7 +998,7 @@ impl DrainJoin {
                 self.protocols.iter().map(|p| p.as_dyn()).collect();
             let flash = self.flash.load();
             let world = World {
-                view: store.view(ts),
+                view: store.view(eval_ts(ts)),
                 protocols: &proto_refs,
                 flash: flash.as_ref(),
                 routes: &self.routes,
@@ -940,7 +1020,7 @@ impl DrainJoin {
         if cands.is_empty() {
             return;
         }
-        let view = store.view(ts);
+        let view = store.view(eval_ts(ts));
         let _ = self.enqueue_candidates(&cands, tip, ts, Some(&view));
     }
 
@@ -979,7 +1059,7 @@ impl DrainJoin {
             let book = &self.protocol_prices;
             crate::protocol_prices::to_usd(&batch.entries, |a| {
                 let c = canon.0.get(usize::from(a.0))?;
-                sizing_ray(c, book.usd(a))
+                sizing_ray(c, book.usd_or_batch(a, batch))
             })
         };
         let restated = crate::protocol_prices::PriceBatch {
@@ -987,8 +1067,21 @@ impl DrainJoin {
             entries,
             failed: batch.failed,
         };
-        self.protocol_prices
-            .apply(&restated, &mut self.protocol_moves)
+        let first = self.protocol_prices.applied() == 0;
+        let fresh = self
+            .protocol_prices
+            .apply(&restated, &mut self.protocol_moves);
+        if first {
+            // Startup report (coverage plan 1C): what the first batch priced.
+            let cov = crate::protocol_prices::coverage(
+                &self.protocol_prices,
+                &shared.reads.load(),
+                batch,
+                self.protocols,
+            );
+            crate::protocol_prices::log_coverage(&cov, batch.block);
+        }
+        fresh
     }
 
     /// Size the engine's per-position tables for the real universe so the
@@ -1092,13 +1185,36 @@ impl DrainJoin {
     }
 
     /// End of block: re-read sources into the process [`FlashIndex`].
-    fn publish_flash(&mut self) {
+    /// `true` when the published index changed.
+    fn publish_flash(&mut self) -> bool {
         let Some(srcs) = self.flash_sources.as_ref() else {
-            return;
+            return false;
         };
         let g = srcs.lock();
         self.flash_scratch.refresh(&g);
-        self.flash_scratch.publish_if_material(&self.flash, 0);
+        self.flash_scratch.publish_if_material(&self.flash, 0)
+    }
+
+    /// Pair terms for every quote the engine held `Unfundable` this block,
+    /// into the band inputs. A collateral gets an exit in the warm route
+    /// table only from a band, and a band only from its pair's terms; a
+    /// position with no exit yet never becomes a candidate to publish them,
+    /// so without this its pair would never be evaluated at all.
+    fn publish_unfunded_terms(&mut self) {
+        let unfunded = self.engine.take_unfunded();
+        if unfunded.is_empty() {
+            return;
+        }
+        let legs: Vec<(ProtocolId, &Quote)> =
+            unfunded.iter().map(|u| (u.protocol, &u.quote)).collect();
+        publish_pair_terms(
+            &self.prices,
+            &self.protocol_prices,
+            &self.flash.load(),
+            &self.band_gas,
+            &legs,
+            &mut self.assemble,
+        );
     }
 
     #[must_use]
@@ -1280,7 +1396,7 @@ impl DrainJoin {
         let proto_refs: Vec<&dyn Protocol> = self.protocols.iter().map(|p| p.as_dyn()).collect();
         let flash = self.flash.load();
         let world = World {
-            view: ctx.store.view(ctx.timestamp),
+            view: ctx.store.view(eval_ts(ctx.timestamp)),
             protocols: &proto_refs,
             flash: flash.as_ref(),
             routes: &self.routes,
@@ -1296,7 +1412,6 @@ impl DrainJoin {
             tracing::error!(error = %e, "protocol price moves failed");
         }
         publish_per_eth(&self.prices, &self.protocol_prices, &mut self.assemble);
-        publish_band_block(&self.assemble, self.fee.as_ref(), ctx.block);
         self.assemble.prune_local_bands();
         if proto_refs.is_empty() {
             tracing::error!("empty protocol list — on_dirty skipped (no invented adapter)");
@@ -1327,6 +1442,17 @@ impl DrainJoin {
         }
         if let Err(e) = self.engine.on_block(&world) {
             tracing::error!(error = %e, "on_block failed");
+        }
+        // GUIDE 07 §4b: an `Unfundable` position is re-evaluated when either
+        // side of eligibility moved — flash depth, or the exits the warm
+        // route table holds (rebuilt off the hot path once per block).
+        let routes_block = self.routes.table().block;
+        if self.flash_moved || routes_block > self.routes_seen {
+            self.flash_moved = false;
+            self.routes_seen = self.routes_seen.max(routes_block);
+            if let Err(e) = self.engine.on_flash_change(&world) {
+                tracing::error!(error = %e, "Unfundable re-evaluation failed");
+            }
         }
     }
 
@@ -1425,6 +1551,7 @@ impl DrainJoin {
             }
             Some(ready) => ready.gas_failed,
         };
+        let prepare_at = std::time::Instant::now();
         let mut kept: Vec<&'c Candidate> = Vec::new();
         for c in cands {
             if !c.fireable() || c.cause.kind() == TriggerKind::OraclePredicted {
@@ -1470,12 +1597,13 @@ impl DrainJoin {
             stats.skipped_select = stats.skipped_select.saturating_add(1);
             return out;
         };
+        let legs: Vec<(ProtocolId, &Quote)> = kept.iter().map(|c| (c.protocol, &c.quote)).collect();
         publish_pair_terms(
             &self.prices,
             &self.protocol_prices,
             &self.flash.load(),
             &self.band_gas,
-            &kept,
+            &legs,
             &mut self.assemble,
         );
         ensure_bands(
@@ -1501,6 +1629,9 @@ impl DrainJoin {
                 gas_failed,
             })
             .collect();
+        let prepared = prepare_at.elapsed();
+        self.add_timing(|t| t.prepare = t.prepare.saturating_add(prepared));
+        let select_at = std::time::Instant::now();
         let flash = self.flash.load();
         let warm = self.routes.table();
         let warm_ref = if warm.is_empty() {
@@ -1531,37 +1662,34 @@ impl DrainJoin {
                 return out;
             }
         };
+        let selected = select_at.elapsed();
+        self.add_timing(|t| t.select = t.select.saturating_add(selected));
         if plans.is_empty() {
             tracing::error!("select emitted no plans");
             stats.skipped_select = stats.skipped_select.saturating_add(1);
             return out;
         }
-        let price = match liq_router::profit::gas_price_in_debt(&ready.gas) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!(error = %e, "gas_price_in_debt refused");
-                stats.skipped_select = stats.skipped_select.saturating_add(1);
-                return out;
-            }
-        };
         for plan in &plans {
             let Some(bid) = plan_bid(plan, ready, &self.assemble) else {
                 stats.skipped_job = stats.skipped_job.saturating_add(1);
                 continue;
             };
-            let assembled = match assemble(
+            let assemble_at = std::time::Instant::now();
+            let assembled = assemble(
                 std::slice::from_ref(plan),
                 &ready.cfg,
                 &book,
                 &self.assemble,
                 &ready.validate,
                 &bid,
-                price,
                 &ready.gas,
                 ready.flags,
                 flash.as_ref(),
                 ready.haircut,
-            ) {
+            );
+            let took = assemble_at.elapsed();
+            self.add_timing(|t| t.assemble = t.assemble.saturating_add(took));
+            let assembled = match assembled {
                 Ok(a) => a,
                 Err(e) => {
                     tracing::error!(error = %e, "assemble refused — no zero tail");
@@ -1636,6 +1764,12 @@ impl DrainJoin {
         };
         let Some(ready) = self.select.as_ref() else {
             return Finish::Job;
+        };
+        // Encoding and simulation, timed on every way out of them.
+        let sim_lap = SimLap {
+            drain: self,
+            at: std::time::Instant::now(),
+            done: std::cell::Cell::new(false),
         };
         let encoded = match EncodedPlan::encode(&assembled.plan, &ready.validate) {
             Ok(e) => e,
@@ -1741,7 +1875,7 @@ impl DrainJoin {
             min_profit: U256::from(assembled.plan.min_profit_wei),
             health: None,
         };
-        let outcome = match sim.verify(&bundle, &at) {
+        let mut outcome = match sim.verify(&bundle, &at) {
             Ok(o) => o,
             Err(SimError::StateUnavailable) | Err(SimError::ArchiveUnavailable) => {
                 tracing::error!("sim state/archive unavailable — skip send");
@@ -1752,6 +1886,62 @@ impl DrainJoin {
                 return Finish::Sim;
             }
         };
+        // The bid is a fraction of `gross − gasCostWei`, and `gasCostWei` is
+        // the planner's estimate. Where the transaction burns more, the bid
+        // comes out of gas we pay ourselves: block 26,098,187 budgeted 872k
+        // gas, ran 1.10M, bid 99.5 % and lost 0.00022 ETH. Charge what the
+        // simulation measured and simulate again; a plan that is not
+        // profitable at its real gas is not sent.
+        let Ok(wei_per_gas) = ready.gas.accounting_wei_per_gas() else {
+            tracing::error!("accounting gas price overflow — skip");
+            return Finish::Job;
+        };
+        let (plan_bytes, calldata) = match charge_measured_gas(
+            &assembled.plan,
+            outcome.gas_used,
+            wei_per_gas,
+        ) {
+            None => (plan_bytes, calldata),
+            Some(plan) => {
+                let encoded = match EncodedPlan::encode(&plan, &ready.validate) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        tracing::error!(error = %e, "re-priced plan encode refused");
+                        return Finish::Job;
+                    }
+                };
+                let bytes = Bytes::from(encoded.into_bytes());
+                let data = execute_calldata(bytes.as_ref());
+                let again = Bundle {
+                    calls: bundle
+                        .calls
+                        .iter()
+                        .map(|c| SimTx {
+                            data: data.clone(),
+                            ..c.clone()
+                        })
+                        .collect(),
+                    min_profit: U256::from(plan.min_profit_wei),
+                    ..bundle.clone()
+                };
+                tracing::info!(
+                    planned = assembled.plan.gas_cost_wei,
+                    measured = plan.gas_cost_wei,
+                    gas = outcome.gas_used,
+                    "plan gas cost re-priced from the simulation"
+                );
+                outcome = match sim.verify(&again, &at) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        tracing::info!(error = %e, "not profitable at its measured gas — skip send");
+                        return Finish::Sim;
+                    }
+                };
+                (bytes, data)
+            }
+        };
+        sim_lap.stop();
+        let handoff_at = std::time::Instant::now();
         let Some(gas) = job_gas(outcome.gas_spent, at.max_tx_gas()) else {
             tracing::error!("sim spent no gas — skip");
             return Finish::Job;
@@ -1772,7 +1962,15 @@ impl DrainJoin {
         ) else {
             return Finish::Job;
         };
-        if inbox.try_send(job) {
+        let sent = inbox.try_send(job);
+        let handed = handoff_at.elapsed();
+        self.add_timing(|t| {
+            t.handoff = t.handoff.saturating_add(handed);
+            if sent {
+                t.jobs = t.jobs.saturating_add(1);
+            }
+        });
+        if sent {
             Finish::Sent
         } else {
             tracing::error!("ExecInbox full — counted, not blocked");
@@ -1780,6 +1978,44 @@ impl DrainJoin {
         }
     }
 
+    /// The last block's [`BlockTiming`].
+    #[must_use]
+    pub fn last_timing(&self) -> BlockTiming {
+        self.timing.get()
+    }
+
+    fn add_timing(&self, f: impl FnOnce(&mut BlockTiming)) {
+        let mut t = self.timing.get();
+        f(&mut t);
+        self.timing.set(t);
+    }
+}
+
+/// Adds the time since `at` to [`BlockTiming::sim`] once: at [`Self::stop`],
+/// or when dropped on an early return.
+struct SimLap<'a> {
+    drain: &'a DrainJoin,
+    at: std::time::Instant,
+    done: std::cell::Cell<bool>,
+}
+
+impl SimLap<'_> {
+    fn stop(&self) {
+        if !self.done.replace(true) {
+            let took = self.at.elapsed();
+            self.drain
+                .add_timing(|t| t.sim = t.sim.saturating_add(took));
+        }
+    }
+}
+
+impl Drop for SimLap<'_> {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+impl DrainJoin {
     /// The block a job built on `tip` lands in. `None` when `tip` is not
     /// the block this join last saw committed: its hash names the state the
     /// simulator reads.
@@ -1854,7 +2090,7 @@ impl DrainJoin {
         {
             let flash = self.flash.load();
             let world = World {
-                view: store.view(self.last_ts),
+                view: store.view(eval_ts(self.last_ts)),
                 protocols: &proto_refs,
                 flash: flash.as_ref(),
                 routes: &self.routes,
@@ -1872,7 +2108,7 @@ impl DrainJoin {
             return;
         }
         let (groups, other) = partition_by_hint(cands);
-        let view = store.view(self.last_ts);
+        let view = store.view(eval_ts(self.last_ts));
         let tip = store.tip();
         for group in &groups {
             let _ = self.enqueue_svr(group, tip, self.last_ts, Some(&view));
@@ -2119,11 +2355,13 @@ fn svr_select_cfg(mut cfg: SelectCfg) -> SelectCfg {
 
 impl AfterBlock for DrainJoin {
     fn after_block(&mut self, ctx: AfterBlockCtx<'_>) {
+        let started = std::time::Instant::now();
+        self.timing.set(BlockTiming::default());
         self.block_seen = true;
         self.last_block = ctx.block;
         self.last_hash = ctx.hash;
         self.last_ts = ctx.timestamp;
-        self.publish_flash();
+        self.flash_moved |= self.publish_flash();
         self.observe_parent_header(ctx.base_fee_per_gas, ctx.gas_used, ctx.gas_limit, ctx.block);
         self.refresh_select(ctx.gas_limit);
         let tip = ctx.store.tip();
@@ -2134,7 +2372,10 @@ impl AfterBlock for DrainJoin {
             .as_mut()
             .and_then(|w| w.after_block(store, ctx.block, ctx.hash));
         let block = ctx.block;
+        let engine_at = std::time::Instant::now();
+        self.add_timing(|t| t.setup = started.elapsed());
         self.feed_engine(ctx);
+        self.add_timing(|t| t.engine = engine_at.elapsed());
         // After the engine took this block: its bands and prices match the
         // snapshot's block.
         if let (Some(snap), Some(drift)) = (snap, self.drift.as_ref()) {
@@ -2147,12 +2388,19 @@ impl AfterBlock for DrainJoin {
                 timestamp: ts,
             });
         }
+        self.publish_unfunded_terms();
         let cands: Vec<Candidate> = self.engine.candidates().collect();
-        if cands.is_empty() {
-            return;
+        let n = u32::try_from(cands.len()).unwrap_or(u32::MAX);
+        self.add_timing(|t| t.candidates = n);
+        if !cands.is_empty() {
+            let view = store.view(eval_ts(ts));
+            let _ = self.enqueue_candidates(&cands, tip, ts, Some(&view));
         }
-        let view = store.view(ts);
-        let _ = self.enqueue_candidates(&cands, tip, ts, Some(&view));
+        // Last: the warm thread rebuilds bands and exits once this stamp
+        // lands, so every pair term this block published is in that rebuild.
+        publish_band_block(&self.assemble, self.fee.as_ref(), block);
+        let total = started.elapsed();
+        self.add_timing(|t| t.total = total);
     }
 
     fn poll(&mut self, store: &liq_state::StateStore) {
@@ -2766,8 +3014,8 @@ mod tests {
         p
     }
 
-    fn wrap_gas() -> [u64; 5] {
-        [366_332, 355_632, 460_032, 370_435, 384_134]
+    fn wrap_gas() -> [u64; 7] {
+        [366_332, 355_632, 460_032, 370_435, 384_134, 0, 0]
     }
 
     fn flat_schedule() -> BidSchedule {
@@ -2831,6 +3079,7 @@ mod tests {
             tokens: SmallVec::from_slice(&[tok(0), tok(1)]),
             hop_gas: 100_000,
             state: PoolState::V3(V3State {
+                factory: 0,
                 sqrt_price_x96: Q96,
                 tick: 0,
                 liquidity: l,
@@ -2848,6 +3097,8 @@ mod tests {
                         gross: l,
                     },
                 ],
+                v4: None,
+                window: None,
             }),
         }
     }
@@ -3310,6 +3561,46 @@ mod tests {
             job_gas(15_000_000, liq_sim::MAX_TX_GAS),
             Some(liq_sim::MAX_TX_GAS)
         );
+    }
+
+    /// Block 26,098,187's plan, from the replay: budgeted 1,533,601,355,468,235
+    /// wei of gas (872,215 gas at 1,758,283,629 wei/gas), bid 9,950 bps, floor
+    /// 165,950,247,651,707 wei; the simulation ran 1,102,639 gas. Oracle:
+    /// the arithmetic — the plan is charged 1,102,639 × 1,758,283,629 and its
+    /// floor drops by 0.5 % of the extra (what is left after the bid), to no
+    /// less than 1 wei. A plan whose budget covers the measured gas is left
+    /// as it is.
+    #[test]
+    fn a_plan_is_charged_the_gas_its_simulation_used() {
+        let plan = liq_plan::BatchPlan {
+            flags: 0,
+            bid_bps: 9_950,
+            gas_cost_wei: 1_533_601_355_468_235,
+            min_profit_wei: 165_950_247_651_707,
+            groups: Vec::new(),
+            profit_swaps: Vec::new(),
+        };
+        let price = 1_758_283_629u128;
+        let p = charge_measured_gas(&plan, 1_102_639, price).unwrap();
+        let cost = 1_102_639u128 * price;
+        assert_eq!(p.gas_cost_wei, cost);
+        let extra = cost - plan.gas_cost_wei;
+        assert_eq!(p.min_profit_wei, plan.min_profit_wei - extra * 50 / 10_000);
+        assert_eq!((p.bid_bps, p.flags), (plan.bid_bps, plan.flags));
+        assert_eq!(
+            charge_measured_gas(&plan, 872_215, price),
+            None,
+            "within budget"
+        );
+        assert_eq!(charge_measured_gas(&plan, 500_000, price), None);
+        // Our share of the extra (about 2.0e12 wei) is above a 10-wei
+        // floor: the floor stops at 1 wei, never 0.
+        let thin = liq_plan::BatchPlan {
+            min_profit_wei: 10,
+            ..plan.clone()
+        };
+        let p = charge_measured_gas(&thin, 1_102_639, price).unwrap();
+        assert_eq!(p.min_profit_wei, 1);
     }
 
     fn backrun(pos: u32) -> Candidate {

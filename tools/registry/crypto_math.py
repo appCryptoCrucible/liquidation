@@ -18,6 +18,10 @@ I_MAX = 2**255 - 1
 I_MIN = -(2**255)
 
 
+# Curve's `A_MULTIPLIER`: `A()` is the amplification times this.
+A_MULTIPLIER = 10_000
+
+
 class Revert(Exception):
     pass
 
@@ -441,6 +445,65 @@ def tri_get_dy(i, j, dx, balances, precisions, price_scale, d, ann, gamma,
 # ── original CurveCryptoSwap2 (`newton_y` inside the pool) ──────────────────
 
 
+def two_stable_get_y(amp: int, xp: list[int], d: int, i: int) -> int:
+    """`StableswapMath.get_y` as deployed for the 2025 Twocrypto pools
+    (`0xbfdd…ea13`, "StableSwapNG adapted for use in twocrypto pool"):
+    `amp` is the pool's `A()` (already times A_MULTIPLIER); N = 2."""
+    n = 2
+    s_ = 0
+    c = d
+    ann = amp * n
+    for k in range(n):
+        if k == i:
+            continue
+        x = xp[k]
+        s_ += x
+        c = c * d // (x * n)
+    c = c * d * A_MULTIPLIER // (ann * n)
+    b = s_ + d * A_MULTIPLIER // ann
+    y = d
+    for _ in range(255):
+        y_prev = y
+        y = (y * y + c) // (2 * y + b - d)
+        if (y - y_prev if y > y_prev else y_prev - y) <= 1:
+            return y
+    raise Revert("get_y did not converge")
+
+
+def two_stable_fee(xp: list[int], mid_fee: int, out_fee: int, fee_gamma: int) -> int:
+    """`Twocrypto._fee` (2025, v2.1.0d / v3.0.0): the balance term
+    `fee_gamma·B / (fee_gamma·B/1e18 + 1e18 − B)`, clamped to
+    [MIN_FEE, MAX_FEE] = [0.1 bps, 100 %] of FEE_PRECISION 1e10."""
+    e18 = 10**18
+    b = xp[0] + xp[1]
+    b = e18 * 4 * xp[0] // b * xp[1] // b
+    b = fee_gamma * b // (fee_gamma * b // e18 + e18 - b)
+    fee = (mid_fee * b + out_fee * (e18 - b)) // e18
+    return min(10**10, max(10**5, fee))
+
+
+def two_stable_get_dy(i, j, dx, balances, precisions, price_scale, d, amp, mid_fee, out_fee, fee_gamma):
+    """`TwocryptoView.get_dy` (`0x1d78…c867`) for a 2025 Twocrypto pool whose
+    MATH is the stableswap adaptation: xp scaled by `price_scale`, the
+    stableswap `get_y`, the pool's own `_fee`. Checked exact on
+    `0x6563…9bf3` (v3.0.0) and `0x6e54…a9c2` (v2.1.0d), every pair, two
+    sizes, 2026-10-08."""
+    e18 = 10**18
+    bal = list(balances)
+    bal[i] += dx
+    xp = [bal[0] * precisions[0], bal[1] * price_scale * precisions[1] // e18]
+    y = two_stable_get_y(amp, xp, d, j)
+    if not y < xp[j]:
+        raise Revert("unsafe value for y")
+    dy = xp[j] - y - 1
+    xp[j] = y
+    if j > 0:
+        dy = dy * e18 // price_scale
+    dy //= precisions[j]
+    dy -= two_stable_fee(xp, mid_fee, out_fee, fee_gamma) * dy // 10**10
+    return dy
+
+
 def two_v1_get_dy(i, j, dx, balances, precisions, price_scale, d, ann, gamma,
                   mid_fee, out_fee, fee_gamma) -> int:
     """`CurveCryptoSwap2ETH._exchange` output (A, gamma not ramping)."""
@@ -458,3 +521,231 @@ def two_v1_get_dy(i, j, dx, balances, precisions, price_scale, d, ann, gamma,
         dy = udiv(uc(dy * 10**18), price_scale)
     dy = udiv(dy, precisions[j])
     return uc(dy - udiv(uc(two_fee(xp, mid_fee, out_fee, fee_gamma) * dy), 10**10))
+
+
+# ───────────── 2025 Twocrypto pools (v2.1.0d, v3.0.0): the swap's own state change ─────────────
+#
+# `_exchange` then `tweak_price`, as deployed (`0x6e54…a9c2` v2.1.0d, `0x6563…9bf3`
+# v3.0.0, Vyper 0.4.3), so a plan that sends several slices through one pool
+# quotes each on the state the one before left. Once per block the first swap
+# updates the price oracle (an EMA over `last_prices`) and may move `price_scale`
+# toward it; the swaps after it in that block only move balances and `D`.
+# `A`/`gamma` ramps are not modelled (a ramping pool is stale).
+
+
+def wad_exp(x: int) -> int:
+    """snekmate `math._wad_exp` (v0.1.x), as `StableswapMath.wad_exp` returns it."""
+    if x <= -41_446_531_673_892_822_313:
+        return 0
+    if x >= 135_305_999_368_893_231_589:
+        raise Revert("wad_exp overflow")
+    x = tdiv_unsafe(iw(x << 78), 5**18)
+    k = iw(iw(tdiv_unsafe(iw(x << 96), 54_916_777_467_707_473_351_141_471_128) + 2**95) >> 96)
+    x = iw(x - iw(k * 54_916_777_467_707_473_351_141_471_128))
+    y = iw((iw(iw(x + 1_346_386_616_545_796_478_920_950_773_328) * x) >> 96)
+           + 57_155_421_227_552_351_082_224_309_758_442)
+    p = iw(iw(iw((iw(iw(iw(y + x) - 94_201_549_194_550_492_254_356_042_504_812) * y) >> 96)
+                 + 28_719_021_644_029_726_153_956_944_680_412_240) * x)
+           + iw(4_385_272_521_454_847_904_659_076_985_693_276 << 96))
+    q = iw((iw(iw(x - 2_855_989_394_907_223_263_936_484_059_900) * x) >> 96)
+           + 50_020_603_652_535_783_019_961_831_881_945)
+    q = iw((iw(q * x) >> 96) - 533_845_033_583_426_703_283_633_433_725_380)
+    q = iw((iw(q * x) >> 96) + 3_604_857_256_930_695_427_073_651_918_091_429)
+    q = iw((iw(q * x) >> 96) - 14_423_608_567_350_463_180_887_372_962_807_573)
+    q = iw((iw(q * x) >> 96) + 26_449_188_498_355_588_339_934_803_723_976_023)
+    r = tdiv_unsafe(p, q)
+    return (uw(uw(r) * 3_822_833_074_963_236_453_042_738_258_902_158_003_155_416_615_667)
+            >> (195 - k))
+
+
+def two_stable_newton_d(amp: int, xp: list[int]) -> int:
+    """`StableswapMath.newton_D`: `amp` is the pool's `A()`."""
+    if not (xp[0] > 0 and xp[1] > 0 and udiv_unsafe(max(xp), min(xp)) < 10_000):
+        raise Revert("!balance")
+    n = 2
+    s = sum(xp)
+    if s == 0:
+        return 0
+    d = s
+    ann = amp * n
+    for _ in range(255):
+        d_p = d
+        for x in xp:
+            d_p = d_p * d // x
+        d_p //= n**n
+        prev = d
+        d = ((udiv_unsafe(ann * s, A_MULTIPLIER) + d_p * n) * d) // (
+            udiv_unsafe((ann - A_MULTIPLIER) * d, A_MULTIPLIER) + (n + 1) * d_p)
+        if abs(d - prev) <= 1:
+            return d
+    raise Revert("Did not converge")
+
+
+def two_stable_get_p(xp: list[int], d: int, amp: int) -> int:
+    """`StableswapMath.get_p`: `dx/dy` at `xp`, times `price_scale` for a price."""
+    n = 2
+    ann = uw(amp * n)
+    dr = udiv_unsafe(d, n**n)
+    for x in xp:
+        dr = dr * d // x
+    xp0_a = udiv_unsafe(ann * xp[0], A_MULTIPLIER)
+    return 10**18 * (xp0_a + udiv_unsafe(dr * xp[0], xp[1])) // (xp0_a + dr)
+
+
+def unpack_3(packed: int) -> list[int]:
+    return [(packed >> 128) & (2**128 - 1), (packed >> 64) & (2**64 - 1), packed & (2**64 - 1)]
+
+
+def two_stable_xcp(d: int, price_scale: int) -> int:
+    return d * 10**18 // 2 // isqrt(10**18 * price_scale)
+
+
+def two_stable_donation_shares(st: dict, ts: int, protection: bool = True) -> int:
+    shares = st["donation_shares"]
+    if shares == 0:
+        return 0
+    elapsed = ts - st["last_donation_release_ts"]
+    unlocked = min(shares, udiv_unsafe(shares * elapsed, st["donation_duration"]))
+    if not protection:
+        return unlocked
+    factor = 0
+    expiry = st["donation_protection_expiry_ts"]
+    if expiry > ts:
+        factor = min(udiv_unsafe((expiry - ts) * 10**18, st["donation_protection_period"]), 10**18)
+    return udiv_unsafe(unlocked * (10**18 - factor), 10**18)
+
+
+def two_stable_exchange(st: dict, i: int, j: int, dx: int, ts: int) -> int:
+    """`exchange(i, j, dx)` at block timestamp `ts` on the pool state `st`
+    (a dict of the pool's storage, mutated as the pool mutates its own),
+    returning `dy`. `st["version"]` picks v2.1.0d or v3.0.0."""
+    v3 = st["version"] == "v3.0.0"
+    if i == j or dx == 0:
+        raise Revert("same coin / zero dx")
+    e18 = 10**18
+    prec = st["precisions"]
+    amp = st["ann"]
+    bal = list(st["balances"])
+    bal[i] += dx
+    price_scale = st["price_scale"]
+    xp = [bal[0] * prec[0], udiv_unsafe(bal[1] * price_scale * prec[1], e18)]
+    d = st["d"]
+    total_supply = st["total_supply"]
+    vp_preop = 0
+    if v3:
+        vp_preop = e18 * two_stable_xcp(d, price_scale) // total_supply
+    y = two_stable_get_y(amp, xp, d, j)
+    if not y < xp[j]:
+        raise Revert("unsafe value for y")
+    dy = xp[j] - y - 1
+    xp[j] = y
+    if j > 0:
+        dy = dy * e18 // price_scale
+    dy //= prec[j]
+    fee = udiv_unsafe(two_stable_fee(xp, st["mid_fee"], st["out_fee"], st["fee_gamma"]) * dy, 10**10)
+    dy -= fee
+    yb = bal[j] - dy
+    if v3:
+        admin = udiv_unsafe(fee * st["reserved_profit_fraction"] * st["admin_fee"], 10**20)
+        if admin > 0:
+            yb -= admin
+    bal[j] = yb
+    y = yb * prec[j]
+    if j > 0:
+        y = udiv_unsafe(y * price_scale, e18)
+    xp[j] = y
+    d = two_stable_newton_d(amp, xp)
+    st["balances"] = bal
+    # ---- tweak_price ----
+    price_oracle = st["price_oracle"]
+    last_prices = st["last_prices"]
+    params = unpack_3(st["packed_rebalancing_params"])
+    last_timestamp = st["last_timestamp"]
+    if last_timestamp < ts:
+        alpha = wad_exp(-(udiv_unsafe((ts - last_timestamp) * e18, params[2])))
+        if v3:
+            capped = min(max(last_prices, udiv_unsafe(price_scale, 2)), 2 * price_scale)
+        else:
+            capped = min(last_prices, 2 * price_scale)
+        price_oracle = udiv_unsafe(capped * (e18 - alpha) + price_oracle * alpha, e18)
+        st["price_oracle"] = price_oracle
+        st["last_timestamp"] = ts
+    st["last_prices"] = udiv_unsafe(two_stable_get_p(xp, d, amp) * price_scale, e18)
+    donation_shares = two_stable_donation_shares(st, ts)
+    locked_supply = total_supply - donation_shares
+    old_vp = st["virtual_price"]
+    xcp = two_stable_xcp(d, price_scale)
+    virtual_price = e18 * xcp // total_supply
+    xcp_profit = st["xcp_profit"]
+    if v3:
+        if not (virtual_price >= vp_preop and virtual_price >= old_vp):
+            raise Revert("virtual price decreased")
+        lp_xcp_profit = st["lp_xcp_profit"]
+        if virtual_price > old_vp:
+            xcp_profit += virtual_price - old_vp
+            if xcp_profit > e18:
+                d_profit = xcp_profit - max(st["xcp_profit"], e18)
+                rf, af = st["reserved_profit_fraction"], st["admin_fee"]
+                lp_xcp_profit += udiv_unsafe(d_profit * rf * (10**10 - af), 10**20 - rf * af)
+        else:
+            delta = old_vp - virtual_price
+            xcp_profit -= delta
+            if lp_xcp_profit > e18 and delta <= lp_xcp_profit - e18:
+                lp_xcp_profit -= delta
+            else:
+                lp_xcp_profit = e18
+        st["lp_xcp_profit"] = lp_xcp_profit
+        threshold = lp_xcp_profit
+        gate_extra = 0
+    else:
+        if virtual_price < old_vp:
+            raise Revert("virtual price decreased")
+        xcp_profit = xcp_profit + virtual_price - old_vp
+        threshold = max(e18, (xcp_profit + e18) // 2)
+        gate_extra = params[0]
+    st["xcp_profit"] = xcp_profit
+    vp_boosted = e18 * xcp // locked_supply
+    if vp_boosted < virtual_price:
+        raise Revert("negative donation")
+    if vp_boosted > threshold + gate_extra and ts > last_timestamp:
+        target = price_oracle  # no policy contract (checked at seed)
+        norm = udiv_unsafe(target * e18, price_scale)
+        norm = norm - e18 if norm > e18 else e18 - norm
+        step = min(udiv_unsafe(norm, 5), params[1])
+        p_new = price_scale
+        if v3:
+            if step > params[0]:
+                p_new = udiv_unsafe(price_scale * (norm - step) + step * target, norm)
+        elif norm > step:
+            p_new = udiv_unsafe(price_scale * (norm - step) + step * target, norm)
+        if p_new != price_scale:
+            xp2 = [xp[0], udiv_unsafe(xp[1] * p_new, price_scale)]
+            new_d = two_stable_newton_d(amp, xp2)
+            new_xcp = two_stable_xcp(new_d, p_new)
+            new_vp = e18 * new_xcp // total_supply
+            burn = 0
+            goal = max(threshold, virtual_price)
+            if new_vp < goal:
+                tweaked = e18 * new_xcp // goal
+                if not tweaked < total_supply:
+                    raise Revert("tweaked supply must shrink")
+                burn = min(total_supply - tweaked, donation_shares)
+                new_vp = e18 * new_xcp // (total_supply - burn)
+            if new_vp > e18 and new_vp >= threshold:
+                st["d"] = new_d
+                st["virtual_price"] = new_vp
+                st["price_scale"] = p_new
+                if burn > 0:
+                    unlocked = two_stable_donation_shares(st, ts, False)
+                    unlocked_new = unlocked - burn * unlocked // donation_shares
+                    new_total = st["donation_shares"] - burn
+                    new_elapsed = 0
+                    if new_total > 0 and unlocked_new > 0:
+                        new_elapsed = unlocked_new * st["donation_duration"] // new_total
+                    st["donation_shares"] = new_total
+                    st["total_supply"] = total_supply - burn
+                    st["last_donation_release_ts"] = ts - new_elapsed
+                return dy
+    st["d"] = d
+    st["virtual_price"] = virtual_price
+    return dy

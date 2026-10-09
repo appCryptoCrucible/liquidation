@@ -659,3 +659,83 @@ fn probe_matches_the_adapter_and_mutates_nothing() {
     assert_eq!(rig.engine.stats().folds, folds_before, "not a fold");
     assert_eq!(rig.engine.candidates().count(), 0, "nothing queued");
 }
+
+/// A route cache with no exit for anything: the warm table before any band.
+struct NoExit;
+
+impl liq_protocol::RouteCache for NoExit {
+    fn has_exit(&self, _coll: liq_types::AssetId, _amount: U256) -> bool {
+        false
+    }
+}
+
+/// A liquidatable position whose debt is fundable but whose collateral has
+/// no exit yet is held `Unfundable`, and its quote is handed out
+/// (`take_unfunded`) rather than discarded: those quotes are the band
+/// inputs that can give the collateral an exit. Once the route cache has
+/// one, `on_flash_change` promotes exactly the positions that are
+/// liquidatable and eligible. Oracle: the adapter's own health and quote
+/// at the crash price, and `is_eligible` called directly (`Rig::expected`).
+/// Negative: before this, an unfunded position's quote was dropped in the
+/// fold, so its pair never got a band, its collateral never an exit, and
+/// the position never a candidate.
+#[test]
+fn unfunded_quotes_are_handed_out_and_promoted_once_an_exit_exists() {
+    let mut rig = Rig::new(&bands_universe(), pinned_flash(), 64);
+    rig.resync(T0);
+    let _ = rig.engine.take_unfunded();
+    let _: Vec<_> = rig.engine.candidates().collect();
+    let crash = rig.tick(WETH, ETH_MINUS_30, SourceKind::Canonical);
+    let px = rig.px_with(WETH, ETH_MINUS_30);
+    let protocols: [&dyn Protocol; 1] = [&rig.p];
+    let fold_with =
+        |engine: &mut liq_engine::Engine,
+         st: &liq_state::StateStore,
+         flash: &liq_flash::FlashIndex,
+         routes: &dyn liq_protocol::RouteCache,
+         f: &dyn Fn(&mut liq_engine::Engine, &liq_engine::World<'_>)| {
+            let w = liq_engine::World {
+                view: st.view(T0),
+                protocols: &protocols,
+                flash,
+                routes,
+                haircut: liq_flash::Haircut::NONE,
+                overlay: None,
+            };
+            f(engine, &w);
+        };
+    fold_with(&mut rig.engine, &rig.st, &rig.flash, &NoExit, &|e, w| {
+        e.on_price_tick(w, &crash).unwrap();
+    });
+    assert_eq!(rig.engine.queued(), 0, "no exit: nothing is a candidate");
+    let unfunded = rig.engine.take_unfunded();
+    let mut got: Vec<PositionId> = unfunded.iter().map(|u| u.position).collect();
+    got.sort_unstable();
+    got.dedup();
+    let liquidatable = rig.expected(T0, &px);
+    assert!(!liquidatable.is_empty());
+    assert_eq!(
+        got, liquidatable,
+        "every liquidatable position's quote, nothing else"
+    );
+    let view = rig.st.view(T0);
+    for u in &unfunded {
+        assert_eq!(rig.engine.band(u.position), Some(Band::Unfundable));
+        let want = rig
+            .p
+            .quote(view.position(u.position).unwrap(), &px)
+            .unwrap()
+            .unwrap();
+        assert_eq!(u.quote, want, "the fold's quote, as the adapter gives it");
+        assert_eq!(u.protocol, rig.p.id());
+    }
+    assert!(rig.engine.take_unfunded().is_empty(), "taken once");
+
+    let routes = liq_flash::DepthOnlyRouteCache(&rig.flash);
+    fold_with(&mut rig.engine, &rig.st, &rig.flash, &routes, &|e, w| {
+        e.on_flash_change(w).unwrap();
+    });
+    assert_eq!(ids(rig.engine.candidates()), liquidatable);
+    assert!(rig.engine.bands().members(Band::Unfundable).is_empty());
+    assert!(rig.engine.take_unfunded().is_empty());
+}

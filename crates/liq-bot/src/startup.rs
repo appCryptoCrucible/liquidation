@@ -205,6 +205,24 @@ fn profit_sink_from_env() -> Option<alloy_primitives::Address> {
     }
 }
 
+/// Bring a freshly loaded index to chain state before it is leaked and
+/// routed: canonical prices, the book's pools, then the flash sources.
+/// Everything here is pinned to the head each seed reads; logs keep it
+/// current afterwards. The historical replay test seeds through this too.
+pub async fn seed_index(load: &mut crate::index::IndexLoad, rpc_url: &str) {
+    seed_canonical(load, rpc_url).await;
+    match liq_config::rpc::HttpRpc::connect(rpc_url) {
+        Ok(rpc) => {
+            crate::pool_seed::seed_v3(&mut load.book, &rpc).await;
+            crate::pool_seed::seed_v4(&mut load.book, &rpc).await;
+            crate::pool_seed::seed_v2(&mut load.book, &rpc).await;
+            crate::pool_seed::seed_curve(&mut load.book, &rpc).await;
+            crate::flash_seed::seed_flash(&mut load.sources, &rpc).await;
+        }
+        Err(e) => tracing::error!(error = %e, "pool and flash seed skipped — RPC connect failed"),
+    }
+}
+
 /// Read every configured aggregator's `latestRoundData` so the engine starts
 /// with prices. Without this each slot stays empty until that feed's next
 /// `AnswerUpdated`, which on a heartbeat-only feed can be hours.
@@ -368,15 +386,14 @@ pub async fn run(
         loaded.intern.asset_id_capacity(),
     );
     let mut index_load = crate::index::load_index(config_dir, &loaded.intern, &loaded.registry);
-    seed_canonical(&mut index_load, &loaded.config.rpc_url).await;
-    match liq_config::rpc::HttpRpc::connect(&loaded.config.rpc_url) {
-        Ok(rpc) => {
-            crate::pool_seed::seed_v3(&mut index_load.book, &rpc).await;
-            crate::pool_seed::seed_v2(&mut index_load.book, &rpc).await;
-            crate::pool_seed::seed_curve(&mut index_load.book, &rpc).await;
-        }
-        Err(e) => tracing::error!(error = %e, "pool seed skipped — RPC connect failed"),
-    }
+    seed_index(&mut index_load, &loaded.config.rpc_url).await;
+    crate::graph_build::attach(
+        &mut index_load,
+        &loaded.intern,
+        &loaded.config.rpc_url,
+        config_dir,
+    )
+    .await;
     let index = crate::index::leak_index(index_load);
     if let Err(e) = crate::pool_seed::spawn_curve_reseed(
         Arc::clone(&index.book),
@@ -388,37 +405,11 @@ pub async fn run(
             "curve reseed thread not started — traded Curve pools stay unrouted"
         );
     }
-    // New exits for already-interned tokens join the book from the registry
-    // file without a restart; anything else goes to the review log.
-    let registry_path = loaded.config.registry_path.clone();
-    let review_log = registry_path
-        .parent()
-        .and_then(std::path::Path::parent)
-        .map_or_else(
-            || std::path::PathBuf::from("data/review/registry-watch.log"),
-            |root| root.join("data/review/registry-watch.log"),
-        );
-    let hops = crate::gas_model::GasModel::load(&config_dir.join("liq-gas.toml"))
-        .map(|m| m.hop)
-        .unwrap_or_default();
-    if let Err(e) = crate::registry_watch::spawn(
-        crate::registry_watch::RegistryWatch {
-            path: registry_path,
-            review_log,
-            rpc_url: loaded.config.rpc_url.clone(),
-            intern: loaded.intern.clone(),
-            hops,
-            book: Arc::clone(&index.book),
-            resubscribe: Arc::clone(&index.resubscribe),
-            loaded: loaded.registry.clone(),
-        },
-        Arc::new(AtomicBool::new(false)),
-    ) {
-        tracing::error!(
-            ?e,
-            "registry watch not started — registry changes need a restart"
-        );
-    }
+    // The registry is read once, here. No exit joins the running book from
+    // the file (decision 2026-10-07): the daily refresh proposes pools and
+    // unwraps for review (`data/review/<date>-candidates.json`), a person
+    // admits the ones they checked (`tools/registry/admit_reviewed.py`), and
+    // a restart takes the batch. `registry_watch` is not started.
     let engine_positions = store.len().saturating_mul(2);
     let band_shared = crate::bands::BandShared::new();
     let stop_warm = Arc::new(AtomicBool::new(false));
@@ -944,5 +935,559 @@ mod tests {
             liq_obs::thirteen_a_http_pool_seam().handshake_free_critical,
             liq_obs::net_rtt::Claim::Absent
         );
+    }
+}
+
+/// Phase 4 on the live book: how long the graph, the zero-size table and
+/// the exact search take on every committed pool seeded from chain, with
+/// pools under a USD depth floor left out as dust.
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
+mod graph_live {
+    use std::collections::HashMap;
+
+    use alloy_primitives::{address, U256};
+    use liq_router::graph::{
+        pool_depths, raw_value, search, RawValue, SearchBudget, TokenGraph, ZeroTable,
+    };
+    use liq_types::AssetId;
+
+    #[test]
+    #[ignore = "needs MAINNET_RPC_URL"]
+    fn live_graph_table_and_search_timings() {
+        let url = std::env::var("MAINNET_RPC_URL").unwrap();
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let reg = liq_config::Registry::from_path(&root.join("registry/registry.json")).unwrap();
+        let intern = liq_config::Intern::from_registry(&reg).unwrap();
+        let mut load = crate::index::load_index(&root.join("config"), &intern, &reg);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(super::seed_index(&mut load, &url));
+        let book = &load.book;
+        let decimals = |a: AssetId| {
+            intern
+                .assets()
+                .iter()
+                .find(|r| r.id == a)
+                .map_or(18, |r| r.decimals)
+        };
+        // Canonical USD prices seed the depth pricing.
+        let canonical = load.canonical.as_ref().unwrap();
+        let seed: HashMap<AssetId, RawValue> = intern
+            .assets()
+            .iter()
+            .filter_map(|r| {
+                let p = canonical.price(r.id).filter(|p| p.ts != 0)?;
+                Some((r.id, raw_value(p.price.raw(), r.decimals)?))
+            })
+            .collect();
+        let usdc = intern
+            .asset(address!("a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"))
+            .unwrap();
+        let gas = liq_router::GasTerms {
+            base_fee_wei: 2_000_000_000,
+            priority_fee_wei: 0,
+            out_per_eth: U256::from(3_000_000_000u64),
+        };
+        let usd = |n: u64| U256::from(n) * U256::from(10u64).pow(U256::from(18u64));
+        eprintln!(
+            "book: {} pools ({} live), {} unwraps; {} seed prices",
+            book.pools().len(),
+            book.pools().iter().filter(|p| p.is_live()).count(),
+            book.unwraps().count(),
+            seed.len()
+        );
+        for floor in [10_000u64, 100_000] {
+            let t0 = std::time::Instant::now();
+            let (depth, prices) = pool_depths(book, &seed, usd(floor), 6);
+            let depth_us = t0.elapsed().as_micros();
+            let kept = depth
+                .iter()
+                .filter(|d| d.is_some_and(|d| d >= usd(floor)))
+                .count();
+            let g = TokenGraph::build_with(book, |id| {
+                usize::try_from(id.0)
+                    .ok()
+                    .and_then(|i| depth.get(i).copied().flatten())
+                    .is_some_and(|d| d >= usd(floor))
+            })
+            .unwrap();
+            let t0 = std::time::Instant::now();
+            let table = ZeroTable::build(&g, book, 4).unwrap();
+            let table_ms = t0.elapsed().as_millis();
+            eprintln!(
+                "floor ${floor}: {} tokens priced, depths in {depth_us} us; {kept} pools kept; graph {} tokens, {} edges; table K=4 {table_ms} ms",
+                prices.len(),
+                g.nodes().len(),
+                g.edges().len()
+            );
+            let mut stats = Vec::new();
+            for &from in g.nodes() {
+                if from == usdc || table.best(&g, from, usdc).is_none() {
+                    continue;
+                }
+                let amount =
+                    U256::from(1_000u64) * U256::from(10u64).pow(U256::from(decimals(from)));
+                let budget = SearchBudget {
+                    max_hops: 4,
+                    top_n: 4,
+                    max_quotes: 50_000,
+                    min_share_bps: 5_000,
+                };
+                let t0 = std::time::Instant::now();
+                let r = search(&g, &table, book, &gas, from, usdc, amount, budget).unwrap();
+                stats.push((
+                    t0.elapsed().as_micros(),
+                    r.quotes,
+                    r.pruned,
+                    r.exhausted,
+                    r.routes.len(),
+                ));
+            }
+            stats.sort_unstable();
+            let n = stats.len();
+            if n == 0 {
+                continue;
+            }
+            let found = stats.iter().filter(|s| s.4 > 0).count();
+            let capped = stats.iter().filter(|s| s.3).count();
+            eprintln!("  search into USDC from {n} tokens (K=4, top 4): {found} found a route, {capped} hit the quote cap");
+            for p in [50usize, 90, 99, 100] {
+                let s = stats[(n - 1) * p / 100];
+                eprintln!("    p{p}: {} us, {} quotes, {} pruned", s.0, s.1, s.2);
+            }
+        }
+    }
+}
+
+/// The curated graph on the live book: each provider's ten deepest pools,
+/// each pairing taken once by its deepest provider.
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
+mod curated_live {
+    use std::collections::HashMap;
+
+    use alloy_primitives::{address, U256};
+    use liq_router::graph::{
+        curated_pools, raw_value, search, Provider, Quota, RawValue, SearchBudget, TokenGraph,
+        ZeroTable,
+    };
+    use liq_types::AssetId;
+
+    #[test]
+    #[ignore = "needs MAINNET_RPC_URL"]
+    fn live_curated_deepest_pools() {
+        let url = std::env::var("MAINNET_RPC_URL").unwrap();
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let reg = liq_config::Registry::from_path(&root.join("registry/registry.json")).unwrap();
+        let intern = liq_config::Intern::from_registry(&reg).unwrap();
+        let mut load = crate::index::load_index(&root.join("config"), &intern, &reg);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(super::seed_index(&mut load, &url));
+        let book = &load.book;
+        let rec = |a: AssetId| intern.assets().iter().find(|r| r.id == a);
+        let sym = |a: AssetId| {
+            rec(a)
+                .and_then(|r| r.symbol.clone())
+                .unwrap_or_else(|| format!("#{}", a.0))
+        };
+        let canonical = load.canonical.as_ref().unwrap();
+        let seed: HashMap<AssetId, RawValue> = intern
+            .assets()
+            .iter()
+            .filter_map(|r| {
+                let p = canonical.price(r.id).filter(|p| p.ts != 0)?;
+                Some((r.id, raw_value(p.price.raw(), r.decimals)?))
+            })
+            .collect();
+        let wad = U256::from(10u64).pow(U256::from(18u64));
+        // Every token's total supply, for the market-cap check on prices
+        // only one pool offers.
+        let supply: HashMap<AssetId, U256> = {
+            use alloy_sol_types::{sol, SolCall};
+            sol! { function totalSupply() returns (uint256); }
+            let rpc = liq_config::rpc::HttpRpc::connect(&url).unwrap();
+            let block = rt
+                .block_on(liq_config::rpc::ChainRpc::block_number(&rpc))
+                .unwrap();
+            let recs: Vec<_> = intern.assets().iter().collect();
+            let mut out = HashMap::new();
+            for chunk in recs.chunks(300) {
+                let calls = chunk
+                    .iter()
+                    .map(|r| crate::pool_seed::call(r.address, totalSupplyCall {}.abi_encode()))
+                    .collect();
+                if let Some(res) = rt.block_on(crate::pool_seed::aggregate(&rpc, calls, block)) {
+                    for (r, x) in chunk.iter().zip(res) {
+                        if x.success && x.returnData.len() >= 32 {
+                            out.insert(r.id, U256::from_be_slice(&x.returnData[..32]));
+                        }
+                    }
+                }
+            }
+            out
+        };
+        let t0 = std::time::Instant::now();
+        let trace = liq_router::graph::pool_depths_traced(
+            book,
+            &seed,
+            U256::from(10_000u64) * wad,
+            6,
+            Some(&supply),
+        );
+        let (depth, prices) = (trace.depths.clone(), trace.prices.clone());
+        eprintln!(
+            "depths (2 % slippage, exact quotes) in {} ms",
+            t0.elapsed().as_millis()
+        );
+        let mut per: HashMap<Provider, usize> = HashMap::new();
+        for (p, d) in book.pools().iter().zip(&depth) {
+            if d.is_some() {
+                if let Some(pr) = Provider::of(p) {
+                    *per.entry(pr).or_default() += 1;
+                }
+            }
+        }
+        // Uniswap V2, V3 and V4: every unique pool of $1M or more, at most
+        // 50 each. The others: their ten deepest.
+        let t0 = std::time::Instant::now();
+        let curated = curated_pools(book, &depth, |p| match p {
+            Provider::UniswapV2 | Provider::UniswapV3 | Provider::UniswapV4 => Quota {
+                max: 50,
+                min_depth: U256::from(1_000_000u64) * wad,
+            },
+            _ => Quota {
+                max: 10,
+                min_depth: U256::ZERO,
+            },
+        });
+        eprintln!("curated in {} us", t0.elapsed().as_micros());
+        for pr in Provider::ALL {
+            eprintln!(
+                "{pr:?} ({} pools with a measured depth):",
+                per.get(&pr).copied().unwrap_or(0)
+            );
+            for c in curated.iter().filter(|c| c.provider == pr) {
+                let pool = book.get(c.pool).unwrap();
+                let names: Vec<String> = c.pairing.iter().map(|a| sym(*a)).collect();
+                eprintln!(
+                    "  {:#x}  {:<28} ${}",
+                    pool.address,
+                    names.join("/"),
+                    c.depth / wad
+                );
+            }
+        }
+        // Implausible depths: each coin's derived price (USD per whole token).
+        let per_token = |a: AssetId| -> String {
+            let Some(v) = prices.get(&a) else {
+                return "unpriced".into();
+            };
+            let d = rec(a).map_or(18, |r| r.decimals);
+            // v = USD (WAD) of 1e18 raw; per whole token: v · 10^d / 1e18, in micro-USD.
+            let micro =
+                *v * U256::from(10u64).pow(U256::from(d)) / wad / U256::from(1_000_000_000_000u64);
+            format!(
+                "${}.{:06}{}",
+                micro / U256::from(1_000_000u64),
+                micro % U256::from(1_000_000u64),
+                if seed.contains_key(&a) { " (feed)" } else { "" }
+            )
+        };
+        for c in curated
+            .iter()
+            .filter(|c| c.depth > U256::from(1_000_000_000u64) * wad)
+        {
+            let pool = book.get(c.pool).unwrap();
+            let coins: Vec<String> = c
+                .pairing
+                .iter()
+                .map(|a| format!("{} {}", sym(*a), per_token(*a)))
+                .collect();
+            eprintln!(
+                "  suspicious {:?} {:#x}: {}",
+                c.provider,
+                pool.address,
+                coins.join(", ")
+            );
+        }
+        // Where FRAX's and rswETH's prices came from, back to a feed.
+        for target in [
+            address!("853d955acef822db058eb8505911ed77f175b99e"),
+            address!("fae103dc9cf190ed75350761e95403b7b8afa6c0"),
+        ] {
+            let Some(mut at) = intern.asset(target) else {
+                continue;
+            };
+            eprintln!("chain for {}:", sym(at));
+            for _ in 0..8 {
+                let Some(o) = trace.chosen.get(&at) else {
+                    eprintln!("    {} {} (seed)", sym(at), per_token(at));
+                    break;
+                };
+                let pool = book.get(o.pool).unwrap();
+                let n = trace.offers.get(&at).map_or(0, Vec::len);
+                eprintln!(
+                    "    {} {} <- pass {} {:?} {:#x} from {} (weight ${}; {n} offers)",
+                    sym(at),
+                    per_token(at),
+                    o.pass,
+                    Provider::of(pool),
+                    pool.address,
+                    sym(o.from),
+                    o.depth / wad
+                );
+                at = o.from;
+            }
+        }
+        // Oracle for every pool's zero-size rate: an exact quote of $100.
+        // ρ² / 2^192 must equal quote / amount to within the quote's own
+        // slippage (well under 1 % at $100 on a pool deeper than $10k).
+        {
+            use liq_router::solver::Q96;
+            let mut bad: HashMap<Provider, (usize, usize, Vec<String>)> = HashMap::new();
+            for (pidx, pool) in book.pools().iter().enumerate() {
+                let Some(pr) = Provider::of(pool) else {
+                    continue;
+                };
+                if depth
+                    .get(pidx)
+                    .copied()
+                    .flatten()
+                    .is_none_or(|d| d < U256::from(10_000u64) * wad)
+                {
+                    continue;
+                }
+                let n = pool.assets.len();
+                for i in 0..n {
+                    for j in 0..n {
+                        if i == j {
+                            continue;
+                        }
+                        let (Some(v), Ok(i8), Ok(j8)) = (
+                            prices.get(&pool.assets[i]),
+                            u8::try_from(i),
+                            u8::try_from(j),
+                        ) else {
+                            continue;
+                        };
+                        let amount = U256::from(100u64) * wad * wad / *v;
+                        if amount.is_zero() {
+                            continue;
+                        }
+                        let (Ok(rho), Ok(out)) = (
+                            pool.rho_at_zero(i8, j8),
+                            pool.quote_exact_in(i8, j8, amount),
+                        ) else {
+                            continue;
+                        };
+                        let ideal = amount * rho / Q96 * rho / Q96;
+                        let e = bad.entry(pr).or_default();
+                        e.0 += 1;
+                        // |out/ideal − 1| > 1 %
+                        let off = out * U256::from(100u64) < ideal * U256::from(99u64)
+                            || out * U256::from(100u64) > ideal * U256::from(101u64);
+                        if off {
+                            e.1 += 1;
+                            if e.2.len() < 4 {
+                                e.2.push(format!(
+                                    "{:#x} {}->{} quote {} ideal {}",
+                                    pool.address,
+                                    sym(pool.assets[i]),
+                                    sym(pool.assets[j]),
+                                    out,
+                                    ideal
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            for pr in Provider::ALL {
+                if let Some((n, k, ex)) = bad.get(&pr) {
+                    eprintln!("rho check {pr:?}: {k} of {n} directions off by more than 1 %");
+                    for e in ex {
+                        eprintln!("    {e}");
+                    }
+                }
+            }
+        }
+        // Oracle for V3 / V4 depth: Uniswap's own quoters (QuoterV2 runs the
+        // pool's `swap` and reverts with the result; V4Quoter the
+        // PoolManager's), at each curated pool's 2 % size, both ways.
+        {
+            use alloy_sol_types::{sol, SolCall};
+            use liq_config::rpc::ChainRpc;
+            use liq_router::solver::PoolState;
+            sol! {
+                struct QV3 { address tokenIn; address tokenOut; uint256 amountIn; uint24 fee; uint160 sqrtPriceLimitX96; }
+                function quoteExactInputSingle(QV3 params) returns (uint256 amountOut, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate);
+                struct QPoolKey { address currency0; address currency1; uint24 fee; int24 tickSpacing; address hooks; }
+                struct QV4 { QPoolKey poolKey; bool zeroForOne; uint128 exactAmount; bytes hookData; }
+                function quoteV4(QV4 params) returns (uint256 amountOut, uint256 gasEstimate);
+            }
+            const V3_QUOTER: alloy_primitives::Address =
+                address!("61fFE014bA17989E743c5F6cB21bF9697530B21e");
+            const V4_QUOTER: alloy_primitives::Address =
+                address!("52f0e24d1c21c8a0cb1e5a5dd6198556bd9e1203");
+            let rpc = liq_config::rpc::HttpRpc::connect(&url).unwrap();
+            let mut targets: Vec<liq_router::PoolId> = curated
+                .iter()
+                .filter(|c| matches!(c.provider, Provider::UniswapV3 | Provider::UniswapV4))
+                .map(|c| c.pool)
+                .collect();
+            for a in [
+                address!("fad866e71675b9f0b79ac90948ccb3d07763719c"),
+                address!("c0e502446a2013c4bff35b0686e4766f23c7ee98"),
+            ] {
+                if let Some(id) = book.by_address(a) {
+                    if !targets.contains(&id) {
+                        targets.push(id);
+                    }
+                }
+            }
+            let (mut same, mut off, mut refused) = (0usize, 0usize, 0usize);
+            for id in targets {
+                let pool = book.get(id).unwrap();
+                let PoolState::V3(s) = &pool.state else {
+                    continue;
+                };
+                for (i, j) in [(0u8, 1u8), (1, 0)] {
+                    let Some(v) = prices.get(&pool.assets[usize::from(i)]) else {
+                        continue;
+                    };
+                    let Some(usd) = liq_router::graph::slip_depth(pool, i, j, *v) else {
+                        continue;
+                    };
+                    let amount = usd * wad / *v;
+                    if amount.is_zero() || amount > U256::from(u128::MAX) {
+                        continue;
+                    }
+                    let ours = pool.quote_exact_in(i, j, amount).ok();
+                    let data: alloy_primitives::Bytes = match &s.v4 {
+                        None => quoteExactInputSingleCall {
+                            params: QV3 {
+                                tokenIn: pool.tokens[usize::from(i)],
+                                tokenOut: pool.tokens[usize::from(j)],
+                                amountIn: amount,
+                                fee: alloy_primitives::aliases::U24::from(s.fee_pips),
+                                sqrtPriceLimitX96: alloy_primitives::aliases::U160::ZERO,
+                            },
+                        }
+                        .abi_encode()
+                        .into(),
+                        Some(k) => quoteV4Call {
+                            params: QV4 {
+                                poolKey: QPoolKey {
+                                    currency0: k.currency0,
+                                    currency1: k.currency1,
+                                    fee: alloy_primitives::aliases::U24::from(k.fee),
+                                    tickSpacing: alloy_primitives::aliases::I24::try_from(
+                                        k.tick_spacing,
+                                    )
+                                    .unwrap(),
+                                    hooks: k.hooks,
+                                },
+                                zeroForOne: i == 0,
+                                exactAmount: u128::try_from(amount).unwrap(),
+                                hookData: alloy_primitives::Bytes::new(),
+                            },
+                        }
+                        .abi_encode()
+                        .into(),
+                    };
+                    // The V4 call is encoded from a local name: stamp the
+                    // V4Quoter's own selector.
+                    let mut data = data.to_vec();
+                    if s.v4.is_some() {
+                        let sig = alloy_primitives::keccak256(
+                            "quoteExactInputSingle(((address,address,uint24,int24,address),bool,uint128,bytes))",
+                        );
+                        data[..4].copy_from_slice(&sig[..4]);
+                    }
+                    let to = if s.v4.is_some() { V4_QUOTER } else { V3_QUOTER };
+                    let theirs = rt
+                        .block_on(rpc.call(to, data.into()))
+                        .ok()
+                        .and_then(|raw| raw.get(..32).map(U256::from_be_slice));
+                    let label = format!(
+                        "{:?} {:#x} {}->{} ${}",
+                        Provider::of(pool),
+                        pool.address,
+                        sym(pool.assets[usize::from(i)]),
+                        sym(pool.assets[usize::from(j)]),
+                        usd / wad
+                    );
+                    match (ours, theirs) {
+                        (Some(o), Some(t)) => {
+                            let close = o * U256::from(1000u64) >= t * U256::from(995u64)
+                                && o * U256::from(1000u64) <= t * U256::from(1005u64);
+                            if close {
+                                same += 1;
+                            } else {
+                                off += 1;
+                                eprintln!("  quoter MISMATCH {label}: ours {o}, quoter {t}");
+                            }
+                        }
+                        (o, t) => {
+                            refused += 1;
+                            eprintln!("  quoter refused {label}: ours {o:?}, quoter {t:?}");
+                        }
+                    }
+                }
+            }
+            eprintln!("quoter check: {same} within 0.5 %, {off} mismatched, {refused} refused by one side");
+        }
+        // A graph of only these pools (and every unwrap), and what it reaches.
+        let keep: std::collections::HashSet<u32> = curated.iter().map(|c| c.pool.0).collect();
+        let g = TokenGraph::build_with(book, |id| keep.contains(&id.0)).unwrap();
+        let t0 = std::time::Instant::now();
+        let table = ZeroTable::build(&g, book, 4).unwrap();
+        let table_us = t0.elapsed().as_micros();
+        let usdc = intern
+            .asset(address!("a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"))
+            .unwrap();
+        let gas = liq_router::GasTerms {
+            base_fee_wei: 2_000_000_000,
+            priority_fee_wei: 0,
+            out_per_eth: U256::from(3_000_000_000u64),
+        };
+        let mut times = Vec::new();
+        let (mut reach, mut found) = (0usize, 0usize);
+        for &from in g.nodes() {
+            if from == usdc || table.best(&g, from, usdc).is_none() {
+                continue;
+            }
+            reach += 1;
+            let dec = rec(from).map_or(18, |r| r.decimals);
+            let amount = U256::from(1_000u64) * U256::from(10u64).pow(U256::from(dec));
+            let budget = SearchBudget {
+                max_hops: 4,
+                top_n: 4,
+                max_quotes: 50_000,
+                min_share_bps: 5_000,
+            };
+            let t0 = std::time::Instant::now();
+            let r = search(&g, &table, book, &gas, from, usdc, amount, budget).unwrap();
+            times.push((t0.elapsed().as_micros(), r.quotes, r.exhausted));
+            found += usize::from(!r.routes.is_empty());
+        }
+        times.sort_unstable();
+        eprintln!(
+            "curated graph: {} pools, {} tokens, {} edges (with {} unwraps); table K=4 {table_us} us; {reach} tokens reach USDC, {found} with a route at 1 000 tokens",
+            curated.len(),
+            g.nodes().len(),
+            g.edges().len(),
+            book.unwraps().count()
+        );
+        if let (Some(mid), Some(max)) = (times.get(times.len() / 2), times.last()) {
+            eprintln!(
+                "  search p50 {} us ({} quotes), max {} us ({} quotes); {} hit the cap",
+                mid.0,
+                mid.1,
+                max.0,
+                max.1,
+                times.iter().filter(|t| t.2).count()
+            );
+        }
     }
 }

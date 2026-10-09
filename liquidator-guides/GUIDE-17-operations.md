@@ -179,26 +179,36 @@ Consequences to plan around:
 - **Post-restart drift check gates the lease** (Step 2). A binary that restarts
   into wrong state must not submit.
 
-### Registry changes are not restarts
+### Registry changes: proposed daily, admitted by hand, taken at a restart
 
-New exits for tokens the bot already tracks — V2 pairs, Curve plain / NG /
-crypto pools, vault / Curve-LP / Pendle-PT unwraps — reach the running ExEx
-from `registry/registry.json` with no restart. `liq-discovery.timer`
-(`ops/systemd/liq-discovery.{service,timer}`) runs
-`tools/registry/daily_refresh.py` once a day: it re-runs exit discovery on a
-copy with every gate, replaces the live file atomically when exits changed,
-and the ExEx's registry watch (`liq-bot/src/registry_watch.rs`) asserts the
-additions on chain, adds them to the pool book, has the hot thread route
-their logs, and only then seeds them. A live PT that reaches expiry moves to
-its post-expiry redeem on its own. What cannot be added live — new tokens
-(asset ids are fixed at start), new protocol markets, oracle or flash-source
-changes, Uniswap V3 pools from the registry, pools that drop out — is written
-to `data/review/<date>.md` (the daily scan, including a full `discover.py`
-market enumeration) and `data/review/registry-watch.log` (anything the watch
-refused) for a person to decide; adding one is a config change and a
-restart, batched like any deploy. A run that would drop more than 10 % (and at
-least 3) of an exit kind applies nothing (a failing RPC fails gates; it does not retire
-pools).
+No pool or unwrap joins the running bot on its own (decision 2026-10-07): a
+pool that looks legitimate when admitted can turn hostile later, so each one
+is checked by a person first. The bot reads `registry/registry.json` only at
+startup; the registry watch is not started, and Uniswap V3 `PoolCreated`
+discovery is off.
+
+`liq-discovery.timer` (`ops/systemd/liq-discovery.{service,timer}`) runs
+`tools/registry/daily_refresh.py` once a day. It re-runs exit discovery
+(V2 pairs, Curve plain / NG / crypto pools, vault / Curve-LP / Pendle-PT
+unwraps) and the `discover.py` market scan on copies, with every gate, and
+never writes the live file. It writes to `data/review/`:
+
+- `<date>-candidates.json`: each proposed change (a pool or unwrap added,
+  changed or removed; a new Uniswap V3 pool), with its tokens and
+  `"approve": false`;
+- `<date>-registry.candidate.json` and `<date>-markets.candidate.json`: the
+  working registries the entries come from;
+- `<date>.md`: the readable report, with new tokens and protocol markets
+  (a config change), the coverage table, and a safety-valve warning when a
+  run would drop more than 10 % (and at least 3) of an exit kind (a failing
+  RPC fails gates; it does not retire pools).
+
+To admit: check each entry on chain, set `"approve": true` on those to take,
+run `python tools/registry/admit_reviewed.py data/review/<date>-candidates.json`
+(`--dry-run` first to see the changes), and restart the bot once for the
+batch. The tool copies each entry exactly as proposed, refuses a pool whose
+tokens are not registry tokens, never touches tokens, protocols or oracles,
+and appends what it admitted to `data/review/admitted.log`.
 
 ## Step 2 — Supervision
 

@@ -24,6 +24,26 @@
 #   leg      = mainnet p75 protocol frame + our Executor's guard reads for
 #              that adapter. p75, not median: the band is a pre-filter and
 #              under-charging gas passes losing sizes.
+#
+# 2026-10-05, three Executor changes: no health view before a liquidation
+# call (the protocol's own check, inside try/catch, is the guard); one
+# `approve` call per allowance, cleared afterwards only when the spender
+# left some; a Curve leg asks the one MetaRegistry handler that holds its
+# pool. Every fork test above was run before and after on the same state
+# (`forge test --isolate`, Foundry v1.8.3, `vm.lastCallGas`: the whole
+# transaction after refunds). Swap frames did not move, so each change is a
+# change of "fixed", and the figures below moved by it:
+#   wrap     by the change of its Morpho fixture (test_gas_morpho_weth_* and
+#            test_fork_morpho_weth_aave_flash);
+#   leg      by the change of its own fixture less the change of the wrap it
+#            was derived on (aave), the smallest when several were measured.
+# Each (protocol, provider) pair measured then sums to a total that fell by
+# no more than its measured saving (Liquity's leg is its frame alone and it
+# runs without a lender: unchanged). No leg was re-derived from its formula:
+# the removed views paid cold accesses for the liquidation call, which now
+# pays them itself (fork frames grew 53k–107k, Aave V3's by 92k), and the
+# mainnet p75 frames always included them, so a leg here still counts them
+# twice, as it did before.
 
 [tx]
 # 21_000 intrinsic + ~6_000 calldata (plans measured at 333–385 bytes,
@@ -44,27 +64,58 @@ base = 115_100
 [wrap]
 # As measured on the single contract: the split adds nothing per group beyond
 # what [tx].base carries.
-aave = 198_065
-morpho = 128_189
-univ3 = 132_672
-univ4 = 105_901
+# 2026-10-05 approvals: aave 198_065 − 7_997, morpho 128_189 − 7_996 (the
+# leg's allowance and the lender's), univ3 132_672 − 3_988, univ4 105_901 −
+# 3_988 (the leg's only). On these fixtures the refund cap binds, so a saving
+# shows at 80 %: 9_995 and 4_985 before refunds.
+aave = 190_068
+morpho = 120_193
+univ3 = 128_684
+univ4 = 101_913
+# Uniswap V3 flash swap (provider 6): the exit's own pool lends the debt and
+# is paid inside its swap callback. Its swap is charged as the hop it is
+# ([swap].univ3); this is the plumbing around it. Fork trace
+# (ForkLiveLiquidations test_gas_morpho_weth_univ3_swap, 2026-10-04, on the
+# split contract): execute 319_447 − the lender's swap frame net of our
+# callback 70_492 − the profit swap 49_844 − Morpho's liquidate frame
+# 118_581 = 80_530. The V4 wrap on the same trace is 111_335 against the
+# 105_901 recorded on the single contract (the split's module touches,
+# which [tx].base carries): on that footing, 75_100.
+# 2026-10-05 approvals: − 4_331 (test_gas_morpho_weth_univ3_swap).
+univ3_swap = 70_769
 # DERIVED: Sky DSS was only measurable against Aave V3 (DAI debt):
 # 296_199 there, minus Aave V3's average guard excess over Morpho across the
 # providers measured on both (96_278).
-sky_dss = 199_921
+# 2026-10-05: − 1_243, by the same derivation on the changes: test_gas_v3_dai_sky
+# − 29_476, less Aave V3's average change beyond its wrap's on the other four
+# providers (− 28_233).
+sky_dss = 198_678
 # Aave V3 flash wrapping an Aave V4 leg: same wrap as `aave`; the V4 leg's
 # extra cost is in [liquidation].aave-v4.
-aave_v4 = 198_065
+aave_v4 = 190_068
 
 [liquidation]
 # mainnet frame p75 375_651 (median 273_221, n 14) + fork guard 105_091
 # (getUserAccountData; fork leg 347_231 − fork frame 242_140).
-aave-v3 = 480_742
+# 2026-10-05: − 27_231. `getUserAccountData` is no longer called: the pool
+# refuses a healthy position inside `liquidationCall`. Eight fixtures (DAI and
+# USDT debt, six providers) fell 29_476 to 36_845, 27_231 to 28_849 beyond
+# their wrap; the fork frame is now 334_140, cold accesses included.
+aave-v3 = 453_511
 # Spark is an Aave V3 fork on the same adapter and Executor path.
-spark = 480_742
+spark = 453_511
+# Aave V2 (the V3 leg on the V2 pool, adapter version v2): fork leg frame
+# (ForkAaveV2, the real liquidation at 26_104_558, cold): LiquidationModule
+# runLegs 596_794, of which the pool's `liquidationCall` 563_951. V2's
+# `calculateUserAccountData` walks every reserve the account uses, so the
+# leg is dearer than V3's. No mainnet window sample.
+aave-v2 = 596_794
 # fork 623_074 − wrap 198_065 = 425_009 (frame 341_551 + guard 83_458);
 # mainnet frame p75 337_491 (n 15) + that guard = 420_949 — fork is higher.
-aave-v4 = 425_009
+# 2026-10-05: − 38_559, the Spoke's `getUserAccountData` no longer called
+# (test_fork_v4_weth_aave_flash − 46_556, its wrap − 7_997; fork frame now
+# 435_051).
+aave-v4 = 386_450
 # mainnet frame p75 191_343 (median 127_424, n 15). Morpho's guard reads are
 # inside the measured wraps (wrap was derived on Morpho).
 morpho-blue = 191_343
@@ -74,15 +125,23 @@ morpho-blue = 191_343
 # debt in USDC 261_729 (the WETH wrap/unwrap and the DEX one-token step are
 # inside). The largest of the three; one figure covers every vault type.
 # Mainnet T1 frame p75 was 255_683 (n 7). No Executor guard: the call is the guard.
-fluid = 273_399
+# 2026-10-05 approvals: the three fell 8_432, 7_418 and 12_697 against the
+# wrap's 7_997: T1 264_498, T2 273_978, T3 257_029. Still the largest.
+fluid = 273_978
 # mainnet frame p75 234_040 (n 5) + fork guard and vault-share redeem
 # 347_284 (ForkShareRedeem at 26_019_284: fixed 778_933 − wrap 198_065 −
 # frame 233_584).
-euler-v2 = 581_324
+# 2026-10-05: − 64_292, `checkLiquidation` no longer called (the vault's own
+# `liquidate` refuses a healthy violator): the fixture fell 72_289, its wrap
+# 7_997; fork frame now 286_584.
+euler-v2 = 517_032
 # mainnet frame p75 434_025 (median 326_395, n 15) + fork guard and cETH
 # redeem 219_422 (ForkShareRedeem at 22_000_000: fixed 666_620 − wrap
 # 198_065 − frame 249_133).
-compound-v2 = 653_447
+# 2026-10-05: − 39_653, `comptroller` / `getAccountLiquidity` / `isDeprecated`
+# no longer called (`liquidateBorrow` asks the Comptroller itself): the fixture
+# fell 47_650, its wrap 7_997; fork frame now 345_133.
+compound-v2 = 613_794
 # fork frame 420_540 (ForkShareRedeem at 26_019_284: batchLiquidateTroves,
 # one trove offset against the Stability Pool, gas-comp transfer). No
 # mainnet liquidation in the window. The whole execute was 588_964, so
@@ -91,22 +150,40 @@ liquity-v2 = 420_540
 # fork leg: fixed 623_948 − wrap 198_065 (ForkSiloGearbox at 26_019_284,
 # wstETH/WETH pair: hook liquidationCall frame 310_808 + maxLiquidation
 # guard and approvals). No mainnet liquidation in the window.
-silo-v2 = 425_883
+# 2026-10-05: − 92_192, `maxLiquidation` no longer called (the hook refuses a
+# solvent borrower, and a redeem its silo cannot pay): the fixture fell
+# 100_189, its wrap 7_997; hook frame now 417_808.
+silo-v2 = 333_691
 # fork leg (ForkSiloGearbox at 26_049_000, v3.1 kpk WETH manager, one
 # wstETH collateral): partial fixed 524_618 − wrap 198_065 = 326_553 (facade
 # frame 401_407); full 524_128 − 198_065 = 326_063 (frame 358_891). The
 # larger of the two. Accounts holding more collateral tokens cost more on
 # the full path (Gearbox values every enabled token). No mainnet window sample.
-gearbox = 326_553
+# 2026-10-05 approvals: partial fell 9_986 and full 9_988 against the wrap's
+# 7_997: 324_564 and 324_072.
+gearbox = 324_564
 
 [swap]
 # mainnet UniV3 pool swap frames incl. payment callback: median 82_097
 # (p75 98_414, n 49); fork 49_821 … 118_695.
 univ3 = 82_100
+# Uniswap V4 leg (venue 9): the PoolManager `unlock` frame around `swap`,
+# `sync`/`settle` and `take`, fork at 25_586_282 (ForkUniV4Swap, LAC/USDC
+# 1 % hookless pool): 86_332 with the PoolManager cold, 61_466 for a second
+# V4 leg in the same transaction. Priced cold. Inside a V4 flash's unlock the
+# `unlock` and callback frames are skipped, which this leaves as margin.
+univ4 = 86_332
 # mainnet pair `swap` frame median 34_825 (n 57) excludes the token
 # transfer into the pair, which a router leg also pays (~30k): 65_000.
 univ2 = 65_000
 # mainnet Curve `exchange` frames incl. transferFrom: median 104_986 (n 11).
+# The three Curve swap figures are the pool's frame alone. Around it a Curve
+# leg costs what a Uniswap V3 leg does not: the MetaRegistry handler check
+# (11k–16k and two cold accounts), two `coins()` reads, and the allowance
+# (set, consumed by the pool, read back). On the fork after 2026-10-05 the
+# leg's frame is 53k–60k above `exchange` before refunds, 20k less after (a
+# V3 leg's is 7k above its swap); before, with the walk over every handler,
+# it was 169k–175k. Not added here.
 curve = 104_986
 # StableSwap-NG `exchange` frames incl. transfers, fork at 26_019_284
 # (ForkLiveLiquidations): standard coins 108_535 (0x4f49…3c85), rate-oracle
@@ -119,6 +196,26 @@ curve_ng = 117_442
 # CurveCryptoSwap2 170_472 (0x5fae…404a, behind its proxy). Priced at the
 # higher.
 curve_crypto = 170_472
+# SushiSwap V3 (venue 0 with the factory byte) is a Uniswap V3 fork with the
+# same swap: priced as `univ3`; the fork measurement below was −31_534 and
+# −2_051 against Uniswap's on the same plan.
+# PancakeSwap V3 pools with a live `lmPool`, fork at 26_149_895
+# (ForkDexVenues, USDC/WETH 0.05 % 0x1ac1…D36 and WETH/USDT 0.05 % 0x6CA2…E15C
+# against the Uniswap V3 pool on the same plan, `forge test --isolate`, Foundry
+# v1.8.3): +326_091 and +253_389 gas, from the pool's `accumulateReward` call
+# into the MasterChef LM pool. Priced at `univ3` + the higher. A Pancake pool
+# with no `lmPool` (lmPool() == 0) costs about what a Uniswap V3 pool does.
+pancake_v3 = 408_191
+# Balancer V2 weighted pool through the Vault (venue 11), same fork and method,
+# the 2021 legacy pools: USDC/WETH +53_977, DAI/WETH +43_834 against Uniswap.
+# Priced at `univ3` + the higher.
+balancer = 136_077
+# Fluid DEX T1 (venue 12): the pool's `swapIn` plus both Liquidity `operate`
+# calls, and for a native-ETH pool the WETH unwrap or wrap. Same fork and
+# method, exact input against Uniswap's exact output: token for token USDC/USDT
+# +177_656, native ETH in +129_068, native ETH out (wstETH/ETH) +158_311.
+# Priced at `univ3` + the highest.
+fluid = 259_756
 # ERC-4626 unwrap (venue 5): `asset()` check + `redeem` frames, fork at
 # 26_019_284 (ForkUnwrap): MetaMorpho gtUSDC 498 + 203_566 (the vault
 # withdraws across its Morpho markets), gtWETH 180_040. Priced at the higher;
@@ -134,7 +231,11 @@ pendle_pt = 141_280
 # USR/USDC 0x3ee8…5195): MetaRegistry `is_registered` 122_873 (it walks
 # every sub-registry) + `coins(i)` 337 + `remove_liquidity_one_coin` 64_684,
 # plus the registry's cold account.
-curve_lp = 190_494
+# 2026-10-05: − 108_918. The leg asks the pool's own MetaRegistry handler
+# (`get_registry(6)` 3_593 + its `is_registered` 7_314, and the handler's cold
+# account) instead of the walk over all eight: the leg's frame on the same
+# fork test went from 250_987 to 142_069.
+curve_lp = 81_576
 # Live Pendle PT sold on its market (venue 8), fork at 26_088_000
 # (ForkPendleMarket, PT-sUSDS-26NOV2026 → DAI): V6 factory `isValidMarket`
 # 9_536 + `readTokens` 413 + PT transfer 11_119 + `swapExactPtForSy` 141_337

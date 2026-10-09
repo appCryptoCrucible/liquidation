@@ -309,9 +309,22 @@ fn halt_logs_fold_before_the_pin_and_error_after() {
         DEPLOY_BLOCK + 1,
         T0,
     );
+    // After the pin the pool's market is halted, not the bot: ingest goes
+    // on, and the same liquidatable position is blocked.
+    let px = prices(1800_0000_0000, DAI_P8);
+    assert_eq!(
+        p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap().state,
+        HealthState::Liquidatable
+    );
     assert_eq!(
         p.apply_log(&mut st, &after.view()),
-        Err(ProtocolError::HaltSignal)
+        Ok(DirtySet::ProtocolWide)
+    );
+    assert_eq!(
+        p.health(st.view(ALICE_ID, T0).unwrap(), &px).unwrap().state,
+        HealthState::Blocked {
+            reason: liq_protocol::BlockReason::Paused
+        }
     );
 }
 
@@ -459,11 +472,11 @@ fn answer_and_fold(
 /// collateral flag for reserve **id** (`UserConfiguration.isUsingAsCollateral`),
 /// `getUserEMode` the category. An account whose state was corrupted is
 /// restored to the log fold's values and health. The reserve ids are
-/// deliberately not `slot - 1` (WETH id 5, DAI id 2, as after a dropped
-/// reserve's id is reused), so the bitmap must go through the ids read
-/// back from `getReserveData`. Negative: before the ids are read the resync
-/// stays unsettled; with `slot - 1` the WETH collateral bit (11) would be
-/// read at bit 1 and Alice would lose her collateral.
+/// deliberately not `slot - FIRST_RESERVE` (WETH id 5, DAI id 2, as after
+/// a dropped reserve's id is reused), so the bitmap must go through the ids
+/// read back from `getReserveData`. Negative: before the ids are read the
+/// resync stays unsettled; with `slot - FIRST_RESERVE` the WETH collateral
+/// bit (11) would be read at bit 1 and Alice would lose her collateral.
 #[test]
 fn resync_restores_a_corrupted_account_through_reserve_ids() {
     use alloy_sol_types::SolCall;
@@ -592,4 +605,134 @@ fn resync_restores_a_corrupted_account_through_reserve_ids() {
     assert_eq!(got.hf, want.hf);
     assert_eq!(got.collateral_value, want.collateral_value);
     assert_eq!(got.debt_value, want.debt_value);
+}
+
+/// Oracle: `PoolConfigurator.setEModeCategory` (`8305565ae`) configures any
+/// `uint8` id and nothing deletes one; Aave V3 Core had 48 categories at
+/// block 26,112,136. Every id up to 255 folds. An account in category 48
+/// is valued at that category's threshold and seized at its bonus on a
+/// reserve that is collateral in it, and at the reserve's own parameters
+/// in a category where it is not. Changing the category reprices exactly
+/// the reserves that are collateral in it. Negative: with the 28-entry
+/// table this replaced, the 29th `EModeCategoryAdded` failed the fold
+/// (`TableFull`), and a category change repriced only the pool's meta row,
+/// which no account holds.
+#[test]
+fn every_emode_category_id_folds_and_prices() {
+    use liq_adapters_aave_v3::events::cfg as ccfg;
+    use liq_protocol::{DirtyRows, MarketSlot};
+    let d = Deploy::new();
+    let (p, mut st) = full_store(&d);
+    let b = DEPLOY_BLOCK + 2;
+    let category = |id: u8, lt: u16, bonus: u16| {
+        log(
+            d.configurator,
+            &ccfg::EModeCategoryAdded {
+                categoryId: id,
+                ltv: U256::from(lt - 2_00),
+                liquidationThreshold: U256::from(lt),
+                liquidationBonus: U256::from(bonus),
+                oracle: Address::ZERO,
+                label: format!("category {id}"),
+            },
+            b,
+            T0,
+        )
+    };
+    let lt = |id: u8| 85_00 + u16::from(id);
+    let bonus = |id: u8| 101_00 + u16::from(id);
+    for id in 1..=u8::MAX {
+        assert_eq!(
+            p.apply_log(&mut st, &category(id, lt(id), bonus(id)).view()),
+            Ok(DirtySet::None),
+            "category {id} folds; no reserve is collateral in it yet"
+        );
+    }
+    let weth_row = DirtyRows::from_slice(&[MarketSlot {
+        market: POOL_MARKET,
+        slot: WETH_SLOT,
+    }]);
+    let in_48 = log(
+        d.configurator,
+        &ccfg::AssetCollateralInEModeChanged {
+            asset: d.weth,
+            categoryId: 48,
+            collateral: true,
+        },
+        b,
+        T0,
+    );
+    assert_eq!(
+        p.apply_log(&mut st, &in_48.view()),
+        Ok(DirtySet::MarketReprice(weth_row.clone()))
+    );
+
+    let health = |st: &liq_protocol::conformance::JournalStore, weth_p8: u64| {
+        p.health(st.view(ALICE_ID, T0).unwrap(), &prices(weth_p8, DAI_P8))
+            .unwrap()
+    };
+    let enter = |id: u8| {
+        log(
+            d.pool,
+            &pool::UserEModeSet {
+                user: d.alice,
+                categoryId: id,
+            },
+            b,
+            T0,
+        )
+    };
+    // HF at threshold `lt`, rounded as `alice_by_hand` rounds it.
+    let hf_at = |weth_p8: u64, lt: u16| {
+        let (_, coll, debt) = alice_by_hand(weth_p8, DAI_P8, RAY, RAY);
+        let hf = (coll * U256::from(lt) * WAD + debt / U256::from(2u8)) / debt / uint!(10_000_U256);
+        Ray::from_raw(hf * uint!(1_000_000_000_U256))
+    };
+
+    // Outside e-mode, and in a category WETH is not collateral in: the
+    // reserve's own threshold, so liquidatable at 1,800.
+    let (plain, _, _) = alice_by_hand(1800_0000_0000, DAI_P8, RAY, RAY);
+    assert_eq!(
+        health(&st, 1800_0000_0000).hf,
+        Ray::from_raw(plain * uint!(1_000_000_000_U256))
+    );
+    p.apply_log(&mut st, &enter(47).view()).unwrap();
+    assert_eq!(
+        health(&st, 1800_0000_0000).hf,
+        hf_at(1800_0000_0000, WETH_LT)
+    );
+    assert_eq!(health(&st, 1800_0000_0000).state, HealthState::Liquidatable);
+
+    // In category 48: its threshold (85.48%) makes her healthy at 1,800.
+    p.apply_log(&mut st, &enter(48).view()).unwrap();
+    let h = health(&st, 1800_0000_0000);
+    assert_eq!(h.hf, hf_at(1800_0000_0000, lt(48)));
+    assert_ne!(h.state, HealthState::Liquidatable);
+    // At 1,700 she is liquidatable, and WETH is seized at the category's bonus.
+    assert_eq!(health(&st, 1700_0000_0000).state, HealthState::Liquidatable);
+    let q = p
+        .quote(
+            st.view(ALICE_ID, T0).unwrap(),
+            &prices(1700_0000_0000, DAI_P8),
+        )
+        .unwrap()
+        .expect("liquidatable");
+    assert_eq!(q.seize_options[0].asset, WETH);
+    assert_eq!(
+        q.seize_options[0].bonus,
+        Ray::from_raw(U256::from(bonus(48) - 100_00) * math::BPS_RAY)
+    );
+
+    // Governance moves category 48: the WETH row reprices, and the new
+    // threshold is what she is valued at.
+    assert_eq!(
+        p.apply_log(&mut st, &category(48, 90_00, 102_00).view()),
+        Ok(DirtySet::MarketReprice(weth_row))
+    );
+    assert_eq!(health(&st, 1800_0000_0000).hf, hf_at(1800_0000_0000, 90_00));
+    // A category WETH is not collateral in reprices nothing.
+    assert_eq!(
+        p.apply_log(&mut st, &category(200, 90_00, 102_00).view()),
+        Ok(DirtySet::None)
+    );
 }

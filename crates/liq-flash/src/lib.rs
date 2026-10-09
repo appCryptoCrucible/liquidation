@@ -23,7 +23,7 @@
 #![deny(clippy::todo, clippy::unimplemented)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, Bytes, U256};
 use liq_protocol::{CallbackShape, DecodedLog};
 use liq_types::{AssetId, FlashProvider, LogSubscriber};
 
@@ -58,6 +58,30 @@ pub trait FlashSource: LogSubscriber + Send + Sync + 'static {
     fn gas_overhead(&self) -> u64;
     /// Fold one routed log. Ingest thread only.
     fn apply_log(&mut self, log: &DecodedLog<'_>);
+
+    /// Chain reads that bring this source to chain state at one block,
+    /// before its logs keep it there (GUIDE 07 §4). Logs only move a
+    /// balance by what changed, so without these a source starts at zero
+    /// and never funds anything. Asked again after each
+    /// [`FlashSource::apply_seed`] until empty, so a source can learn what
+    /// to read next (an Aave pool reads its reserve list, then each
+    /// reserve, then each balance). Default: nothing to read.
+    fn seed_reads(&self) -> Vec<SeedRead> {
+        Vec::new()
+    }
+
+    /// The answers to the last [`FlashSource::seed_reads`], one per read in
+    /// order; `None` when the call failed or reverted. What a failed read
+    /// would have set stays unfunded, never guessed.
+    fn apply_seed(&mut self, _answers: &[Option<Bytes>]) {}
+}
+
+/// One startup read for [`FlashSource::seed_reads`]: `to.call(data)` at the
+/// seeding block.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeedRead {
+    pub to: Address,
+    pub data: Bytes,
 }
 
 #[cfg(test)]
@@ -159,7 +183,11 @@ mod tests {
                 | CallbackShape::UniV4UnlockCallback
                 | CallbackShape::MorphoFlashCallback
                 | CallbackShape::SkyDssOnFlashLoan => {}
-                CallbackShape::Direct => panic!("a lender never has the flash-less shape"),
+                // The flash swap is a route through a pool the exit sells
+                // on, not a source the index holds.
+                CallbackShape::Direct | CallbackShape::UniV3SwapCallback => {
+                    panic!("a lender's shape is its own flash callback")
+                }
             }
         }
         assert_eq!(srcs[4].available(ID_USDC), U256::ZERO);

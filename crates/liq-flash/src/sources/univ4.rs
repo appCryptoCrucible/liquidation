@@ -98,6 +98,14 @@ impl FlashSource for UniV4PoolManager {
     fn apply_log(&mut self, log: &DecodedLog<'_>) {
         self.table.apply_transfer(log);
     }
+
+    fn seed_reads(&self) -> Vec<crate::SeedRead> {
+        self.table.seed_reads()
+    }
+
+    fn apply_seed(&mut self, answers: &[Option<alloy_primitives::Bytes>]) {
+        self.table.apply_seed(answers);
+    }
 }
 
 #[cfg(test)]

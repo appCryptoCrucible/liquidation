@@ -50,14 +50,17 @@ would need one guard and one threshold per group.
 ```
 1 byte    groupCount
 per group, head = 59 bytes:
-  1 byte    provider         0 Aave · 1 UniV3 · 2 UniV4 · 3 Morpho · 4 Sky DSS Flash
+  1 byte    provider         0 Aave · 1 UniV3 · 2 UniV4 · 3 Morpho · 4 Sky DSS Flash ·
+                             5 none (reward-only) · 6 UniV3 flash swap
   20 bytes  flashSource
   20 bytes  debtAsset
   16 bytes  flashAmount      u128 — may exceed the sum of repays, deliberately
   1 byte    liqCount
   1 byte    repaySwapCount
 then: liqCount liquidation legs (77 fixed bytes + adapter tail)
-then: repaySwapCount swap legs (all EXACT_OUT into debtAsset)
+then: repaySwapCount swap legs (EXACT_OUT into debtAsset, each tied to the
+      liquidation leg it repays; an exit through WETH sells the collateral
+      into WETH first, §1c)
 ```
 
 **Sequential, never nested (D32).** Each group borrows, liquidates, swaps to
@@ -125,6 +128,22 @@ Provider id `4` is **Sky DSS Flash** (reclaimed from the Balancer reservation �
 docs-only stage; nothing on-chain depended on revert-on-4). Balancer remains out
 of scope and has no provider id.
 
+**Provider `6` is a Uniswap V3 flash swap.** `flashSource` is a V3 pool holding
+`debtAsset`; `execute` swaps exact-out for `flashAmount` of the debt, the pool
+pays first, and `uniswapV3SwapCallback` runs the group and pays the pool its
+other token (the collateral, or WETH for an exit through WETH). A flash loan
+and the repay swap in one pool call, at the swap fee the exit pays anyway;
+`[wrap].univ3_swap` against the loan's wrap, plus its fee, is what it saves.
+Rules the encoder asserts (`liq-plan` `flash_swap_group`): one liquidation leg
+(a beaten leg beside a live one would leave debt bought and unpaid for; alone,
+it reverts the group and the swap with it before anything is owed), `feeBps`
+0, no repay leg buys the debt (the lender did) and none uses the lender pool,
+which is locked while it swaps. The repay blob holds only the collateral's way
+into WETH; what collateral is left after the pool is paid closes in the profit
+blob, or is WETH already. The router takes it when it nets more than the
+cheapest flash loan with the same exit (GUIDE 12 §4; `liq-router`
+`flash_swap_alternative`).
+
 #### Liquidation legs (77 fixed bytes + adapter tail)
 
 ```
@@ -177,14 +196,27 @@ lowered by `min_out_tolerance_bps`.
 `adapter` is per-leg, so one group may span protocols — Alice on Aave V3 and Bob
 on Aave V4, both owing USDC, is one group.
 
-**Exact-out repay sizing.** `L_EXACT_OUT` repay legs are sized to the protocol's
-**actual pull**, not the requested `repayAmount`: V3 close factor, V4 target-HF
-clamp, Morpho `toAssetsUp(toSharesDown(a)) ≤ a`. Over-pull vs that amount is
-under-seizure (`TransferFailed` in the swap callback — plan revert). Dust from
-an over-ask that the protocol did not take is surplus debt token: route it with
-an `L_TAKE_BALANCE` profit leg on the group's `debtAsset` (unless the debt
-already is WETH), or it is reachable only by `sweep` and the profit guard
-reverts `Unprofitable`.
+**Exact-out repay sizing.** The `L_EXACT_OUT` repay legs tied to a leg are
+sized to that protocol's **actual pull**, not the requested `repayAmount`: V3
+close factor, V4 target-HF clamp, Morpho `toAssetsUp(toSharesDown(a)) ≤ a`.
+Over-pull vs that amount is under-seizure (`TransferFailed` in the swap
+callback — plan revert). Dust from an over-ask that the protocol did not take
+is surplus debt token: route it with an `L_TAKE_BALANCE` profit leg on the
+group's `debtAsset` (unless the debt already is WETH), or it is reachable only
+by `sweep` and the profit guard reverts `Unprofitable`.
+
+**The flash premium is bought at run time, not in the plan.** The provider's
+callback reports its fee (Aave `premium`, V3 `fee0 + fee1`, Sky DSS `fee`; 0
+for V4, Morpho and a flash swap), and the Executor adds it to the group's first
+pool-direct exact-output leg that runs (venue 0 or 2; `SwapModule.runSwaps`,
+transient slot `T_FEE`). So the group owes it once whichever of its legs fill,
+and a fee that moved between simulation and inclusion is bought as charged.
+Two kinds of leg carry none: a router's output is fixed in its own calldata,
+which must include the premium; Curve has no exact output, so a leg repaid on
+Curve alone overshoots by the whole premium (an unwrap into the debt asset
+carries it in the seize bonus). The encoder refuses a fee-charging group in
+which some leg could fill alone with nothing to buy the premium
+(`PremiumUncovered`).
 
 **Surplus-borrow / clamp.** `flashAmount` may exceed the sum of actual pulls
 (over-borrow, or V3/V4 clamp). The encoder must emit `L_TAKE_BALANCE` on that
@@ -210,7 +242,9 @@ per leg, head = 60 bytes:
                        8 = sell a live Pendle PT on its market
   20 bytes  tokenIn    which collateral this leg spends
   20 bytes  tokenOut   where it goes
-  1 byte    legFlags   bit0 TAKE_BALANCE · bit1 EXACT_OUT
+  1 byte    legFlags   bit0 TAKE_BALANCE · bit1 EXACT_OUT ·
+                       bits 2–7 the liquidation leg this repay swap serves,
+                       as its index in the group plus one (0: untied)
   16 bytes  amount     u128 — exact output when EXACT_OUT, else input;
                        ignored when TAKE_BALANCE is set
   2 bytes   dataLen    u16
@@ -222,10 +256,22 @@ flag — debt asset for `EXACT_OUT`, WETH otherwise — which worked while a pla
 exactly one debt asset. It no longer does. 20 bytes a leg is a few hundred gas; a
 leg that guesses its own output is a silent misliquidation.
 
-**Repay legs are `EXACT_OUT` into the group's debt asset.** Sized to what is owed,
-consuming whatever collateral that takes. Exact-input would force you to
+**Repay legs are `EXACT_OUT` into the group's debt asset.** Sized to the pull
+of the leg they are tied to, consuming whatever collateral that takes. Exact-input would force you to
 over-provision and strand debt-token dust, or under-provision and fail the repay.
 V3 encodes the mode in the sign of `amountSpecified`, so it is one call site.
+
+**An exit through WETH sells the collateral first.** When the collateral's own
+pools into the debt pay less (or there are none), the router routes it through
+WETH, the way most collateral reaches a stablecoin. The repay blob then sells
+all of the collateral into WETH (set amounts on every pool but the largest,
+which takes the whole balance with `TAKE_BALANCE` and so closes it), and buys
+exactly the pull with WETH (`EXACT_OUT`). No profit leg sells that
+collateral; the WETH left over is profit. Such a leg is still alone in its
+flash group: its repay blob closes the collateral itself, a `TAKE_BALANCE`
+that must run after every set-amount leg on that token, another leg's
+included, and would sell that leg's leftover too. Alone, the order and the
+closure are its own.
 
 **Profit legs converge on WETH.** The bid must be paid in ETH regardless — builders
 value a bundle by `coinbaseDiff`, the coinbase's *native* balance delta, so an
@@ -245,11 +291,22 @@ held, so it absorbs solver rounding *and* an under-delivering leg *and* a
 liquidation leg that was skipped entirely.
 
 **Order is load-bearing within a blob.** `EXACT_OUT` legs consume an unknown amount
-of collateral, so any `TAKE_BALANCE` leg must run after them. The encoder emits
-them in that order and asserts it (§2).
+of collateral, so the `TAKE_BALANCE` leg on that collateral must run after them,
+and so must every leg selling a set amount of it. A `TAKE_BALANCE` on one token
+ahead of set amounts of another is an exit through WETH. The encoder emits them
+in that order and asserts it per token (§2).
 
-A leg whose `tokenIn` balance is zero is skipped silently — the normal consequence
-of a liquidation leg being beaten, not an error.
+**Each repay swap is tied to the liquidation leg it repays** (legFlags bits
+2–7). `LiquidationModule.runLegs` returns which legs filled, one bit each, and
+the swap module skips a tied swap whose leg did not: what it would sell never
+arrived, and its exact output would be paid for with another leg's collateral,
+or fail the plan. In a group of several legs every set-amount repay leg is
+tied; a `TAKE_BALANCE` leg never is (it spends what arrived, whichever leg
+seized it), nor a profit leg (it runs after every group). A leg whose
+`tokenIn` balance is zero is skipped silently too. Both are the normal
+consequence of a liquidation leg being beaten, not an error: the group lands
+on the legs that filled, and fails `AllLegsFailed` only when none did. A tie
+names one of 63 legs, so a group holds no more.
 
 Venue data:
 
@@ -258,11 +315,11 @@ Venue data:
 | `0` UniV3 pool-direct | 20 bytes: pool address. Settled in `uniswapV3SwapCallback` — no approval on this path. |
 | `1` Allowlisted router | 20 bytes target (must equal `ROUTER_A` or `ROUTER_B`) + the router's own calldata. Exact approval, zeroed after. |
 | `2` UniV2 / Sushi pair | 21 bytes: pair ‖ factory id (0 Uniswap V2, 1 SushiSwap). The pair is re-derived by CREATE2 against that factory before any token moves. |
-| `3` Curve StableSwap (plain and NG) | 22 bytes: pool ‖ i ‖ j. Exact input only. The pool must be in Curve's MetaRegistry and hold `tokenIn`/`tokenOut` at `i`/`j`; `exchange(int128,int128,uint256,uint256)`. Exact approval, zeroed after. |
-| `4` Curve crypto (twocrypto-ng, tricrypto-ng, original CurveCryptoSwap2) | 22 bytes: pool ‖ i ‖ j. Same checks as `3`; `exchange(uint256,uint256,uint256,uint256)`. |
+| `3` Curve StableSwap (plain and NG) | 23 bytes: pool ‖ i ‖ j ‖ h. Exact input only. `h` is the index of the Curve MetaRegistry handler that holds the pool: the Executor reads `get_registry(h)` and asks that one handler `is_registered(pool)` (the MetaRegistry's own `is_registered` asks all eight in turn, 123k gas on every leg). A handler that does not hold the pool, or an index past the list, is `BadPool`. The pool must also hold `tokenIn`/`tokenOut` at `i`/`j`; `exchange(int128,int128,uint256,uint256)`. Exact approval, zeroed after. |
+| `4` Curve crypto (twocrypto-ng, tricrypto-ng, original CurveCryptoSwap2) | 23 bytes: pool ‖ i ‖ j ‖ h. Same checks as `3`; `exchange(uint256,uint256,uint256,uint256)`. |
 | `5` Unwrap ERC-4626 | 20 bytes: the vault, which must equal `tokenIn`; its `asset()` must equal `tokenOut`. `redeem(amount, this, this)`: no approval. Exact input only. |
 | `6` Redeem expired Pendle PT | 20 bytes: the YT. `tokenIn` (the PT) and the YT must name each other (`PT.YT()`, `YT.PT()`) and the YT must be expired. The PT goes to the YT, `redeemPY` pays SY, and `SY.redeem(this, sy, tokenOut, 0, false)` pays `tokenOut` (the SY refuses a token it cannot pay). Exact input only; placed like `5`. |
-| `7` Curve NG LP one-coin withdrawal | 21 bytes: pool ‖ `i`. The pool must equal `tokenIn` (an NG pool is its own LP token), be in Curve's MetaRegistry, and hold `tokenOut` at `i`. `remove_liquidity_one_coin(amount, i, 0)` burns our LP: no approval. Exact input only; placed like `5`. |
+| `7` Curve NG LP one-coin withdrawal | 22 bytes: pool ‖ `i` ‖ h. The pool must equal `tokenIn` (an NG pool is its own LP token), be held by MetaRegistry handler `h` (as venue `3`), and hold `tokenOut` at `i`. `remove_liquidity_one_coin(amount, i, 0)` burns our LP: no approval. Exact input only; placed like `5`. |
 | `8` Sell a live Pendle PT on its market | 20 bytes: the market. It must be `isValidMarket` on Pendle's `PendleMarketFactoryV6` (`MainnetVenues.PENDLE_MARKET_FACTORY_V6`) and its `readTokens()` PT must equal `tokenIn`. The PT goes to the market, `swapExactPtForSy(this, amount, "")` pays SY, and the market's SY `redeem(this, sy, tokenOut, 0, false)` pays `tokenOut`. Exact input only; placed like `5`. |
 
 **Unwrap legs come first in a repay blob.** A seized collateral with no pool of
@@ -377,43 +434,55 @@ caught. Each has a failure mode that is silent rather than loud.
 ```rust
 impl BatchPlan {
     fn validate(&self) -> Result<(), EncodeError> {
-        // 1. Every collateral is closed exactly once by a TAKE_BALANCE leg.
-        //    Zero strands it until the next sweep; two makes the second a
-        //    silent no-op against an empty balance.
+        // 1. Every collateral is closed exactly once by a TAKE_BALANCE leg
+        //    that runs after its liquidation: in its own group's repay blob
+        //    (an unwrap, or an exit through WETH), or else in the profit blob.
+        //    Zero strands it until the next sweep; two in a blob makes the
+        //    second a silent no-op against an empty balance. Another group's
+        //    repay blob does not count: it ran before this group seized.
         for g in &self.groups {
             for l in &g.liqs {
-                let closers = self.all_swaps()
-                    .filter(|s| s.token_in == l.collateral_asset
-                             && s.leg_flags.contains(LegFlags::TAKE_BALANCE))
-                    .count();
-                if closers != 1 {
-                    return Err(EncodeError::BadCollateralClosure {
-                        collateral: l.collateral_asset, closers,
-                    });
+                let own = takes(&g.repay_swaps, l.collateral_asset);
+                let closers = if own > 0 { own } else { takes(&self.profit_swaps, l.collateral_asset) };
+                if closers != usize::from(l.collateral_asset != WETH) {
+                    return Err(EncodeError::BadCollateralClosure { .. });
                 }
             }
         }
 
-        // 2. Within each blob, EXACT_OUT legs precede TAKE_BALANCE legs. An
-        //    EXACT_OUT leg consumes an unknown amount of collateral, so a
-        //    balance sweep before it would take collateral the repay needs.
+        // 2. Within each blob, every leg spending a set amount of a token
+        //    (EXACT_OUT, or exact input) precedes the TAKE_BALANCE leg on it:
+        //    a balance sweep before it would take what the leg needs.
         for blob in self.all_blobs() { blob.assert_exact_out_first()?; }
 
-        // 3. Every repay swap targets its own group's debt asset. A leg
-        //    pointed at the wrong group's asset leaves one group short and
-        //    another with a surplus it will sweep as profit.
+        // 3. Every repay swap targets its own group's debt asset, or WETH (an
+        //    exit through WETH, §1c), or is an unwrap. A leg pointed at
+        //    another group's asset leaves one group short and another with a
+        //    surplus it will sweep as profit.
         for g in &self.groups {
-            if g.repay_swaps.iter().any(|s| s.token_out != g.debt_asset) {
+            if g.repay_swaps.iter().any(|s| s.token_out != g.debt_asset
+                && s.token_out != WETH && !is_unwrap_venue(s.venue)) {
                 return Err(EncodeError::RepayTargetMismatch { group: g.debt_asset });
             }
         }
 
-        // 4. Every profit swap targets WETH.
+        // 4. Every profit swap targets WETH, untied.
         if self.profit_swaps.iter().any(|s| s.token_out != WETH) {
             return Err(EncodeError::ProfitTargetNotWeth);
         }
 
-        // 5. Same debt asset in multiple groups is allowed ONLY for the
+        // 5. Ties (§1c). In a group of several legs every set-amount repay
+        //    leg names a leg of its group; no TAKE_BALANCE leg is tied. Per
+        //    leg, the exact outputs tied to it buy exactly its pull (at most,
+        //    when an exact-input leg or an unwrap into the debt overshoots),
+        //    and under a fee-charging source the leg can buy the premium
+        //    alone: a pool exact output, or that overshoot.
+        for g in &self.groups {
+            g.ties_ok()?;              // UntiedRepay, TieOutOfRange, TiedTakeBalance
+            g.size_each_leg_to_its_pull()?; // UnderSeizure, RepayNotSizedToPull, PremiumUncovered
+        }
+
+        // 6. Same debt asset in multiple groups is allowed ONLY for the
         //    multi-source cascade (§1b′): ≤ 3 groups sharing a debtAsset,
         //    each a different provider/flashSource, repay swaps still
         //    targeting that group's own debtAsset (invariant 3).
@@ -465,6 +534,7 @@ bitflags::bitflags! {
     pub struct LegFlags: u8 {
         const TAKE_BALANCE = 0b0000_0001;
         const EXACT_OUT    = 0b0000_0010;
+        // bits 2–7: the tie, leg index + 1 (`liq_plan::tie_flags`, `leg_tie`)
     }
 }
 ```

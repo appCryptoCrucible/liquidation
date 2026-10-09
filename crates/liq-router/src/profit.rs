@@ -19,6 +19,9 @@ use alloy_primitives::U256;
 use liq_flash::{fee_amount, FlashIndex, Haircut, SourceEntry};
 use liq_protocol::{CallbackShape, FlashRoute, LegChoice, Quote};
 use liq_types::fixed::{mul_div, Rounding, RAY};
+use liq_types::FlashProvider;
+
+use crate::exact::{lender_of, solve_pair_single_lender};
 use liq_types::{AssetId, ProtocolId};
 use smallvec::SmallVec;
 
@@ -68,6 +71,43 @@ pub struct ProfitCtx<'a> {
     pub market: &'a dyn MarketView,
     pub gas: &'a GasTerms,
     pub budget: &'a SolveBudget,
+    /// Per-provider wrap gas, so a leg's funding can be weighed where its
+    /// exit is solved ([`flash_swap_alternative`]). `None`: flash loans
+    /// only.
+    pub wrap: Option<WrapGas<'a>>,
+}
+
+/// Per-provider wrap gas as `select` charges it (`SelectCfg::wrap_gas`,
+/// `liq-gas.toml` `[wrap]`).
+#[derive(Copy, Clone, Debug)]
+pub struct WrapGas<'a> {
+    /// Indexed by `FlashProvider as usize`; `0` is unmeasured.
+    pub by_provider: &'a [u64; 7],
+    /// Aave V3 flash wrapping an Aave V4 leg.
+    pub aave_v4: u64,
+    /// The protocol `aave_v4` applies to.
+    pub aave_v4_protocol: Option<ProtocolId>,
+}
+
+impl WrapGas<'_> {
+    /// Wrap gas of `provider` around a leg of `protocol`; `None` when it is
+    /// unmeasured (nothing is priced at zero gas). A reward-only group
+    /// wraps nothing.
+    #[must_use]
+    pub fn of(&self, provider: FlashProvider, protocol: ProtocolId) -> Option<u64> {
+        if provider == FlashProvider::None {
+            return Some(0);
+        }
+        let g = if provider == FlashProvider::Aave && self.aave_v4_protocol == Some(protocol) {
+            self.aave_v4
+        } else {
+            self.by_provider
+                .get(provider as usize)
+                .copied()
+                .unwrap_or(0)
+        };
+        (g != 0).then_some(g)
+    }
 }
 
 /// One evaluated `(repay, seize, source)` triple.
@@ -159,9 +199,16 @@ pub fn route_depth_repay(
     repay_for_seized(cap, terms)
 }
 
+/// How close [`fit_size`] gets to the largest routable size: a thousandth
+/// of the range it searches. Each step is a full exit solve, so eighty
+/// halvings of a U256 range cost minutes on a large position for wei that
+/// change nothing.
+const FIT_TOLERANCE: u64 = 1_000;
+
 /// Shrink `s` until `solve_pair(seized(s))` succeeds. Partial beats skip:
 /// a smaller `s` is returned rather than `InsufficientLiquidity` at the
-/// top of the range. `Ok(0)` means no positive size fits.
+/// top of the range, to within [`FIT_TOLERANCE`]. `Ok(0)` means no positive
+/// size fits.
 fn fit_size(
     book: &PoolBook,
     coll: AssetId,
@@ -179,9 +226,13 @@ fn fit_size(
     }
     let mut lo = U256::ZERO;
     let mut hi = s_max;
+    let close = s_max
+        .checked_div(U256::from(FIT_TOLERANCE))
+        .unwrap_or_default()
+        .max(U256::ONE);
     for _ in 0..80 {
         let span = match hi.checked_sub(lo) {
-            Some(s) if s > U256::from(1u64) => s,
+            Some(s) if s > close => s,
             _ => break,
         };
         let mid = lo
@@ -223,13 +274,21 @@ fn flash_fee(route: &FlashRoute, s: U256) -> Result<U256, ProfitError> {
     fee_amount(route.provider, s, route.fee_bps).ok_or(ProfitError::UnpriceableFee)
 }
 
-/// Evaluate one triple. `None` = unavailable (unfundable, unroutable,
-/// or `swap_out < flash_owed`).
+/// Evaluate one (repay, seize) pair, funded by the cheapest of `sources`
+/// that covers the size. `None` = unavailable (unfundable, unroutable, or
+/// `swap_out < flash_owed`).
+///
+/// The size is settled once, against the deepest source's capacity: a
+/// source only caps the size and sets the fee, and the sources are sorted
+/// cheapest first ([`FlashIndex::entries`]), so the first that covers the
+/// size is the one to take. Sizing is the costly part (every step an exit
+/// solve), and it used to run once per source: about a hundred times for a
+/// WETH debt.
 pub fn evaluate(
     ctx: &ProfitCtx<'_>,
     q: &Quote,
     choice: LegChoice,
-    entry: &SourceEntry,
+    sources: &[SourceEntry],
 ) -> Result<Option<SizedLeg>, ProfitError> {
     let repay = q
         .repay_options
@@ -265,7 +324,11 @@ pub fn evaluate(
         return Ok(None);
     };
     let cap = band.max_size;
-    let flash_cap = available_after_haircut(entry, ctx.haircut);
+    let flash_cap = sources
+        .iter()
+        .map(|e| available_after_haircut(e, ctx.haircut))
+        .max()
+        .unwrap_or_default();
     let route_cap = match ctx.warm {
         Some(w) => route_depth_repay(w, seize.asset, &terms)?,
         None => repay.max_repay, // exact fit_size below is the real ceiling
@@ -276,15 +339,19 @@ pub fn evaluate(
     let seize_cap = repay_for_seized(seize.max_seize, &terms)?;
     let protocol_cap = repay.max_repay.min(seize_cap);
     let s0 = min4(protocol_cap, flash_cap, route_cap, cap);
-    let s = fit_size(
-        ctx.book,
-        seize.asset,
-        repay.asset,
-        s0,
-        &terms,
-        &leg_gas,
-        ctx.budget,
-    )?;
+    // Sizing quotes the exit at many sizes: the graph's routes are searched
+    // once, at the first, and re-quoted after.
+    let s = crate::graph::reuse_routes(|| {
+        fit_size(
+            ctx.book,
+            seize.asset,
+            repay.asset,
+            s0,
+            &terms,
+            &leg_gas,
+            ctx.budget,
+        )
+    })?;
     // Below the band's lower edge gas dominates: not a partial, a skip.
     // Below the protocol's own minimum (an all-or-nothing leg) the call
     // would revert: also a skip, never a shrunken size.
@@ -303,12 +370,47 @@ pub fn evaluate(
     else {
         return Ok(None);
     };
+    // Once, at the size settled on: split across pools and chains, and a
+    // sale worth 5 ETH or more as a flow across the whole graph.
+    let exit = crate::exact::refine_exit(
+        ctx.book,
+        seize.asset,
+        repay.asset,
+        &leg_gas,
+        ctx.budget,
+        exit,
+    )?;
+    // The cheapest source that covers the size (sizing never exceeds the
+    // deepest, so one does).
+    let Some(entry) = sources
+        .iter()
+        .find(|e| available_after_haircut(e, ctx.haircut) >= s)
+    else {
+        return Ok(None);
+    };
     let route = entry.route(repay.asset, s);
     let fee = flash_fee(&route, s)?;
     let owed = s.checked_add(fee).ok_or(RouteError::Math)?;
     let contribution = match exit.amount_out.checked_sub(owed) {
         Some(c) if !c.is_zero() => c,
         _ => return Ok(None),
+    };
+    let (exit, route, fee, owed, contribution) = match flash_swap_alternative(
+        ctx,
+        &leg_gas,
+        seize.asset,
+        repay.asset,
+        s,
+        &terms,
+        &route,
+        &exit,
+        fee,
+    )? {
+        Some((single, swap)) => {
+            let c = single.amount_out.checked_sub(s).ok_or(RouteError::Math)?;
+            (single, swap, U256::ZERO, s, c)
+        }
+        None => (exit, route, fee, owed, contribution),
     };
     Ok(Some(SizedLeg {
         choice,
@@ -326,6 +428,81 @@ pub fn evaluate(
         terms,
         rewards: SmallVec::new(),
     }))
+}
+
+/// The flash swap that would fund this leg instead of `loan`, when it
+/// leaves more after gas: the debt bought exact-out from one Uniswap V3
+/// pool, paid inside its swap callback, so the loan's fee and wrapper fall
+/// away and the pool's fee is the one the exit pays anyway
+/// ([`FlashProvider::UniV3Swap`]). A flash swap needs the exit's last swap,
+/// into the debt, on one V3 pool, so the exit is re-solved onto its best
+/// single pool ([`solve_pair_single_lender`]) and the two are compared
+/// whole: output, less what is owed, less hop and wrap gas. `None` when the
+/// wrap gas of either funding is unmeasured (nothing is priced at zero
+/// gas), no single V3 pool absorbs the size, or the loan nets more.
+#[allow(clippy::too_many_arguments)] // each input is a distinct term of the comparison
+fn flash_swap_alternative(
+    ctx: &ProfitCtx<'_>,
+    gas: &GasTerms,
+    coll: AssetId,
+    debt: AssetId,
+    s: U256,
+    terms: &PairTerms,
+    loan: &FlashRoute,
+    loan_exit: &ExitQuote,
+    loan_fee: U256,
+) -> Result<Option<(ExitQuote, FlashRoute)>, ProfitError> {
+    let Some(wrap) = ctx.wrap else {
+        return Ok(None);
+    };
+    let (Some(wrap_swap), Some(wrap_loan)) = (
+        wrap.of(FlashProvider::UniV3Swap, ctx.protocol),
+        wrap.of(loan.provider, ctx.protocol),
+    ) else {
+        return Ok(None);
+    };
+    let seized = seized_for(s, terms)?;
+    let single = match solve_pair_single_lender(ctx.book, coll, debt, seized, gas, ctx.budget) {
+        Ok(q) => q,
+        Err(RouteError::InsufficientLiquidity | RouteError::StalePool | RouteError::Math) => {
+            return Ok(None)
+        }
+        Err(e) => return Err(ProfitError::Route(e)),
+    };
+    let Some(pool) = lender_of(ctx.book, &single) else {
+        return Ok(None);
+    };
+    let owed_loan = s.checked_add(loan_fee).ok_or(RouteError::Math)?;
+    let net = |out: U256, owed: U256, hops: u64, wrap: u64| -> Result<U256, ProfitError> {
+        let cost = gas.cost_in_out(hops.saturating_add(wrap))?;
+        Ok(out.saturating_sub(owed).saturating_sub(cost))
+    };
+    let loan_net = net(
+        loan_exit.amount_out,
+        owed_loan,
+        loan_exit.hop_gas,
+        wrap_loan,
+    )?;
+    let swap_net = net(single.amount_out, s, single.hop_gas, wrap_swap)?;
+    if single.amount_out <= s || swap_net <= loan_net {
+        return Ok(None);
+    }
+    let source = ctx
+        .book
+        .get(pool)
+        .map(|p| p.address)
+        .ok_or(ProfitError::Missing("lender pool"))?;
+    Ok(Some((
+        single,
+        FlashRoute {
+            provider: FlashProvider::UniV3Swap,
+            source,
+            asset: debt,
+            amount: s,
+            fee_bps: 0,
+            callback: CallbackShape::UniV3SwapCallback,
+        },
+    )))
 }
 
 /// A quote whose every repay option is zero: the protocol pays the liquidator
@@ -367,6 +544,8 @@ pub fn reward_plan(
                 amount_out: seize.max_seize,
                 hop_gas: 0,
                 rho0: U256::ZERO,
+                hub: None,
+                chain: None,
                 unwrap: None,
             }
         } else {
@@ -434,10 +613,14 @@ pub fn reward_plan(
 
 /// Serial joint search. The winner maximises **contribution**
 /// (`swap_out − flash_owed`), not min exit-cost (GUIDE 12 §4c / D26).
-/// Ties keep quote preference order (lower repay index, then seize, then
-/// index order of sources).
+/// Ties keep quote preference order (lower repay index, then seize); each
+/// pair is funded by the cheapest source covering its size.
 pub fn best_plan(ctx: &ProfitCtx<'_>, q: &Quote) -> Result<Option<SizedLeg>, ProfitError> {
-    let mut best: Option<SizedLeg> = None;
+    // Legs of different debt assets compare in WETH wei. `contribution` is
+    // in the leg's own debt units, and raw units rank a 6-decimal $1 token's
+    // contribution far above an 8-decimal $84k one's: block 26,098,187 took
+    // the $1,535 USDT leg over the $2,075 WBTC leg for that reason.
+    let mut best: Option<(U256, SizedLeg)> = None;
     for (ri, repay) in q.repay_options.iter().enumerate() {
         let Ok(ri) = u8::try_from(ri) else {
             continue;
@@ -457,26 +640,29 @@ pub fn best_plan(ctx: &ProfitCtx<'_>, q: &Quote) -> Result<Option<SizedLeg>, Pro
                 repay: ri,
                 seize: si,
             };
-            for e in sources {
-                match evaluate(ctx, q, choice, e) {
-                    Ok(Some(leg)) => {
-                        let better = best
-                            .as_ref()
-                            .is_none_or(|b| leg.contribution > b.contribution);
-                        if better {
-                            best = Some(leg);
-                        }
+            match evaluate(ctx, q, choice, sources) {
+                Ok(Some(leg)) => {
+                    let Some(per) = ctx.market.per_eth(leg.debt).filter(|p| !p.is_zero()) else {
+                        continue;
+                    };
+                    let wei = crate::solver::mul_div_512(
+                        leg.contribution,
+                        crate::exact::OUT_PER_ETH_WETH,
+                        per,
+                    )?;
+                    if best.as_ref().is_none_or(|(b, _)| wei > *b) {
+                        best = Some((wei, leg));
                     }
-                    Ok(None) => {}
-                    Err(ProfitError::Missing(_) | ProfitError::UnpriceableFee) => {
-                        tracing::debug!(repay = ri, seize = si, "combo unavailable");
-                    }
-                    Err(e) => return Err(e),
                 }
+                Ok(None) => {}
+                Err(ProfitError::Missing(_) | ProfitError::UnpriceableFee) => {
+                    tracing::debug!(repay = ri, seize = si, "combo unavailable");
+                }
+                Err(e) => return Err(e),
             }
         }
     }
-    Ok(best)
+    Ok(best.map(|(_, leg)| leg))
 }
 
 /// Pre-gas expected contribution-per-gas (GUIDE 12 §4f).
@@ -771,6 +957,7 @@ mod tests {
             market,
             gas,
             budget: &B,
+            wrap: None,
         }
     }
 
@@ -976,14 +1163,24 @@ mod tests {
         let entry = idx.entries(A1)[0];
         market.terms.bonus = bonus_5();
         let c5 = ctx(&idx, &bk, &market, &FREE);
-        let l5 = evaluate(&c5, &q, LegChoice { repay: 0, seize: 0 }, &entry)
-            .unwrap()
-            .unwrap();
+        let l5 = evaluate(
+            &c5,
+            &q,
+            LegChoice { repay: 0, seize: 0 },
+            std::slice::from_ref(&entry),
+        )
+        .unwrap()
+        .unwrap();
         market.terms.bonus = bonus_10;
         let c10 = ctx(&idx, &bk, &market, &FREE);
-        let l10 = evaluate(&c10, &q, LegChoice { repay: 0, seize: 1 }, &entry)
-            .unwrap()
-            .unwrap();
+        let l10 = evaluate(
+            &c10,
+            &q,
+            LegChoice { repay: 0, seize: 1 },
+            std::slice::from_ref(&entry),
+        )
+        .unwrap()
+        .unwrap();
         assert!(
             l10.contribution > l5.contribution,
             "higher bonus must raise contribution with exact quotes: {} vs {}",
@@ -1115,10 +1312,11 @@ mod tests {
             market: &market,
             gas: &FREE,
             budget: &B,
+            wrap: None,
         };
         let entry = idx.entries(A1)[0];
         assert!(matches!(
-            evaluate(&c, &q, LegChoice::PREFERRED, &entry),
+            evaluate(&c, &q, LegChoice::PREFERRED, std::slice::from_ref(&entry)),
             Err(ProfitError::Missing(_))
         ));
     }

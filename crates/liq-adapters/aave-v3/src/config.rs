@@ -21,6 +21,10 @@ pub struct PoolConfig {
     /// tokens). Subscribed for `BalanceTransfer` and stable `Mint`/`Burn`;
     /// which reserve each belongs to comes from `ReserveInitialized`.
     pub tokens: Vec<Address>,
+    /// Aave V2: the collateral manager's `LIQUIDATIONS_GRACE_SENTINEL`
+    /// (`0x929b090f…`), whose `GracePeriodSet(asset, until)` sets each
+    /// reserve's grace window. `address(0)` otherwise.
+    pub grace_sentinel: Address,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,6 +78,21 @@ pub struct LiquidationParams {
     pub oracle_decimals: u8,
     pub balance_model: BalanceModel,
     pub close_factor_scope: CloseFactorScope,
+    /// Which Aave the instance runs.
+    pub version: AaveVersion,
+}
+
+/// The Aave code an instance runs. V2 differs from V3 in its events, how
+/// its tokens report balances, its interest compounding, its health and
+/// seize rounding, and its ETH-quoted oracle (see each use).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum AaveVersion {
+    #[default]
+    V3,
+    /// Aave V2 `LendingPool` (implementation `0x02d84abd…`, collateral
+    /// manager `0xcc963272…`, Sourcify matches). Balances come from its
+    /// tokens' events, each carrying the index the token scaled by.
+    V2,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,6 +113,7 @@ pub enum Emitter {
     Provider(usize),
     Sentinel(usize),
     Sequencer(usize),
+    GraceSentinel(usize),
     AToken { pool: usize, slot: u16 },
     VToken { pool: usize, slot: u16 },
     SToken { pool: usize, slot: u16 },

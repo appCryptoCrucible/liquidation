@@ -105,7 +105,10 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
         assertEq(euler.lastMinYield(), 1);
     }
 
-    function test_euler_guard_and_revert_zero_allowance() public {
+    /// A healthy violator is refused by the vault's own `liquidate`
+    /// (`E_ExcessiveRepayAmount` on chain; the double reverts likewise), and
+    /// the leg is skipped.
+    function test_euler_healthy_and_revert_zero_allowance() public {
         euler.setPosition(borrower, 0, 0);
         vm.expectRevert(Executor.AllLegsFailed.selector);
         _exec(_plan(PB.F_SWEEP, 0, GAS_COST, 0, 1, PB.legEuler(address(euler), borrower, address(coll), REPAY, 1, address(coll))));
@@ -116,6 +119,27 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
         vm.expectRevert(Executor.AllLegsFailed.selector);
         _exec(_plan(PB.F_SWEEP, 0, GAS_COST, 0, 1, PB.legEuler(address(euler), borrower, address(coll), REPAY, 1, address(coll))));
         assertEq(debt.allowance(address(ex), address(euler)), 0);
+    }
+
+    /// A zero minimum yield is refused before the vault is called. On chain
+    /// a violator with no debt left makes `liquidate` a no-op unless the
+    /// minimum is above zero (`E_MinYield`), and a no-op would count as a
+    /// filled leg. Oracle: the vault double records every `liquidate` it
+    /// receives. Its position is liquidatable and the plan lands on its
+    /// other leg, so no record means the Executor never called it.
+    function test_euler_zero_min_yield_is_refused_before_the_call() public {
+        vm.expectEmit(true, true, true, true, address(ex));
+        emit Executor.LegFailed(PB.A_EULER, address(euler), borrower, 5, ""); // stage 5: tail
+        _exec(_plan(
+            PB.F_SWEEP, 0, GAS_COST, 0.9e18, 2,
+            bytes.concat(
+                PB.legEuler(address(euler), borrower, address(coll), REPAY, 0, address(coll)),
+                PB.legV3(address(pool), borrower, address(coll), REPAY)
+            )
+        ));
+        assertEq(euler.lastViolator(), address(0), "the vault was not called");
+        assertEq(pool.lastDebtToCover(), REPAY, "the other leg filled");
+        _assertClean();
     }
 
     function test_silo_dispatch_approve_zero() public {
@@ -286,7 +310,6 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
     }
 
     uint128 constant WETH_REPAY = 1e18;
-    uint128 constant WETH_OWED = 1e18 + 5e14; // Aave mock 5 bps
 
     function _cetherPlan(uint16 bidBps, uint128 gasCost, uint128 minProfit, uint8 liqCount, bytes memory legs)
         internal view returns (bytes memory)
@@ -295,7 +318,8 @@ contract ExecutorAdapters10ETest is ExecutorTestBase {
             PB.header(PB.F_SWEEP, bidBps, gasCost, minProfit, 1),
             PB.groupHead(PB.P_AAVE, address(pool), address(weth), WETH_REPAY, liqCount, 1),
             legs,
-            PB.poolSwap(address(pCollWeth), address(coll), address(weth), PB.L_EXACT_OUT, WETH_OWED),
+            // The pull; the Executor adds the Aave mock's 5 bps.
+            PB.poolSwap(address(pCollWeth), address(coll), address(weth), PB.L_EXACT_OUT, WETH_REPAY),
             PB.profit(1, PB.poolSwap(address(pCollWeth), address(coll), address(weth), PB.L_TAKE_BALANCE, 0))
         );
     }

@@ -368,19 +368,104 @@ contract MockUniV3Pool {
     uint256 public rateDen = 1;
     uint256 public flashFeeBps = 5;
     uint256 public swaps;
+    /// The real pool's `lock`: a swap or flash cannot re-enter the pool
+    /// from its own callback (`LOK`).
+    bool internal unlocked = true;
+    /// An exact-output swap delivers this much less than asked: the pool's
+    /// liquidity ran out at the price limit.
+    uint256 public short;
 
     constructor() {
         (token0, token1, fee) = MockUniV3Factory(msg.sender).parameters();
     }
 
     function setRate(uint256 n, uint256 d) external { rateNum = n; rateDen = d; }
+    function setShort(uint256 s) external { short = s; }
+
+    modifier lock() {
+        require(unlocked, "LOK");
+        unlocked = false;
+        _;
+        unlocked = true;
+    }
+
+    function swap(address recipient, bool zeroForOne, int256 amountSpecified, uint160, bytes calldata data)
+        external lock returns (int256 amount0, int256 amount1)
+    {
+        swaps++;
+        (address tIn, address tOut) = zeroForOne ? (token0, token1) : (token1, token0);
+        // price of tOut in tIn: zeroForOne → out = in·num/den ; else out = in·den/num
+        (uint256 n, uint256 d) = zeroForOne ? (rateNum, rateDen) : (rateDen, rateNum);
+        uint256 amtIn; uint256 amtOut;
+        if (amountSpecified > 0) {
+            amtIn = uint256(amountSpecified);
+            amtOut = amtIn * n / d;
+        } else {
+            amtOut = uint256(-amountSpecified) - short;
+            amtIn = (amtOut * d + n - 1) / n;
+        }
+        (amount0, amount1) = zeroForOne
+            ? (int256(amtIn), -int256(amtOut))
+            : (-int256(amtOut), int256(amtIn));
+        uint256 before = Tok.bal(tIn, address(this));
+        Tok.push(tOut, recipient, amtOut);
+        IV3SwapCallback(msg.sender).uniswapV3SwapCallback(amount0, amount1, data);
+        require(Tok.bal(tIn, address(this)) >= before + amtIn, "pool: IIA");
+    }
+
+    function flash(address recipient, uint256 amount0, uint256 amount1, bytes calldata data) external lock {
+        uint256 fee0 = amount0 * flashFeeBps / 10_000;
+        uint256 fee1 = amount1 * flashFeeBps / 10_000;
+        uint256 b0 = Tok.bal(token0, address(this));
+        uint256 b1 = Tok.bal(token1, address(this));
+        if (amount0 != 0) Tok.push(token0, recipient, amount0);
+        if (amount1 != 0) Tok.push(token1, recipient, amount1);
+        IV3FlashCallback(msg.sender).uniswapV3FlashCallback(fee0, fee1, data);
+        require(Tok.bal(token0, address(this)) >= b0 + fee0, "F0");
+        require(Tok.bal(token1, address(this)) >= b1 + fee1, "F1");
+    }
+}
+
+interface IPancakeSwapCallback {
+    function pancakeV3SwapCallback(int256, int256, bytes calldata) external;
+}
+
+/// A SushiSwap or PancakeSwap V3 pool, for etching at the address its
+/// deployer derives (the anchors are mainnet constants, so a mock factory
+/// cannot stand in): `init` stores what the real pool holds as immutables.
+/// Constant rate (`rateNum / rateDen` token1 per token0), exact input or
+/// output by the sign, transfer-in-callback settlement, the pool's `IIA`
+/// check. It calls back under the name its deployer's pools use
+/// (`pancakeName`: `pancakeV3SwapCallback`, else `uniswapV3SwapCallback`), or
+/// the other one when `crossName` asks, to prove the name decides nothing.
+contract MockForkPool {
+    address public token0;
+    address public token1;
+    uint24 public fee;
+    bool public pancakeName;
+    bool public crossName;
+    uint256 public rateNum = 1;
+    uint256 public rateDen = 1;
+    uint256 public swaps;
+    /// What the pool passes back: its caller's `data`, unless a test
+    /// replaces it (a forged triple).
+    bytes public forged;
+
+    function init(address a, address b, uint24 fee_, bool pancakeName_) external {
+        (token0, token1) = a < b ? (a, b) : (b, a);
+        fee = fee_;
+        pancakeName = pancakeName_;
+    }
+
+    function setRate(uint256 n, uint256 d) external { rateNum = n; rateDen = d; }
+    function setCrossName(bool c) external { crossName = c; }
+    function setForged(bytes calldata f) external { forged = f; }
 
     function swap(address recipient, bool zeroForOne, int256 amountSpecified, uint160, bytes calldata data)
         external returns (int256 amount0, int256 amount1)
     {
         swaps++;
         (address tIn, address tOut) = zeroForOne ? (token0, token1) : (token1, token0);
-        // price of tOut in tIn: zeroForOne → out = in·num/den ; else out = in·den/num
         (uint256 n, uint256 d) = zeroForOne ? (rateNum, rateDen) : (rateDen, rateNum);
         uint256 amtIn; uint256 amtOut;
         if (amountSpecified > 0) {
@@ -395,20 +480,14 @@ contract MockUniV3Pool {
             : (-int256(amtOut), int256(amtIn));
         uint256 before = Tok.bal(tIn, address(this));
         Tok.push(tOut, recipient, amtOut);
-        IV3SwapCallback(msg.sender).uniswapV3SwapCallback(amount0, amount1, data);
+        bytes memory cb = data;
+        if (forged.length != 0) cb = forged;
+        if (pancakeName != crossName) {
+            IPancakeSwapCallback(msg.sender).pancakeV3SwapCallback(amount0, amount1, cb);
+        } else {
+            IV3SwapCallback(msg.sender).uniswapV3SwapCallback(amount0, amount1, cb);
+        }
         require(Tok.bal(tIn, address(this)) >= before + amtIn, "pool: IIA");
-    }
-
-    function flash(address recipient, uint256 amount0, uint256 amount1, bytes calldata data) external {
-        uint256 fee0 = amount0 * flashFeeBps / 10_000;
-        uint256 fee1 = amount1 * flashFeeBps / 10_000;
-        uint256 b0 = Tok.bal(token0, address(this));
-        uint256 b1 = Tok.bal(token1, address(this));
-        if (amount0 != 0) Tok.push(token0, recipient, amount0);
-        if (amount1 != 0) Tok.push(token1, recipient, amount1);
-        IV3FlashCallback(msg.sender).uniswapV3FlashCallback(fee0, fee1, data);
-        require(Tok.bal(token0, address(this)) >= b0 + fee0, "F0");
-        require(Tok.bal(token1, address(this)) >= b1 + fee1, "F1");
     }
 }
 
@@ -950,21 +1029,23 @@ contract MockCreditFacade {
     }
 }
 
+/// Comptroller double: what `liquidateBorrowAllowed` decides on (official
+/// Unitroller pin `a3214f67`) — the borrower has a shortfall, or the
+/// borrowed market is deprecated.
 contract MockComptroller {
     mapping(address => uint256) public shortfall;
     mapping(address => bool) public deprecated;
     function setShortfall(address u, uint256 s) external { shortfall[u] = s; }
     function setDeprecated(address c, bool d) external { deprecated[c] = d; }
-    function getAccountLiquidity(address account)
-        external view returns (uint256 err, uint256, uint256)
-    {
-        return (0, 0, shortfall[account]);
-    }
-    function isDeprecated(address cToken) external view returns (bool) {
-        return deprecated[cToken];
+    function liquidateAllowed(address cTokenBorrowed, address borrower) external view returns (bool) {
+        return deprecated[cTokenBorrowed] || shortfall[borrower] != 0;
     }
 }
 
+/// CErc20 double. As the official `CToken.liquidateBorrowFresh` (pin
+/// `a3214f67`) it asks the Comptroller first (`liquidateBorrowAllowed`: a
+/// shortfall, or a deprecated market) and, refused, returns
+/// `COMPTROLLER_REJECTION` (3) without moving a token.
 contract MockCErc20 {
     MockComptroller public unitroller;
     mapping(address => uint256) public maxRepay;
@@ -988,6 +1069,7 @@ contract MockCErc20 {
         external returns (uint256)
     {
         if (revertOnLiquidate) return 1;
+        if (!unitroller.liquidateAllowed(address(this), borrower)) return 3;
         uint256 maxR = maxRepay[borrower];
         if (maxR == 0) return 2;
         uint256 actual = repayAmount < maxR ? repayAmount : maxR;
@@ -1001,7 +1083,8 @@ contract MockCErc20 {
     }
 }
 
-/// Official CEther pin `a3214f67`: 2-arg payable `liquidateBorrow`.
+/// Official CEther pin `a3214f67`: 2-arg payable `liquidateBorrow`, which
+/// reverts (`requireNoError`) when the Comptroller refuses the liquidation.
 /// `leftoverRefund` is a mock control for wrap-delta tests, not live state.
 contract MockCEther {
     MockComptroller public unitroller;
@@ -1026,6 +1109,7 @@ contract MockCEther {
 
     function liquidateBorrow(address borrower, address cTokenCollateral) external payable {
         require(!revertOnLiquidate, "cether: revert");
+        require(unitroller.liquidateAllowed(address(this), borrower), "liquidateBorrow failed");
         uint256 maxR = maxRepay[borrower];
         require(maxR != 0, "cether: solvent");
         uint256 actual = msg.value < maxR ? msg.value : maxR;
@@ -1325,14 +1409,28 @@ contract MockPendleFactory {
     function add(address m) external { isValidMarket[m] = true; }
 }
 
-/// MetaRegistry double: an unregistered pool reverts, as the real one does.
+/// One MetaRegistry handler: `is_registered` over the pools of its own base
+/// registry, false (not a revert) for any other, as the deployed handlers
+/// answer.
+contract MockCurveHandler {
+    mapping(address => bool) public is_registered;
+
+    function register(address p) external { is_registered[p] = true; }
+}
+
+/// MetaRegistry double (deployed source, Sourcify
+/// 0xF98B45FA17DE75FB1aD0e7aFD971b0ca00e379fC): `get_registry(i)` is the
+/// handler at index `i`, the zero address past `registry_length`. Three
+/// handlers; each pool is registered in the one a test names.
 contract MockCurveRegistry {
-    mapping(address => bool) internal registered;
+    uint256 public constant registry_length = 3;
+    mapping(uint256 => address) public get_registry;
 
-    function register(address p) external { registered[p] = true; }
+    constructor() {
+        for (uint256 i; i < registry_length; ++i) get_registry[i] = address(new MockCurveHandler());
+    }
 
-    function is_registered(address p) external view returns (bool) {
-        require(registered[p], "no registry");
-        return true;
+    function register(address p, uint8 handler) external {
+        MockCurveHandler(get_registry[handler]).register(p);
     }
 }

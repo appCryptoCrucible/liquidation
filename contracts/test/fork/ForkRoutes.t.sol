@@ -109,7 +109,8 @@ contract ForkRoutesTest is Test {
         // on a later non-zero approve if that zeroing write is missing
         // (TESTING.md mutation 9).
         (uint256 pulled,) = _probeAave(user, WETH, USDT, 1_000_000e6);
-        uint128 buy = uint128(pulled + _aaveFee(pulled));
+        // The repay leg buys the pull; the Executor adds Aave's premium.
+        uint128 buy = uint128(pulled);
         uint128 approved = uint128(pulled * 2);
 
         bytes memory plan = bytes.concat(

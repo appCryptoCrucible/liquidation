@@ -95,6 +95,7 @@ contract FocusHandler is ExecutorTestBase {
         address b = address(uint160(uint256(keccak256(abi.encode("focus-b", seed)))));
 
         uint128 collOut = uint128(uint256(size) * 1e8 / 60_000e6 * (10_000 + bonusBps) / 10_000);
+        // Bought: the pull, plus the premium the Executor adds.
         uint128 owed = size + uint128(uint256(size) * 5 / 10_000);
         uint128 spent = uint128((uint256(owed) * 1e8 + 60_000e6 - 1) / 60_000e6);
         if (spent > collOut) return;
@@ -104,7 +105,7 @@ contract FocusHandler is ExecutorTestBase {
             PB.header(sweepFlag ? PB.F_SWEEP : 0, bidBps, 0, 0, 1),
             PB.groupHead(PB.P_AAVE, address(pool), address(debt), size, 1, 1),
             PB.legV3(address(pool), b, address(coll), size),
-            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, owed),
+            PB.poolSwap(address(pCollDebt), address(coll), address(debt), PB.L_EXACT_OUT, size),
             PB.profit(1, PB.poolSwap(address(pCollWeth), address(coll), address(weth), PB.L_TAKE_BALANCE, 0))
         );
 

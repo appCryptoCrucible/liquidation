@@ -42,6 +42,37 @@ pub mod pause_market {
     }
 }
 
+/// The original (2019) Compound V2 `AccrueInterest`, without `cashPrior`:
+/// the official Comptroller's cETH, cUSDC, cBAT, cZRX, cREP, cWBTC and the
+/// first cDAI still run that code (`CEther.sol` of `0x4ddc2d19…`, Sourcify
+/// exact match, emitted after `totalBorrows` takes its new value).
+pub mod ctoken_original {
+    use super::sol;
+    sol! {
+        event AccrueInterest(
+            uint256 interestAccumulated,
+            uint256 borrowIndex,
+            uint256 totalBorrows
+        );
+    }
+}
+
+/// The earlier Compound V2 `AccrueInterest`, which also reports the new
+/// `totalReserves` (DeFiPie's `PToken` at `0xb4ef9b69…`, Sourcify exact
+/// match). Its own topic: the four-field event above never matches it.
+pub mod ctoken_reserves {
+    use super::sol;
+    sol! {
+        event AccrueInterest(
+            uint256 cashPrior,
+            uint256 interestAccumulated,
+            uint256 borrowIndex,
+            uint256 totalBorrows,
+            uint256 totalReserves
+        );
+    }
+}
+
 pub mod ctoken {
     use super::sol;
     sol! {
@@ -91,6 +122,8 @@ pub mod views {
     use super::sol;
     sol! {
         function closeFactorMantissa() external view returns (uint256);
+        /// Not a view; `eth_call`ed only to prove a market frozen (it reverts).
+        function accrueInterest() external returns (uint256);
         function liquidationIncentiveMantissa() external view returns (uint256);
         function oracle() external view returns (address);
         function underlying() external view returns (address);

@@ -264,7 +264,7 @@ contract ForkShareRedeemTest is Test {
         uint256 sinkBefore = IERC20B(WETH).balanceOf(sink);
         vm.recordLogs();
         vm.prank(operator);
-        ex.execute(_compoundPlan(user, repay, buy));
+        ex.execute(_compoundPlan(user, repay));
 
         // chain: the cETH this leg seized was redeemed, not left on the executor
         bool redeemed;
@@ -369,7 +369,7 @@ contract ForkShareRedeemTest is Test {
         uint256 sinkBefore = IERC20B(WETH).balanceOf(sink);
         vm.recordLogs();
         vm.prank(operator);
-        ex.execute(_eulerPlan(user, maxRepay, buy));
+        ex.execute(_eulerPlan(user, maxRepay));
 
         bool burned;
         Vm.Log[] memory logs = vm.getRecordedLogs();
@@ -512,30 +512,24 @@ contract ForkShareRedeemTest is Test {
         assertGt(kept, 0, "chain: sink received no WETH");
     }
 
+    /// The repay leg buys the pull; the Executor adds Aave's premium.
     function _compoundPlan(address user, uint256 repay) internal pure returns (bytes memory) {
-        return _compoundPlan(user, repay, repay);
-    }
-
-    function _compoundPlan(address user, uint256 repay, uint256 buy) internal pure returns (bytes memory) {
         return bytes.concat(
             PB.header(PB.F_SWEEP, BID_BPS, 0, 1, 1),
             PB.groupHead(PB.P_AAVE, AAVE_V3_POOL, USDT, uint128(repay), 1, 1),
             PB.legCompound(CUSDT, user, WETH, uint128(repay), CETH, 0),
-            PB.poolSwap(USDT_WETH_005, WETH, USDT, PB.L_EXACT_OUT, uint128(buy)),
+            PB.poolSwap(USDT_WETH_005, WETH, USDT, PB.L_EXACT_OUT, uint128(repay)),
             PB.profit(0, "")
         );
     }
 
+    /// The repay leg buys the pull; the Executor adds Aave's premium.
     function _eulerPlan(address user, uint256 repay) internal pure returns (bytes memory) {
-        return _eulerPlan(user, repay, repay);
-    }
-
-    function _eulerPlan(address user, uint256 repay, uint256 buy) internal pure returns (bytes memory) {
         return bytes.concat(
             PB.header(PB.F_SWEEP, BID_BPS, 0, 1, 1),
             PB.groupHead(PB.P_AAVE, AAVE_V3_POOL, USDT, uint128(repay), 1, 1),
             PB.legEuler(EULER_USDT, user, WETH, uint128(repay), 1, EULER_WETH),
-            PB.poolSwap(USDT_WETH_005, WETH, USDT, PB.L_EXACT_OUT, uint128(buy)),
+            PB.poolSwap(USDT_WETH_005, WETH, USDT, PB.L_EXACT_OUT, uint128(repay)),
             PB.profit(0, "")
         );
     }

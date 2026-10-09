@@ -38,5 +38,10 @@ async fn go() -> Result<(), LiteError> {
         report.matches.flagged_nobody_liquidated.len(),
         report.matches.flagged_and_declined.len(),
     );
+    let h = &report.health;
+    eprintln!(
+        "health vs getUserAccountData at the snapshot: {} borrowers, {} exact, max error {} ppb, worst {:?}; refused {}: {:?}",
+        h.compared, h.exact, h.max_err_ppb, h.worst, h.refused.len(), h.refused.iter().take(5).collect::<Vec<_>>()
+    );
     Ok(())
 }

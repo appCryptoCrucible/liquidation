@@ -13,6 +13,7 @@ pragma solidity 0.8.28;
 
 interface IERC20 {
     function balanceOf(address) external view returns (uint256);
+    function allowance(address owner, address spender) external view returns (uint256);
     function transfer(address, uint256) external returns (bool);
     function approve(address, uint256) external returns (bool);
 }
@@ -29,10 +30,13 @@ interface IAavePool {
         address receiver, address asset, uint256 amount,
         bytes calldata params, uint16 referralCode
     ) external;
+    /// Reverts unless the user's health factor is below 1.
     function liquidationCall(
         address collateral, address debt, address user,
         uint256 debtToCover, bool receiveAToken
     ) external;
+    /// Not called by the Executor (`liquidationCall` checks health itself);
+    /// the fork suite reads it as its oracle.
     function getUserAccountData(address user) external view returns (
         uint256 totalCollateralBase, uint256 totalDebtBase, uint256 availableBorrowsBase,
         uint256 currentLiquidationThreshold, uint256 ltv, uint256 healthFactor
@@ -78,10 +82,12 @@ interface IAaveV4Spoke {
         uint256 activeCollateralCount;
         uint256 borrowCount;
     }
+    /// Reverts unless the user's health factor is below 1.
     function liquidationCall(
         uint256 collateralReserveId, uint256 debtReserveId, address user,
         uint256 debtToCover, bool receiveShares
     ) external;
+    /// Not called by the Executor; the fork suite reads it as its oracle.
     function getUserAccountData(address user) external view returns (UserAccountData memory);
 }
 
@@ -133,11 +139,33 @@ interface IUniV3Pool {
 }
 
 // ───────────────────────────── Uniswap V4 ───────────────────────────────
+/// Uniswap V4 `PoolKey` (v4-core `types/PoolKey.sol`). Currency `0` is
+/// native ETH; `currency0 < currency1`.
+struct V4PoolKey {
+    address currency0;
+    address currency1;
+    uint24 fee;
+    int24 tickSpacing;
+    address hooks;
+}
+
+/// Uniswap V4 `IPoolManager.SwapParams`. `amountSpecified < 0` is an exact
+/// input, `> 0` an exact output.
+struct V4SwapParams {
+    bool zeroForOne;
+    int256 amountSpecified;
+    uint160 sqrtPriceLimitX96;
+}
+
 interface IPoolManager {
     function unlock(bytes calldata data) external returns (bytes memory);
     function take(address currency, address to, uint256 amount) external;
     function sync(address currency) external;
     function settle() external payable returns (uint256);
+    /// Returns the caller's `BalanceDelta`: amount0 in the high 128 bits,
+    /// amount1 in the low, each negative when owed to the pool.
+    function swap(V4PoolKey memory key, V4SwapParams memory params, bytes calldata hookData)
+        external returns (int256 swapDelta);
 }
 
 // ───────────────────────────── Sky DSS Flash ────────────────────────────
@@ -211,9 +239,19 @@ interface IERC4626Unwrap {
     function redeem(uint256 shares, address receiver, address owner) external returns (uint256);
 }
 
-/// Curve MetaRegistry. `is_registered` reverts ("no registry") for an
-/// unknown pool, so an unregistered pool fails closed either way.
+/// Curve MetaRegistry (deployed source on Sourcify). Its own
+/// `is_registered(pool)` asks every handler below `registry_length` in turn
+/// and is true when any of them holds the pool. `get_registry(i)` is the
+/// handler at index `i`: handlers are only ever appended or replaced in
+/// place, so an index past the list reads the zero address.
 interface ICurveMetaRegistry {
+    function get_registry(uint256 i) external view returns (address);
+}
+
+/// One MetaRegistry handler: the registry API over a single base registry
+/// or factory. `is_registered` is false, not a revert, for a pool it does
+/// not hold.
+interface ICurveRegistryHandler {
     function is_registered(address pool) external view returns (bool);
 }
 
@@ -228,8 +266,9 @@ interface IDssFlash {
 /// `collateral` is the collateral vault (shares), not the underlying.
 interface IEVault {
     function EVC() external view returns (address);
-    function checkLiquidation(address liquidator, address violator, address collateral)
-        external view returns (uint256 maxRepay, uint256 maxYield);
+    /// Reverts `E_ExcessiveRepayAmount` when `repayAssets` is above the
+    /// violator's maximum repay (zero for a healthy one) and `E_MinYield`
+    /// when the yield is below `minYieldBalance`.
     function liquidate(address violator, address collateral, uint256 repayAssets, uint256 minYieldBalance)
         external;
     /// Pulls `amount` of underlying from the caller and burns `receiver`'s debt.
@@ -265,8 +304,12 @@ interface IEVC {
 /// `IPartialLiquidation` pin `570a668a`. Call the **hook receiver**, never the
 /// Silo ERC-4626. Pin topic0 `LiquidationCall` `0x3a84f644…`.
 interface ISiloHook {
+    /// Not called by the Executor; the fork suite reads it as its oracle.
     function maxLiquidation(address borrower)
         external view returns (uint256 collateralToLiquidate, uint256 debtToRepay, bool sTokenRequired);
+    /// Reverts for a solvent borrower. With `receiveSToken == false` the
+    /// hook redeems the seized shares to the caller, and reverts when the
+    /// collateral silo is short of liquidity.
     function liquidationCall(
         address collateralAsset, address debtAsset, address borrower,
         uint256 maxDebtToCover, bool receiveSToken
@@ -388,18 +431,14 @@ interface ICreditFacadeV3Multicall {
 /// Official Unitroller pin `a3214f67`. CEther vs CErc20 is a config flag,
 /// never `underlying()` on-chain.
 interface ICToken {
-    function comptroller() external view returns (address);
     /// `CTokenInterfaces.redeem` pin `a3214f67`. Same selector on CEther and CErc20.
     /// Returns 0 on success. CEther sends ETH; CErc20 sends `underlying`.
     function redeem(uint256 redeemTokens) external returns (uint256);
 }
 
-interface IComptroller {
-    function getAccountLiquidity(address account)
-        external view returns (uint256 err, uint256 liquidity, uint256 shortfall);
-    function isDeprecated(address cToken) external view returns (bool);
-}
-
+/// `liquidateBorrow` asks the Comptroller's `liquidateBorrowAllowed`: the
+/// borrower must have a shortfall, or the market be deprecated. Refused, a
+/// CErc20 returns a non-zero error code and CEther reverts.
 interface ICErc20 {
     function liquidateBorrow(address borrower, uint256 repayAmount, address cTokenCollateral)
         external returns (uint256);
@@ -407,4 +446,54 @@ interface ICErc20 {
 
 interface ICEther {
     function liquidateBorrow(address borrower, address cTokenCollateral) external payable;
+}
+
+// ───────────────────────────── Balancer V2 ──────────────────────────────
+/// The V2 Vault's single swap (`Vault.swap`, `balancer-v2-monorepo`
+/// `IVault.sol`). `kind`: 0 = GIVEN_IN, 1 = GIVEN_OUT. `limit` is the least
+/// out (GIVEN_IN) or the most in (GIVEN_OUT) the caller accepts.
+struct BalancerSingleSwap {
+    bytes32 poolId;
+    uint8 kind;
+    address assetIn;
+    address assetOut;
+    uint256 amount;
+    bytes userData;
+}
+
+struct BalancerFunds {
+    address sender;
+    bool fromInternalBalance;
+    address payable recipient;
+    bool toInternalBalance;
+}
+
+interface IBalancerVault {
+    function swap(BalancerSingleSwap memory singleSwap, BalancerFunds memory funds, uint256 limit, uint256 deadline)
+        external payable returns (uint256 amountCalculated);
+}
+
+/// `BasePoolFactory.isPoolFromFactory` (the 2022 pool factories on).
+interface IBalancerPoolFactory {
+    function isPoolFromFactory(address pool) external view returns (bool);
+}
+
+// ───────────────────────────── Fluid DEX ────────────────────────────────
+/// A Fluid DEX T1 pool (`FluidDexT1`, `iDexT1.sol`). The pool pulls the input
+/// token from its caller to the Liquidity layer itself, so the caller
+/// approves the pool; native ETH is sent as `msg.value`.
+interface IFluidDexPool {
+    function DEX_ID() external view returns (uint256);
+    function swapIn(bool swap0to1, uint256 amountIn, uint256 amountOutMin, address to)
+        external payable returns (uint256 amountOut);
+    function swapOut(bool swap0to1, uint256 amountOut, uint256 amountInMax, address to)
+        external payable returns (uint256 amountIn);
+    /// `constantsView()` returns a static struct of 18 words (`dexId`,
+    /// `liquidity`, `factory`, five implementations, `deployerContract`,
+    /// `token0`, `token1`, six slots, `oracleMapping`); `DexModule` reads it
+    /// with a raw static call, by offset.
+}
+
+interface IFluidDexFactory {
+    function getDexAddress(uint256 dexId) external view returns (address);
 }

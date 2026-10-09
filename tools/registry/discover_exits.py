@@ -9,7 +9,10 @@ V2: getPair(token, hub) on both factories for every tracked token x HUB_ASSETS.
     Kept when the pair address is the CREATE2 address the Executor re-derives,
     factory() agrees, and the hub-side reserve clears HUB_MIN_RESERVE.
 
-Curve: every MetaRegistry pool. Kept only when
+Curve: every MetaRegistry pool. Each kept pool records `curve_handler`, the
+    index of the MetaRegistry handler that holds it (get_registry(i), whose
+    is_registered(pool) is true): the Executor asks that one handler on every
+    Curve leg, so the leg carries the index. Kept only when
     - not a metapool, 2..4 coins, every coin tracked, no native-ETH placeholder,
       no rebasing coin;
     - coins(uint256)/balances(uint256)/A()/fee() answer and gamma() does not
@@ -31,6 +34,10 @@ Curve crypto ("curve_crypto"): pools whose gamma() answers, 2 or 3 coins, not
     every ordered pair at two sizes.
 
 Usage: MAINNET_RPC_URL=... python tools/registry/discover_exits.py [--dry-run]
+
+       ... discover_exits.py --curve-handlers [--dry-run]
+           re-read only `curve_handler` for the Curve pools already in the
+           registry (after Curve changes its handler list); nothing else moves.
 """
 from __future__ import annotations
 
@@ -48,7 +55,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 import crypto_math as cm  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-REG = ROOT / "registry" / "registry.json"
+# `LIQ_REGISTRY_FILE` points the tools at a candidate registry (`data/review/`):
+# proposals are tested there, never in the admitted registry.
+REG = Path(os.environ["LIQ_REGISTRY_FILE"]) if os.environ.get("LIQ_REGISTRY_FILE") else ROOT / "registry" / "registry.json"
 META = ROOT / "registry" / "registry.meta.json"
 
 MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11"
@@ -56,6 +65,9 @@ UNIV2_FACTORY = "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f"
 UNIV2_INIT_HASH = "96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f"
 SUSHI_FACTORY = "0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac"
 SUSHI_INIT_HASH = "e18a34eb0e04b04f7a0ac29a6e80748dca96319b42c54d679cb821dca90c6303"
+# Plain-pool implementations whose `get_D` divides by `N^N` once (as NG
+# does): the crvUSD stableswap factory's 2-coin pool, Vyper 0.3.7.
+D_ONCE_IMPLS = {"0x67fe41a94e779ccfa22cff02cc2957dc9c0e4286"}
 CURVE_META_REGISTRY = "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc"
 # StableSwap-NG factory: `get_pool_asset_types(pool)`.
 CURVE_NG_FACTORY = "0x6a8cbed756804b16e05e741edabd5cb544ae21bf"
@@ -183,7 +195,11 @@ def discover_v2(chain: Chain, tracked: set[str]) -> dict[str, dict]:
 # ── Curve ───────────────────────────────────────────────────────────────────
 
 
-def curve_get_d(xp: list[int], amp: int, a_prec: int) -> int:
+def curve_get_d(xp: list[int], amp: int, a_prec: int, d_once: bool = False) -> int:
+    """`get_D`. Plain pools divide `D_P` by `x·N` per coin; `d_once` pools
+    (the crvUSD stableswap factory's 2-coin implementation `0x67fe…4286`,
+    and NG) compute `D·D/x0·D/x1/N^N`, dividing by `N^N` once. The integer
+    results differ."""
     n = len(xp)
     s = sum(xp)
     if s == 0:
@@ -193,7 +209,9 @@ def curve_get_d(xp: list[int], amp: int, a_prec: int) -> int:
     for _ in range(255):
         d_p = d
         for x in xp:
-            d_p = d_p * d // (x * n)
+            d_p = d_p * d // (x if d_once else x * n)
+        if d_once:
+            d_p //= n**n
         prev = d
         d = (ann * s // a_prec + d_p * n) * d // ((ann - a_prec) * d // a_prec + (n + 1) * d_p)
         if abs(d - prev) <= 1:
@@ -201,9 +219,9 @@ def curve_get_d(xp: list[int], amp: int, a_prec: int) -> int:
     raise ValueError("D did not converge")
 
 
-def curve_get_y(i: int, j: int, x: int, xp: list[int], amp: int, a_prec: int) -> int:
+def curve_get_y(i: int, j: int, x: int, xp: list[int], amp: int, a_prec: int, d_once: bool = False) -> int:
     n = len(xp)
-    d = curve_get_d(xp, amp, a_prec)
+    d = curve_get_d(xp, amp, a_prec, d_once)
     ann = amp * n
     c = d
     s_ = 0
@@ -224,10 +242,10 @@ def curve_get_y(i: int, j: int, x: int, xp: list[int], amp: int, a_prec: int) ->
     raise ValueError("y did not converge")
 
 
-def curve_get_dy(i, j, dx, balances, rates, amp, a_prec, fee) -> int:
+def curve_get_dy(i, j, dx, balances, rates, amp, a_prec, fee, d_once: bool = False) -> int:
     xp = [r * b // 10**18 for r, b in zip(rates, balances)]
     x = xp[i] + dx * rates[i] // 10**18
-    y = curve_get_y(i, j, x, xp, amp, a_prec)
+    y = curve_get_y(i, j, x, xp, amp, a_prec, d_once)
     dy = (xp[j] - y - 1) * 10**18 // rates[j]
     return dy - fee * dy // 10**10
 
@@ -291,6 +309,71 @@ def ng_get_dy(i, j, dx, balances, rates, amp, fee, offpeg) -> int:
     dy = xp[j] - y - 1
     f = ng_dynamic_fee((xp[i] + x) // 2, (xp[j] + y) // 2, fee, offpeg) * dy // 10**10
     return (dy - f) * 10**18 // rates[j]
+
+
+def curve_handlers(chain: Chain, pools: list[str]) -> dict[str, int]:
+    """MetaRegistry handler index of each pool.
+
+    The index `i` whose handler (`get_registry(i)`, `i < registry_length()`)
+    answers `is_registered(pool)`: the lowest when several hold the pool. The
+    Executor's Curve legs name this index and ask that handler alone
+    (`SwapModule._curveRegistered`); the MetaRegistry's own `is_registered`
+    walks every handler. A pool no handler holds is left out of the result.
+    """
+    reg = CURVE_META_REGISTRY
+    n = word(chain.multicall([(reg, sel("registry_length()"))])[0])
+    if not n:
+        raise RuntimeError("MetaRegistry registry_length() did not answer")
+    handlers = [
+        word(r, "address")
+        for r in chain.multicall(
+            [(reg, sel("get_registry(uint256)") + encode(["uint256"], [i])) for i in range(n)]
+        )
+    ]
+    if any(h is None or h.lower() == ZERO for h in handlers):
+        raise RuntimeError(f"MetaRegistry get_registry(0..{n}) has a gap: {handlers}")
+    res = chain.multicall(
+        [(h, sel("is_registered(address)") + encode(["address"], [p])) for p in pools for h in handlers]
+    )
+    out: dict[str, int] = {}
+    for k, p in enumerate(pools):
+        held = [i for i, r in enumerate(res[k * n : (k + 1) * n]) if word(r, "bool")]
+        if held:
+            out[p] = held[0]
+    return out
+
+
+def with_curve_handlers(chain: Chain, found: dict[str, dict]) -> dict[str, dict]:
+    """`found` with `curve_handler` set; a pool no handler holds is dropped."""
+    idx = curve_handlers(chain, list(found))
+    kept = {}
+    for p, entry in found.items():
+        if p not in idx:
+            print(f"  skip {p}: no MetaRegistry handler holds it")
+            continue
+        kept[p] = {**entry, "curve_handler": idx[p]}
+    return kept
+
+
+def refresh_curve_handlers(chain: Chain, reg: dict) -> int:
+    """Re-read `curve_handler` on the registry's Curve pools, in place.
+    Returns how many changed. A pool no handler holds any more is an error:
+    its legs would be refused on chain, and removing a pool is a decision."""
+    pools = [a for a, p in reg["pools"].items() if p["venue"] in ("curve", "curve_ng", "curve_crypto")]
+    idx = curve_handlers(chain, pools)
+    missing = [p for p in pools if p not in idx]
+    if missing:
+        raise RuntimeError(f"no MetaRegistry handler holds: {missing}")
+    changed = 0
+    for p in pools:
+        if reg["pools"][p].get("curve_handler") != idx[p]:
+            changed += 1
+        reg["pools"][p]["curve_handler"] = idx[p]
+    by_handler: dict[int, int] = {}
+    for p in pools:
+        by_handler[idx[p]] = by_handler.get(idx[p], 0) + 1
+    print(f"curve handlers: {len(pools)} pools, {changed} changed, by handler index {dict(sorted(by_handler.items()))}")
+    return changed
 
 
 def discover_curve(chain: Chain, tracked: set[str], tokens: dict) -> dict[str, dict]:
@@ -406,24 +489,40 @@ def discover_curve(chain: Chain, tracked: set[str], tokens: dict) -> dict[str, d
     found: dict[str, dict] = {}
     for p, coins, bals, rates, amp, a_prec, fee, kind, offpeg, types in stage2:
         n = len(coins)
-        exact = True
+        wants = []
         for i in range(n):
             for j in range(n):
                 if i == j:
                     continue
                 for div in (1_000, 20):
-                    dx = max(bals[i] // div, 1)
-                    want = word(next(res))
-                    try:
-                        if kind == "curve_ng":
-                            got = ng_get_dy(i, j, dx, bals, rates, amp, fee, offpeg)
-                        else:
-                            got = curve_get_dy(i, j, dx, bals, rates, amp, a_prec, fee)
-                    except (ValueError, ZeroDivisionError):
-                        got = None
-                    if want is None or got != want:
-                        exact = False
-        if not exact:
+                    wants.append((i, j, max(bals[i] // div, 1), word(next(res))))
+        # A plain pool's `get_D` form follows its implementation, not which
+        # form happens to match today (the two agree at some states): a clone
+        # of a `D_ONCE_IMPLS` implementation divides by `N^N` once, any other
+        # plain pool by `x·N` per coin.
+        forms = [False]
+        if kind == "curve":
+            code = chain.w3.eth.get_code(Web3.to_checksum_address(p)).hex()
+            if code.startswith("363d3d373d3d3d363d73") and ("0x" + code[20:60]).lower() in D_ONCE_IMPLS:
+                forms = [True]
+        d_once = None
+        for form in forms:
+            exact = True
+            for i, j, dx, want in wants:
+                try:
+                    if kind == "curve_ng":
+                        got = ng_get_dy(i, j, dx, bals, rates, amp, fee, offpeg)
+                    else:
+                        got = curve_get_dy(i, j, dx, bals, rates, amp, a_prec, fee, form)
+                except (ValueError, ZeroDivisionError):
+                    got = None
+                if want is None or got != want:
+                    exact = False
+                    break
+            if exact:
+                d_once = form
+                break
+        if d_once is None:
             print(f"  skip {p}: {kind} math does not reproduce get_dy")
             continue
         found[p] = {
@@ -438,6 +537,9 @@ def discover_curve(chain: Chain, tracked: set[str], tokens: dict) -> dict[str, d
         }
         if kind == "curve_ng":
             found[p]["asset_types"] = types
+        if kind == "curve" and d_once:
+            found[p]["curve_d_once"] = True
+    found = with_curve_handlers(chain, found)
     ng = sum(1 for f in found.values() if f["venue"] == "curve_ng")
     print(f"curve: {len(found)} kept (exact get_dy match), {ng} NG")
     return found
@@ -453,6 +555,9 @@ def crypto_kind(n: int, version, has_math: bool):
         return "two_v200"
     if n == 2 and has_math and version == "v2.1.0":
         return "two_v210"
+    # The 2025 Twocrypto pools whose MATH is the stableswap adaptation.
+    if n == 2 and has_math and version in ("v2.1.0d", "v3.0.0"):
+        return "two_stable"
     if n == 3 and has_math and version == "v2.0.0":
         return "tri"
     return None
@@ -463,6 +568,8 @@ def crypto_dy(kind, i, j, dx, bal, prec, ps, D, A, G, mid, out, fg):
         return cm.tri_get_dy(i, j, dx, bal, prec, ps, D, A, G, mid, out, fg)
     if kind == "two_v1":
         return cm.two_v1_get_dy(i, j, dx, bal, prec, ps[0], D, A, G, mid, out, fg)
+    if kind == "two_stable":
+        return cm.two_stable_get_dy(i, j, dx, bal, prec, ps[0], D, A, mid, out, fg)
     return cm.two_get_dy(i, j, dx, bal, prec, ps[0], D, A, G, mid, out, fg, kind == "two_v210")
 
 
@@ -580,6 +687,7 @@ def discover_crypto(chain: Chain, tracked: set[str], tokens: dict) -> dict[str, 
             "coins": coins,
             "crypto_kind": kind,
         }
+    found = with_curve_handlers(chain, found)
     print(f"crypto: {len(found)} kept (exact get_dy match)")
     return found
 
@@ -587,6 +695,8 @@ def discover_crypto(chain: Chain, tracked: set[str], tokens: dict) -> dict[str, 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--curve-handlers", action="store_true",
+                    help="only re-read curve_handler on the Curve pools already in the registry")
     ap.add_argument("--registry", type=Path, default=None,
                     help="registry.json to read and write (default: the repo's); its meta is the sibling registry.meta.json")
     args = ap.parse_args()
@@ -601,6 +711,19 @@ def main() -> int:
     chain = Chain(url)
     print(f"pinned block {chain.block}")
     reg = json.loads(REG.read_text(encoding="utf-8"))
+    if args.curve_handlers:
+        refresh_curve_handlers(chain, reg)
+        if args.dry_run:
+            return 0
+        REG.write_text(json.dumps(reg, indent=1) + "\n", encoding="utf-8")
+        meta = json.loads(META.read_text(encoding="utf-8"))
+        note = (
+            f"curve handlers: curve_handler (MetaRegistry handler index) of every Curve pool read by "
+            f"tools/registry/discover_exits.py --curve-handlers at block {chain.block}"
+        )
+        meta["notes"] = [n for n in meta.get("notes", []) if not n.startswith("curve handlers: ")] + [note]
+        META.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        return 0
     tokens = reg["tokens"]
     tracked = set(tokens) - {
         t for t, e in tokens.items() if EXCLUDED_QUIRKS & set(e["quirks"])

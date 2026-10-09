@@ -37,6 +37,12 @@ impl VaultRow {
     pub const DISCOUNT_KNOWN: u8 = 1 << 2;
     pub const COOL_OFF_KNOWN: u8 = 1 << 3;
     pub const HOOKS_KNOWN: u8 = 1 << 4;
+    /// A halt-class log (proxy upgrade, admin or governor change) came from
+    /// this vault after the pin: its view is no longer trusted. Its market
+    /// refuses liquidation (`MarketFlags::PAUSED`) and its shares are
+    /// unpriced as collateral everywhere, until a person re-pins the config.
+    /// Every other vault keeps running.
+    pub const HALTED: u8 = 1 << 5;
 }
 
 /// Collateral vault recognized on a debt vault (`GovSetLTV`).

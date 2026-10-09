@@ -45,6 +45,8 @@ W decoder: `LiquidateBorrow(address liquidator, address borrower, uint256 repayA
 | cmp.pauseGlobal | Comptroller._setSeizePaused → ActionPaused(string,bool) | 0xef159d9a32b2472e32b098f954f3ce62d232939f1c207070b584df1814de2de0 | ProtocolWide | Seize |
 | cmp.pauseMarket | Comptroller._setBorrowPaused → ActionPaused(address,string,bool) | 0x71aec636243f9709bb0007ae15e9afb8150ab01716d75fd7573be5cc096e03b0 | MarketReprice | Borrow |
 | ctk.accrue | CToken.accrueInterest → AccrueInterest | 0x4dec04e750ca11537cabcd8a9eab06494de08da3735bc8871cd41250e190bc04 | MarketAccrual | cashPrior, borrowIndex, totalBorrows |
+| ctk.accrue3 | original (2019) CToken accrueInterest → AccrueInterest without cashPrior | 0x875352fb3fadeb8c0be7cbbe8ff761b308fa7033470cd0287f02f3436fd76cb9 | MarketAccrual | interestAccumulated, borrowIndex, totalBorrows |
+| ctk.accrue5 | earlier CToken (DeFiPie `PToken`) accrueInterest → AccrueInterest with totalReserves | 0x717fee053884ab1935ba6d0140f6ed225371439611d9674ff445419d6a0fa1b7 | MarketAccrual | cashPrior, borrowIndex, totalBorrows, totalReserves |
 | ctk.mint | CToken.mintInternal → Mint | 0x4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c03821c4f | Positions | |
 | ctk.redeem | CToken.redeemInternal → Redeem | 0xe5b754fb1abb7f01b499791d0b820ae3b6af3424ac1c59768edb53f4ec31a929 | Positions | |
 | ctk.borrow | CToken.borrowInternal → Borrow | 0x13ed6866d4e1ee6da46f845c46d7e54120883d75c5ea9a2dacc1c4ca8984ab80 | Positions | accountBorrows + index snap |

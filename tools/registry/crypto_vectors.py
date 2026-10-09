@@ -89,6 +89,8 @@ def main() -> int:
                     got = cm.tri_get_dy(i, j, dx, bal, prec, ps, D, A, G, mid, out, fg)
                 elif kind == "two_v1":
                     got = cm.two_v1_get_dy(i, j, dx, bal, prec, ps[0], D, A, G, mid, out, fg)
+                elif kind == "two_stable":
+                    got = cm.two_stable_get_dy(i, j, dx, bal, prec, ps[0], D, A, mid, out, fg)
                 else:
                     got = cm.two_get_dy(i, j, dx, bal, prec, ps[0], D, A, G, mid, out, fg,
                                         kind == "two_v210")

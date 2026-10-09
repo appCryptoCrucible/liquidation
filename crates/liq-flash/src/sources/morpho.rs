@@ -103,6 +103,14 @@ impl FlashSource for MorphoBlue {
     fn apply_log(&mut self, log: &DecodedLog<'_>) {
         self.table.apply_transfer(log);
     }
+
+    fn seed_reads(&self) -> Vec<crate::SeedRead> {
+        self.table.seed_reads()
+    }
+
+    fn apply_seed(&mut self, answers: &[Option<alloy_primitives::Bytes>]) {
+        self.table.apply_seed(answers);
+    }
 }
 
 #[cfg(test)]
@@ -112,6 +120,41 @@ mod tests {
     use crate::sources::fixtures::*;
     use alloy_primitives::{Address, U256};
     use liq_types::LogSubscriber;
+
+    /// Oracle: `balanceOf(Morpho)` on USDC and WETH at block 26M. The seed
+    /// asks exactly those two reads (ERC-20 `balanceOf`, selector
+    /// `0x70a08231`), takes the answers as the balances, and asks nothing
+    /// more; a failed read leaves that token unfunded.
+    #[test]
+    fn seed_reads_each_balance_once() {
+        let held = |asset, token| HeldAsset {
+            asset,
+            token,
+            balance: U256::ZERO,
+        };
+        let mut m = MorphoBlue::new(MORPHO, &[held(ID_USDC, USDC), held(ID_WETH, WETH)]);
+        assert_eq!(m.available(ID_USDC), U256::ZERO, "unseeded funds nothing");
+        assert_eq!(
+            m.seed_reads(),
+            vec![balance_of(USDC, MORPHO), balance_of(WETH, MORPHO)]
+        );
+        m.apply_seed(&[
+            uint_answer(U256::from(MORPHO_USDC_26M)),
+            uint_answer(u256(MORPHO_WETH_26M)),
+        ]);
+        assert_eq!(m.available(ID_USDC), U256::from(MORPHO_USDC_26M));
+        assert_eq!(m.available(ID_WETH), u256(MORPHO_WETH_26M));
+        assert!(m.seed_reads().is_empty(), "seeded once");
+
+        let mut failed = MorphoBlue::new(MORPHO, &[held(ID_USDC, USDC), held(ID_WETH, WETH)]);
+        failed.apply_seed(&[None, uint_answer(u256(MORPHO_WETH_26M))]);
+        assert_eq!(failed.available(ID_USDC), U256::ZERO);
+        assert_eq!(failed.available(ID_WETH), u256(MORPHO_WETH_26M));
+        assert!(
+            failed.seed_reads().is_empty(),
+            "a failed read is not retried forever"
+        );
+    }
 
     fn morpho() -> MorphoBlue {
         MorphoBlue::new(

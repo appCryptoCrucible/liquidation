@@ -33,6 +33,9 @@ SILO_FACTORY_V3 = "0x1DAb4A310447185144467076b116DAC7aec3b48F"
 AJNA_ERC20_FACTORY = "0x6146DD43C5622bB6D12A5240ab9CF4de14eDC625"
 AJNA_ERC721_FACTORY = "0x27461199d3b7381De66a85D685828E967E35AF4c"
 UNIV3_FACTORY = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+UNIV4_POOL_MANAGER = "0x000000000004444c5dc75cB358380D2e3dE08A90"
+# Sky's Chainlog: MCD_FLASH (DssFlash) and MCD_END (whose Cage() stops it).
+SKY_CHAINLOG = "0xdA0Ab1e0017DEbCd72Be8599041a2aa3bA7e740F"
 MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11"
 CHAINLINK_FEED_REGISTRY = "0x47Fb2585D2C56Fe188D0E6ec628a38b74fCeeeDf"
 USD_DENOM = "0x0000000000000000000000000000000000000348"
@@ -66,6 +69,7 @@ DISCOVERY_STEP_NAMES = [
     "silo",
     "ajna",
     "univ3",
+    "flash",
 ]
 # step name → family key used in protocols[*].family / counts / oracle source prefix
 STEP_FAMILY = {
@@ -79,6 +83,7 @@ STEP_FAMILY = {
     "silo": "silo-v2",
     "ajna": "ajna",
     "univ3": "univ3",
+    "flash": "flash",
 }
 # Feed Registry denominations: WETH has no entry; ETH denomination (0xEeee…) is the feed.
 FEED_REGISTRY_BASE_ALIAS = {
@@ -193,10 +198,13 @@ class Builder:
             )
         )
 
-    def multicall(self, calls: list[tuple[str, bytes]]) -> list[tuple[bool, bytes]]:
+    def multicall(
+        self, calls: list[tuple[str, bytes]], batch: Optional[int] = None
+    ) -> list[tuple[bool, bytes]]:
         out: list[tuple[bool, bytes]] = []
-        for i in range(0, len(calls), self.batch):
-            chunk = calls[i : i + self.batch]
+        step = batch or self.batch
+        for i in range(0, len(calls), step):
+            chunk = calls[i : i + step]
             data = sel("tryAggregate(bool,(address,bytes)[])") + encode(
                 ["bool", "(address,bytes)[]"],
                 [False, [(self.cs(t), d) for t, d in chunk]],
@@ -636,6 +644,33 @@ class Builder:
                 "admitted": True,
             }
 
+    def discover_flash(self):
+        """Flash-loan singletons the index binds (GUIDE 07 §3a), under the
+        kinds `liq_bot::index` matches: Morpho Blue, the Uniswap V4
+        PoolManager, and Sky's DssFlash with the End whose Cage() stops it
+        (both read from the Chainlog). Aave/Spark pools and V3 pools are
+        bound from `protocols` and `pools` instead. A row is written only for
+        an address with code; a miss is a failure, never a guess."""
+        for addr, venue, kind in (
+            (MORPHO_BLUE, "morpho-blue", "singleton"),
+            (UNIV4_POOL_MANAGER, "univ4", "pool_manager"),
+        ):
+            if self.has_code(addr):
+                self.flash_sources[self.al(addr)] = {"venue": venue, "kind": kind, "source": self.cs(addr)}
+            else:
+                self.failures[f"flash:{venue}"] = f"{addr} has no code"
+        for key, kind in (("MCD_FLASH", "dss_flash"), ("MCD_END", "mcd_end")):
+            name = key.encode().ljust(32, b"\0")
+            ret = self.call1(SKY_CHAINLOG, "getAddress(bytes32)", (name,), ("bytes32",))
+            addr = addr_word(ret) if ret else None
+            if not addr or not self.has_code(addr):
+                self.failures[f"flash:{key}"] = "Chainlog getAddress failed or no code"
+                continue
+            row = {"venue": "sky-dss-flash", "kind": kind, "source": self.cs(addr), "chainlog": key}
+            if kind == "dss_flash":
+                row["asset"] = self.cs(HUB_ASSETS[3])
+            self.flash_sources[self.al(addr)] = row
+
     def discover_sky(self):
         family = "sky-maker"
         pc = self.counts[family]
@@ -995,18 +1030,85 @@ class Builder:
                 f"univ3: counts-only refresh ({existing} pools from checkpoint, scan skipped)"
             )
             return
-        assets = sorted(self.tracked_assets | {a.lower() for a in HUB_ASSETS})
-        hub_l = [a.lower() for a in HUB_ASSETS]
+        hubs = {a.lower() for a in HUB_ASSETS}
+        self.univ3_get_pools(sorted(self.tracked_assets | hubs))
+        # Every exit starts at a market's collateral and ends in a flash-borrowed debt (or
+        # WETH): each market token × each flash-loanable one, so the router can always
+        # choose among all the pools between them.
+        ends = self.market_tokens()
+        self.univ3_get_pools(sorted(ends), sorted((ends & self.flash_loanable_tokens()) | hubs))
+        # PoolCreated sweep over the last 3M blocks (~14 months); full-archive sweep from
+        # UNIV3_FACTORY_DEPLOY is C3-scale volume. Keep only pools whose *both* tokens are
+        # tracked (protocol collateral/debt tokens + HUB_ASSETS): a pool pairing a tracked
+        # asset with an untracked token is not an exit. The membership test runs against a
+        # frozen snapshot: ensure_token() below grows tracked_assets, and testing the live set
+        # lets each new pool's other token admit the next pool (observed: 30k pools of noise).
+        self._univ3_sweep_created()
+        self._set_univ3_counts()
+
+    def aave_reserves(self) -> set[str]:
+        """Each Aave V3 and Spark pool's reserves (getReservesList): the protocol rows carry
+        only their receipt tokens."""
+        out: set[str] = set()
+        for p in self.protocols.values():
+            if p.get("family") not in ("aave-v3", "spark"):
+                continue
+            ret = self.call1(p["market"], "getReservesList()")
+            if not ret:
+                self.failures[f"univ3:reserves:{p['market']}"] = "getReservesList failed"
+                continue
+            out.update(self.al(a) for a in decode(["address[]"], ret)[0])
+        return out
+
+    def market_tokens(self) -> set[str]:
+        """Every token a tracked market lends or takes as collateral, the Aave V3 and Spark
+        reserves, and the hubs: what a liquidation can start or end in."""
+        out = {a.lower() for a in HUB_ASSETS} | self.aave_reserves()
+        for p in self.protocols.values():
+            for f in ("loan_token", "collateral_token", "asset", "quote_token"):
+                if p.get(f):
+                    out.add(self.al(p[f]))
+            out.update(self.al(g) for g in (p.get("gems") or []))
+        out.discard(ZERO)
+        return out
+
+    def flash_loanable_tokens(self) -> set[str]:
+        """Every registry token the bot's flash sources can lend (liq_bot::flash_seed reads
+        the same at startup): a balance at the Morpho singleton or the Uniswap V4
+        PoolManager, which lend any token they hold; each Aave V3 and Spark pool's reserves
+        (getReservesList); DSS Flash's DAI."""
+        tokens = sorted(t for t in self.tokens if t != ZERO)
+        out: set[str] = set()
+        balance_of = sel("balanceOf(address)")
+        for holder in (MORPHO_BLUE, UNIV4_POOL_MANAGER):
+            arg = encode(["address"], [self.cs(holder)])
+            res = self.multicall([(t, balance_of + arg) for t in tokens])
+            for t, (ok, ret) in zip(tokens, res):
+                if ok and len(ret) >= 32 and int.from_bytes(ret[:32], "big") > 0:
+                    out.add(t)
+        out |= self.aave_reserves()
+        out.add(self.al(HUB_ASSETS[3]))  # DAI, lent by DSS Flash
+        out.discard(ZERO)
+        return out
+
+    def univ3_get_pools(self, assets: list[str], partners: Optional[list[str]] = None):
+        """The factory's pool for each of `assets` × `partners` (default HUB_ASSETS) at every
+        fee tier, checked against the pool's own token0/token1/fee.
+
+        The partners are the hubs and every flash-loanable token (a liquidation repays a
+        flash-borrowed debt, so every exit ends in one), and they pair with each other too.
+        The deepest exits (USDC/WETH, WETH/USDT, WBTC/WETH, DAI/WETH) are hub pairs, created
+        in 2021 before the PoolCreated sweep's window: skipping hub-hub pairs here left all
+        of them out of the registry.
+        """
+        partner_l = sorted({a.lower() for a in (partners or HUB_ASSETS)})
         pairs: list[tuple[str, str, int]] = []
         for a in assets:
-            if a in hub_l:
-                continue
-            for h in hub_l:
+            for h in partner_l:
                 if a == h:
                     continue
                 for fee in UNIV3_FEES:
                     pairs.append((a, h, fee))
-                    pairs.append((h, a, fee))
         # dedupe token order as on-chain: factory sorts token0 < token1
         seen_triple: set[tuple[str, str, int]] = set()
         calls: list[tuple[str, bytes]] = []
@@ -1029,18 +1131,23 @@ class Builder:
                 )
             )
             meta.append((a0, a1, fee))
-        res = self.multicall(calls)
+        res = self.multicall(calls, batch=1000)
         factory = self.al(UNIV3_FACTORY)
+        found: list[tuple[str, str, int, str]] = []
         for (a0, a1, fee), (ok, ret) in zip(meta, res):
             if not ok or len(ret) < 32:
                 continue
             pool = addr_word(ret[:32])
-            if not pool:
-                continue
-            t0_r = self.call1(pool, "token0()")
-            t1_r = self.call1(pool, "token1()")
-            f_r = self.call1(pool, "fee()")
-            if not t0_r or not t1_r or not f_r:
+            if pool:
+                found.append((a0, a1, fee, pool))
+        # Each pool's own token0/token1/fee, batched: three calls a pool.
+        reads = self.multicall(
+            [(pool, sel(s)) for (_, _, _, pool) in found for s in ("token0()", "token1()", "fee()")],
+            batch=900,
+        )
+        for k, (a0, a1, fee, pool) in enumerate(found):
+            (ok0, t0_r), (ok1, t1_r), (okf, f_r) = reads[3 * k : 3 * k + 3]
+            if not (ok0 and ok1 and okf) or len(t0_r) < 32 or len(t1_r) < 32 or len(f_r) < 32:
                 continue
             on_t0 = self.al(addr_word(t0_r[:32]) or "")
             on_t1 = self.al(addr_word(t1_r[:32]) or "")
@@ -1058,12 +1165,10 @@ class Builder:
             }
             self.ensure_token(on_t0)
             self.ensure_token(on_t1)
-        # PoolCreated sweep over the last 3M blocks (~14 months); full-archive sweep from
-        # UNIV3_FACTORY_DEPLOY is C3-scale volume. Keep only pools whose *both* tokens are
-        # tracked (protocol collateral/debt tokens + HUB_ASSETS): a pool pairing a tracked
-        # asset with an untracked token is not an exit. The membership test runs against a
-        # frozen snapshot: ensure_token() below grows tracked_assets, and testing the live set
-        # lets each new pool's other token admit the next pool (observed: 30k pools of noise).
+
+    def _univ3_sweep_created(self):
+        """PoolCreated over the last UNIV3_SWEEP_BLOCKS: pools whose both tokens are tracked."""
+        factory = self.al(UNIV3_FACTORY)
         sweep_from = max(UNIV3_FACTORY_DEPLOY, self.head - UNIV3_SWEEP_BLOCKS)
         tracked = frozenset(self.tracked_assets)
         logs = self.get_logs(
@@ -1105,7 +1210,6 @@ class Builder:
             }
             self.ensure_token(a0)
             self.ensure_token(a1)
-        self._set_univ3_counts()
 
     def _referenced_tokens(self) -> set[str]:
         """Every token address a protocol entry or pool refers to (what decimals must exist for)."""
@@ -1327,6 +1431,7 @@ class Builder:
             ("silo", self.discover_silo),
             ("ajna", self.discover_ajna),
             ("univ3", self.discover_univ3_pools),
+            ("flash", self.discover_flash),
         ]
         for name, fn in steps:
             if name in self.done_steps:

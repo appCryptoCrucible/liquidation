@@ -37,10 +37,10 @@ pub use verify::{
     Bundle, HealthProbe, SimTx, Trigger,
 };
 pub use warm::{
-    artifact_path, clear_except, executor_initcode, executor_stack, insert_executor,
-    liquidation_module_initcode, load_executor_creation_bytecode, place_code, swap_module_initcode,
-    ExecutorCode, ExecutorSpec, Simulator, WarmSet, PLANNED_EXECUTOR, PLANNED_LIQUIDATION_MODULE,
-    PLANNED_SWAP_MODULE,
+    artifact_path, clear_except, dex_module_initcode, executor_initcode, executor_stack,
+    insert_executor, liquidation_module_initcode, load_executor_creation_bytecode, place_code,
+    swap_module_initcode, ExecutorCode, ExecutorSpec, Simulator, WarmSet, PLANNED_DEX_MODULE,
+    PLANNED_EXECUTOR, PLANNED_LIQUIDATION_MODULE, PLANNED_SWAP_MODULE,
 };
 pub use worker::{spawn_workers, SimPool, SimReply, SimRequest, SimWorker};
 

@@ -44,6 +44,12 @@ pub enum FlashProvider {
     /// No flash: a reward-only group (Liquity V2 gas compensation, Sky
     /// keeper incentives) borrows and repays nothing. Executor `P_NONE`.
     None = 5,
+    /// Flash swap: the group's debt is bought exact-out from a Uniswap V3
+    /// pool, which pays first and is paid its other token inside
+    /// `uniswapV3SwapCallback`, where the group runs. A flash loan and the
+    /// repay swap in one pool call, at the swap fee the exit pays anyway.
+    /// Executor `P_UNIV3_SWAP`.
+    UniV3Swap = 6,
 }
 
 /// The full natural key. Interned to [`PositionId`] once, then never used on
@@ -137,5 +143,7 @@ mod tests {
         assert_eq!(FlashProvider::UniV4 as u8, 2);
         assert_eq!(FlashProvider::Morpho as u8, 3);
         assert_eq!(FlashProvider::SkyDss as u8, 4);
+        assert_eq!(FlashProvider::None as u8, 5);
+        assert_eq!(FlashProvider::UniV3Swap as u8, 6);
     }
 }

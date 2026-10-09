@@ -319,6 +319,12 @@ impl Config {
                 decimals: a.decimals,
             });
         }
+        let mut price_sources = Vec::with_capacity(f.price_sources.len());
+        for o in f.price_sources {
+            price_sources.push(SourcePin {
+                oracle: parse_addr(&o)?,
+            });
+        }
         let cfg = Self {
             protocol: ProtocolId(f.protocol),
             factory: parse_addr(&f.factory)?,
@@ -328,7 +334,7 @@ impl Config {
             vaults,
             interned: Vec::new(),
             assets,
-            price_sources: Vec::new(),
+            price_sources,
             pinned_through: f.pinned_through,
         };
         cfg.validate_shape()?;
@@ -349,6 +355,10 @@ struct TomlFile {
     first_market: u32,
     pinned_through: u64,
     vaults: Vec<String>,
+    /// Each vault's own `oracle()` (an EulerRouter), as the generator read
+    /// it. A vault whose oracle is not listed stays unpriced.
+    #[serde(default)]
+    price_sources: Vec<String>,
     assets: Vec<TomlAsset>,
 }
 

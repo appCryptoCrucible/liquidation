@@ -1,5 +1,10 @@
 //! Hot reload of the registry's exits while the node runs — no restart.
 //!
+//! **Not started** (decision 2026-10-07): no exit joins the running bot
+//! unreviewed. The daily refresh proposes, a person admits
+//! (`tools/registry/admit_reviewed.py`), and a restart takes the batch. The
+//! module is kept, tested, for a reviewed hot path should one be wanted.
+//!
 //! A thread polls `registry.json`'s modification time (the daily discovery
 //! job replaces it atomically). On a change it reads the file, diffs it
 //! against what the process runs on, and applies only exits for tokens the

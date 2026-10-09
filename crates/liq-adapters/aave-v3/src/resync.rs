@@ -15,7 +15,7 @@
 //! Every reserve's balances are read in one stage (follow-ups see only the
 //! previous answer, not the store, so they cannot map the configuration
 //! bitmap to slots). The bitmap is indexed by reserve **id**, which is not
-//! `slot - 1` once a reserve has been dropped and its id reused
+//! `slot - FIRST_RESERVE` once a reserve has been dropped and its id reused
 //! (`PoolLogic.executeInitReserve` takes the first free id): each reserve's
 //! id is read once — `UNDERLYING_ASSET_ADDRESS()` on its aToken, then
 //! `getReserveData(underlying)`, whose `aTokenAddress` must be the row's —
@@ -36,7 +36,7 @@ use liq_protocol::{
 use liq_types::{MarketId, PositionId};
 
 use crate::config::Config;
-use crate::layout::{Reserve, UserExtra, UserReserve};
+use crate::layout::{Reserve, UserExtra, UserReserve, FIRST_RESERVE};
 
 sol! {
     /// `DataTypes.ReserveDataLegacy` @ `8305565ae`. `configuration` is the
@@ -57,6 +57,27 @@ sol! {
         uint128 accruedToTreasury;
         uint128 unbacked;
         uint128 isolationModeTotalDebt;
+    }
+
+    /// Aave V2 `DataTypes.ReserveData` (pool `0x02d84abd…`): the same
+    /// facts as V3's in another order, `id` a `uint8` at the end.
+    struct ReserveDataV2 {
+        uint256 configuration;
+        uint128 liquidityIndex;
+        uint128 variableBorrowIndex;
+        uint128 currentLiquidityRate;
+        uint128 currentVariableBorrowRate;
+        uint128 currentStableBorrowRate;
+        uint40 lastUpdateTimestamp;
+        address aTokenAddress;
+        address stableDebtTokenAddress;
+        address variableDebtTokenAddress;
+        address interestRateStrategyAddress;
+        uint8 id;
+    }
+
+    interface IPoolAccountV2 {
+        function getReserveData(address asset) external view returns (ReserveDataV2 memory);
     }
 
     interface IPoolAccount {
@@ -110,7 +131,7 @@ pub(crate) fn id_reads(cfg: &Config, rows: &dyn MarketRows) -> Vec<StateRead> {
         let Some(rs) = rows.rows(p.market) else {
             continue;
         };
-        for (slot, row) in rs.iter().enumerate().skip(1) {
+        for (slot, row) in rs.iter().enumerate().skip(usize::from(FIRST_RESERVE)) {
             let Ok(r) = row.body::<Reserve>() else {
                 continue;
             };
@@ -155,7 +176,7 @@ pub(crate) fn follow_ups(cfg: &Config, answer: StateAnswer<'_>) -> Vec<StateRead
     }]
 }
 
-fn apply_ids(st: &mut dyn StateWriter, answers: &[StateAnswer<'_>]) -> Result<()> {
+fn apply_ids(st: &mut dyn StateWriter, answers: &[StateAnswer<'_>], v2: bool) -> Result<()> {
     for a in answers {
         let t = a.read.tag;
         if t & ID == 0 || t & ID_DATA == 0 || !a.success {
@@ -164,8 +185,16 @@ fn apply_ids(st: &mut dyn StateWriter, answers: &[StateAnswer<'_>]) -> Result<()
         let Ok(slot) = u16::try_from(t & 0xffff) else {
             continue;
         };
-        let Ok(data) = IPoolAccount::getReserveDataCall::abi_decode_returns(a.data) else {
-            continue;
+        let data = if v2 {
+            match IPoolAccountV2::getReserveDataCall::abi_decode_returns(a.data) {
+                Ok(d) => (d.aTokenAddress, u16::from(d.id)),
+                Err(_) => continue,
+            }
+        } else {
+            match IPoolAccount::getReserveDataCall::abi_decode_returns(a.data) {
+                Ok(d) => (d.aTokenAddress, d.id),
+                Err(_) => continue,
+            }
         };
         let at = MarketSlot {
             market: a.read.market,
@@ -177,11 +206,11 @@ fn apply_ids(st: &mut dyn StateWriter, answers: &[StateAnswer<'_>]) -> Result<()
         let mut row = *row;
         let r = row.body_mut::<Reserve>()?;
         // The reserve this id names must be the row's own.
-        if addr(r.a_token) != data.aTokenAddress {
+        if addr(r.a_token) != data.0 {
             tracing::warn!(target: "coverage", slot, "aave reserve id read names another aToken — not stored");
             continue;
         }
-        r.reserve_id = data.id;
+        r.reserve_id = data.1;
         r.id_known = 1;
         st.set_market(at, row)?;
     }
@@ -206,19 +235,25 @@ pub(crate) fn resync_reads(cfg: &Config, pos: PositionRef<'_>) -> Vec<StateRead>
         calldata: Bytes::from(calldata),
         tag: tag(pos.id, kind),
     };
-    let mut out = vec![
-        read(
-            pool.address,
-            IPoolAccount::getUserConfigurationCall { user }.abi_encode(),
-            CFG,
-        ),
-        read(
+    let mut out = vec![read(
+        pool.address,
+        IPoolAccount::getUserConfigurationCall { user }.abi_encode(),
+        CFG,
+    )];
+    // V2 has no e-mode.
+    if cfg.liquidation.version == crate::config::AaveVersion::V3 {
+        out.push(read(
             pool.address,
             IPoolAccount::getUserEModeCall { user }.abi_encode(),
             EMODE,
-        ),
-    ];
-    for (slot, row) in pos.markets.iter().enumerate().skip(1) {
+        ));
+    }
+    for (slot, row) in pos
+        .markets
+        .iter()
+        .enumerate()
+        .skip(usize::from(FIRST_RESERVE))
+    {
         let (Ok(r), Ok(slot)) = (row.body::<Reserve>(), u64::try_from(slot)) else {
             continue;
         };
@@ -271,11 +306,16 @@ fn settle(
     pos: PositionId,
     config: U256,
     answers: &[StateAnswer<'_>],
+    v2: bool,
 ) -> Option<(u8, Vec<Slot>)> {
-    let emode = u8::try_from(word(answers, market, tag(pos, EMODE))?).ok()?;
+    let emode = if v2 {
+        0
+    } else {
+        u8::try_from(word(answers, market, tag(pos, EMODE))?).ok()?
+    };
     let rows = st.markets(market).ok()?;
     let mut out = Vec::with_capacity(rows.len());
-    for (i, row) in rows.iter().enumerate().skip(1) {
+    for (i, row) in rows.iter().enumerate().skip(usize::from(FIRST_RESERVE)) {
         let r = row.body::<Reserve>().ok()?;
         let slot = u16::try_from(i).ok()?;
         let k = u64::from(slot);
@@ -337,7 +377,8 @@ fn apply_accounts(
         let Ok(config) = IPoolAccount::getUserConfigurationCall::abi_decode_returns(a.data) else {
             continue;
         };
-        let Some((emode, slots)) = settle(st, pool.market, pos, config, answers) else {
+        let v2 = cfg.liquidation.version == crate::config::AaveVersion::V2;
+        let Some((emode, slots)) = settle(st, pool.market, pos, config, answers, v2) else {
             tracing::warn!(target: "drift", account = %key.user, "aave account resync incomplete — read again");
             continue;
         };
@@ -379,7 +420,11 @@ pub(crate) fn apply(
     st: &mut dyn StateWriter,
     answers: &[StateAnswer<'_>],
 ) -> Result<Vec<liq_protocol::DirtySet>> {
-    apply_ids(st, answers)?;
+    apply_ids(
+        st,
+        answers,
+        cfg.liquidation.version == crate::config::AaveVersion::V2,
+    )?;
     let accounts = apply_accounts(cfg, st, answers)?;
     Ok(if accounts.is_empty() {
         Vec::new()

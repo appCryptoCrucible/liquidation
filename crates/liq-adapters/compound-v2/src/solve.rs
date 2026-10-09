@@ -1,5 +1,5 @@
-//! Last-healthy price (bisection on the oracle integer). Accrual crossing
-//! is `None`: events do not carry the interest-rate model.
+//! Last-healthy price (bisection on the oracle integer), and the time
+//! accrual alone makes a position liquidatable (bisection on the clock).
 
 use alloy_primitives::U256;
 use liq_protocol::{HealthState, PositionRef, Result, Timestamp};
@@ -33,8 +33,45 @@ fn crossed_at(pos: PositionRef<'_>, px: &PriceVector, asset: AssetId, p_raw: U25
     ))
 }
 
-pub(crate) fn time_to_cross(_pos: PositionRef<'_>, _px: &PriceVector) -> Result<Option<Timestamp>> {
-    Ok(None)
+/// How far ahead [`time_to_cross`] looks, as Morpho's does.
+pub const HORIZON: u64 = 10 * 365 * 24 * 3600;
+
+/// The first second at which accrual alone, at today's prices, makes the
+/// position liquidatable: `health` projected there (each market as
+/// `accrueInterest` would leave it, at its last read borrow rate) says
+/// liquidatable or bad debt. `Some(now)` when it already is; `None` when it
+/// stays healthy over [`HORIZON`], which is also the answer while a
+/// market's rate is unread (health is then the stored values, constant in
+/// time). Bisection, as Morpho's: interest only grows the debt faster than
+/// the collateral's exchange rate when the debt's rate is the higher, and a
+/// position whose health rises with time never brackets.
+pub(crate) fn time_to_cross(pos: PositionRef<'_>, px: &PriceVector) -> Result<Option<Timestamp>> {
+    let crossed = |ts: Timestamp| -> Result<bool> {
+        let mut at = pos;
+        at.timestamp = ts;
+        Ok(matches!(
+            finish(at, px, None)?.1.state,
+            HealthState::Liquidatable | HealthState::BadDebt { .. }
+        ))
+    };
+    let now = pos.timestamp;
+    if crossed(now)? {
+        return Ok(Some(now));
+    }
+    let mut hi = now.checked_add(HORIZON).ok_or(FixedError::Overflow)?;
+    if !crossed(hi)? {
+        return Ok(None);
+    }
+    let mut lo = now;
+    while hi.wrapping_sub(lo) > 1 {
+        let mid = lo.wrapping_add(hi.wrapping_sub(lo) / 2);
+        if crossed(mid)? {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    Ok(Some(hi))
 }
 
 fn holds(pos: PositionRef<'_>, asset: AssetId) -> (bool, bool) {

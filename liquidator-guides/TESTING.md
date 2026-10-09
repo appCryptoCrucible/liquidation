@@ -135,6 +135,19 @@ Every entry is a liquidation somebody executed, so declines are evidence to
 explain, not a filter working. Classify each reason MARKET / SYSTEM / KNOWN; a
 SYSTEM reason is a defect wearing a decline's label.
 
+**The historical replay** (`crates/liq-replay/tests/historical_liquidations.rs`)
+takes this section's oracle through the whole searcher. Each real liquidation in
+a block window is replayed at the block before it (plus that block's earlier
+oracle updates, for a backrun), through the bot's own drain, simulator and
+Executor; the job it builds runs on the same state as the real transaction, and
+the two are valued alike. One step is synthetic: the store is seeded from the
+pool's own views, as events through the bot's ingest, with the borrower from the
+adapter's resync reads. So before anything else runs, the borrower's health is
+checked against the pool's own `getUserAccountData`, and a disagreement is a
+finding, never graded. It does not exercise the backfill fold. It has found
+seventeen bugs that every unit and fork test had passed, from the adapter to the
+registry (`docs/plans/open-items.md`).
+
 ### Plan encoding — `PLAN-ENCODING.md` §4
 
 | | |
@@ -229,7 +242,7 @@ count.
 | 6 | Remove one callback's `msg.sender` check | Callback auth tests |
 | 7 | Invert the HF comparison in `_isLiquidatable` | Guard tests + recall |
 | 8 | Drop one field from an undo record | Reorg round-trip |
-| 9 | Make `safeApprove` skip the zeroing write | USDT fork test |
+| 9 | Make `safeApprove` skip the zero-then-set retry when a token refuses the direct approve, or skip the clear when an allowance is left | `test_usdt_debt_asset_round_trip`, `SafeApprove.t.sol`, `test_clamped_pull_zeroes_residual_allowance` |
 | 10 | Let a non-liquidatable candidate through the gate | Selection negative test |
 | 11 | Use `address(this).balance` for the bid | Donation test |
 | 12 | Return the cap instead of the `argmax` from the bid model | Bid model test |

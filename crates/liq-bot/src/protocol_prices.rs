@@ -56,10 +56,25 @@ pub struct QuotedPrice {
 }
 
 /// The numeraire of a ratio read's decoded pair: Morpho publishes the loan
-/// first. `None` for protocols that quote dollars.
-fn ratio_numeraire(p: &BoundProtocol, decoded: &[(AssetId, Ray)]) -> Option<(AssetId, Ray)> {
+/// first; an Euler vault in a token unit of account publishes the unit
+/// first. `None` for reads that quote dollars.
+fn ratio_numeraire(
+    p: &BoundProtocol,
+    read: &PriceRead,
+    decoded: &[(AssetId, Ray)],
+) -> Option<(AssetId, Ray)> {
     match p {
         BoundProtocol::MorphoBlue(_) => decoded.first().copied(),
+        BoundProtocol::EulerV2(_) if read.tag == liq_adapters_euler_v2::RATIO_READ_TAG => {
+            decoded.first().copied()
+        }
+        // Aave V2: ETH prices, WETH first at one RAY.
+        BoundProtocol::AaveV3(_) if read.tag & liq_adapters_aave_v3::ETH_QUOTED_READ != 0 => {
+            decoded.first().copied()
+        }
+        // Silo: both sides in the pair's oracle quote unit (often a
+        // virtual asset with no price of its own), the numeraire first.
+        BoundProtocol::SiloV2(_) => decoded.first().copied(),
         _ => None,
     }
 }
@@ -67,26 +82,40 @@ fn ratio_numeraire(p: &BoundProtocol, decoded: &[(AssetId, Ray)]) -> Option<(Ass
 /// Ratio prices restated in USD: each price times the numeraire's USD price
 /// over the price the decode gave the numeraire (so the numeraire becomes
 /// exactly its USD price and the pair's ratio is kept, to one unit of the
-/// USD-scaled collateral price). A read whose numeraire has no USD price is
-/// left out, not given one: its market stays on the canonical vector.
+/// USD-scaled collateral price). When the numeraire has no USD price, another
+/// asset of the same read that has one anchors it instead (only the ratio is
+/// the protocol's: a Silo pair quoted in a virtual unit, a Morpho market
+/// whose loan token has no feed). A read none of whose assets has a USD
+/// price is left out, not given one: its market stays on the canonical
+/// vector.
 pub fn to_usd(
     entries: &[QuotedPrice],
     usd_of: impl Fn(AssetId) -> Option<Ray>,
 ) -> Vec<QuotedPrice> {
+    let usd = |a: AssetId| usd_of(a).filter(|p| !p.raw().is_zero());
     let mut out = Vec::with_capacity(entries.len());
     for e in entries {
         let Some((num, published)) = e.scale else {
             out.push(*e);
             continue;
         };
-        let Some(usd) = usd_of(num).filter(|p| !p.raw().is_zero()) else {
+        let anchor = usd(num).map(|u| (u, published)).or_else(|| {
+            entries
+                .iter()
+                .filter(|s| s.protocol == e.protocol && s.market == e.market && s.scale == e.scale)
+                .find_map(|s| usd(s.asset).map(|u| (u, s.price)))
+        });
+        let Some((usd, published)) = anchor else {
             tracing::debug!(
                 market = e.market.0,
                 asset = num.0,
-                "ratio numeraire has no USD price — market not overlaid"
+                "no asset of the ratio read has a USD price — market not overlaid"
             );
             continue;
         };
+        if published.raw().is_zero() {
+            continue;
+        }
         let Ok(price) = liq_types::fixed::mul_div(
             e.price.raw(),
             usd.raw(),
@@ -187,8 +216,10 @@ pub async fn read_block(
             let proto = p.as_dyn();
             match proto.decode_prices(read, &row.returnData, &mut decoded) {
                 Ok(()) => {
-                    let usd = quotes_in_usd(p);
-                    let scale = ratio_numeraire(p, &decoded);
+                    let scale = ratio_numeraire(p, read, &decoded);
+                    // A ratio read restated in USD is never another
+                    // protocol's USD source.
+                    let usd = quotes_in_usd(p) && scale.is_none();
                     batch
                         .entries
                         .extend(decoded.iter().map(|&(asset, price)| QuotedPrice {
@@ -271,8 +302,15 @@ pub struct ProtocolPriceBook {
     /// First USD-denominated source for each asset. A later protocol does
     /// not replace it. Ratio protocols never enter.
     usd_key: HashMap<AssetId, (ProtocolId, MarketId)>,
+    /// Every market whose own oracle prices each asset (USD or restated in
+    /// USD), in the order first seen: [`Self::usd_or_markets`].
+    markets_of: HashMap<AssetId, Vec<(ProtocolId, MarketId)>>,
     applied: u64,
 }
+
+/// Markets [`ProtocolPriceBook::usd_or_markets`] takes the median of: enough
+/// to outvote a few odd oracles without allocating on the hot thread.
+const MEDIAN_MARKETS: usize = 15;
 
 impl ProtocolPrices for ProtocolPriceBook {
     fn patch(&self, protocol: ProtocolId, market: MarketId) -> &[(AssetId, Ray)] {
@@ -316,6 +354,10 @@ impl ProtocolPriceBook {
                 None => {
                     slot.push((e.asset, e.price));
                     first = true;
+                    self.markets_of
+                        .entry(e.asset)
+                        .or_default()
+                        .push((e.protocol, e.market));
                 }
             }
             if e.usd && !self.usd_key.contains_key(&e.asset) {
@@ -335,6 +377,161 @@ impl ProtocolPriceBook {
             .iter()
             .find(|(a, _)| *a == asset)
             .map(|(_, p)| *p)
+    }
+
+    /// [`Self::usd`], or the USD price `batch` itself carries when the book
+    /// has none yet. On the first batch after start a ratio read (Morpho)
+    /// and the getter that prices its numeraire arrive together; restating
+    /// against the book alone dropped the ratio read until a later block.
+    #[must_use]
+    pub fn usd_or_batch(&self, asset: AssetId, batch: &PriceBatch) -> Option<Ray> {
+        self.usd(asset).or_else(|| {
+            batch
+                .entries
+                .iter()
+                .find(|e| e.usd && e.scale.is_none() && e.asset == asset)
+                .map(|e| e.price)
+        })
+    }
+
+    /// [`Self::usd`], or the price `(protocol, market)`'s own oracle gives
+    /// `asset`, restated in USD. A collateral only its own market prices (a
+    /// Morpho LP token: no canonical feed, no USD getter) is sized at the
+    /// price the protocol seizes it at.
+    #[must_use]
+    pub fn usd_or_market(
+        &self,
+        asset: AssetId,
+        protocol: ProtocolId,
+        market: MarketId,
+    ) -> Option<Ray> {
+        self.usd(asset).or_else(|| {
+            self.patch(protocol, market)
+                .iter()
+                .find(|(a, _)| *a == asset)
+                .map(|(_, p)| *p)
+        })
+    }
+
+    /// [`Self::usd`], or the median of what the markets pricing `asset`
+    /// say (each its own oracle, restated in USD; the first
+    /// [`MEDIAN_MARKETS`] seen; the lower middle of an even count). For a
+    /// token no canonical feed or USD getter prices, where no single market
+    /// is the one in question: gas and bands in that token. Permissionless
+    /// markets name any oracle, so no one market decides.
+    #[must_use]
+    pub fn usd_or_markets(&self, asset: AssetId) -> Option<Ray> {
+        if let Some(p) = self.usd(asset) {
+            return Some(p);
+        }
+        let mut seen: smallvec::SmallVec<[Ray; MEDIAN_MARKETS]> = smallvec::SmallVec::new();
+        for (protocol, market) in self.markets_of.get(&asset)?.iter().take(MEDIAN_MARKETS) {
+            if let Some((_, p)) = self
+                .patch(*protocol, *market)
+                .iter()
+                .find(|(a, p)| *a == asset && !p.raw().is_zero())
+            {
+                seen.push(*p);
+            }
+        }
+        seen.sort_unstable();
+        let mid = seen.len().checked_sub(1)? / 2;
+        seen.get(mid).copied()
+    }
+}
+
+/// Per protocol, what the first applied batch priced: markets with an
+/// oracle read, how many the book prices, and the rest by reason. A market
+/// with no read at all (no oracle pinned) is not in `reads` and so not
+/// counted here; the adapters log those at bind.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PriceCoverage {
+    pub protocol: ProtocolId,
+    pub read: usize,
+    pub priced: usize,
+    /// The read failed or decoded no price.
+    pub failed: Vec<MarketId>,
+    /// Decoded, but a ratio read none of whose assets has a USD price.
+    pub no_anchor: Vec<MarketId>,
+}
+
+/// [`PriceCoverage`] of `book` after `raw` (the batch as read, before
+/// restating) was applied, over `reads`.
+#[must_use]
+pub fn coverage(
+    book: &ProtocolPriceBook,
+    reads: &ReadSet,
+    raw: &PriceBatch,
+    protocols: &[BoundProtocol],
+) -> Vec<PriceCoverage> {
+    let mut out: Vec<PriceCoverage> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (pi, r) in reads {
+        let Some(p) = protocols.get(*pi) else {
+            continue;
+        };
+        let id = p.as_dyn().id();
+        if !seen.insert((id, r.market)) {
+            continue;
+        }
+        let i = match out.iter().position(|c| c.protocol == id) {
+            Some(i) => i,
+            None => {
+                out.push(PriceCoverage {
+                    protocol: id,
+                    read: 0,
+                    priced: 0,
+                    failed: Vec::new(),
+                    no_anchor: Vec::new(),
+                });
+                out.len().saturating_sub(1)
+            }
+        };
+        let Some(c) = out.get_mut(i) else { continue };
+        c.read = c.read.saturating_add(1);
+        if !book.patch(id, r.market).is_empty() {
+            c.priced = c.priced.saturating_add(1);
+        } else if raw
+            .entries
+            .iter()
+            .any(|e| e.protocol == id && e.market == r.market)
+        {
+            c.no_anchor.push(r.market);
+        } else {
+            c.failed.push(r.market);
+        }
+    }
+    out
+}
+
+/// Log [`coverage`]: one line per protocol, with the first unpriced
+/// markets by id.
+pub fn log_coverage(cov: &[PriceCoverage], block: u64) {
+    const SHOWN: usize = 10;
+    for c in cov {
+        let ids = |v: &[MarketId]| v.iter().take(SHOWN).map(|m| m.0).collect::<Vec<_>>();
+        let unpriced = c.failed.len().saturating_add(c.no_anchor.len());
+        if unpriced == 0 {
+            tracing::info!(
+                protocol = c.protocol.0,
+                block,
+                read = c.read,
+                priced = c.priced,
+                "protocol prices: every market with an oracle read is priced"
+            );
+        } else {
+            tracing::warn!(
+                protocol = c.protocol.0,
+                block,
+                read = c.read,
+                priced = c.priced,
+                read_failed = c.failed.len(),
+                no_usd_anchor = c.no_anchor.len(),
+                first_failed = ?ids(&c.failed),
+                first_no_anchor = ?ids(&c.no_anchor),
+                "protocol prices: markets unpriced after the first batch"
+            );
+        }
     }
 }
 
@@ -357,6 +554,51 @@ mod tests {
 
     fn ray(v: u64) -> Ray {
         Ray::from_raw(alloy_primitives::U256::from(v))
+    }
+
+    /// A token only markets price (no canonical feed, no USD getter) is
+    /// priced at the median of those markets: one odd oracle among three
+    /// does not move it; with two, the lower; a USD getter, once one
+    /// exists, comes first. Oracle: the median by hand.
+    #[test]
+    fn a_market_only_token_takes_the_median_market() {
+        let (p, a) = (ProtocolId(2), AssetId(9));
+        let mut book = ProtocolPriceBook::default();
+        let batch = |block: u64, entries: Vec<QuotedPrice>| PriceBatch {
+            block,
+            entries,
+            failed: 0,
+        };
+        let mut moves = Vec::new();
+        book.apply(
+            &batch(
+                1,
+                vec![
+                    quote(p, MarketId(1), a, ray(100), false),
+                    quote(p, MarketId(2), a, ray(9_000), false),
+                ],
+            ),
+            &mut moves,
+        );
+        assert_eq!(book.usd_or_markets(a), Some(ray(100)), "two: the lower");
+        book.apply(
+            &batch(2, vec![quote(p, MarketId(3), a, ray(102), false)]),
+            &mut moves,
+        );
+        assert_eq!(
+            book.usd_or_markets(a),
+            Some(ray(102)),
+            "the odd 9,000 outvoted"
+        );
+        assert_eq!(book.usd_or_markets(AssetId(10)), None);
+        book.apply(
+            &batch(
+                3,
+                vec![quote(ProtocolId(1), MarketId(7), a, ray(101), true)],
+            ),
+            &mut moves,
+        );
+        assert_eq!(book.usd_or_markets(a), Some(ray(101)), "a USD getter first");
     }
 
     fn quote(p: ProtocolId, m: MarketId, a: AssetId, price: Ray, usd: bool) -> QuotedPrice {
@@ -1206,6 +1448,34 @@ mod tests {
         Ray::from_raw(alloy_primitives::U256::from(dollars) * liq_types::fixed::RAY)
     }
 
+    /// A ratio read whose numeraire has no USD price (a Silo pair quoted in
+    /// a virtual unit) is anchored on its other asset: that asset becomes its
+    /// own dollar price and the pair keeps the protocol's ratio.
+    #[test]
+    fn a_ratio_read_without_a_numeraire_price_anchors_on_its_other_asset() {
+        let (unit, coll, m) = (AssetId(0), AssetId(1), MarketId(7001));
+        let (p_unit, p_coll) = (
+            Ray::from_raw(alloy_primitives::U256::from(999_871_000_000_000_000u128)),
+            Ray::from_raw(alloy_primitives::U256::from(1_027_341_680_000_000_000u128)),
+        );
+        let q = |asset, p: Ray| QuotedPrice {
+            scale: Some((unit, p_unit)),
+            ..quote(ProtocolId(6), m, asset, p, false)
+        };
+        let out = to_usd(&[q(unit, p_unit), q(coll, p_coll)], |a| {
+            (a == coll).then(|| usd_ray(100_000))
+        });
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1].price, usd_ray(100_000));
+        // unit / coll in USD is the protocol's unit / coll, to one unit.
+        let lhs = out[0].price.raw() * p_coll.raw();
+        let rhs = p_unit.raw() * out[1].price.raw();
+        let diff = if lhs > rhs { lhs - rhs } else { rhs - lhs };
+        assert!(diff <= p_coll.raw(), "ratio moved by {diff}");
+        // Neither asset priced: nothing overlaid.
+        assert!(to_usd(&[q(unit, p_unit), q(coll, p_coll)], |_| None).is_empty());
+    }
+
     /// Morpho: the pair the decode builds reproduces `price()` exactly; after
     /// restating in USD the loan is its dollar price and `oracle_price` still
     /// reproduces `price()` to within one unit of the collateral price, i.e.
@@ -1241,6 +1511,70 @@ mod tests {
         // Collateral in dollars: 1.2 * 3000.
         let usd = out[1].price.raw() / liq_types::fixed::RAY;
         assert_eq!(usd, alloy_primitives::U256::from(3_600u64));
+    }
+
+    /// The first batch after start carries a Morpho read and the Aave
+    /// getter that prices its loan token. The book is still empty, so the
+    /// numeraire's USD price comes from the batch itself; once applied, from
+    /// the book. A ratio read is never a USD source. Oracle: the batch's own
+    /// numbers.
+    #[test]
+    fn a_numeraire_priced_in_the_same_batch_is_used_before_the_book_has_it() {
+        let (usdc, lp, m) = (AssetId(677), AssetId(129), MarketId(5001));
+        let getter = quote(ProtocolId(0), MarketId(1), usdc, ray(1), true);
+        let ratio = QuotedPrice {
+            scale: Some((usdc, ray(1))),
+            ..quote(ProtocolId(5), m, lp, ray(2), false)
+        };
+        let batch = PriceBatch {
+            block: 7,
+            entries: vec![getter, ratio],
+            failed: 0,
+        };
+        let mut book = ProtocolPriceBook::default();
+        assert_eq!(book.usd(usdc), None, "empty before the first batch");
+        assert_eq!(book.usd_or_batch(usdc, &batch), Some(ray(1)));
+        assert_eq!(
+            book.usd_or_batch(lp, &batch),
+            None,
+            "a ratio read is not a USD price"
+        );
+        let mut moves = Vec::new();
+        book.apply(&batch, &mut moves);
+        assert_eq!(
+            book.usd_or_batch(usdc, &PriceBatch::default()),
+            Some(ray(1))
+        );
+    }
+
+    /// A collateral with no USD source anywhere is sized at its own market's
+    /// overlay price; with a USD source, that wins; another market's
+    /// overlay is never borrowed. Oracle: the overlay entries applied.
+    #[test]
+    fn a_collateral_only_its_market_prices_is_sized_at_that_price() {
+        let (lp, usdc, m, other) = (AssetId(129), AssetId(677), MarketId(5001), MarketId(5002));
+        let morpho = ProtocolId(5);
+        let mut book = ProtocolPriceBook::default();
+        let mut moves = Vec::new();
+        book.apply(
+            &PriceBatch {
+                block: 1,
+                entries: vec![
+                    quote(morpho, m, lp, ray(3), false),
+                    quote(ProtocolId(0), MarketId(1), usdc, ray(1), true),
+                ],
+                failed: 0,
+            },
+            &mut moves,
+        );
+        assert_eq!(book.usd(lp), None);
+        assert_eq!(book.usd_or_market(lp, morpho, m), Some(ray(3)));
+        assert_eq!(book.usd_or_market(lp, morpho, other), None);
+        assert_eq!(
+            book.usd_or_market(usdc, morpho, m),
+            Some(ray(1)),
+            "a USD source wins"
+        );
     }
 
     /// No USD price for the numeraire: the read is left out, not priced at 1.
