@@ -1,10 +1,23 @@
-//! Non-hot exec worker: recv [`ExecJob`] and call `submit_path`, and recv
+//! Non-hot exec worker: recv [`ExecJob`] and submit it, and recv
 //! [`GovJob`] and call `submit_gov`.
 //!
 //! Lives off the hot thread. `block_on` is here only — never on ingest.
 //! With a chain client, every job first resyncs the operator nonce for its
 //! target block, and a job marked `rpc_verify` is simulated against the
 //! node before it is signed.
+//!
+//! Network latency is the one cost we cannot search away, so this thread
+//! owns the submit sockets:
+//! - It runs as `liq-exec-submit`, pinned to that core from `cores.toml`
+//!   (isolated, `nohz_full`), and its runtime's one I/O worker is pinned to
+//!   the same core. Unpinned, it would share the housekeeping cores with
+//!   IRQs and Lighthouse.
+//! - The prewarm and the re-warm loop run on this runtime, so every pooled
+//!   connection (and the task that writes its bytes) lives here, not on the
+//!   main runtime.
+//! - Jobs are signed and gated in arrival order on this thread (nonces stay
+//!   in order) and each POST is spawned, so the next job never waits on the
+//!   previous one's acks (~100-150 ms from a US builder or the relay).
 
 use std::sync::Arc;
 use std::thread::{Builder, JoinHandle};
@@ -13,7 +26,7 @@ use alloy_primitives::Address;
 use crossbeam_channel::Receiver;
 use liq_exec::chain::{ChainClient, SimCall};
 use liq_exec::gov::{GovJob, GovTarget};
-use liq_exec::path::{ExecJob, ExecPath};
+use liq_exec::path::{ExecJob, ExecPath, Gated};
 use liq_obs::ShadowRecorder;
 use liq_risk::RiskGate;
 
@@ -32,14 +45,34 @@ pub struct ChainExec {
     pub profit_sink: Option<Address>,
 }
 
+/// Thread name; also the `cores.toml` slot whose core it is pinned to.
+pub const EXEC_THREAD: &str = "liq-exec-submit";
+
+/// Pin the current thread to `core` if one is given. A failed pin is logged
+/// and the thread runs unpinned: sending late beats not sending.
+fn pin(core: Option<u16>, what: &'static str) {
+    let Some(core) = core else { return };
+    if let Err(e) = crate::threads::pin_to_core(usize::from(core)) {
+        tracing::error!(?e, core, what, "exec pin failed — running unpinned");
+    }
+}
+
 /// Recv jobs and run the submit paths. Full inboxes are counted on try_send.
+/// `core`: the `liq-exec-submit` core from `cores.toml` (`None` in tests).
 pub fn spawn_exec_worker(
     rx: Receiver<ExecJob>,
     chain: Option<ChainExec>,
     path: Arc<Path>,
+    core: Option<u16>,
 ) -> std::io::Result<JoinHandle<()>> {
-    Builder::new().name("liq-bot-exec".into()).spawn(move || {
-        let rt = match tokio::runtime::Builder::new_current_thread()
+    Builder::new().name(EXEC_THREAD.into()).spawn(move || {
+        pin(core, "liq-exec-submit");
+        // One I/O worker on the same core drives the sockets and the spawned
+        // POSTs while this thread blocks on the inbox.
+        let rt = match tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("liq-exec-io")
+            .on_thread_start(move || pin(core, "liq-exec-io"))
             .enable_all()
             .build()
         {
@@ -48,6 +81,14 @@ pub fn spawn_exec_worker(
                 tracing::error!(error = %e, "exec worker runtime refused");
                 return;
             }
+        };
+        // Sockets belong to this runtime: open them here, keep them warm here.
+        if let Err(e) = rt.block_on(path.prewarm()) {
+            tracing::error!(error = %e, "13A prewarm failed — the re-warm loop retries");
+        }
+        let rewarm = {
+            let _in_rt = rt.enter();
+            path.spawn_rewarm()
         };
         let gov_rx = chain
             .as_ref()
@@ -61,9 +102,7 @@ pub fn spawn_exec_worker(
                     if !rt.block_on(prepare(&mut job, chain.as_ref(), &path, &mut target)) {
                         continue;
                     }
-                    if let Err(e) = rt.block_on(path.submit_path(&job)) {
-                        tracing::error!(error = %e, trace = job.trace.raw(), "submit_path failed");
-                    }
+                    submit(&rt, &path, &job);
                 }
                 recv(gov_rx) -> msg => {
                     let (Ok(job), Some(c)) = (msg, chain.as_ref()) else { continue };
@@ -81,7 +120,27 @@ pub fn spawn_exec_worker(
                 }
             }
         }
+        rewarm.abort();
     })
+}
+
+/// Sign and gate `job` here, in order; spawn its POST on the I/O worker.
+fn submit(rt: &tokio::runtime::Runtime, path: &Arc<Path>, job: &ExecJob) {
+    let trace = job.trace.raw();
+    match path.sign_and_gate(job) {
+        Ok(Gated::Done(receipt)) => {
+            tracing::debug!(trace, ?receipt, "submit_path: no POST");
+        }
+        Ok(Gated::Send(ready)) => {
+            let path = Arc::clone(path);
+            drop(rt.spawn(async move {
+                if let Err(e) = path.send_ready(*ready).await {
+                    tracing::error!(error = %e, trace, "submit_path failed");
+                }
+            }));
+        }
+        Err(e) => tracing::error!(error = %e, trace, "submit_path failed"),
+    }
 }
 
 /// Resync the nonce for the job's block and, when asked, verify it against

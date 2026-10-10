@@ -3237,6 +3237,7 @@ mod tests {
                 id: BuilderId(1),
                 name: "t",
                 endpoint: relay,
+                warm: false,
             }],
             relay,
         )

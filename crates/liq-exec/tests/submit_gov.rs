@@ -115,6 +115,7 @@ fn path(
             id: BuilderId(1),
             name: "mock",
             endpoint: builder,
+            warm: false,
         }],
         builder,
     )
@@ -422,6 +423,7 @@ async fn each_operator_slot_resyncs_to_its_own_chain_nonce() {
             id: BuilderId(1),
             name: "mock",
             endpoint: url,
+            warm: false,
         }],
         url,
     )

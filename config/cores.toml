@@ -1,37 +1,35 @@
-# Production pin map: AMD EPYC 4564P (Zen 4 Raphael, 16 cores / 32 threads,
-# 2 CCDs x 8, 32 MB L3 each, one socket, one NUMA node).
+# Production pin map: AMD Ryzen 7 9800X3D (Zen 5, 8 cores / 16 threads, one
+# CCD, one 96 MB L3 shared by every core, one socket, one NUMA node).
 #
-# Standard Linux enumeration for this die: physical CPUs 0-15, SMT sibling
-# of N is N+16. CCD0 L3 is "0-7,16-23". CCD1 L3 is "8-15,24-31".
-# On Linux, startup (allow_unpinned = false) reads
-# /sys/devices/system/cpu/cpuN/cache/index3/shared_cpu_list and refuses
-# to start if a slice differs. Confirm once with `lscpu -e` before leaving
-# the node running. A pin that succeeds does not prove L3 placement until
-# that check passes.
+# Standard Linux enumeration for this die: physical CPUs 0-7, SMT sibling
+# of N is N+8. The one L3 is "0-15". On Linux, startup (allow_unpinned =
+# false) reads /sys/devices/system/cpu/cpuN/cache/index3/shared_cpu_list
+# and refuses to start if the slice differs. Confirm once with `lscpu -e`
+# before leaving the node running.
 #
-# Kernel isolcpus (ops/host/cmdline) is narrower than the CCD1 list:
-# isolated logical CPUs are 0-13 and 16-29. 14, 15, 30 and 31 stay for
-# Reth and Lighthouse. `isolated` below is the sim-worker rule, not the
-# kernel mask.
+# One L3 means the hot path cannot own an L3 slice (the two-CCD EPYC map
+# gave it CCD0). It owns cores instead: `hot_cpu_list` is the three hot
+# cores and their SMT siblings, which stay empty so no other thread shares
+# their execution units or L1/L2. The 96 MB L3 is shared with the sim
+# workers and the route builder; the hot band (~25 KB) is a rounding error
+# against it, which is the X3D part's case.
+#
+# Kernel isolcpus (ops/host/cmdline): logical CPUs 0-5 and 8-13. 6, 7, 14
+# and 15 stay for Reth, Lighthouse and IRQs. `isolated` below is the
+# sim-worker rule, not the kernel mask.
 
 schema = 1
 
 [[l3]]
-# CCD0. Hot path only: cores 0, 1, 2. Cores 3-7 and SMT siblings 16-23
-# stay empty so this 32 MB L3 keeps the position columns.
-shared_cpu_list = "0-7,16-23"
+# The whole die. Hot path: cores 0, 1, 2 (siblings 8, 9, 10 reserved).
+# Sim workers: both threads of cores 3 and 4 (3, 4, 11, 12). Router cache
+# and submit: core 5 and its sibling 13. CEX, telemetry and drift share the
+# Reth/Lighthouse CPUs 6, 7, 14, 15.
+shared_cpu_list = "0-15"
 numa = 0
 isolated = true
 exclusive_hot = true
-
-[[l3]]
-# CCD1. Sim workers on 8-11 (SMT siblings 24-27 unpinned). Router and
-# submit own physical cores 12 and 13. CEX, telemetry and drift share
-# the Reth/Lighthouse cores.
-shared_cpu_list = "8-15,24-31"
-numa = 0
-isolated = true
-exclusive_hot = false
+hot_cpu_list = "0-2,8-10"
 
 [[thread]]
 name = "liq-node-hot"
@@ -47,23 +45,23 @@ core = 2
 
 [[thread]]
 name = "liq-sim-worker-0"
-core = 8
+core = 3
 
 [[thread]]
 name = "liq-sim-worker-1"
-core = 9
+core = 4
 
 [[thread]]
 name = "liq-sim-worker-2"
-core = 10
-
-[[thread]]
-name = "liq-sim-worker-3"
 core = 11
 
 [[thread]]
-name = "liq-router-cache"
+name = "liq-sim-worker-3"
 core = 12
+
+[[thread]]
+name = "liq-router-cache"
+core = 5
 
 [[thread]]
 name = "liq-exec-submit"
@@ -71,12 +69,12 @@ core = 13
 
 [[thread]]
 name = "liq-oracle-cex"
-core = 14
+core = 6
 
 [[thread]]
 name = "liq-obs-telemetry"
-core = 30
+core = 14
 
 [[thread]]
 name = "liq-obs-drift"
-core = 31
+core = 15

@@ -7,7 +7,10 @@ mod matcher;
 mod sign;
 mod stream;
 
-pub use bundle::{post_signed, rpc_send_bundle, MevShareSubmitter, SendBundle, SignedRelayRequest};
+pub use bundle::{
+    post_signed, rpc_send_bundle, MevShareSubmitter, SendBundle, SignedRelayRequest,
+    MEV_SHARE_VERSION,
+};
 pub use history::{fetch_history, parse_history_body, HistoryQuery};
 pub use matcher::{
     match_hint, publish_source, svr_targets, PriceOrigin, SvrMatch, SvrTarget, FORWARD_SELECTOR,

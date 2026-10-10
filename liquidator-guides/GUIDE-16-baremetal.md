@@ -335,6 +335,16 @@ to each **CCX** (core complex — typically 8 cores with their own L3 slice). Tw
 threads on the same NUMA node but different CCXs share no L3 at all, and two
 threads on the *same* CCX evict each other's lines freely.
 
+On a single-CCD part there is no second slice to give the hot path, so the
+exclusivity moves from the L3 to the cores: the hot threads own their physical
+cores and the SMT siblings of those cores stay empty, and everything else shares
+the one L3 with them. The production box is such a part (Ryzen 7 9800X3D: eight
+cores, one 96 MB L3). The hot band is ~25 KB against that 96 MB, so what the
+eviction argument below protects against is far weaker there than on a 32 MB
+EPYC slice, and the first-touch counters in GUIDE 09 are what say whether it
+matters at all. `config/cores.toml` expresses this as `hot_cpu_list` on the one
+`exclusive_hot` slice; a two-CCD map leaves it out and the hot path owns the slice.
+
 That second half is what matters here, and it is the opposite problem from the
 one people usually guard against:
 

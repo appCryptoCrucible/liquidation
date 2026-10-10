@@ -1,5 +1,5 @@
 [Unit]
-Description=Reth (liquidation ExEx host) on the EPYC 4564P box
+Description=Reth (liquidation ExEx host) on the Ryzen 7 9800X3D box
 After=network-online.target
 Wants=network-online.target
 

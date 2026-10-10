@@ -118,11 +118,13 @@ fn set_from_urls(builder: &'static str, relay: &'static str) -> BuilderSet {
                 id: BuilderId(1),
                 name: "mock-a",
                 endpoint: builder,
+                warm: false,
             },
             BuilderEndpoint {
                 id: BuilderId(2),
                 name: "mock-b",
                 endpoint: builder,
+                warm: false,
             },
         ],
         relay,
@@ -160,7 +162,8 @@ async fn submit_enabled_false_zero_http() {
 async fn submit_enabled_true_mock_receives_signed_body_and_header() {
     let mock = spawn_mock(Duration::ZERO).await;
     let relay = leak_str(mock.url.clone());
-    let builders = set_from_urls(relay, relay);
+    let builders =
+        set_from_urls(relay, relay).with_mevshare_builders(&["flashbots", "titan", "quasar"]);
     // Test-only force of held+resync. Production has no such force.
     let p = path(true, live_bits(true, true), builders, AllowAll);
     let rec = p
@@ -187,6 +190,13 @@ async fn submit_enabled_true_mock_receives_signed_body_and_header() {
     let v: serde_json::Value = serde_json::from_slice(&last.body).unwrap();
     assert_eq!(v["method"], "mev_sendBundle");
     assert_eq!(v["params"][0]["body"][1]["canRevert"], false);
+    // mev-share-node refuses a bundle whose version is not "v0.1"/"beta-1".
+    assert_eq!(v["params"][0]["version"], "v0.1");
+    // The configured builder names reach the wire as `privacy.builders`.
+    assert_eq!(
+        v["params"][0]["privacy"]["builders"],
+        serde_json::json!(["flashbots", "titan", "quasar"])
+    );
 }
 
 fn svr_job() -> liq_exec::path::ExecJob {
@@ -374,11 +384,13 @@ async fn joinset_fans_out_two_builders() {
                 id: BuilderId(1),
                 name: "a",
                 endpoint: ua,
+                warm: false,
             },
             BuilderEndpoint {
                 id: BuilderId(2),
                 name: "b",
                 endpoint: ub,
+                warm: false,
             },
         ],
         ua,
@@ -392,16 +404,84 @@ async fn joinset_fans_out_two_builders() {
         .unwrap();
     let dt = t0.elapsed();
     assert_eq!(rec, SubmitReceipt::Accepted);
-    assert_eq!(a.hits.load(std::sync::atomic::Ordering::Relaxed), 1);
-    assert_eq!(b.hits.load(std::sync::atomic::Ordering::Relaxed), 1);
     assert!(
         dt < Duration::from_millis(350),
         "JoinSet must overlap; sequential would be ~400ms, got {dt:?}"
     );
+    // The fan-out returns at the first accept; the other POST is in flight.
+    let both = wait_hits(&[&a.hits, &b.hits], 1, Duration::from_secs(2)).await;
+    assert!(both, "each builder received the bundle once");
     let body = &a.captured.lock()[0].body;
     let v: serde_json::Value = serde_json::from_slice(body).unwrap();
     assert_eq!(v["method"], "eth_sendBundle");
     assert_eq!(v["params"][0]["txs"].as_array().unwrap().len(), 1);
+}
+
+/// Poll until every counter reaches `n` or `limit` passes.
+async fn wait_hits(hits: &[&std::sync::atomic::AtomicU64], n: u64, limit: Duration) -> bool {
+    let t0 = Instant::now();
+    while t0.elapsed() < limit {
+        if hits
+            .iter()
+            .all(|h| h.load(std::sync::atomic::Ordering::Relaxed) >= n)
+        {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
+
+/// A far builder does not hold the submit: the fan-out returns at the near
+/// builder's accept, and the far one still receives the same bundle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fanout_returns_at_first_accept_and_far_builder_still_gets_it() {
+    let near = spawn_mock(Duration::ZERO).await;
+    let far = spawn_mock(Duration::from_millis(800)).await;
+    let un = leak_str(near.url.clone());
+    let uf = leak_str(far.url.clone());
+    let set = BuilderSet::from_parts(
+        vec![
+            BuilderEndpoint {
+                id: BuilderId(1),
+                name: "near",
+                endpoint: un,
+                warm: false,
+            },
+            BuilderEndpoint {
+                id: BuilderId(2),
+                name: "far",
+                endpoint: uf,
+                warm: false,
+            },
+        ],
+        un,
+    )
+    .unwrap();
+    let p = path(true, live_bits(true, true), set, AllowAll);
+    let t0 = Instant::now();
+    let rec = p
+        .submit_path(&job(TriggerKind::InterestDrift, None, None))
+        .await
+        .unwrap();
+    let dt = t0.elapsed();
+    assert_eq!(rec, SubmitReceipt::Accepted);
+    assert!(
+        dt < Duration::from_millis(400),
+        "waited on the far builder: {dt:?} (it answers at ~800 ms)"
+    );
+    assert_eq!(
+        far.hits.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "far not read yet"
+    );
+    assert!(
+        wait_hits(&[&far.hits], 1, Duration::from_secs(3)).await,
+        "the far builder still received the bundle"
+    );
+    let a = near.captured.lock()[0].body.clone();
+    let b = far.captured.lock()[0].body.clone();
+    assert_eq!(a, b, "same signed bytes to both");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

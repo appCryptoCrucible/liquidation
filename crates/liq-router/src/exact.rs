@@ -1624,6 +1624,14 @@ const FLOW_SLICES: u64 = 50;
 /// Chain legs a flow may spread over: once that many distinct paths have
 /// taken slices, the rest go along them.
 const FLOW_PATHS: usize = 32;
+/// Every how many slices the graph is searched for new paths. The search
+/// is the flow's cost (about a thousand quotes a slice); between searches
+/// the slices go to the paths already found, each re-quoted on the pools
+/// as the earlier slices left them, so no slice is priced on stale state —
+/// only a path that first pays once the others have moved waits for the
+/// next search, by when it was already close. Each search keeps a route
+/// per hop count as a candidate, not only the winner.
+const FLOW_SEARCH_EVERY: u64 = 4;
 /// Trials the balancing pass may run after the slices: each shifts a part
 /// of a slice from the path paying least at the margin to the one paying
 /// most, kept when the sale pays more for it; a trial that does not pay
@@ -1713,7 +1721,10 @@ pub fn flow_split(
     let mut work = book.clone();
     let mut left = sold;
     let mut quotes = 0u32;
+    let mut slice_no = 0u64;
     while !left.is_zero() {
+        let search_now = slice_no.is_multiple_of(FLOW_SEARCH_EVERY);
+        slice_no = slice_no.saturating_add(1);
         // The last slice takes the remainder.
         let s = if left < slice.saturating_mul(U256::from(2u64)) {
             left
@@ -1749,29 +1760,34 @@ pub fn flow_split(
                 pick = Some((k, x));
             }
         }
-        // And the path paying most for this slice on those pools, found
-        // now: a new one while the plan has room for another chain leg.
-        let chains = paths.iter().filter(|p| !p.direct).count();
-        if chains < FLOW_PATHS {
-            let (fresh, q) = crate::graph::best_slice_chain(&work, start, asset_out, s, min_hops);
+        // And, every [`FLOW_SEARCH_EVERY`]th slice, the paths paying most
+        // for this slice on those pools, found now: new ones join as
+        // candidates (re-quoted on every later slice) while the plan has
+        // room for another chain leg.
+        let chains = paths
+            .iter()
+            .filter(|p| !p.direct && !p.sold.is_zero())
+            .count();
+        if search_now && chains < FLOW_PATHS {
+            let (fresh, q) = crate::graph::best_slice_chains(&work, start, asset_out, s, min_hops);
             quotes = quotes.saturating_add(q);
-            if let Some((route, hops, data, exact_out)) = fresh {
+            for (route, hops, data, exact_out) in fresh {
+                let k = match paths.iter().position(|p| p.data == data) {
+                    Some(k) => k,
+                    None => {
+                        paths.push(FlowPath {
+                            hops,
+                            data,
+                            exact_out,
+                            route_gas: route.hop_gas,
+                            sold: U256::ZERO,
+                            out: U256::ZERO,
+                            direct: false,
+                        });
+                        paths.len().saturating_sub(1)
+                    }
+                };
                 if pick.is_none_or(|(_, o)| route.amount_out > o) {
-                    let k = match paths.iter().position(|p| p.data == data) {
-                        Some(k) => k,
-                        None => {
-                            paths.push(FlowPath {
-                                hops,
-                                data,
-                                exact_out,
-                                route_gas: route.hop_gas,
-                                sold: U256::ZERO,
-                                out: U256::ZERO,
-                                direct: false,
-                            });
-                            paths.len().saturating_sub(1)
-                        }
-                    };
                     pick = Some((k, route.amount_out));
                 }
             }

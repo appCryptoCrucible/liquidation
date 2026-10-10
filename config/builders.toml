@@ -3,63 +3,81 @@
 # ultrasound, agnostic, …). Searchers do not submit to those.
 #
 # Official published URLs only:
+# Who builds (relayscan.io, 7 days to 2026-10-10): Titan 52%, Quasar 21%,
+# BuilderNet 16%, Eureka 4.6%, bombora 3.2%; beaverbuild 0.11%.
+#
 #   beaverbuild  https://beaverbuild.org/docs.html
 #                one URL, `https://rpc.beaverbuild.org/`. No regional host.
-#   rsync        https://rsync-builder.xyz/docs
-#                method docs only; the site is the endpoint. No regional host.
+#                Retired its own builder 2025-05-06 and runs BuilderNet
+#                (buildernet.org/blog/beaverbuild).
+#   rsync        removed 2026-10-10: `rsync-builder.xyz` resolves to no
+#                address and rsync built no block in the 7 days to that date.
+#   Quasar       https://docs.quasar.win/getting-started
+#                `https://rpc.quasar.win`, no auth required (a signed
+#                X-Flashbots-Signature "will prioritize your bundles"; we
+#                sign). One region: "We currently have a single endpoint in
+#                us-east-1. Multi-region endpoints will be released shortly."
+#                (docs.quasar.win, 2026-10-10). CloudFront edge in front;
+#                ~123 ms warm from the dev box. Switch to an EU host when
+#                Quasar publishes one.
 #   Titan        https://docs.titanbuilder.xyz/
 #                `rpc.titanbuilder.xyz` is AWS geo-routing and Titan says it
 #                can land in the wrong region. They say to use the regional
-#                hosts. Both US and EU are listed until the box location is
-#                chosen. Asia is not.
+#                hosts. The box is in the EU, so only `eu.rpc` is listed.
 #   Flashbots    https://docs.flashbots.net/flashbots-auction/advanced/rpc-endpoint
-#                `relay.flashbots.net` is Flashbots' builder. No regional split
-#                on that host.
+#                `relay.flashbots.net` is the Flashbots bundle relay. Flashbots
+#                has run no builder of its own since 2024-12-05; relay
+#                orderflow "is automatically shared with BuilderNet"
+#                (buildernet.org/docs/send-orderflow). No regional split.
 #   BuilderNet   https://buildernet.org/docs/send-orderflow
 #                Flashbots' orderflow network. A submit to one region is
-#                propagated to the others; both directs are listed so the
-#                first hop is local whichever continent the box is in.
+#                propagated to the others, so only the EU direct is listed:
+#                the first hop is local to the EU box.
 #                The geo endpoint `rpc.buildernet.org` is not used.
 #
 # No public-RPC submit URL. No `eth_sendRawTransaction`. No
 # `eth_sendPrivateTransaction`. Strings leak once at load to `&'static str` (00C).
+#
+# Fan-out (2026-10-10): BuilderNet EU, Titan EU and Quasar, 90% of blocks
+# between them. The box is in the EU, so the US rows of Titan and BuilderNet
+# are not listed. beaverbuild and the Flashbots relay are not listed: both now feed
+# BuilderNet, which the `buildernet-*` rows reach directly (~20 ms from
+# Frankfurt against ~150 ms to the relay). The relay stays the MEV-Share
+# endpoint below. rsync is gone (no address, no blocks).
+#
+# `warm = true`: the exec path re-warms the pooled HTTP/2 connection to that
+# builder every 20 s (`ExecPath::spawn_rewarm`) and PINGs it every 5 s, so a
+# bundle there never pays a TCP + TLS handshake (~230 ms to a US host from
+# Europe, measured 2026-10-09, ops/net/README.md). Every builder here is warm;
+# the MEV-Share relay is always warmed and needs no flag.
 # H3 has not deployed; planned Executor is `liq_exec::builders::PLANNED_EXECUTOR`.
-
-[[builders]]
-id = 1
-name = "beaverbuild"
-endpoint = "https://rpc.beaverbuild.org/"
-
-[[builders]]
-id = 2
-name = "rsync"
-endpoint = "https://rsync-builder.xyz"
-
-[[builders]]
-id = 3
-name = "titan-us"
-endpoint = "https://us.rpc.titanbuilder.xyz"
 
 [[builders]]
 id = 4
 name = "titan-eu"
 endpoint = "https://eu.rpc.titanbuilder.xyz"
-
-[[builders]]
-id = 5
-name = "flashbots"
-endpoint = "https://relay.flashbots.net"
-
-[[builders]]
-id = 6
-name = "buildernet-us"
-endpoint = "https://direct-us.buildernet.org"
+warm = true
 
 [[builders]]
 id = 7
 name = "buildernet-eu"
 endpoint = "https://direct-eu.buildernet.org"
+warm = true
+
+[[builders]]
+id = 8
+name = "quasar"
+endpoint = "https://rpc.quasar.win"
+warm = true
 
 [mevshare]
-# `mev_sendBundle` (GUIDE 13 §2). Same Flashbots builder host; different method.
+# `mev_sendBundle` (GUIDE 13 §2). BuilderNet's own hosts do not take this
+# method, so MEV-Share goes to the Flashbots relay (US only).
 relay = "https://relay.flashbots.net"
+# `privacy.builders` on every MEV-Share bundle. Names are from Flashbots'
+# MEV-Share registry (github.com/flashbots/dowg builder-registrations.json:
+# "flashbots", "Titan", "Quasar"); mev-share-node lowercases them. "flashbots"
+# is its internal builder, BuilderNet, which receives every bundle anyway.
+# The node intersects this list with the oracle transaction's own builder
+# list, so a builder the origin did not allow is dropped there.
+builders = ["flashbots", "titan", "quasar"]

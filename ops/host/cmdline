@@ -1,11 +1,13 @@
-# AMD EPYC 4564P. Append this line to GRUB_CMDLINE_LINUX, then reboot.
+# AMD Ryzen 7 9800X3D (8 cores / 16 threads, one L3). Append this line to
+# GRUB_CMDLINE_LINUX, then reboot.
 # Do not set CPUAffinity on reth-liq.service: the process must be able to
 # pin onto the isolated cores. Lighthouse is the unit that is confined
 # (ops/systemd/lighthouse.service).
 #
+# Logical CPU N and N+8 are the two threads of physical core N.
 # Isolated:
-#   0-7,16-23   CCD0 (hot). Only cores 0, 1, 2 are pinned.
-#   8-11,24-27  sim workers and their SMT siblings.
-#   12,13,28,29 router and submit, plus their SMT siblings (siblings unpinned).
-# Left for Reth, Lighthouse, IRQs, CEX, telemetry, drift: 14, 15, 30, 31.
-isolcpus=domain,managed_irq,0-13,16-29 nohz_full=0-13,16-29 rcu_nocbs=0-13,16-29 irqaffinity=14-15,30-31 processor.max_cstate=1 amd_idle.max_cstate=1
+#   0-2, 8-10   hot path (cores 0, 1, 2 pinned; siblings 8-10 left empty).
+#   3, 4, 11, 12 sim workers (both threads of cores 3 and 4).
+#   5, 13       router cache and submit (core 5 and its sibling).
+# Left for Reth, Lighthouse, IRQs, CEX, telemetry, drift: 6, 7, 14, 15.
+isolcpus=domain,managed_irq,0-5,8-13 nohz_full=0-5,8-13 rcu_nocbs=0-5,8-13 irqaffinity=6-7,14-15 processor.max_cstate=1 amd_idle.max_cstate=1

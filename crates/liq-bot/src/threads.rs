@@ -1,7 +1,12 @@
 //! Named threads, `cores.toml` topology, and fail-closed pinning.
 //!
-//! The committed file is the EPYC 4564P map. On Linux, production compares
-//! each L3 list to sysfs and refuses to start if they differ.
+//! The committed file is the Ryzen 7 9800X3D map: one CCD, one 96 MB L3
+//! shared by all eight cores, so the hot path cannot own an L3 slice and
+//! owns cores inside it instead (`hot_cpu_list`, with the SMT siblings of
+//! the hot cores listed so nothing else is pinned there). A two-CCD map
+//! (the earlier EPYC 4564P one) gives the hot path a whole slice by leaving
+//! `hot_cpu_list` out. On Linux, production compares each L3 list to sysfs
+//! and refuses to start if they differ.
 
 use core_affinity::CoreId;
 use serde::Deserialize;
@@ -95,6 +100,12 @@ pub struct L3Slice {
     pub numa: u8,
     pub isolated: bool,
     pub exclusive_hot: bool,
+    /// On the `exclusive_hot` slice of a single-L3 part: the cores the hot
+    /// threads own, their SMT siblings included. Hot threads pin inside it,
+    /// nothing else pins inside it, and the rest of the slice is open to
+    /// every other thread, sim workers included. `None`: the whole slice
+    /// is the hot path's.
+    pub hot_cpu_list: Option<CpuList>,
 }
 
 /// One named, pinned OS thread.
@@ -127,6 +138,8 @@ struct L3Raw {
     numa: u8,
     isolated: bool,
     exclusive_hot: bool,
+    #[serde(default)]
+    hot_cpu_list: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -174,6 +187,8 @@ pub enum ThreadError {
     HotCcxContaminated { name: String, core: u16 },
     #[error("sim worker {name} core {core} is not isolated off the hot CCX")]
     SimOffIsolated { name: String, core: u16 },
+    #[error("hot_cpu_list {text:?} is not inside its shared_cpu_list, or not on the exclusive_hot slice")]
+    BadHotCores { text: String },
     #[error("core {core} is not in this process affinity set")]
     CoreUnavailable { core: usize },
     #[error("pin_to_core({core}) returned false")]
@@ -212,11 +227,22 @@ impl CoreMap {
                     ));
                 }
             }
+            let hot_cpu_list = match s.hot_cpu_list {
+                Some(text) => {
+                    let hot = CpuList::parse(&text)?;
+                    if !s.exclusive_hot || hot.as_slice().iter().any(|c| !list.contains(*c)) {
+                        return Err(ThreadError::BadHotCores { text });
+                    }
+                    Some(hot)
+                }
+                None => None,
+            };
             l3.push(L3Slice {
                 shared_cpu_list: list,
                 numa: s.numa,
                 isolated: s.isolated,
                 exclusive_hot: s.exclusive_hot,
+                hot_cpu_list,
             });
         }
         if hot_ccx != 1 {
@@ -241,19 +267,26 @@ impl CoreMap {
                 .ok_or(ThreadError::CoreNotInTopology { core: t.core })?;
             let hot_name = is_hot_thread(&t.name);
             let sim = is_sim_worker(&t.name);
-            if hot_name && !slice.exclusive_hot {
+            // What the hot path owns: its cores on a single-L3 part, the
+            // whole slice otherwise.
+            let on_hot_cores = slice.exclusive_hot
+                && slice
+                    .hot_cpu_list
+                    .as_ref()
+                    .is_none_or(|hot| hot.contains(t.core));
+            if hot_name && !on_hot_cores {
                 return Err(ThreadError::HotThreadOffExclusiveCcx {
                     name: t.name,
                     core: t.core,
                 });
             }
-            if !hot_name && slice.exclusive_hot {
+            if !hot_name && on_hot_cores {
                 return Err(ThreadError::HotCcxContaminated {
                     name: t.name,
                     core: t.core,
                 });
             }
-            if sim && (slice.exclusive_hot || !slice.isolated) {
+            if sim && (on_hot_cores || !slice.isolated) {
                 return Err(ThreadError::SimOffIsolated {
                     name: t.name,
                     core: t.core,
@@ -504,24 +537,101 @@ mod tests {
         assert_eq!(thread_name("node", "hot").unwrap().as_str(), "liq-node-hot");
     }
 
+    /// The committed map is the 9800X3D's: one L3 of sixteen logical CPUs,
+    /// the hot threads on physical cores 0-2 with their SMT siblings 8-10
+    /// reserved, sim workers on cores 3 and 4 (both threads of each), the
+    /// router and submit on core 5 and its sibling, and the rest beside
+    /// Reth and Lighthouse on 6, 7, 14, 15.
     #[test]
     fn load_committed_production_map() {
         let map = CoreMap::load(&committed_toml()).expect("committed cores.toml");
         assert_eq!(map.schema, 1);
-        assert_eq!(map.l3().len(), 2);
+        assert_eq!(map.l3().len(), 1);
         assert!(map.l3().iter().all(|s| s.numa == 0));
-        assert_eq!(map.l3().iter().filter(|s| s.exclusive_hot).count(), 1);
+        let hot = &map.l3()[0];
+        assert!(hot.exclusive_hot && hot.isolated);
+        assert_eq!(
+            hot.shared_cpu_list.as_slice(),
+            &(0..16).collect::<Vec<u16>>()[..]
+        );
+        assert_eq!(
+            hot.hot_cpu_list.as_ref().unwrap().as_slice(),
+            &[0, 1, 2, 8, 9, 10]
+        );
         assert_eq!(map.slot("liq-node-hot").unwrap().core, 0);
         assert_eq!(map.slot("liq-oracle-fusion").unwrap().core, 1);
         assert_eq!(map.slot("liq-engine-recompute").unwrap().core, 2);
-        assert_eq!(map.slot("liq-sim-worker-0").unwrap().core, 8);
-        assert_eq!(map.slot("liq-sim-worker-3").unwrap().core, 11);
-        assert_eq!(map.slot("liq-router-cache").unwrap().core, 12);
+        assert_eq!(map.slot("liq-sim-worker-0").unwrap().core, 3);
+        assert_eq!(map.slot("liq-sim-worker-1").unwrap().core, 4);
+        assert_eq!(map.slot("liq-sim-worker-2").unwrap().core, 11);
+        assert_eq!(map.slot("liq-sim-worker-3").unwrap().core, 12);
+        assert_eq!(map.slot("liq-router-cache").unwrap().core, 5);
         assert_eq!(map.slot("liq-exec-submit").unwrap().core, 13);
-        assert_eq!(map.slot("liq-oracle-cex").unwrap().core, 14);
-        assert_eq!(map.slot("liq-obs-telemetry").unwrap().core, 30);
-        assert_eq!(map.slot("liq-obs-drift").unwrap().core, 31);
+        assert_eq!(map.slot("liq-oracle-cex").unwrap().core, 6);
+        assert_eq!(map.slot("liq-obs-telemetry").unwrap().core, 14);
+        assert_eq!(map.slot("liq-obs-drift").unwrap().core, 15);
         assert!(map.slot("nope").is_err());
+        // Nothing is pinned on a hot core's SMT sibling.
+        for t in map.threads() {
+            assert!(
+                !is_hot_thread(&t.name) || !(8..=10).contains(&t.core),
+                "{} on a hot sibling",
+                t.name
+            );
+            assert!(
+                is_hot_thread(&t.name) || !hot.hot_cpu_list.as_ref().unwrap().contains(t.core),
+                "{} inside the hot cores",
+                t.name
+            );
+        }
+    }
+
+    /// On one L3 the hot path owns `hot_cpu_list`: a hot thread outside it
+    /// fails, another thread inside it fails (the sibling of a hot core
+    /// included), a sim worker elsewhere on the isolated slice passes, and
+    /// a `hot_cpu_list` on a non-exclusive slice or outside its slice is
+    /// refused.
+    #[test]
+    fn single_l3_hot_cores_rules() {
+        let base = r#"
+schema = 1
+[[l3]]
+shared_cpu_list = "0-15"
+numa = 0
+isolated = true
+exclusive_hot = true
+hot_cpu_list = "0-2,8-10"
+"#;
+        let with = |threads: &str| CoreMap::parse_toml(&format!("{base}{threads}"));
+        assert!(with("[[thread]]\nname = \"liq-node-hot\"\ncore = 0\n[[thread]]\nname = \"liq-sim-worker-0\"\ncore = 3\n[[thread]]\nname = \"liq-exec-submit\"\ncore = 13\n").is_ok());
+        match with("[[thread]]\nname = \"liq-node-hot\"\ncore = 3\n") {
+            Err(ThreadError::HotThreadOffExclusiveCcx { .. }) => {}
+            other => panic!("expected HotThreadOffExclusiveCcx, got {other:?}"),
+        }
+        match with("[[thread]]\nname = \"liq-router-cache\"\ncore = 9\n") {
+            Err(ThreadError::HotCcxContaminated { .. }) => {}
+            other => panic!("expected HotCcxContaminated, got {other:?}"),
+        }
+        // A sim worker on a hot core is contamination before it is anything
+        // else.
+        match with("[[thread]]\nname = \"liq-sim-worker-0\"\ncore = 1\n") {
+            Err(ThreadError::HotCcxContaminated { .. }) => {}
+            other => panic!("expected HotCcxContaminated, got {other:?}"),
+        }
+        let outside = base.replace("hot_cpu_list = \"0-2,8-10\"", "hot_cpu_list = \"0-2,20\"");
+        match CoreMap::parse_toml(&format!(
+            "{outside}[[thread]]\nname = \"liq-node-hot\"\ncore = 0\n"
+        )) {
+            Err(ThreadError::BadHotCores { .. }) => {}
+            other => panic!("expected BadHotCores, got {other:?}"),
+        }
+        let not_exclusive = base.replace("exclusive_hot = true", "exclusive_hot = false");
+        match CoreMap::parse_toml(&format!(
+            "{not_exclusive}[[thread]]\nname = \"liq-node-hot\"\ncore = 0\n"
+        )) {
+            Err(ThreadError::BadHotCores { .. }) => {}
+            other => panic!("expected BadHotCores, got {other:?}"),
+        }
     }
 
     #[test]

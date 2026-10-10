@@ -147,19 +147,23 @@ relay = "https://relay.flashbots.net"
 #[test]
 fn shipped_toml_has_every_builder_and_relay() {
     let r = NetRoster::load(&shipped_builders()).expect("shipped builders.toml");
-    assert_eq!(r.builders.len(), 7);
+    assert_eq!(r.builders.len(), 3);
     assert_eq!(r.mevshare_relay, "https://relay.flashbots.net");
     let names: Vec<_> = r.builders.iter().map(|b| b.name.as_str()).collect();
-    assert!(names.contains(&"beaverbuild"));
-    assert!(names.contains(&"rsync"));
-    assert!(names.contains(&"titan-us"));
+    assert!(!names.contains(&"beaverbuild"));
+    assert!(
+        !names.contains(&"rsync"),
+        "rsync-builder.xyz has no address"
+    );
+    assert!(names.contains(&"quasar"));
+    assert!(!names.contains(&"titan-us"));
     assert!(names.contains(&"titan-eu"));
-    assert!(names.contains(&"flashbots"));
-    assert!(names.contains(&"buildernet-us"));
+    assert!(!names.contains(&"flashbots"));
+    assert!(!names.contains(&"buildernet-us"));
     assert!(names.contains(&"buildernet-eu"));
     let mon = RttMonitor::from_roster(r).unwrap();
     let rep = mon.report();
-    assert_eq!(rep.builders.len(), 7);
+    assert_eq!(rep.builders.len(), 3);
     for row in &rep.builders {
         assert_eq!(row.n, 0);
         assert!(row.p99_ns.is_none(), "empty window is ABSENT, not 0");
@@ -236,7 +240,7 @@ relay = "http://127.0.0.1:3/"
 }
 
 #[test]
-fn thirteen_a_keepalive_prewarm_present_handshake_still_absent() {
+fn thirteen_a_keepalive_prewarm_present_handshake_proven_on_submit_client() {
     let s = thirteen_a_http_pool_seam();
     assert!(s.shared_client, "ExecPath stores one reqwest::Client");
     assert!(s.cloned_for_joinset, "JoinSet clones the same client");
@@ -249,8 +253,8 @@ fn thirteen_a_keepalive_prewarm_present_handshake_still_absent() {
     assert!(s.prewarm, "13A must name warm_http / prewarm in source");
     assert_eq!(
         s.handshake_free_critical,
-        Claim::Absent,
-        "keepalive/prewarm is not a measured handshake-free proof"
+        Claim::ProvenOnSubmitClient,
+        "the accept-counter proof lives in liq-exec/tests/warm_connections.rs"
     );
 }
 

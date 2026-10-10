@@ -747,6 +747,11 @@ pub enum Claim {
     /// claim stays Absent until a handshake counter is measured on **that**
     /// object (16D monitor proof is not 13A proof).
     Absent,
+    /// Proven by `liq-exec/tests/warm_connections.rs` on `ExecPath.http`
+    /// itself: an accept counter on a keep-alive mock stays at one socket
+    /// across re-warms and a submit, and the re-warm loop keeps that socket
+    /// open past the server's idle close.
+    ProvenOnSubmitClient,
 }
 
 impl Claim {
@@ -755,6 +760,7 @@ impl Claim {
         match self {
             Self::ProvenOnMonitorClient => "PROVEN_MONITOR_CLIENT",
             Self::Absent => "ABSENT",
+            Self::ProvenOnSubmitClient => "PROVEN_SUBMIT_CLIENT",
         }
     }
 }
@@ -782,6 +788,17 @@ pub fn thirteen_a_http_pool_seam() -> ThirteenAHttpPool {
     let explicit_pool_max_idle = both.contains("pool_max_idle_per_host");
     let prewarm =
         both.contains("warm_http") || both.contains("prewarm") || both.contains("pre_warm");
+    let proof = root.join("../tests/warm_connections.rs");
+    let proof_src = fs::read_to_string(&proof).unwrap_or_default();
+    let handshake_free_critical = if path.contains("fn rewarm")
+        && path.contains("fn spawn_rewarm")
+        && proof_src.contains("accepted")
+        && proof_src.contains("spawn_rewarm_every")
+    {
+        Claim::ProvenOnSubmitClient
+    } else {
+        Claim::Absent
+    };
     ThirteenAHttpPool {
         shared_client,
         cloned_for_joinset,
@@ -789,7 +806,7 @@ pub fn thirteen_a_http_pool_seam() -> ThirteenAHttpPool {
         explicit_pool_idle,
         explicit_pool_max_idle,
         prewarm,
-        handshake_free_critical: Claim::Absent,
+        handshake_free_critical,
     }
 }
 

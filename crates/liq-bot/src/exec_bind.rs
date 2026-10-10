@@ -364,6 +364,7 @@ mod tests {
                 id: BuilderId(1),
                 name: "mock",
                 endpoint: relay,
+                warm: false,
             }],
             relay,
         )
@@ -451,6 +452,110 @@ mod tests {
         let rec = path.submit_path(&job()).await.unwrap();
         assert_eq!(rec, SubmitReceipt::Recorded);
         assert_eq!(hits.load(Ordering::Relaxed), 0);
+    }
+
+    /// Mock relay that answers each request `delay` after reading it, and
+    /// records when each `mev_sendBundle` arrived.
+    async fn spawn_slow_mock(
+        delay: Duration,
+    ) -> (String, Arc<parking_lot::Mutex<Vec<std::time::Instant>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let seen_t = Arc::clone(&seen);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let seen_t = Arc::clone(&seen_t);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 16_384];
+                    let mut got = Vec::new();
+                    loop {
+                        match sock.read(&mut buf).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => {
+                                got.extend_from_slice(buf.get(..n).unwrap_or(&[]));
+                                let Some(head) = got.windows(4).position(|w| w == b"\r\n\r\n")
+                                else {
+                                    continue;
+                                };
+                                let text = String::from_utf8_lossy(&got);
+                                let len = text
+                                    .lines()
+                                    .find_map(|l| {
+                                        l.to_ascii_lowercase()
+                                            .strip_prefix("content-length:")
+                                            .and_then(|v| v.trim().parse::<usize>().ok())
+                                    })
+                                    .unwrap_or(0);
+                                if got.len() >= head + 4 + len {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if String::from_utf8_lossy(&got).contains("mev_sendBundle") {
+                        seen_t.lock().push(std::time::Instant::now());
+                    }
+                    tokio::time::sleep(delay).await;
+                    let payload = br#"{"jsonrpc":"2.0","id":1,"result":{"bundleHash":"0x00"}}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        payload.len()
+                    );
+                    let mut out = resp.into_bytes();
+                    out.extend_from_slice(payload);
+                    let _ = sock.write_all(&out).await;
+                });
+            }
+        });
+        (format!("http://{addr}/"), seen)
+    }
+
+    /// The exec worker signs jobs in order but does not hold the next job
+    /// for the previous one's ack: with a relay that answers 600 ms after
+    /// reading, two queued jobs both reach it well inside one answer time.
+    #[test]
+    fn exec_worker_does_not_wait_on_acks_between_jobs() {
+        let mock_rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let delay = Duration::from_millis(600);
+        let (url, seen) = mock_rt.block_on(spawn_slow_mock(delay));
+        let flag = Arc::new(SubmitEnabled::new(true));
+        let lease = SubmitLease::granted_shadow();
+        lease.nonce_resync_flag().store(true, Ordering::Release);
+        let path = Arc::new(bind_path(flag, &lease, builders_for(&url)));
+        let (inbox, rx) = liq_exec::path::ExecInbox::pair(4);
+        let worker =
+            crate::exec_worker::spawn_exec_worker(rx, None, Arc::clone(&path), None).unwrap();
+        // Both jobs queued at once; the worker drains them in order.
+        assert!(inbox.try_send(job()));
+        let mut second = job();
+        second.trace = TraceId::from_raw(8);
+        assert!(inbox.try_send(second));
+        let t0 = std::time::Instant::now();
+        while seen.lock().len() < 2 && t0.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let at = seen.lock().clone();
+        assert_eq!(at.len(), 2, "both bundles reached the relay");
+        let (Some(first), Some(next)) = (at.first(), at.get(1)) else {
+            panic!("two arrivals");
+        };
+        let gap = next.saturating_duration_since(*first);
+        assert!(
+            gap < Duration::from_millis(300),
+            "second job waited on the first one's ack: {gap:?} (ack takes {delay:?})"
+        );
+        // Both took their own nonce, in order.
+        assert_eq!(path.nonces.next_of(0).unwrap(), 2);
+        drop(inbox);
+        worker.join().unwrap();
     }
 
     /// Test-only force of all three. Production has no such force.

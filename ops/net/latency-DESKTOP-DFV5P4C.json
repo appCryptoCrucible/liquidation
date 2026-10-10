@@ -1,0 +1,1888 @@
+{
+ "host": "DESKTOP-DFV5P4C",
+ "when": "2026-10-09T16:02:47+00:00",
+ "samples": 20,
+ "results": [
+  {
+   "name": "builder:beaverbuild",
+   "url": "https://rpc.beaverbuild.org/",
+   "kind": "rpc",
+   "addresses": [
+    "15.197.252.29",
+    "3.33.230.164"
+   ],
+   "samples": [
+    {
+     "connect_ms": 12.637800071388483,
+     "tls_ms": 36.94319981150329,
+     "request_ms": 34.300200175493956,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 12.486200081184506,
+     "tls_ms": 37.52899984829128,
+     "request_ms": 40.3740000911057,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 12.877900153398514,
+     "tls_ms": 34.293799893930554,
+     "request_ms": 69.32200002484024,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 61.66410003788769,
+     "tls_ms": 37.00889996252954,
+     "request_ms": 56.80459993891418,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 17.532499972730875,
+     "tls_ms": 31.903399853035808,
+     "request_ms": 55.45220011845231,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 12.160199927166104,
+     "tls_ms": 36.078899865970016,
+     "request_ms": 39.4784000236541,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 11.873200070112944,
+     "tls_ms": 36.395200062543154,
+     "request_ms": 56.78669991903007,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 13.352100038900971,
+     "tls_ms": 35.06799996830523,
+     "request_ms": 57.50009999610484,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 13.250699965283275,
+     "tls_ms": 34.1147999279201,
+     "request_ms": 38.01689995452762,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 13.410700019448996,
+     "tls_ms": 33.95870001986623,
+     "request_ms": 70.50050003454089,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 13.879300095140934,
+     "tls_ms": 34.649600042030215,
+     "request_ms": 57.79849993996322,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 12.637400068342686,
+     "tls_ms": 33.76449993811548,
+     "request_ms": 57.60459997691214,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 13.256799895316362,
+     "tls_ms": 33.67390017956495,
+     "request_ms": 69.85109997913241,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 54.25649997778237,
+     "tls_ms": 34.23780016601086,
+     "request_ms": 40.08940001949668,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 13.946800027042627,
+     "tls_ms": 31.412299955263734,
+     "request_ms": 67.44210002943873,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 12.711100047454238,
+     "tls_ms": 36.47910011932254,
+     "request_ms": 34.033000003546476,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 12.780799996107817,
+     "tls_ms": 34.55720003694296,
+     "request_ms": 70.2543999068439,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 13.407000107690692,
+     "tls_ms": 33.25810004025698,
+     "request_ms": 38.144199876114726,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 12.89450004696846,
+     "tls_ms": 34.44850002415478,
+     "request_ms": 41.13100003451109,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 12.615100014954805,
+     "tls_ms": 35.86479998193681,
+     "request_ms": 69.13149985484779,
+     "peer": "3.33.230.164",
+     "status": "HTTP/1.1 400 Bad Request"
+    }
+   ],
+   "errors": []
+  },
+  {
+   "name": "builder:rsync",
+   "url": "https://rsync-builder.xyz",
+   "kind": "rpc",
+   "addresses": [],
+   "samples": [],
+   "errors": [
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed"
+   ]
+  },
+  {
+   "name": "builder:titan-us",
+   "url": "https://us.rpc.titanbuilder.xyz",
+   "kind": "rpc",
+   "addresses": [
+    "3.92.90.185"
+   ],
+   "samples": [
+    {
+     "connect_ms": 97.6156999822706,
+     "tls_ms": 135.94930013641715,
+     "request_ms": 96.86509985476732,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 98.85330009274185,
+     "tls_ms": 112.33810009434819,
+     "request_ms": 96.63999988697469,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 96.91140009090304,
+     "tls_ms": 110.54040002636611,
+     "request_ms": 96.65090008638799,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 98.85770012624562,
+     "tls_ms": 115.54009979590774,
+     "request_ms": 96.65310010313988,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 98.8880000077188,
+     "tls_ms": 112.97190003097057,
+     "request_ms": 96.85149998404086,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 98.20810006931424,
+     "tls_ms": 113.77539997920394,
+     "request_ms": 96.80619998835027,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 99.24040012992918,
+     "tls_ms": 108.01439988426864,
+     "request_ms": 97.33180003240705,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 96.66220005601645,
+     "tls_ms": 145.52500005811453,
+     "request_ms": 190.8694999292493,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 97.70739986561239,
+     "tls_ms": 106.68950015679002,
+     "request_ms": 208.62170006148517,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 97.53660019487143,
+     "tls_ms": 108.19389997050166,
+     "request_ms": 97.43679990060627,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 98.15010009333491,
+     "tls_ms": 103.47780003212392,
+     "request_ms": 96.41449991613626,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 98.34600007161498,
+     "tls_ms": 218.97139982320368,
+     "request_ms": 97.00210019946098,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 99.74650014191866,
+     "tls_ms": 106.17409995757043,
+     "request_ms": 97.70469996146858,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 99.62520003318787,
+     "tls_ms": 108.71609998866916,
+     "request_ms": 98.86820008978248,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 98.9936999976635,
+     "tls_ms": 106.0465001501143,
+     "request_ms": 96.43390006385744,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 96.65920003317297,
+     "tls_ms": 111.24389991164207,
+     "request_ms": 97.03469998203218,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 97.59649983607233,
+     "tls_ms": 100.94110015779734,
+     "request_ms": 98.12600002624094,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 98.95279980264604,
+     "tls_ms": 101.64110013283789,
+     "request_ms": 97.37619990482926,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 99.04959984123707,
+     "tls_ms": 109.96300005353987,
+     "request_ms": 97.8457999881357,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 99.84240005724132,
+     "tls_ms": 113.90839982777834,
+     "request_ms": 98.95700006745756,
+     "peer": "3.92.90.185",
+     "status": "HTTP/1.1 200 OK"
+    }
+   ],
+   "errors": []
+  },
+  {
+   "name": "builder:titan-eu",
+   "url": "https://eu.rpc.titanbuilder.xyz",
+   "kind": "rpc",
+   "addresses": [
+    "3.66.4.153"
+   ],
+   "samples": [
+    {
+     "connect_ms": 12.711300048977137,
+     "tls_ms": 16.597099835053086,
+     "request_ms": 12.623300077393651,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.422399923205376,
+     "tls_ms": 18.258200027048588,
+     "request_ms": 12.5537000130862,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 15.254699857905507,
+     "tls_ms": 17.350699985399842,
+     "request_ms": 12.905200012028217,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.36860004812479,
+     "tls_ms": 16.81950013153255,
+     "request_ms": 17.628700006753206,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.097000006586313,
+     "tls_ms": 16.43280009739101,
+     "request_ms": 12.016699882224202,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.72259994968772,
+     "tls_ms": 18.438100116327405,
+     "request_ms": 11.890199966728687,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.02289986051619,
+     "tls_ms": 17.81790005043149,
+     "request_ms": 12.649100041016936,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.826200040057302,
+     "tls_ms": 16.21040003374219,
+     "request_ms": 11.7747001349926,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.862100197002292,
+     "tls_ms": 18.83279997855425,
+     "request_ms": 12.404199922457337,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 12.604099931195378,
+     "tls_ms": 18.802100094035268,
+     "request_ms": 12.075899867340922,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.185699936002493,
+     "tls_ms": 16.11130009405315,
+     "request_ms": 11.717000044882298,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.60839994251728,
+     "tls_ms": 16.443300060927868,
+     "request_ms": 12.572800042107701,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 12.869399972259998,
+     "tls_ms": 16.696299891918898,
+     "request_ms": 12.9700000397861,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.78919999115169,
+     "tls_ms": 16.989300027489662,
+     "request_ms": 12.213399866595864,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.206200139597058,
+     "tls_ms": 16.203399980440736,
+     "request_ms": 13.052099850028753,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 12.669399846345186,
+     "tls_ms": 16.23820001259446,
+     "request_ms": 13.243500143289566,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 15.081399818882346,
+     "tls_ms": 258.2457000389695,
+     "request_ms": 15.428600134328008,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.614799991250038,
+     "tls_ms": 18.192500108852983,
+     "request_ms": 12.892399914562702,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.481499860063195,
+     "tls_ms": 18.394000129774213,
+     "request_ms": 12.182299979031086,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.590400107204914,
+     "tls_ms": 19.22070002183318,
+     "request_ms": 11.869799811393023,
+     "peer": "3.66.4.153",
+     "status": "HTTP/1.1 200 OK"
+    }
+   ],
+   "errors": []
+  },
+  {
+   "name": "builder:flashbots",
+   "url": "https://relay.flashbots.net",
+   "kind": "rpc",
+   "addresses": [
+    "3.141.90.87",
+    "3.151.218.200"
+   ],
+   "samples": [
+    {
+     "connect_ms": 106.90849996171892,
+     "tls_ms": 163.63670001737773,
+     "request_ms": 195.8723000716418,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 207.24140014499426,
+     "tls_ms": 113.79410000517964,
+     "request_ms": 106.58619995228946,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 108.29369979910553,
+     "tls_ms": 203.96970002911985,
+     "request_ms": 175.697400001809,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 107.87379997782409,
+     "tls_ms": 112.66570002771914,
+     "request_ms": 108.28340006992221,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 119.55530010163784,
+     "tls_ms": 109.09499996341765,
+     "request_ms": 189.66779997572303,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 201.73559989780188,
+     "tls_ms": 211.08720009215176,
+     "request_ms": 106.77079996094108,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 113.79410000517964,
+     "tls_ms": 114.94469991885126,
+     "request_ms": 186.62230018526316,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 196.13850000314415,
+     "tls_ms": 115.35790003836155,
+     "request_ms": 106.54140007682145,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 153.8714999333024,
+     "tls_ms": 114.33340003713965,
+     "request_ms": 106.91470000892878,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 107.6183000113815,
+     "tls_ms": 124.52200008556247,
+     "request_ms": 299.1104999091476,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 217.28589991107583,
+     "tls_ms": 114.63890015147626,
+     "request_ms": 193.3873000089079,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 107.25139989517629,
+     "tls_ms": 199.9457001220435,
+     "request_ms": 139.81469999998808,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 110.4848999530077,
+     "tls_ms": 118.39239997789264,
+     "request_ms": 128.83500009775162,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 199.80400009080768,
+     "tls_ms": 115.60510005801916,
+     "request_ms": 106.72099981456995,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 167.12610004469752,
+     "tls_ms": 109.8736000712961,
+     "request_ms": 197.8444999549538,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 106.67819995433092,
+     "tls_ms": 218.70349999517202,
+     "request_ms": 164.0368001535535,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 107.87850013002753,
+     "tls_ms": 113.83319995366037,
+     "request_ms": 222.4965998902917,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 122.04420007765293,
+     "tls_ms": 219.2789998371154,
+     "request_ms": 107.35100018791854,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 201.7904999665916,
+     "tls_ms": 212.43109996430576,
+     "request_ms": 106.4949999563396,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 212.70160004496574,
+     "tls_ms": 216.03189990855753,
+     "request_ms": 191.8610001448542,
+     "peer": "3.141.90.87",
+     "status": "HTTP/1.1 200 OK"
+    }
+   ],
+   "errors": []
+  },
+  {
+   "name": "builder:buildernet-us",
+   "url": "https://direct-us.buildernet.org",
+   "kind": "rpc",
+   "addresses": [
+    "200.225.47.181",
+    "200.225.47.183"
+   ],
+   "samples": [
+    {
+     "connect_ms": 97.28339989669621,
+     "tls_ms": 111.56279989518225,
+     "request_ms": 96.61610005423427,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 99.6868999209255,
+     "tls_ms": 105.132200056687,
+     "request_ms": 98.8058999646455,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 112.11390001699328,
+     "tls_ms": 102.84999990835786,
+     "request_ms": 95.86940007284284,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 97.49790001660585,
+     "tls_ms": 104.72550010308623,
+     "request_ms": 99.07959983684123,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 97.58529998362064,
+     "tls_ms": 101.457400014624,
+     "request_ms": 96.92870010621846,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 98.44200010411441,
+     "tls_ms": 104.26199994981289,
+     "request_ms": 98.30019995570183,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 99.18979997746646,
+     "tls_ms": 111.72310006804764,
+     "request_ms": 98.03880006074905,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 99.8503000009805,
+     "tls_ms": 103.6765999160707,
+     "request_ms": 97.36010013148189,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 108.38190000504255,
+     "tls_ms": 114.11860003136098,
+     "request_ms": 98.84370001964271,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 99.69880012795329,
+     "tls_ms": 118.33039997145534,
+     "request_ms": 99.41589995287359,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 97.69439999945462,
+     "tls_ms": 100.90410010889173,
+     "request_ms": 98.3476999681443,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 98.71459985151887,
+     "tls_ms": 101.68700013309717,
+     "request_ms": 97.3520998377353,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 98.93219987861812,
+     "tls_ms": 101.89230018295348,
+     "request_ms": 97.59939997456968,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 97.34999993816018,
+     "tls_ms": 109.94020011276007,
+     "request_ms": 98.88589987531304,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 99.00219994597137,
+     "tls_ms": 104.72360020503402,
+     "request_ms": 99.18799996376038,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 98.23930007405579,
+     "tls_ms": 112.05270001664758,
+     "request_ms": 96.82970005087554,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 98.98669994436204,
+     "tls_ms": 109.7626001574099,
+     "request_ms": 98.45559997484088,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 98.09029987081885,
+     "tls_ms": 105.3613000549376,
+     "request_ms": 97.65280014835298,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 97.44680020958185,
+     "tls_ms": 110.02619983628392,
+     "request_ms": 98.50160009227693,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 101.22499987483025,
+     "tls_ms": 104.92700012400746,
+     "request_ms": 98.43620005995035,
+     "peer": "200.225.47.183",
+     "status": "HTTP/1.1 400 Bad Request"
+    }
+   ],
+   "errors": []
+  },
+  {
+   "name": "builder:buildernet-eu",
+   "url": "https://direct-eu.buildernet.org",
+   "kind": "rpc",
+   "addresses": [
+    "198.203.202.53",
+    "198.203.202.55"
+   ],
+   "samples": [
+    {
+     "connect_ms": 19.330899929627776,
+     "tls_ms": 24.3087001144886,
+     "request_ms": 18.46339995972812,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 20.78710007481277,
+     "tls_ms": 23.41789985075593,
+     "request_ms": 18.678600201383233,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 21.261400077492,
+     "tls_ms": 23.673699935898185,
+     "request_ms": 19.10070003941655,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 23.603799985721707,
+     "tls_ms": 23.617699975147843,
+     "request_ms": 18.907299963757396,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 20.1365000102669,
+     "tls_ms": 23.716700030490756,
+     "request_ms": 19.39720008522272,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 23.465799866244197,
+     "tls_ms": 22.92820019647479,
+     "request_ms": 19.222599919885397,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 19.901199964806437,
+     "tls_ms": 25.06290003657341,
+     "request_ms": 19.765499979257584,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 20.794800017029047,
+     "tls_ms": 22.37959997728467,
+     "request_ms": 18.566899932920933,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 19.15850001387298,
+     "tls_ms": 26.499300030991435,
+     "request_ms": 27.462600031867623,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 19.39580007456243,
+     "tls_ms": 23.55259982869029,
+     "request_ms": 18.80170009098947,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 23.125299951061606,
+     "tls_ms": 26.25710004940629,
+     "request_ms": 19.785000011324883,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 19.937200006097555,
+     "tls_ms": 25.10440000332892,
+     "request_ms": 19.6923001203686,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 20.19549999386072,
+     "tls_ms": 26.417900109663606,
+     "request_ms": 19.062699982896447,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 31.276500085368752,
+     "tls_ms": 26.283300016075373,
+     "request_ms": 18.714800011366606,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 20.87699994444847,
+     "tls_ms": 35.11840011924505,
+     "request_ms": 18.622499890625477,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 21.69049996882677,
+     "tls_ms": 34.72120012156665,
+     "request_ms": 19.40310001373291,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 20.048900041729212,
+     "tls_ms": 24.607199942693114,
+     "request_ms": 18.53909995406866,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 21.275199949741364,
+     "tls_ms": 23.38979998603463,
+     "request_ms": 20.059699891135097,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 21.587399998679757,
+     "tls_ms": 23.683200124651194,
+     "request_ms": 18.93060002475977,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    },
+    {
+     "connect_ms": 21.431999979540706,
+     "tls_ms": 26.406799908727407,
+     "request_ms": 20.954699954017997,
+     "peer": "198.203.202.55",
+     "status": "HTTP/1.1 400 Bad Request"
+    }
+   ],
+   "errors": []
+  },
+  {
+   "name": "relay:flashbots-boost",
+   "url": "https://boost-relay.flashbots.net",
+   "kind": "relay",
+   "addresses": [
+    "104.20.21.179",
+    "172.66.170.133"
+   ],
+   "samples": [
+    {
+     "connect_ms": 13.593400130048394,
+     "tls_ms": 17.662599915638566,
+     "request_ms": 214.18659994378686,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.050199883058667,
+     "tls_ms": 17.754800152033567,
+     "request_ms": 120.76990003697574,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.26029996946454,
+     "tls_ms": 21.751799853518605,
+     "request_ms": 245.11480005457997,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.564200071617961,
+     "tls_ms": 25.480099953711033,
+     "request_ms": 140.61110001057386,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.581000035628676,
+     "tls_ms": 21.239700028672814,
+     "request_ms": 226.4846998732537,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.593799900263548,
+     "tls_ms": 16.336699947714806,
+     "request_ms": 131.75240019336343,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 12.050500139594078,
+     "tls_ms": 18.160599982365966,
+     "request_ms": 135.89440006762743,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 12.698199832811952,
+     "tls_ms": 25.350000010803342,
+     "request_ms": 175.01020012423396,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 15.774199971929193,
+     "tls_ms": 16.52320008724928,
+     "request_ms": 142.29009998962283,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 17.244699876755476,
+     "tls_ms": 28.537800069898367,
+     "request_ms": 177.04110010527074,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.119300059974194,
+     "tls_ms": 19.512899918481708,
+     "request_ms": 173.4757001977414,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.560499927029014,
+     "tls_ms": 20.78130003064871,
+     "request_ms": 158.08970015496016,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.608499895781279,
+     "tls_ms": 24.168699979782104,
+     "request_ms": 121.69610010460019,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.270699815824628,
+     "tls_ms": 18.95450009033084,
+     "request_ms": 153.85759994387627,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.769700122997165,
+     "tls_ms": 47.477300046011806,
+     "request_ms": 131.86949980445206,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.804700156673789,
+     "tls_ms": 19.89639992825687,
+     "request_ms": 158.3126001060009,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.736000215634704,
+     "tls_ms": 19.54319979995489,
+     "request_ms": 149.66020011343062,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.723500004038215,
+     "tls_ms": 23.808799916878343,
+     "request_ms": 164.33630022220314,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.97660018503666,
+     "tls_ms": 21.830399986356497,
+     "request_ms": 190.5739998910576,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.682100154459476,
+     "tls_ms": 30.600900063291192,
+     "request_ms": 269.58699990063906,
+     "peer": "172.66.170.133",
+     "status": "HTTP/1.1 200 OK"
+    }
+   ],
+   "errors": []
+  },
+  {
+   "name": "relay:ultrasound",
+   "url": "https://relay.ultrasound.money",
+   "kind": "relay",
+   "addresses": [
+    "141.94.249.85",
+    "37.59.18.178",
+    "51.210.32.183"
+   ],
+   "samples": [
+    {
+     "connect_ms": 24.656200082972646,
+     "tls_ms": 29.47780000977218,
+     "request_ms": 24.48609983548522,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 26.339800097048283,
+     "tls_ms": 27.962699998170137,
+     "request_ms": 26.155099971219897,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 25.91139986179769,
+     "tls_ms": 28.782800072804093,
+     "request_ms": 25.25379997678101,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 24.43729992955923,
+     "tls_ms": 28.543599881231785,
+     "request_ms": 22.914100205525756,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 24.49380001053214,
+     "tls_ms": 28.368700062856078,
+     "request_ms": 23.309600073844194,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 26.1115999892354,
+     "tls_ms": 29.023299925029278,
+     "request_ms": 23.753599962219596,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 23.816500091925263,
+     "tls_ms": 29.751800000667572,
+     "request_ms": 23.768899962306023,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 25.997899938374758,
+     "tls_ms": 30.145300086587667,
+     "request_ms": 23.073700023815036,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 26.04670007713139,
+     "tls_ms": 27.373099932447076,
+     "request_ms": 23.39170011691749,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 26.0538998991251,
+     "tls_ms": 33.387800212949514,
+     "request_ms": 23.992599919438362,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 32.621300080791116,
+     "tls_ms": 30.000499915331602,
+     "request_ms": 24.780299980193377,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 24.47329997085035,
+     "tls_ms": 27.935100020840764,
+     "request_ms": 23.695699870586395,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 24.019800126552582,
+     "tls_ms": 26.65259991772473,
+     "request_ms": 23.340299958363175,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 27.181799989193678,
+     "tls_ms": 28.407400008291006,
+     "request_ms": 143.02309998311102,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 114.81900000944734,
+     "tls_ms": 29.919900000095367,
+     "request_ms": 137.23039999604225,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 113.11150016263127,
+     "tls_ms": 26.966199977323413,
+     "request_ms": 23.45509990118444,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 68.57749982737005,
+     "tls_ms": 29.85890000127256,
+     "request_ms": 25.592700112611055,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 37.60199993848801,
+     "tls_ms": 28.235499979928136,
+     "request_ms": 24.086400168016553,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 66.84610014781356,
+     "tls_ms": 28.158299857750535,
+     "request_ms": 24.279600009322166,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 54.264199919998646,
+     "tls_ms": 28.660600073635578,
+     "request_ms": 23.75610009767115,
+     "peer": "37.59.18.178",
+     "status": "HTTP/1.1 200 OK"
+    }
+   ],
+   "errors": []
+  },
+  {
+   "name": "relay:agnostic",
+   "url": "https://agnostic-relay.net",
+   "kind": "relay",
+   "addresses": [
+    "15.197.194.13",
+    "3.33.234.153"
+   ],
+   "samples": [
+    {
+     "connect_ms": 12.56539998576045,
+     "tls_ms": 128.34559986367822,
+     "request_ms": 35.381900146603584,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 84.2562997713685,
+     "tls_ms": 37.81820018775761,
+     "request_ms": 34.88900000229478,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 15.329099958762527,
+     "tls_ms": 30.10490001179278,
+     "request_ms": 25.343499844893813,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.901300029829144,
+     "tls_ms": 34.384300000965595,
+     "request_ms": 29.17720004916191,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 15.070100082084537,
+     "tls_ms": 32.02340006828308,
+     "request_ms": 26.89979993738234,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.95809992775321,
+     "tls_ms": 35.45640013180673,
+     "request_ms": 33.92160008661449,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 15.585900051519275,
+     "tls_ms": 31.37280000373721,
+     "request_ms": 34.9051000084728,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.709000078961253,
+     "tls_ms": 34.135299967601895,
+     "request_ms": 37.50459989532828,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 12.295000022277236,
+     "tls_ms": 33.32129982300103,
+     "request_ms": 34.50110019184649,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 28.723099967464805,
+     "tls_ms": 23.790899896994233,
+     "request_ms": 35.21800017915666,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 12.055800063535571,
+     "tls_ms": 32.60529995895922,
+     "request_ms": 26.74989984370768,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 18.230800051242113,
+     "tls_ms": 35.70999996736646,
+     "request_ms": 26.705299969762564,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.882899889722466,
+     "tls_ms": 33.52890000678599,
+     "request_ms": 26.591500034555793,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.976299833506346,
+     "tls_ms": 33.20170007646084,
+     "request_ms": 34.478000132367015,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.914800016209483,
+     "tls_ms": 31.7136999219656,
+     "request_ms": 35.049800062552094,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.68870004080236,
+     "tls_ms": 30.809899792075157,
+     "request_ms": 32.45180007070303,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.806999893859029,
+     "tls_ms": 33.17150007933378,
+     "request_ms": 34.889400005340576,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 11.942300014197826,
+     "tls_ms": 30.666999984532595,
+     "request_ms": 32.11370017379522,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.844200177118182,
+     "tls_ms": 31.501099932938814,
+     "request_ms": 72.0689999870956,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.01020004414022,
+     "tls_ms": 30.97459999844432,
+     "request_ms": 35.23669997230172,
+     "peer": "3.33.234.153",
+     "status": "HTTP/1.1 200 OK"
+    }
+   ],
+   "errors": []
+  },
+  {
+   "name": "relay:aestus",
+   "url": "https://mainnet.aestus.live",
+   "kind": "relay",
+   "addresses": [
+    "51.77.108.83"
+   ],
+   "samples": [
+    {
+     "connect_ms": 30.63499997369945,
+     "tls_ms": 35.039300099015236,
+     "request_ms": 29.576099943369627,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 31.557400012388825,
+     "tls_ms": 33.292199950665236,
+     "request_ms": 29.572200030088425,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 30.597900040447712,
+     "tls_ms": 32.794199883937836,
+     "request_ms": 29.740000143647194,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 31.125199981033802,
+     "tls_ms": 33.29970012418926,
+     "request_ms": 29.004099778831005,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 31.571999890729785,
+     "tls_ms": 32.48580009676516,
+     "request_ms": 30.800699954852462,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 49.10479998216033,
+     "tls_ms": 33.74040010385215,
+     "request_ms": 30.063799815252423,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 32.71959978155792,
+     "tls_ms": 34.84169999137521,
+     "request_ms": 29.318500077351928,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 30.8960999827832,
+     "tls_ms": 32.357900170609355,
+     "request_ms": 29.27930001169443,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 29.329099925234914,
+     "tls_ms": 32.11840009316802,
+     "request_ms": 28.758500004187226,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 30.093499924987555,
+     "tls_ms": 33.02350011654198,
+     "request_ms": 29.458799865096807,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 30.5334001313895,
+     "tls_ms": 34.774000057950616,
+     "request_ms": 30.3740999661386,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 31.114100012928247,
+     "tls_ms": 33.7415998801589,
+     "request_ms": 31.98059997521341,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 29.907999793067575,
+     "tls_ms": 33.87540020048618,
+     "request_ms": 29.398499988019466,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 29.985100030899048,
+     "tls_ms": 34.297400154173374,
+     "request_ms": 31.048899982124567,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 31.32549999281764,
+     "tls_ms": 34.90839991718531,
+     "request_ms": 29.00260011665523,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 29.90339999087155,
+     "tls_ms": 34.45479995571077,
+     "request_ms": 29.016300104558468,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 30.11219995096326,
+     "tls_ms": 32.81749994494021,
+     "request_ms": 29.673899989575148,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 31.161800026893616,
+     "tls_ms": 33.05299999192357,
+     "request_ms": 30.069499975070357,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 31.84409998357296,
+     "tls_ms": 33.57620001770556,
+     "request_ms": 29.37689982354641,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 34.039500169456005,
+     "tls_ms": 33.093599835410714,
+     "request_ms": 28.729800134897232,
+     "peer": "51.77.108.83",
+     "status": "HTTP/1.1 200 OK"
+    }
+   ],
+   "errors": []
+  },
+  {
+   "name": "relay:bloxroute-max-profit",
+   "url": "https://bloxroute.max-profit.blxrbdn.com",
+   "kind": "relay",
+   "addresses": [],
+   "samples": [],
+   "errors": [
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed",
+    "gaierror: [Errno 11001] getaddrinfo failed"
+   ]
+  },
+  {
+   "name": "relay:bloxroute-regulated",
+   "url": "https://bloxroute.regulated.blxrbdn.com",
+   "kind": "relay",
+   "addresses": [
+    "18.66.192.104",
+    "18.66.192.118",
+    "18.66.192.16",
+    "18.66.192.88"
+   ],
+   "samples": [
+    {
+     "connect_ms": 16.745500033721328,
+     "tls_ms": 255.94910001382232,
+     "request_ms": 232.26609989069402,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 15.300699975341558,
+     "tls_ms": 16.03970001451671,
+     "request_ms": 49.99629990197718,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.889900106936693,
+     "tls_ms": 17.75130000896752,
+     "request_ms": 22.445800015702844,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.747499953955412,
+     "tls_ms": 17.181800212711096,
+     "request_ms": 21.1213999427855,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 16.761000035330653,
+     "tls_ms": 18.757399870082736,
+     "request_ms": 43.551400071009994,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.749000081792474,
+     "tls_ms": 16.913099912926555,
+     "request_ms": 21.806899923831224,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.305200031027198,
+     "tls_ms": 15.796699794009328,
+     "request_ms": 43.24780008755624,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 16.246699960902333,
+     "tls_ms": 15.92989987693727,
+     "request_ms": 23.376299999654293,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.779499964788556,
+     "tls_ms": 17.63890008442104,
+     "request_ms": 22.0983000472188,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.725900022312999,
+     "tls_ms": 16.088000033050776,
+     "request_ms": 23.949400056153536,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 15.52719995379448,
+     "tls_ms": 16.30639983341098,
+     "request_ms": 44.21340022236109,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.218899887055159,
+     "tls_ms": 16.86820015311241,
+     "request_ms": 22.067599929869175,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 12.895299820229411,
+     "tls_ms": 17.15379999950528,
+     "request_ms": 22.54880010150373,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 12.889200123026967,
+     "tls_ms": 18.14619987271726,
+     "request_ms": 22.54900010302663,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.228600077331066,
+     "tls_ms": 17.174799926579,
+     "request_ms": 22.424499969929457,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 15.280399937182665,
+     "tls_ms": 19.57060000859201,
+     "request_ms": 22.506600013002753,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.824099907651544,
+     "tls_ms": 17.098700162023306,
+     "request_ms": 42.104899883270264,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 17.30680000036955,
+     "tls_ms": 17.421900061890483,
+     "request_ms": 21.08490001410246,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 15.372299822047353,
+     "tls_ms": 17.0847000554204,
+     "request_ms": 22.693500155583024,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.796000042930245,
+     "tls_ms": 16.421400010585785,
+     "request_ms": 22.96350011602044,
+     "peer": "18.66.192.118",
+     "status": "HTTP/1.1 200 OK"
+    }
+   ],
+   "errors": []
+  },
+  {
+   "name": "relay:titan",
+   "url": "https://titanrelay.xyz",
+   "kind": "relay",
+   "addresses": [
+    "18.195.120.217"
+   ],
+   "samples": [
+    {
+     "connect_ms": 14.042099937796593,
+     "tls_ms": 16.69050008058548,
+     "request_ms": 13.050799956545234,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.794500079005957,
+     "tls_ms": 17.039099941030145,
+     "request_ms": 12.557700043544173,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.450700022280216,
+     "tls_ms": 17.66970008611679,
+     "request_ms": 14.668700052425265,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.783200109377503,
+     "tls_ms": 17.874599900096655,
+     "request_ms": 12.571499915793538,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.332099886611104,
+     "tls_ms": 16.30660006776452,
+     "request_ms": 14.77020001038909,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.802299905568361,
+     "tls_ms": 16.314500011503696,
+     "request_ms": 13.024700107052922,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 16.096999868750572,
+     "tls_ms": 17.215200001373887,
+     "request_ms": 13.196200132369995,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.347200049087405,
+     "tls_ms": 16.824099933728576,
+     "request_ms": 12.846400029957294,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.489700086414814,
+     "tls_ms": 16.938199987635016,
+     "request_ms": 14.461399987339973,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.103999895974994,
+     "tls_ms": 16.333900159224868,
+     "request_ms": 13.487499905750155,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.877899782732129,
+     "tls_ms": 17.515600193291903,
+     "request_ms": 12.461500009521842,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.340300112962723,
+     "tls_ms": 17.58619979955256,
+     "request_ms": 12.086500180885196,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 16.941099893301725,
+     "tls_ms": 16.905900090932846,
+     "request_ms": 13.315799878910184,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.970699859783053,
+     "tls_ms": 244.33940020389855,
+     "request_ms": 13.058999786153436,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 13.54640000499785,
+     "tls_ms": 17.22349994815886,
+     "request_ms": 12.454699957743287,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 19.97800008393824,
+     "tls_ms": 17.614099895581603,
+     "request_ms": 12.674700003117323,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 23.86089996434748,
+     "tls_ms": 66.4425001014024,
+     "request_ms": 39.27859989926219,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 14.81770002283156,
+     "tls_ms": 17.727599944919348,
+     "request_ms": 14.488199958577752,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 12.917699990794063,
+     "tls_ms": 17.987499944865704,
+     "request_ms": 12.051899917423725,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    },
+    {
+     "connect_ms": 12.732299976050854,
+     "tls_ms": 16.860400093719363,
+     "request_ms": 11.942700017243624,
+     "peer": "18.195.120.217",
+     "status": "HTTP/1.1 200 OK"
+    }
+   ],
+   "errors": []
+  }
+ ]
+}

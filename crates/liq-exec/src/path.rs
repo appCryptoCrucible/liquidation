@@ -28,6 +28,16 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(3);
 const HTTP_POOL_IDLE: Duration = Duration::from_secs(90);
 const HTTP_TCP_KEEPALIVE: Duration = Duration::from_secs(10);
 const HTTP_POOL_MAX_IDLE_PER_HOST: usize = 8;
+/// HTTP/2 PING on every pooled connection, idle or not. Keeps NAT and load
+/// balancer state alive between re-warms and lets the pool drop a dead
+/// connection within `HTTP2_PING_TIMEOUT` instead of a bundle finding it.
+const HTTP2_PING_EVERY: Duration = Duration::from_secs(5);
+const HTTP2_PING_TIMEOUT: Duration = Duration::from_secs(3);
+/// Re-warm cadence for the `warm` builders and the MEV-Share relay. Servers
+/// close idle keep-alive sockets on their own clock (AWS ALB 60 s default,
+/// nginx 75 s, our pool 90 s); 20 s keeps every pooled socket under those
+/// limits with room for one failed round, at one tiny POST per target.
+const HTTP_REWARM_EVERY: Duration = Duration::from_secs(20);
 
 /// Logs the undeployed-Executor refusal once per process.
 static UNDEPLOYED_WARNED: AtomicBool = AtomicBool::new(false);
@@ -63,6 +73,24 @@ pub struct ExecJob {
     /// `gas_limit` is then the simulated gas plus a margin. Set when the
     /// drain had no in-process simulator.
     pub rpc_verify: bool,
+}
+
+/// What [`ExecPath::sign_and_gate`] decided. `Done`: nothing to POST
+/// (recorded, denied, toggles off). `Send`: signed and allowed.
+#[derive(Debug)]
+pub enum Gated {
+    Done(SubmitReceipt),
+    Send(Box<ReadyToSend>),
+}
+
+/// A signed job the gate let through, with the nonce it took. Owned, so the
+/// POST can run on its own task.
+#[derive(Debug)]
+pub struct ReadyToSend {
+    pub job: ExecJob,
+    pub allocated: AllocatedNonce,
+    pub signed: SignedTx,
+    pub venue: Venue,
 }
 
 /// Hot → exec inbox. Bounded; full is counted.
@@ -234,8 +262,21 @@ where
         self
     }
 
-    /// Sign, record, gate, optional POST. This is the only send path.
+    /// Sign, record, gate, optional POST. This is the only send path:
+    /// [`Self::sign_and_gate`] then, when it hands back a send,
+    /// [`Self::send_ready`].
     pub async fn submit_path(&self, job: &ExecJob) -> Result<SubmitReceipt> {
+        match self.sign_and_gate(job)? {
+            Gated::Done(receipt) => Ok(receipt),
+            Gated::Send(ready) => self.send_ready(*ready).await,
+        }
+    }
+
+    /// Everything before the network, synchronously: checks, nonce, sign,
+    /// record, risk gate, live toggles. The exec worker runs this in job
+    /// order (so nonces are taken in order) and spawns [`Self::send_ready`],
+    /// so the next job does not wait on this one's acks.
+    pub fn sign_and_gate(&self, job: &ExecJob) -> Result<Gated> {
         if job.chain_id != 1 {
             return Err(ExecError::ChainId(job.chain_id));
         }
@@ -339,7 +380,7 @@ where
                     "risk deny; HTTP not sent"
                 );
                 self.mark_nonce_dropped(&allocated);
-                return Ok(SubmitReceipt::Denied);
+                return Ok(Gated::Done(SubmitReceipt::Denied));
             }
             Allow::Yes => {}
         }
@@ -351,7 +392,7 @@ where
             || !self.nonce_resync.load(Ordering::Acquire)
         {
             self.track(&allocated, &signed, job);
-            return Ok(SubmitReceipt::Recorded);
+            return Ok(Gated::Done(SubmitReceipt::Recorded));
         }
         // No deployed Executor (`venues.executor` unset): the placeholder
         // has no code on mainnet, so a send would only spend gas.
@@ -362,38 +403,103 @@ where
                 );
             }
             self.track(&allocated, &signed, job);
-            return Ok(SubmitReceipt::Recorded);
+            return Ok(Gated::Done(SubmitReceipt::Recorded));
         }
+        Ok(Gated::Send(Box::new(ReadyToSend {
+            job: job.clone(),
+            allocated,
+            signed,
+            venue: routed.venue,
+        })))
+    }
 
-        if let Err(e) = self.send_signed(job, &routed.venue, &signed).await {
+    /// POST a job [`Self::sign_and_gate`] let through. A builder fan-out
+    /// returns at the first builder's ack (the rest finish on their own);
+    /// MEV-Share returns at the relay's.
+    pub async fn send_ready(&self, ready: ReadyToSend) -> Result<SubmitReceipt> {
+        let ReadyToSend {
+            job,
+            allocated,
+            signed,
+            venue,
+        } = ready;
+        if let Err(e) = self.send_signed(&job, &venue, &signed).await {
             self.mark_nonce_dropped(&allocated);
             return Err(e);
         }
         stage(job.trace, Stage::VenueAck);
-        self.track(&allocated, &signed, job);
+        self.track(&allocated, &signed, &job);
         Ok(SubmitReceipt::Accepted)
     }
 
     /// POST to establish the idle socket. **Not** a live bundle. Name is
     /// `warm_http` so 16D `thirteen_a_http_pool_seam` can see the prewarm.
     pub async fn warm_http(&self, url: &str) -> Result<()> {
-        crate::builders::reject_public_rpc(url)?;
-        let resp = self
-            .http
-            .post(url)
-            .header("content-type", "application/json")
-            .body("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]}")
-            .send()
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, url, "13A warm_http / prewarm failed");
-                ExecError::Http(e.to_string())
-            })?;
-        resp.bytes().await.map_err(|e| {
-            tracing::error!(error = %e, url, "13A warm_http body read failed");
-            ExecError::Http(e.to_string())
-        })?;
-        Ok(())
+        warm_url(&self.http, url).await.map(|_| ())
+    }
+
+    /// One warm POST, returning the HTTP version the connection speaks
+    /// (`HTTP/2.0` when ALPN negotiated h2). Live probe and tests.
+    pub async fn warm_version(&self, url: &str) -> Result<reqwest::Version> {
+        warm_url(&self.http, url).await
+    }
+
+    /// Re-warm the sockets the next bundle rides: builders flagged `warm`
+    /// in `builders.toml` plus the MEV-Share relay, all at once. Returns the
+    /// URLs that failed; each is logged and the next tick tries again.
+    pub async fn rewarm(&self) -> Vec<&'static str> {
+        let mut set = tokio::task::JoinSet::new();
+        for url in self.builders.set.warm_targets() {
+            let http = self.http.clone();
+            set.spawn(async move { (url, warm_url(&http, url).await.map(|_| ())) });
+        }
+        let mut failed = Vec::new();
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok((_, Ok(()))) => {}
+                Ok((url, Err(e))) => {
+                    tracing::error!(url, err = %e, "rewarm failed — next bundle there pays a handshake");
+                    failed.push(url);
+                }
+                Err(e) => tracing::error!(err = %e, "rewarm task failed to join"),
+            }
+        }
+        failed
+    }
+
+    /// Run [`Self::rewarm`] every [`HTTP_REWARM_EVERY`] on the current
+    /// runtime for the life of the path. The loop is detached: dropping the
+    /// handle does not stop it, `abort` does.
+    pub fn spawn_rewarm(self: &Arc<Self>) -> tokio::task::JoinHandle<()>
+    where
+        R: Send + Sync + 'static,
+        G: Send + Sync + 'static,
+    {
+        self.spawn_rewarm_every(HTTP_REWARM_EVERY)
+    }
+
+    /// [`Self::spawn_rewarm`] with the cadence chosen by the caller.
+    pub fn spawn_rewarm_every(self: &Arc<Self>, every: Duration) -> tokio::task::JoinHandle<()>
+    where
+        R: Send + Sync + 'static,
+        G: Send + Sync + 'static,
+    {
+        let path = Arc::clone(self);
+        tokio::spawn(async move {
+            let targets = path.builders.set.warm_targets();
+            tracing::info!(
+                ?targets,
+                every_s = every.as_secs_f64(),
+                "rewarm loop started"
+            );
+            loop {
+                tokio::time::sleep(every).await;
+                let failed = path.rewarm().await;
+                if !failed.is_empty() {
+                    tracing::error!(?failed, "rewarm tick left targets cold");
+                }
+            }
+        })
     }
 
     /// Prewarm every curated builder plus the MEV-Share relay. Failures are
@@ -425,6 +531,7 @@ where
                     max_block: job.max_block,
                     hint_hash: hint,
                     signed_liquidation: signed.raw.clone(),
+                    builders: self.builders.set.mevshare_builders,
                 };
                 let req = self.mevshare.sign(&bundle)?;
                 let _ = self.mevshare.send(&self.http, &req).await?;
@@ -493,12 +600,38 @@ where
     }
 }
 
+/// One `eth_chainId` POST over the pooled client. With no idle socket for
+/// the host it opens one (TCP + TLS); with one it rides it and resets the
+/// server's idle clock. Never a bundle.
+async fn warm_url(http: &reqwest::Client, url: &str) -> Result<reqwest::Version> {
+    crate::builders::reject_public_rpc(url)?;
+    let resp = http
+        .post(url)
+        .header("content-type", "application/json")
+        .body("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]}")
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, url, "13A warm_http / prewarm failed");
+            ExecError::Http(e.to_string())
+        })?;
+    let version = resp.version();
+    resp.bytes().await.map_err(|e| {
+        tracing::error!(error = %e, url, "13A warm_http body read failed");
+        ExecError::Http(e.to_string())
+    })?;
+    Ok(version)
+}
+
 fn build_submit_http() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .timeout(HTTP_TIMEOUT)
         .pool_idle_timeout(HTTP_POOL_IDLE)
         .pool_max_idle_per_host(HTTP_POOL_MAX_IDLE_PER_HOST)
         .tcp_keepalive(HTTP_TCP_KEEPALIVE)
+        .http2_keep_alive_interval(HTTP2_PING_EVERY)
+        .http2_keep_alive_timeout(HTTP2_PING_TIMEOUT)
+        .http2_keep_alive_while_idle(true)
         .tcp_nodelay(true)
         .no_proxy()
         .build()
@@ -688,6 +821,7 @@ mod tests {
                 id: liq_types::BuilderId(1),
                 name: "t",
                 endpoint: crate::builders::leak_str("http://127.0.0.1:1/".into()),
+                warm: false,
             }],
             crate::builders::leak_str("http://127.0.0.1:2/".into()),
         )
@@ -717,6 +851,7 @@ mod tests {
                 id: liq_types::BuilderId(1),
                 name: "t",
                 endpoint: crate::builders::leak_str("http://127.0.0.1:1/".into()),
+                warm: false,
             }],
             crate::builders::leak_str("http://127.0.0.1:2/".into()),
         )
@@ -734,6 +869,7 @@ mod tests {
                 id: liq_types::BuilderId(1),
                 name: "t",
                 endpoint: crate::builders::leak_str("http://127.0.0.1:1/".into()),
+                warm: false,
             }],
             crate::builders::leak_str("http://127.0.0.1:2/".into()),
         )
@@ -770,6 +906,7 @@ mod tests {
                 id: liq_types::BuilderId(1),
                 name: "t",
                 endpoint: crate::builders::leak_str("http://127.0.0.1:1/".into()),
+                warm: false,
             }],
             crate::builders::leak_str("http://127.0.0.1:2/".into()),
         )
@@ -788,6 +925,8 @@ mod tests {
         assert!(prod.contains("tcp_nodelay"));
         assert!(prod.contains("fn warm_http"));
         assert!(prod.contains("fn prewarm"));
+        assert!(prod.contains("fn rewarm"));
+        assert!(prod.contains("fn spawn_rewarm"));
     }
 
     fn dummy_job(kind: TriggerKind) -> ExecJob {

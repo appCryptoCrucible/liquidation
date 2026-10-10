@@ -6,6 +6,12 @@ use alloy_primitives::{Bytes, B256};
 use liq_types::{IntendedSubmission, SubmitReceipt, Submitter, Venue};
 use serde_json::json;
 
+/// `mev_sendBundle` schema version. mev-share-node accepts exactly
+/// `"v0.1"` or `"beta-1"` and rejects anything else, an absent field
+/// included, with `unsupported bundle version`
+/// (`mevshare/bundle_validation.go`, `validateBundleInner`).
+pub const MEV_SHARE_VERSION: &str = "v0.1";
+
 /// Bundle params. Hinted oracle tx by hash, then one signed liquidation.
 ///
 /// No `validity.refund` and no `refundConfig`. The matchmaker writes
@@ -14,12 +20,23 @@ use serde_json::json;
 /// split of this liquidation's coinbase payment, and the SSE hint does
 /// not carry it. `refundConfig` is the originator's address split of
 /// that refund.
+///
+/// `builders` becomes `privacy.builders`. In mev-share-node the internal
+/// builder (Flashbots' orderflow into BuilderNet) always receives the
+/// bundle; the names select external builders from Flashbots' registry
+/// (`flashbots/dowg` `builder-registrations.json`, lowercased by the node).
+/// The node intersects this list with the oracle bundle's own
+/// `privacy.builders` when it replaces the hash, so a builder the origin
+/// did not allow is dropped there. Empty means internal builders only.
+/// No `privacy.hints`: an unmatched (`{hash}`-first) bundle that sets hints
+/// is refused (`invalid bundle privacy`).
 #[derive(Clone, Debug)]
 pub struct SendBundle {
     pub block: u64,
     pub max_block: u64,
     pub hint_hash: B256,
     pub signed_liquidation: Bytes,
+    pub builders: &'static [&'static str],
 }
 
 /// Signed JSON-RPC body + `X-Flashbots-Signature` value.
@@ -32,20 +49,27 @@ pub struct SignedRelayRequest {
 
 /// JSON-RPC `mev_sendBundle` UTF-8 body (the bytes that are signed).
 pub fn rpc_send_bundle(b: &SendBundle) -> Result<Vec<u8>> {
+    let mut params = json!({
+        "version": MEV_SHARE_VERSION,
+        "inclusion": {
+            "block": format!("0x{:x}", b.block),
+            "maxBlock": format!("0x{:x}", b.max_block),
+        },
+        "body": [
+            { "hash": format!("{:#x}", b.hint_hash) },
+            { "tx": format!("{:#x}", b.signed_liquidation), "canRevert": false },
+        ],
+    });
+    if !b.builders.is_empty() {
+        if let Some(obj) = params.as_object_mut() {
+            obj.insert("privacy".into(), json!({ "builders": b.builders }));
+        }
+    }
     let payload = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "mev_sendBundle",
-        "params": [{
-            "inclusion": {
-                "block": format!("0x{:x}", b.block),
-                "maxBlock": format!("0x{:x}", b.max_block),
-            },
-            "body": [
-                { "hash": format!("{:#x}", b.hint_hash) },
-                { "tx": format!("{:#x}", b.signed_liquidation), "canRevert": false },
-            ],
-        }],
+        "params": [params],
     });
     serde_json::to_vec(&payload).map_err(|e| MevShareError::HintJson(e.to_string()))
 }
@@ -149,6 +173,7 @@ mod tests {
             max_block: 20_000_002,
             hint_hash: b256!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
             signed_liquidation: Bytes::from(vec![0x02, 0xf8]),
+            builders: &[],
         };
         let signed = sub.sign_send_bundle(&bundle).unwrap();
         assert_eq!(signed.relay, crate::mevshare::FLASHBOTS_RELAY);
@@ -161,6 +186,12 @@ mod tests {
         );
         assert_eq!(v["params"][0]["body"][1]["canRevert"], false);
         assert!(v["params"][0].get("validity").is_none());
+        // mev-share-node: `Version != "beta-1" && Version != "v0.1"` is refused.
+        assert_eq!(v["params"][0]["version"], "v0.1");
+        assert!(
+            v["params"][0].get("privacy").is_none(),
+            "no builders named: no privacy object (internal builders only)"
+        );
 
         let intended = IntendedSubmission {
             plan: Bytes::new(),
@@ -176,5 +207,34 @@ mod tests {
             Err(crate::mevshare::MevShareError::LiveSendIs13A)
         ));
         let _ = rpc_send_bundle;
+    }
+
+    /// Shape checked against mev-share-node `SendMevBundleArgs` /
+    /// `MevBundlePrivacy` json tags (`version`, `privacy.builders`) and its
+    /// validation: builders allowed on an unmatched bundle, hints are not.
+    #[test]
+    fn builders_ride_in_privacy_without_hints() {
+        let bundle = SendBundle {
+            block: 0x10,
+            max_block: 0x12,
+            hint_hash: b256!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            signed_liquidation: Bytes::from(vec![0x02, 0xf8]),
+            builders: &["flashbots", "titan", "quasar"],
+        };
+        let v: serde_json::Value =
+            serde_json::from_slice(&rpc_send_bundle(&bundle).unwrap()).unwrap();
+        let p = &v["params"][0];
+        assert_eq!(p["version"], "v0.1");
+        assert_eq!(p["inclusion"]["block"], "0x10");
+        assert_eq!(p["inclusion"]["maxBlock"], "0x12");
+        assert_eq!(
+            p["privacy"]["builders"],
+            serde_json::json!(["flashbots", "titan", "quasar"])
+        );
+        assert!(
+            p["privacy"].get("hints").is_none(),
+            "unmatched bundle with hints is refused"
+        );
+        assert!(p["privacy"].get("wantRefund").is_none());
     }
 }

@@ -191,32 +191,57 @@ impl BuilderBundle {
                 (id, r)
             });
         }
-        let mut ok = 0u16;
+        // Every POST is already in flight. Return at the first accept: the
+        // bundle is with a builder, and the caller (the exec worker) moves
+        // on. The far builders' acks finish on their own task and are
+        // logged there.
         let mut fail = 0u16;
         while let Some(joined) = set.join_next().await {
-            match joined {
-                Ok((id, Ok(_))) => {
-                    ok = ok.saturating_add(1);
-                    tracing::info!(builder = id.0, "eth_sendBundle accepted");
+            if fanout_ack(joined) {
+                if !set.is_empty() {
+                    tokio::spawn(async move {
+                        while let Some(joined) = set.join_next().await {
+                            let _ = fanout_ack(joined);
+                        }
+                    });
                 }
-                Ok((id, Err(e))) => {
-                    fail = fail.saturating_add(1);
-                    tracing::error!(builder = id.0, err = %e, "eth_sendBundle failed");
-                }
-                Err(e) => {
-                    fail = fail.saturating_add(1);
-                    tracing::error!(err = %e, "builder task join failed");
-                }
+                return Ok(FanoutReport { ok: 1, fail });
             }
+            fail = fail.saturating_add(1);
         }
-        if ok == 0 {
-            return Err(ExecError::AllBuildersUnreachable);
-        }
-        Ok(FanoutReport { ok, fail })
+        Err(ExecError::AllBuildersUnreachable)
     }
 }
 
-/// How many builders accepted / failed. No fallback if `ok == 0`.
+/// Log one builder's answer; `true` when it accepted.
+fn fanout_ack(
+    joined: core::result::Result<
+        (
+            liq_types::BuilderId,
+            core::result::Result<serde_json::Value, liq_oracle::mevshare::MevShareError>,
+        ),
+        tokio::task::JoinError,
+    >,
+) -> bool {
+    match joined {
+        Ok((id, Ok(_))) => {
+            tracing::info!(builder = id.0, "eth_sendBundle accepted");
+            true
+        }
+        Ok((id, Err(e))) => {
+            tracing::error!(builder = id.0, err = %e, "eth_sendBundle failed");
+            false
+        }
+        Err(e) => {
+            tracing::error!(err = %e, "builder task join failed");
+            false
+        }
+    }
+}
+
+/// Builder answers at the moment the fan-out returned: the first accept and
+/// the failures before it. The other POSTs are still in flight. No
+/// fallback if none accepts.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct FanoutReport {
     pub ok: u16,
@@ -448,6 +473,7 @@ mod tests {
                 id: BuilderId(1),
                 name: "mock-a",
                 endpoint: leak_str("http://127.0.0.1:1/".into()),
+                warm: false,
             }],
             leak_str("http://127.0.0.1:2/".into()),
         )

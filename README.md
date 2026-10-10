@@ -119,7 +119,7 @@ flowchart LR
     subgraph out["Take work from the hot thread"]
         direction TB
         SNAP["liq-bot-snapshot<br/>store to disk"]
-        EXW["liq-bot-exec<br/>verify · sign · send"]
+        EXW["liq-exec-submit<br/>verify · sign · send"]
         INCL["liq-bot-inclusion<br/>receipts · outcomes · PnL"]
     end
 

@@ -14,7 +14,7 @@ RestartSec=5
 # Checkpoint sync is required by Lighthouse since v4.6.0. The URL is
 # Sigma Prime's public mainnet checkpoint. If it does not answer, this
 # unit fails; do not replace it with an unchecked endpoint.
-CPUAffinity=14 15 30 31
+CPUAffinity=6 7 14 15
 MemorySwapMax=0
 ExecStart=/usr/local/bin/lighthouse bn \
   --network mainnet \

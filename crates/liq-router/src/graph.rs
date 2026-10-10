@@ -1591,16 +1591,106 @@ pub fn best_path<Q: HopQuoter>(
     min_hops: usize,
     max_hops: u8,
 ) -> (Option<Route>, u32) {
+    let (layers, best, quotes) =
+        label_layers(graph, table, quoter, from, to, amount, min_hops, max_hops);
+    let Some((_, hops)) = best else {
+        return (None, quotes);
+    };
+    (route_from(graph, &layers, to, hops), quotes)
+}
+
+/// [`best_path`]'s search, returning the best route of every hop count in
+/// `min_hops..=max_hops` that reaches `to`, best output first. The one
+/// search finds them all: each layer's label at the target is the most any
+/// path of that many hops delivers, as far as the search looked (the bound
+/// cuts branches that cannot beat the best found, so a shorter or longer
+/// route than the best may be missing or beaten by one it did not
+/// quote). The best of them is [`best_path`]'s route exactly. For a flow's
+/// candidates: routes worth re-quoting on later slices without another
+/// search.
+#[allow(clippy::too_many_arguments)]
+pub fn best_paths_by_hops<Q: HopQuoter>(
+    graph: &TokenGraph,
+    table: &ZeroTable,
+    quoter: &Q,
+    from: AssetId,
+    to: AssetId,
+    amount: U256,
+    min_hops: usize,
+    max_hops: u8,
+) -> (SmallVec<[Route; MAX_ROUTE_HOPS]>, u32) {
+    let (layers, _, quotes) =
+        label_layers(graph, table, quoter, from, to, amount, min_hops, max_hops);
+    let mut out: SmallVec<[Route; MAX_ROUTE_HOPS]> = SmallVec::new();
+    for hops in 1..=max_hops {
+        if usize::from(hops) < min_hops {
+            continue;
+        }
+        if let Some(r) = route_from(graph, &layers, to, hops) {
+            out.push(r);
+        }
+    }
+    // Best first; equal outputs keep the shorter route first, as
+    // `best_path` does.
+    out.sort_by_key(|r| core::cmp::Reverse(r.amount_out));
+    (out, quotes)
+}
+
+/// One layer's cells: the amount at a token, the edge that brought it and
+/// the token index it came from (`u32::MAX` for the start).
+type Layer = Vec<(U256, EdgeId, u32)>;
+
+/// The route the label at `to` in layer `hops` records, walked back
+/// through the layers; `None` when nothing reached `to` in that many hops.
+fn route_from(graph: &TokenGraph, layers: &[Layer], to: AssetId, hops: u8) -> Option<Route> {
+    let mut k = graph.node(to).and_then(|n| usize::try_from(n).ok())?;
+    let amount_out = layers.get(usize::from(hops))?.get(k)?.0;
+    if amount_out.is_zero() {
+        return None;
+    }
+    let mut edges: SmallVec<[EdgeId; MAX_ROUTE_HOPS]> = SmallVec::new();
+    let mut hop_gas = 0u64;
+    let mut layer = usize::from(hops);
+    while layer > 0 {
+        let &(_, id, prev) = layers.get(layer)?.get(k)?;
+        let e = graph.edge(id)?;
+        hop_gas = hop_gas.saturating_add(e.hop_gas);
+        edges.push(id);
+        k = usize::try_from(prev).ok()?;
+        layer = layer.saturating_sub(1);
+    }
+    edges.reverse();
+    Some(Route {
+        edges,
+        amount_out,
+        hop_gas,
+        net: amount_out,
+    })
+}
+
+/// The label search of [`best_path`]: its layers, the best `(output,
+/// hops)` at `to` within `min_hops..=max_hops`, and the hops quoted.
+#[allow(clippy::too_many_arguments)]
+fn label_layers<Q: HopQuoter>(
+    graph: &TokenGraph,
+    table: &ZeroTable,
+    quoter: &Q,
+    from: AssetId,
+    to: AssetId,
+    amount: U256,
+    min_hops: usize,
+    max_hops: u8,
+) -> (Vec<Layer>, Option<(U256, u8)>, u32) {
     let n = graph.nodes.len();
     let Some(start) = graph.node(from).and_then(|n| usize::try_from(n).ok()) else {
-        return (None, 0);
+        return (Vec::new(), None, 0);
     };
     if from == to || amount.is_zero() || max_hops == 0 || max_hops > table.hops() {
-        return (None, 0);
+        return (Vec::new(), None, 0);
     }
     // Per layer and token: the amount there, the edge that brought it and
     // the token index it came from (`u32::MAX` for the start).
-    let mut layers: Vec<Vec<(U256, EdgeId, u32)>> =
+    let mut layers: Vec<Layer> =
         vec![vec![(U256::ZERO, NO_EDGE, u32::MAX); n]; usize::from(max_hops).saturating_add(1)];
     if let Some(cell) = layers.first_mut().and_then(|l| l.get_mut(start)) {
         cell.0 = amount;
@@ -1695,41 +1785,7 @@ pub fn best_path<Q: HopQuoter>(
             }
         }
     }
-    let Some((amount_out, hops)) = best else {
-        return (None, quotes);
-    };
-    // Walk the target's label back through the layers.
-    let Some(mut k) = graph.node(to).and_then(|n| usize::try_from(n).ok()) else {
-        return (None, quotes);
-    };
-    let mut edges: SmallVec<[EdgeId; MAX_ROUTE_HOPS]> = SmallVec::new();
-    let mut hop_gas = 0u64;
-    let mut layer = usize::from(hops);
-    while layer > 0 {
-        let Some(&(_, id, prev)) = layers.get(layer).and_then(|l| l.get(k)) else {
-            return (None, quotes);
-        };
-        let Some(e) = graph.edge(id) else {
-            return (None, quotes);
-        };
-        hop_gas = hop_gas.saturating_add(e.hop_gas);
-        edges.push(id);
-        let Ok(p) = usize::try_from(prev) else {
-            return (None, quotes);
-        };
-        k = p;
-        layer = layer.saturating_sub(1);
-    }
-    edges.reverse();
-    (
-        Some(Route {
-            edges,
-            amount_out,
-            hop_gas,
-            net: amount_out,
-        }),
-        quotes,
-    )
+    (layers, best, quotes)
 }
 
 /// [`best_path`] on the book's chain graph as a chain leg: the route, its
@@ -1743,11 +1799,26 @@ pub fn best_slice_chain(
     amount: U256,
     min_hops: usize,
 ) -> (Option<ChainFound>, u32) {
+    let (found, quotes) = best_slice_chains(book, from, to, amount, min_hops);
+    (found.into_iter().next(), quotes)
+}
+
+/// [`best_paths_by_hops`] on the book's chain graph as chain legs, best
+/// first: one search, a candidate per hop count. The first is
+/// [`best_slice_chain`]'s.
+#[must_use]
+pub fn best_slice_chains(
+    book: &PoolBook,
+    from: AssetId,
+    to: AssetId,
+    amount: U256,
+    min_hops: usize,
+) -> (Vec<ChainFound>, u32) {
     let Some(g) = book.graph() else {
-        return (None, 0);
+        return (Vec::new(), 0);
     };
     let max_hops = g.chain_table.hops().min(4);
-    let (route, quotes) = best_path(
+    let (routes, quotes) = best_paths_by_hops(
         &g.chain_graph,
         &g.chain_table,
         book,
@@ -1757,11 +1828,14 @@ pub fn best_slice_chain(
         min_hops,
         max_hops,
     );
-    let found = route.and_then(|mut route| {
-        route.hop_gas = route.hop_gas.saturating_add(CHAIN_LEG_GAS);
-        let (hops, data, exact_out) = chain_data(book, &g.chain_graph, &route.edges)?;
-        Some((route, hops, data, exact_out))
-    });
+    let found = routes
+        .into_iter()
+        .filter_map(|mut route| {
+            route.hop_gas = route.hop_gas.saturating_add(CHAIN_LEG_GAS);
+            let (hops, data, exact_out) = chain_data(book, &g.chain_graph, &route.edges)?;
+            Some((route, hops, data, exact_out))
+        })
+        .collect();
     (found, quotes)
 }
 
@@ -2119,6 +2193,57 @@ mod tests {
         let mut out = Vec::new();
         go(g, b, from, to, amount, max_hops, &mut vec![from], &mut out);
         out
+    }
+
+    /// The per-hop routes of one search: each is a real route of its hop
+    /// count whose output is its hops quoted in order, the hop counts are
+    /// distinct and within range, and the best of them is `best_path`'s
+    /// route to the wei (the same search, read back per layer). Oracle: the
+    /// book's own hop quotes and `best_path`.
+    #[test]
+    fn the_per_hop_routes_are_real_and_hold_the_best() {
+        let mut routes_seen = 0usize;
+        for seed in 1..40u64 {
+            let b = random_book(seed, 7, 16);
+            let g = TokenGraph::build(&b).unwrap();
+            let table = ZeroTable::build(&g, &b, 4).unwrap();
+            for amount in [e18(1), e18(1_000)] {
+                for (from, to) in [(a(0), a(1)), (a(2), a(5)), (a(6), a(3))] {
+                    for (min_hops, max_hops) in [(1usize, 3u8), (2, 4)] {
+                        let (by_hops, _) = best_paths_by_hops(
+                            &g, &table, &b, from, to, amount, min_hops, max_hops,
+                        );
+                        let (best, _) =
+                            best_path(&g, &table, &b, from, to, amount, min_hops, max_hops);
+                        assert_eq!(
+                            by_hops.first().map(|r| (r.amount_out, r.edges.clone())),
+                            best.map(|r| (r.amount_out, r.edges)),
+                            "seed {seed} {from:?}->{to:?}"
+                        );
+                        let mut lens: Vec<usize> = by_hops.iter().map(|r| r.edges.len()).collect();
+                        lens.sort_unstable();
+                        lens.dedup();
+                        assert_eq!(lens.len(), by_hops.len(), "one route per hop count");
+                        for r in &by_hops {
+                            routes_seen += 1;
+                            assert!(
+                                r.edges.len() >= min_hops && r.edges.len() <= usize::from(max_hops)
+                            );
+                            let (mut amt, mut at, mut gas) = (amount, from, 0u64);
+                            for id in &r.edges {
+                                let e = g.edge(*id).unwrap();
+                                assert_eq!(e.from, at);
+                                amt = b.quote(e, amt).unwrap();
+                                at = e.to;
+                                gas += e.hop_gas;
+                            }
+                            assert_eq!((at, amt, gas), (to, r.amount_out, r.hop_gas));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(routes_seen > 200, "{routes_seen}");
     }
 
     /// Up to three hops the label search returns the output of the best

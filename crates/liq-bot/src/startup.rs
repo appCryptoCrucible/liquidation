@@ -440,11 +440,10 @@ pub async fn run(
         shared,
         ProcessSecrets::from_env(),
     );
-    if let Some(ref path) = exec {
-        if let Err(e) = path.prewarm().await {
-            tracing::error!(error = %e, "13A prewarm failed — path stays bound; handshake_free Absent");
-        }
-    } else {
+    // The prewarm and the re-warm loop run on the exec worker's runtime
+    // (`exec_worker::spawn_exec_worker`), so the warm sockets belong to the
+    // pinned submit thread and not to this runtime.
+    if exec.is_none() {
         tracing::error!("ExecPath unbound — ingest/lease continue; no invented key");
     }
     let mut assemble = bind::intern_view(&loaded.intern).with_bands(band_shared);
@@ -547,7 +546,18 @@ pub async fn run(
         (None, None)
     };
     if let (Some(path), Some(rx)) = (exec.clone(), rx) {
-        if let Err(e) = spawn_exec_worker(rx, chain_exec, path) {
+        // The submit thread's core. Read here because the full map is
+        // asserted later (`pin_threads`); a missing slot runs it unpinned.
+        let exec_core = match CoreMap::load(cores_path)
+            .and_then(|m| m.slot(crate::exec_worker::EXEC_THREAD).map(|s| s.core))
+        {
+            Ok(core) => Some(core),
+            Err(e) => {
+                tracing::error!(?e, "no liq-exec-submit core — submit thread unpinned");
+                None
+            }
+        };
+        if let Err(e) = spawn_exec_worker(rx, chain_exec, path, exec_core) {
             tracing::error!(?e, "exec worker not started — inbox will count full");
         }
     }
@@ -862,7 +872,13 @@ mod tests {
         assert!(src.contains("spawn_warm_thread"));
         assert!(src.contains("RttMonitor"));
         assert!(src.contains("ProcessAssembleView"));
-        assert!(src.contains("prewarm"));
+        let worker = include_str!("exec_worker.rs");
+        assert!(worker.contains("path.prewarm()"));
+        assert!(
+            worker.contains("spawn_rewarm"),
+            "warm sockets need the re-warm loop, on the exec runtime"
+        );
+        assert!(src.contains("EXEC_THREAD"), "submit thread gets its core");
         assert!(src.contains("ProcessSecrets::from_env"));
         assert!(
             src.contains("DrainJoin"),
@@ -933,7 +949,7 @@ mod tests {
         assert!(!rep.invented_p99());
         assert_eq!(
             liq_obs::thirteen_a_http_pool_seam().handshake_free_critical,
-            liq_obs::net_rtt::Claim::Absent
+            liq_obs::net_rtt::Claim::ProvenOnSubmitClient
         );
     }
 }
