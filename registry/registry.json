@@ -118215,78 +118215,6 @@
    ],
    "curve_handler": 6
   },
-  "0xb5555ab6cb4f37f833f8fbd483b70ccdd4601057": {
-   "venue": "curve_ng",
-   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
-   "fee": 5000000,
-   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
-   "deployed_block": 0,
-   "derived_via": "metaregistry.pool_list+get_dy",
-   "coins": [
-    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-    "0xdac17f958d2ee523a2206206994597c13d831ec7"
-   ],
-   "asset_types": [
-    1,
-    1
-   ],
-   "curve_handler": 6
-  },
-  "0x706ddbd9f2aad43f50162a89a1cff30a7942ca97": {
-   "venue": "curve_ng",
-   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
-   "fee": 5000000,
-   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
-   "deployed_block": 0,
-   "derived_via": "metaregistry.pool_list+get_dy",
-   "coins": [
-    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-    "0xdac17f958d2ee523a2206206994597c13d831ec7"
-   ],
-   "asset_types": [
-    1,
-    1
-   ],
-   "curve_handler": 6
-  },
-  "0x509c6c89fbf48b968b52c8069607c729464c78b6": {
-   "venue": "curve_ng",
-   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
-   "fee": 5000000,
-   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
-   "deployed_block": 0,
-   "derived_via": "metaregistry.pool_list+get_dy",
-   "coins": [
-    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-    "0xdac17f958d2ee523a2206206994597c13d831ec7"
-   ],
-   "asset_types": [
-    1,
-    1
-   ],
-   "curve_handler": 6
-  },
-  "0x18042f2fab99af6e374e4f5f3c2218102993cc23": {
-   "venue": "curve_ng",
-   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-   "token1": "0x6b175474e89094c44da98b954eedeac495271d0f",
-   "fee": 5000000,
-   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
-   "deployed_block": 0,
-   "derived_via": "metaregistry.pool_list+get_dy",
-   "coins": [
-    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-    "0x6b175474e89094c44da98b954eedeac495271d0f"
-   ],
-   "asset_types": [
-    1,
-    1
-   ],
-   "curve_handler": 6
-  },
   "0xb723a224c9acf3891b20437b4d55dd45600f5fa3": {
    "venue": "curve_ng",
    "token0": "0xd0580192e98ea6ceb9c7b6191ed2e27560911697",
@@ -118428,24 +118356,6 @@
    "asset_types": [
     1,
     0
-   ],
-   "curve_handler": 6
-  },
-  "0x8c69e2c5cc6d8490593db3635fdc657b0db45c14": {
-   "venue": "curve_ng",
-   "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-   "token1": "0xdac17f958d2ee523a2206206994597c13d831ec7",
-   "fee": 30000000,
-   "factory": "0xf98b45fa17de75fb1ad0e7afd971b0ca00e379fc",
-   "deployed_block": 0,
-   "derived_via": "metaregistry.pool_list+get_dy",
-   "coins": [
-    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-    "0xdac17f958d2ee523a2206206994597c13d831ec7"
-   ],
-   "asset_types": [
-    1,
-    1
    ],
    "curve_handler": 6
   },

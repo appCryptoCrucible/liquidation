@@ -84,6 +84,21 @@ HUB_ASSETS = {
 # Minimum sum of normalized (1e18) Curve balances: drops dead pools only.
 CURVE_MIN_UNITS = 10 * 10**18
 EXCLUDED_QUIRKS = {"rebasing"}
+# Curve NG pools whose rate oracle quotes a simulation better than a real
+# swap: its getRate() discounts one coin when tx.origin == 0 or tx.gasprice
+# == 0 (verified source MyCurveRateOracle, 0x1144989e…; the later UUPS
+# versions behind these pools alternate the discount every 3 hours). An
+# eth_call quote, our seeding and a gas-price-0 simulation all see the
+# discount; the swap executes at the plain Chainlink rate, ~0.5% worse
+# (0.8% on 0x8c69). Six real swaps on 0x509c on 2026-10-11 executed exactly
+# at the real-transaction quote. Never admit them.
+EXCLUDED_POOLS = {
+    "0x509c6c89fbf48b968b52c8069607c729464c78b6",
+    "0x706ddbd9f2aad43f50162a89a1cff30a7942ca97",
+    "0x8c69e2c5cc6d8490593db3635fdc657b0db45c14",
+    "0x18042f2fab99af6e374e4f5f3c2218102993cc23",
+    "0xb5555ab6cb4f37f833f8fbd483b70ccdd4601057",
+}
 BATCH = 300
 
 
@@ -399,6 +414,8 @@ def discover_curve(chain: Chain, tracked: set[str], tokens: dict) -> dict[str, d
         n = word(meta[3 * k])
         coins_r = meta[3 * k + 1]
         is_meta = word(meta[3 * k + 2], "bool")
+        if p in EXCLUDED_POOLS:
+            continue
         if n is None or not coins_r[0] or is_meta is None or is_meta or not 2 <= n <= 4:
             continue
         coins = [c.lower() for c in decode(["address[8]"], coins_r[1])[0][:n]]
@@ -594,6 +611,8 @@ def discover_crypto(chain: Chain, tracked: set[str], tokens: dict) -> dict[str, 
     for k, p in enumerate(pools):
         n = word(meta[2 * k])
         coins_r = meta[2 * k + 1]
+        if p in EXCLUDED_POOLS:
+            continue
         if n is None or not coins_r[0] or not 2 <= n <= 3:
             continue
         coins = [c.lower() for c in decode(["address[8]"], coins_r[1])[0][:n]]
