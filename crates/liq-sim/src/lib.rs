@@ -23,7 +23,7 @@ pub mod worker;
 
 use alloy_primitives::{Address, Bytes, I256, U256};
 use liq_types::{Confidence, Ray, TraceId};
-use revm::database_interface::{DBErrorMarker, DatabaseRef};
+use revm::database_interface::DBErrorMarker;
 use revm::primitives::{StorageKey, StorageValue, B256};
 use revm::state::{AccountInfo, Bytecode};
 use std::convert::Infallible;
@@ -31,10 +31,16 @@ use std::sync::Arc;
 
 pub use env::{mainnet_spec, BlockRef, NextBlock, SimEnv, MAX_TX_GAS, SLOT_SECONDS};
 pub use node::NodeSim;
+/// The state a [`Simulator`] reads, for callers generic over it.
+pub use revm::database_interface::DatabaseRef;
 pub use revm::primitives::hardfork::SpecId;
 pub use verify::{
-    block_env_at, execute_calldata, executor_anchors, verify, verify_historical, verify_variants,
-    Bundle, HealthProbe, SimTx, Trigger,
+    block_env_at, execute_calldata, executor_anchors, verify, verify_historical, verify_ordered,
+    verify_variants, victim_logs, Bundle, HealthProbe, Ordered, SimTx, Trigger, VictimRun,
+};
+pub use warm::{
+    arb_executor_initcode, arb_executor_stack, insert_arb_executor, ArbExecutorCode,
+    PLANNED_ARB_EXECUTOR,
 };
 pub use warm::{
     artifact_path, clear_except, dex_module_initcode, executor_initcode, executor_stack,

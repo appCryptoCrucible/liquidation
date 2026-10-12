@@ -395,6 +395,69 @@ fn executor_bytecode_is_from_forge_artifact_and_lands_at_planned() {
     }
 }
 
+/// The compiled `ArbExecutor` placed beside the shared modules answers as
+/// it was built: its swap module where it delegatecalls it, our WETH, the
+/// profit sink and the operator from the spec. Oracle: the spec itself.
+#[test]
+fn arb_executor_is_placed_and_wired() {
+    let factory = MemoryFactory::from_cache(CacheDB::new(EmptyDB::default()));
+    let mut overlay = CacheDB::new(factory.provider());
+    crate::insert_arb_executor(&mut overlay, crate::PLANNED_ARB_EXECUTOR, &spec()).expect("insert");
+    let env = block();
+    let at = crate::PLANNED_ARB_EXECUTOR;
+    let get = |call: Vec<u8>, ov: &mut CacheDB<_>| read_address(ov, &env, at, call).unwrap();
+    assert_eq!(
+        get(
+            ExecutorWiring::SWAP_MODULECall {}.abi_encode(),
+            &mut overlay
+        ),
+        PLANNED_SWAP_MODULE
+    );
+    assert_eq!(
+        get(ExecutorWiring::WETHCall {}.abi_encode(), &mut overlay),
+        WETH
+    );
+    assert_eq!(
+        get(ArbWiring::PROFIT_SINKCall {}.abi_encode(), &mut overlay),
+        spec().profit_sink
+    );
+    assert_eq!(
+        get(ArbWiring::OPERATORCall {}.abi_encode(), &mut overlay),
+        spec().operator
+    );
+    let dex = ExecutorWiring::DEX_MODULECall {}.abi_encode();
+    assert_eq!(
+        read_address(&mut overlay, &env, PLANNED_SWAP_MODULE, dex).unwrap(),
+        PLANNED_DEX_MODULE
+    );
+}
+
+/// A priced env reaches the transaction and the block: the gas price is the
+/// base fee plus priority, the block's base fee is set. Unpriced stays zero.
+#[test]
+fn priced_env_prices_the_transaction() {
+    let tx = SimTx {
+        caller: Address::repeat_byte(1),
+        to: Address::repeat_byte(2),
+        value: U256::ZERO,
+        data: Bytes::new(),
+        gas_limit: 100_000,
+        access_list: Vec::new(),
+    };
+    let priced = block().with_gas_price(3_000_000_000, 1_000_000);
+    assert_eq!(priced.block.basefee, 3_000_000_000);
+    assert_eq!(crate::verify::to_tx(&tx, &priced).gas_price, 3_001_000_000);
+    assert_eq!(crate::verify::to_tx(&tx, &block()).gas_price, 0);
+}
+
+alloy_sol_types::sol! {
+    /// `ArbExecutor`'s own getters.
+    interface ArbWiring {
+        function PROFIT_SINK() external view returns (address);
+        function OPERATOR() external view returns (address);
+    }
+}
+
 alloy_sol_types::sol! {
     /// Which modules the core runs, and the WETH each module was built for.
     interface ExecutorWiring {

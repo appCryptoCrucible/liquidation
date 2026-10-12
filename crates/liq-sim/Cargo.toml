@@ -19,6 +19,8 @@ alloy-primitives = { workspace = true, features = ["std"] }
 # Live replay test only (`tests/mainnet_replay.rs`); never a dependency of the
 # library, which reads no network.
 reqwest = { workspace = true, features = ["blocking"] }
+# The live tests print the simulator's own error logs.
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["std", "fmt", "registry"] }
 
 [lints]
 workspace = true

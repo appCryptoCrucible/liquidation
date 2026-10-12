@@ -80,8 +80,8 @@ pub(crate) mod fixtures;
 
 pub use assemble::{
     assemble, euler_min_yield_from_quote, fluid_tail_from_quote, gearbox_min_seized_from_quote,
-    leg_meta_from_pins, reencode_with, AssembleError, AssembleView, Assembled, FluidPins,
-    FluidTailFigures, LegMeta, TailPins,
+    leg_meta_from_pins, reencode_with, venue_bytes, AssembleError, AssembleView, Assembled,
+    FluidPins, FluidTailFigures, LegMeta, TailPins,
 };
 pub use balancer::{BalancerRead, BalancerState};
 pub use band::{

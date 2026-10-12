@@ -108,6 +108,10 @@ pub struct VenuesConfig {
     /// On-chain `Executor` (GUIDE 10). `None` until H3.
     #[serde(default)]
     pub executor: Option<Address>,
+    /// On-chain `ArbExecutor` (the backrun engine, `arb` branch). `None`
+    /// until it is deployed; the engine does not start without it.
+    #[serde(default)]
+    pub arb_executor: Option<Address>,
 }
 
 /// Load `config/node.toml` + `risk.toml` + `venues.toml`, then `LIQ_*` env.
@@ -185,6 +189,18 @@ impl Validate for VenuesConfig {
             if addr.is_zero() {
                 return Err(ConfigError::Load(
                     "venues.executor is the zero address".into(),
+                ));
+            }
+        }
+        if let Some(addr) = self.arb_executor {
+            if addr.is_zero() {
+                return Err(ConfigError::Load(
+                    "venues.arb_executor is the zero address".into(),
+                ));
+            }
+            if Some(addr) == self.executor {
+                return Err(ConfigError::Load(
+                    "venues.arb_executor is the liquidation Executor".into(),
                 ));
             }
         }

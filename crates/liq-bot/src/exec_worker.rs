@@ -57,13 +57,23 @@ fn pin(core: Option<u16>, what: &'static str) {
     }
 }
 
+/// The backrun engine's submit side: its jobs and the path that signs them
+/// with the arb key and sends them to `ArbExecutor`.
+pub struct ArbExec {
+    pub rx: Receiver<ExecJob>,
+    pub path: Arc<Path>,
+}
+
 /// Recv jobs and run the submit paths. Full inboxes are counted on try_send.
 /// `core`: the `liq-exec-submit` core from `cores.toml` (`None` in tests).
+/// `arb`: the backrun engine's inbox and path, served on this same thread
+/// and runtime (its own key, so its own nonce order).
 pub fn spawn_exec_worker(
     rx: Receiver<ExecJob>,
     chain: Option<ChainExec>,
     path: Arc<Path>,
     core: Option<u16>,
+    arb: Option<ArbExec>,
 ) -> std::io::Result<JoinHandle<()>> {
     Builder::new().name(EXEC_THREAD.into()).spawn(move || {
         pin(core, "liq-exec-submit");
@@ -90,6 +100,14 @@ pub fn spawn_exec_worker(
             let _in_rt = rt.enter();
             path.spawn_rewarm()
         };
+        let arb_rewarm = arb.as_ref().map(|a| {
+            if let Err(e) = rt.block_on(a.path.prewarm()) {
+                tracing::error!(error = %e, "arb prewarm failed — the re-warm loop retries");
+            }
+            let _in_rt = rt.enter();
+            a.path.spawn_rewarm()
+        });
+        let arb_rx = arb.as_ref().map_or_else(crossbeam_channel::never, |a| a.rx.clone());
         let gov_rx = chain
             .as_ref()
             .and_then(|c| c.gov_rx.clone())
@@ -103,6 +121,15 @@ pub fn spawn_exec_worker(
                         continue;
                     }
                     submit(&rt, &path, &job);
+                }
+                recv(arb_rx) -> msg => {
+                    let (Ok(mut job), Some(a)) = (msg, arb.as_ref()) else { continue };
+                    // Its own key and nonces; no node verify (the engine
+                    // simulated what it could and the contract checks profit).
+                    if !rt.block_on(prepare(&mut job, chain.as_ref(), &a.path, &mut None)) {
+                        continue;
+                    }
+                    submit(&rt, &a.path, &job);
                 }
                 recv(gov_rx) -> msg => {
                     let (Ok(job), Some(c)) = (msg, chain.as_ref()) else { continue };
@@ -121,6 +148,9 @@ pub fn spawn_exec_worker(
             }
         }
         rewarm.abort();
+        if let Some(r) = arb_rewarm {
+            r.abort();
+        }
     })
 }
 

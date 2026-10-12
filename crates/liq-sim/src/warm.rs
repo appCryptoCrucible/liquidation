@@ -37,6 +37,12 @@ pub const PLANNED_SWAP_MODULE: Address =
 pub const PLANNED_DEX_MODULE: Address =
     alloy_primitives::address!("e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3");
 
+/// Where the compiled `ArbExecutor` (the backrun executor, `arb` branch) is
+/// placed. It delegatecalls the same swap module the Executor does, at
+/// [`PLANNED_SWAP_MODULE`]. Not a mainnet claim.
+pub const PLANNED_ARB_EXECUTOR: Address =
+    alloy_primitives::address!("e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4");
+
 /// Constructor arguments of a CacheDB-inserted Executor and its modules: the
 /// core takes the keys, the sink, WETH and the V3 anchors; the swap module
 /// takes WETH, the routers, the V2/Sushi/Curve anchors and the dex module; the
@@ -362,6 +368,75 @@ pub fn executor_stack(spec: &ExecutorSpec) -> Result<ExecutorCode, SimError> {
         swap,
         dex,
     })
+}
+
+/// `ArbExecutor`'s deploy input: `spec.operator` is its one operator key,
+/// wired to the swap module at `swap_module`.
+pub fn arb_executor_initcode(spec: &ExecutorSpec, swap_module: Address) -> Result<Bytes, SimError> {
+    let args = (
+        spec.operator,
+        spec.profit_sink,
+        spec.weth,
+        spec.univ3_factory,
+        spec.univ3_init_hash,
+        swap_module,
+    )
+        .abi_encode();
+    initcode("ArbExecutor", &args)
+}
+
+/// Runtime code of the compiled `ArbExecutor` and the two modules it runs
+/// legs through.
+#[derive(Clone, Debug)]
+pub struct ArbExecutorCode {
+    pub core: Bytecode,
+    pub swap: Bytecode,
+    pub dex: Bytecode,
+}
+
+impl ArbExecutorCode {
+    /// The core at `core_at`, the modules where it delegatecalls them.
+    #[must_use]
+    pub fn placements(&self, core_at: Address) -> [(Address, Bytecode); 3] {
+        [
+            (core_at, self.core.clone()),
+            (PLANNED_SWAP_MODULE, self.swap.clone()),
+            (PLANNED_DEX_MODULE, self.dex.clone()),
+        ]
+    }
+}
+
+/// Build the compiled `ArbExecutor` for `spec` the way [`executor_stack`]
+/// builds the Executor: the modules first, then the core, whose constructor
+/// checks the swap module where it will be placed.
+pub fn arb_executor_stack(spec: &ExecutorSpec) -> Result<ArbExecutorCode, SimError> {
+    let mut world: CacheDB<EmptyDB> = CacheDB::new(EmptyDB::default());
+    let dex = deploy_runtime(&world.cache, dex_module_initcode(spec)?, RUNTIME_DEPLOYER)?;
+    place_code(&mut world, PLANNED_DEX_MODULE, dex.clone())?;
+    let swap = deploy_runtime(
+        &world.cache,
+        swap_module_initcode(spec, PLANNED_DEX_MODULE)?,
+        RUNTIME_DEPLOYER,
+    )?;
+    place_code(&mut world, PLANNED_SWAP_MODULE, swap.clone())?;
+    let core = deploy_runtime(
+        &world.cache,
+        arb_executor_initcode(spec, PLANNED_SWAP_MODULE)?,
+        RUNTIME_DEPLOYER,
+    )?;
+    Ok(ArbExecutorCode { core, swap, dex })
+}
+
+/// Place the compiled `ArbExecutor` at `at` and its modules beside it.
+pub fn insert_arb_executor<Ext: DatabaseRef<Error = SimError>>(
+    db: &mut CacheDB<Ext>,
+    at: Address,
+    spec: &ExecutorSpec,
+) -> Result<(), SimError> {
+    for (addr, code) in arb_executor_stack(spec)?.placements(at) {
+        place_code(db, addr, code)?;
+    }
+    Ok(())
 }
 
 /// Deploy the compiled system for `spec` and place it: the core at `at`,

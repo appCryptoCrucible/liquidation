@@ -20,6 +20,12 @@ pub enum TriggerKind {
     InterestDrift,
     Stale,
     OraclePredicted,
+    /// A backrun (`liq-arb`) of a MEV-Share hint: `{hash}` then ours, on
+    /// the MEV-Share relay.
+    ArbMevShare,
+    /// A backrun of public-mempool transactions: they in the order chosen,
+    /// then ours, as a builder bundle.
+    ArbPublic,
 }
 
 /// Granular halt target (GUIDE 14 §2). `Global` is reserved for node lag.

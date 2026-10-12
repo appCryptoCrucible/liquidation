@@ -54,12 +54,33 @@ pub const fn mainnet_spec(timestamp: u64) -> Option<SpecId> {
 pub struct SimEnv {
     pub spec: SpecId,
     pub block: BlockEnv,
+    /// Gas price every simulated transaction pays (wei / gas). Zero, the
+    /// default, is the liquidation path's unpriced check. Some contracts
+    /// answer differently when `tx.gasprice` is zero (a rate oracle that
+    /// discounts simulation context), so a backrun is simulated at the
+    /// block's real price ([`Self::with_gas_price`]).
+    pub gas_price_wei: u128,
 }
 
 impl SimEnv {
     #[must_use]
     pub const fn new(spec: SpecId, block: BlockEnv) -> Self {
-        Self { spec, block }
+        Self {
+            spec,
+            block,
+            gas_price_wei: 0,
+        }
+    }
+
+    /// Price the block: its base fee is `base_fee_wei`, and every simulated
+    /// transaction pays that plus `priority_wei` per gas, as a real one
+    /// would. Balance checks are lifted (the operator's ETH is the exec
+    /// worker's to watch), so a priced simulation reads no balance.
+    #[must_use]
+    pub fn with_gas_price(mut self, base_fee_wei: u64, priority_wei: u128) -> Self {
+        self.block.basefee = base_fee_wei;
+        self.gas_price_wei = u128::from(base_fee_wei).saturating_add(priority_wei);
+        self
     }
 }
 

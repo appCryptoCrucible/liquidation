@@ -326,6 +326,7 @@ fn ordinary(target: u64) -> liq_exec::path::ExecJob {
         position: tx(9).position,
         hint_hash: None,
         backrun_tx: None,
+        parents: Vec::new(),
         target_block: target,
         max_block: target,
         fee: FeeQuote {

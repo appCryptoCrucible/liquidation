@@ -59,6 +59,10 @@ pub struct ExecJob {
     pub hint_hash: Option<B256>,
     /// Raw parent tx for a backrun bundle. Required for ordered triggers.
     pub backrun_tx: Option<Bytes>,
+    /// Further raw parent txs after [`Self::backrun_tx`], in bundle order:
+    /// the victims of an ordered backrun ([`TriggerKind::ArbPublic`]) beyond
+    /// the first. Empty for every liquidation.
+    pub parents: Vec<Bytes>,
     pub target_block: u64,
     pub max_block: u64,
     pub fee: FeeQuote,
@@ -641,10 +645,16 @@ fn build_submit_http() -> Result<reqwest::Client> {
 /// Venue-required fields. Runs before the recorder and the submit toggle.
 pub fn require_venue_inputs(job: &ExecJob, venue: &Venue) -> Result<()> {
     match job.trigger {
-        TriggerKind::SvrAuction => {
+        TriggerKind::SvrAuction | TriggerKind::ArbMevShare => {
             if job.hint_hash.is_none() {
                 tracing::error!(trace = job.trace.raw(), "MissingHintHash before toggle");
                 return Err(ExecError::MissingHintHash);
+            }
+        }
+        TriggerKind::ArbPublic => {
+            if job.backrun_tx.as_ref().is_none_or(|b| b.is_empty()) {
+                tracing::error!(trace = job.trace.raw(), "MissingBackrunTx before toggle");
+                return Err(ExecError::MissingBackrunTx);
             }
         }
         TriggerKind::InterestDrift
@@ -680,8 +690,20 @@ fn bundle_txs(job: &ExecJob, signed: &SignedTx) -> Result<Vec<Bytes>> {
             Some(parent) if !parent.is_empty() => Ok(vec![parent.clone(), signed.raw.clone()]),
             _ => Ok(vec![signed.raw.clone()]),
         },
-        TriggerKind::SvrAuction => Err(ExecError::WrongVenueBuilder),
+        TriggerKind::SvrAuction | TriggerKind::ArbMevShare => Err(ExecError::WrongVenueBuilder),
         TriggerKind::OraclePredicted => Err(ExecError::PredictedNotSubmittable),
+        // The victims in the order the search chose, then ours.
+        TriggerKind::ArbPublic => {
+            let first = job.backrun_tx.clone().ok_or(ExecError::MissingBackrunTx)?;
+            if first.is_empty() || job.parents.iter().any(|b| b.is_empty()) {
+                return Err(ExecError::MissingBackrunTx);
+            }
+            let mut txs = Vec::with_capacity(job.parents.len().saturating_add(2));
+            txs.push(first);
+            txs.extend(job.parents.iter().cloned());
+            txs.push(signed.raw.clone());
+            Ok(txs)
+        }
         TriggerKind::OraclePublic | TriggerKind::OraclePullHeld => {
             let parent = job.backrun_tx.clone().ok_or(ExecError::MissingBackrunTx)?;
             if parent.is_empty() {
@@ -929,6 +951,72 @@ mod tests {
         assert!(prod.contains("fn spawn_rewarm"));
     }
 
+    fn test_builders() -> crate::builders::BuilderSet {
+        crate::builders::BuilderSet::from_parts(
+            vec![crate::builders::BuilderEndpoint {
+                id: liq_types::BuilderId(1),
+                name: "t",
+                endpoint: crate::builders::leak_str("http://127.0.0.1:1/".into()),
+                warm: false,
+            }],
+            crate::builders::leak_str("http://127.0.0.1:2/".into()),
+        )
+        .unwrap()
+    }
+
+    /// A MEV-Share backrun goes to the relay, needs the hint it backruns,
+    /// and is never a builder bundle.
+    #[test]
+    fn arb_mevshare_routes_to_the_relay_with_its_hint() {
+        let mut job = dummy_job(TriggerKind::ArbMevShare);
+        let routed = crate::submit::route(job.trigger, &test_builders(), 500, 10, 2).unwrap();
+        assert!(matches!(routed.venue, Venue::MevShare { .. }));
+        assert!(matches!(
+            require_venue_inputs(&job, &routed.venue).unwrap_err(),
+            ExecError::MissingHintHash
+        ));
+        job.hint_hash = Some(B256::repeat_byte(7));
+        require_venue_inputs(&job, &routed.venue).unwrap();
+        let signed = SignedTx {
+            raw: Bytes::from_static(&[0xee]),
+            hash: B256::ZERO,
+        };
+        assert!(matches!(
+            bundle_txs(&job, &signed).unwrap_err(),
+            ExecError::WrongVenueBuilder
+        ));
+    }
+
+    /// A public backrun is a builder bundle: the victims in the order the
+    /// search chose, then ours — and refused without a victim.
+    #[test]
+    fn arb_public_bundle_is_the_victims_in_order_then_ours() {
+        let mut job = dummy_job(TriggerKind::ArbPublic);
+        let routed = crate::submit::route(job.trigger, &test_builders(), 500, 10, 2).unwrap();
+        assert!(matches!(routed.venue, Venue::BuilderBundle { .. }));
+        assert!(matches!(
+            require_venue_inputs(&job, &routed.venue).unwrap_err(),
+            ExecError::MissingBackrunTx
+        ));
+        job.backrun_tx = Some(Bytes::from_static(&[0x02]));
+        job.parents = vec![Bytes::from_static(&[0x00]), Bytes::from_static(&[0x01])];
+        require_venue_inputs(&job, &routed.venue).unwrap();
+        let signed = SignedTx {
+            raw: Bytes::from_static(&[0xee]),
+            hash: B256::ZERO,
+        };
+        let txs = bundle_txs(&job, &signed).unwrap();
+        assert_eq!(
+            txs,
+            vec![
+                Bytes::from_static(&[0x02]),
+                Bytes::from_static(&[0x00]),
+                Bytes::from_static(&[0x01]),
+                Bytes::from_static(&[0xee])
+            ]
+        );
+    }
+
     fn dummy_job(kind: TriggerKind) -> ExecJob {
         ExecJob {
             trace: TraceId::from_raw(1),
@@ -947,6 +1035,7 @@ mod tests {
             },
             hint_hash: None,
             backrun_tx: None,
+            parents: Vec::new(),
             target_block: 101,
             max_block: 101,
             fee: quote(100),

@@ -98,7 +98,7 @@ pub fn execute_calldata(plan: &[u8]) -> Bytes {
     )
 }
 
-fn to_tx(env: &SimTx) -> TxEnv {
+pub(crate) fn to_tx(env: &SimTx, sim_env: &SimEnv) -> TxEnv {
     let access_list = AccessList(
         env.access_list
             .iter()
@@ -114,7 +114,7 @@ fn to_tx(env: &SimTx) -> TxEnv {
         .value(env.value)
         .data(env.data.clone())
         .gas_limit(env.gas_limit)
-        .gas_price(0)
+        .gas_price(sim_env.gas_price_wei)
         .access_list(access_list)
         .build_fill()
 }
@@ -129,6 +129,33 @@ fn configure(cfg: &mut CfgEnv, env: &SimEnv) {
     cfg.tx_gas_limit_cap = Some(100_000_000);
 }
 
+/// A priced simulation charges gas, and the question it answers is not
+/// whether the caller can afford it: top the caller's ETH up, in this
+/// simulation's overlay only, to what the transaction can spend, when it
+/// holds less. A caller that already holds enough is left as it is.
+fn fund_caller<P: DatabaseRef<Error = SimError>>(
+    db: &mut CacheDB<Arc<P>>,
+    env: &SimEnv,
+    tx: &SimTx,
+) -> Result<(), SimError> {
+    if env.gas_price_wei == 0 {
+        return Ok(());
+    }
+    let need = U256::from(tx.gas_limit)
+        .checked_mul(U256::from(env.gas_price_wei))
+        .and_then(|g| g.checked_add(tx.value))
+        .ok_or(SimError::Malformed("gas cost overflow"))?;
+    let mut info = db
+        .basic_ref(tx.caller)
+        .map_err(|_| SimError::StateUnavailable)?
+        .unwrap_or_default();
+    if info.balance < need {
+        info.balance = need;
+        db.insert_account_info(tx.caller, info);
+    }
+    Ok(())
+}
+
 /// One call's result, committed to the overlay.
 struct Applied {
     /// Receipt gas: after refunds.
@@ -138,6 +165,8 @@ struct Applied {
     gas_spent: u64,
     output: Bytes,
     success: bool,
+    /// What the call emitted (empty when it reverted).
+    logs: Vec<alloy_primitives::Log>,
 }
 
 fn apply_one<P: DatabaseRef<Error = SimError>>(
@@ -145,7 +174,8 @@ fn apply_one<P: DatabaseRef<Error = SimError>>(
     env: &SimEnv,
     tx: &SimTx,
 ) -> Result<Applied, SimError> {
-    let txenv = to_tx(tx);
+    fund_caller(db, env, tx)?;
+    let txenv = to_tx(tx, env);
     let exec = {
         let mut evm = Context::mainnet()
             .with_db(&mut *db)
@@ -162,7 +192,7 @@ fn apply_one<P: DatabaseRef<Error = SimError>>(
     let gas_used = gas.tx_gas_used();
     let gas_spent = gas.total_gas_spent().max(gas.floor_gas());
     match exec.result {
-        ExecutionResult::Success { output, .. } => {
+        ExecutionResult::Success { output, logs, .. } => {
             let output = match output {
                 Output::Call(b) | Output::Create(b, _) => b,
             };
@@ -171,6 +201,7 @@ fn apply_one<P: DatabaseRef<Error = SimError>>(
                 gas_spent,
                 output,
                 success: true,
+                logs,
             })
         }
         ExecutionResult::Revert { output, .. } => Ok(Applied {
@@ -178,6 +209,7 @@ fn apply_one<P: DatabaseRef<Error = SimError>>(
             gas_spent,
             output,
             success: false,
+            logs: Vec::new(),
         }),
         ExecutionResult::Halt { reason, .. } => {
             error!(?reason, gas_used, "sim halt");
@@ -203,9 +235,13 @@ fn view<P: DatabaseRef<Error = SimError>>(
         .gas_limit(VIEW_GAS)
         .gas_price(0)
         .build_fill();
+    // A read is unpriced even in a priced block: zero gas price needs a zero
+    // base fee, and what it reads does not depend on either.
+    let mut block = env.block.clone();
+    block.basefee = 0;
     let mut evm = Context::mainnet()
         .with_db(&mut *db)
-        .with_block(env.block.clone())
+        .with_block(block)
         .modify_cfg_chained(|cfg| configure(cfg, env))
         .build_mainnet();
     let exec = evm.transact(tx).map_err(|e| {
@@ -323,6 +359,95 @@ fn word_to_ray(word: &[u8]) -> Result<Ray, SimError> {
     let src = word.get(..32).ok_or(SimError::Malformed("health probe"))?;
     buf.copy_from_slice(src);
     Ok(Ray::from_raw(U256::from_be_bytes(buf)))
+}
+
+/// What [`verify_ordered`] found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Ordered {
+    /// Every victim ran, then our calls did.
+    Ran(SimOutcome),
+    /// Victim `index` (in the order given) reverted: that order is not one
+    /// to send — a user's transaction must not fail for our bundle.
+    VictimReverted(usize),
+}
+
+/// What [`victim_logs`] found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VictimRun {
+    /// Each victim's logs, in the order given.
+    Logs(Vec<Vec<alloy_primitives::Log>>),
+    /// Victim `index` reverted in this order.
+    Reverted(usize),
+}
+
+/// Pending transactions in a chosen order on the simulator's state, and the
+/// logs each emits there: what an order does to the pools, for the backrun
+/// to be solved on. Their effects depend on the order, so each order is run
+/// (the simulator resets first).
+pub fn victim_logs<P: DatabaseRef<Error = SimError>>(
+    sim: &mut Simulator<P>,
+    victims: &[SimTx],
+    env: &SimEnv,
+) -> Result<VictimRun, SimError> {
+    sim.reset();
+    let mut out = Vec::with_capacity(victims.len());
+    for (k, tx) in victims.iter().enumerate() {
+        let a = apply_one(&mut sim.db, env, tx)?;
+        if !a.success {
+            return Ok(VictimRun::Reverted(k));
+        }
+        out.push(a.logs);
+    }
+    Ok(VictimRun::Logs(out))
+}
+
+/// Pending transactions in a chosen order, then our calls, on the state the
+/// simulator starts from: what a bundle in that order does. Each victim must
+/// succeed ([`Ordered::VictimReverted`] otherwise); our calls must succeed
+/// ([`SimError::Revert`] otherwise). The outcome's profit is the WETH the
+/// executor and its sink gained across our calls; its gas, our calls' gas.
+/// Several orders of the same victims are compared by calling this once per
+/// order (the simulator resets between calls).
+pub fn verify_ordered<P: DatabaseRef<Error = SimError>>(
+    sim: &mut Simulator<P>,
+    victims: &[SimTx],
+    calls: &[SimTx],
+    env: &SimEnv,
+) -> Result<Ordered, SimError> {
+    sim.reset();
+    for (k, tx) in victims.iter().enumerate() {
+        if !apply_one(&mut sim.db, env, tx)?.success {
+            return Ok(Ordered::VictimReverted(k));
+        }
+    }
+    let before = profit_held(sim, env)?;
+    let mut gas_used: u64 = 0;
+    let mut gas_spent: u64 = 0;
+    for call in calls {
+        let a = apply_one(&mut sim.db, env, call)?;
+        gas_used = gas_used
+            .checked_add(a.gas_used)
+            .ok_or(SimError::Malformed("gas overflow"))?;
+        gas_spent = gas_spent
+            .checked_add(a.gas_spent)
+            .ok_or(SimError::Malformed("gas overflow"))?;
+        if !a.success {
+            return Err(SimError::Revert { reason: a.output });
+        }
+    }
+    let after = profit_held(sim, env)?;
+    let gained = I256::try_from(after)
+        .ok()
+        .zip(I256::try_from(before).ok())
+        .and_then(|(a, b)| a.checked_sub(b))
+        .ok_or(SimError::Malformed("profit overflow"))?;
+    Ok(Ordered::Ran(SimOutcome {
+        gas_used,
+        gas_spent,
+        net_profit_wei: gained,
+        confidence: Confidence::CERTAIN,
+        weth_after: after,
+    }))
 }
 
 /// Verify a bundle against pending state. Trigger first, then our calls.

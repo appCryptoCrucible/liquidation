@@ -306,6 +306,8 @@ pub struct DrainJoin {
     /// Kept out of quoting: their health disagrees with the chain even after
     /// a resync.
     quarantine: std::collections::HashSet<liq_types::PositionId>,
+    /// The backrun engine's input (`arb` branch): `None` runs no engine.
+    arb: Option<crate::arb::ArbFeed>,
     /// MEV-Share hints. Popped on the hot thread. `None` when the reader
     /// was not started.
     svr_rx: Option<rtrb::Consumer<liq_types::MevShareHint>>,
@@ -685,6 +687,7 @@ impl DrainJoin {
             resync: HashMap::new(),
             sweep: std::collections::VecDeque::new(),
             quarantine: std::collections::HashSet::new(),
+            arb: None,
             svr_rx: None,
             svr_targets: Vec::new(),
             gov_rx: None,
@@ -708,6 +711,13 @@ impl DrainJoin {
     ) -> Self {
         self.gov_rx = Some(rx);
         self.gov_inbox = Some(inbox);
+        self
+    }
+
+    /// Feed the backrun engine: each block's tick, last in `after_block`.
+    #[must_use]
+    pub fn with_arb(mut self, feed: crate::arb::ArbFeed) -> Self {
+        self.arb = Some(feed);
         self
     }
 
@@ -1519,7 +1529,12 @@ impl DrainJoin {
                 timestamp,
                 &b.bid,
             ) {
-                Finish::Sent => stats.jobs_sent = stats.jobs_sent.saturating_add(1),
+                Finish::Sent => {
+                    stats.jobs_sent = stats.jobs_sent.saturating_add(1);
+                    if let Some(arb) = self.arb.as_mut() {
+                        arb.reserve(&b.pools);
+                    }
+                }
                 Finish::Sim => stats.skipped_sim = stats.skipped_sim.saturating_add(1),
                 Finish::Job => stats.skipped_job = stats.skipped_job.saturating_add(1),
                 Finish::Full => stats.inbox_full = stats.inbox_full.saturating_add(1),
@@ -1707,6 +1722,7 @@ impl DrainJoin {
                     assembled: a,
                     bid,
                     hop_and_wrap_gas: plan.hop_and_wrap_gas,
+                    pools: crate::arb::exit_pools(plan),
                 });
             }
         }
@@ -2330,6 +2346,8 @@ struct Built<'c> {
     assembled: liq_router::Assembled,
     bid: Bid,
     hop_and_wrap_gas: u64,
+    /// The pools the plan's exits swap through: kept off backruns once sent.
+    pools: smallvec::SmallVec<[u32; crate::arb::MAX_RESERVED]>,
 }
 
 /// One account per plan, so one account per transaction: an owner who
@@ -2357,6 +2375,9 @@ impl AfterBlock for DrainJoin {
     fn after_block(&mut self, ctx: AfterBlockCtx<'_>) {
         let started = std::time::Instant::now();
         self.timing.set(BlockTiming::default());
+        if let Some(arb) = self.arb.as_mut() {
+            arb.begin_block();
+        }
         self.block_seen = true;
         self.last_block = ctx.block;
         self.last_hash = ctx.hash;
@@ -2399,6 +2420,12 @@ impl AfterBlock for DrainJoin {
         // Last: the warm thread rebuilds bands and exits once this stamp
         // lands, so every pair term this block published is in that rebuild.
         publish_band_block(&self.assemble, self.fee.as_ref(), block);
+        // After the block's liquidations are queued: the backrun engine's
+        // tick, with the pools they claimed.
+        if let (Some(arb), Some(fee)) = (self.arb.as_mut(), self.fee) {
+            let view = &self.assemble;
+            arb.end_block(block, ts, fee, |a| liq_router::MarketView::per_eth(view, a));
+        }
         let total = started.elapsed();
         self.add_timing(|t| t.total = total);
     }
@@ -2775,6 +2802,7 @@ fn exec_job(
         position: cand.quote.key,
         hint_hash,
         backrun_tx,
+        parents: Vec::new(),
         target_block: target,
         max_block,
         fee,

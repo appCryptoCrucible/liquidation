@@ -564,7 +564,9 @@ mod tests {
         assert_eq!(map.slot("liq-sim-worker-0").unwrap().core, 3);
         assert_eq!(map.slot("liq-sim-worker-1").unwrap().core, 4);
         assert_eq!(map.slot("liq-sim-worker-2").unwrap().core, 11);
-        assert_eq!(map.slot("liq-sim-worker-3").unwrap().core, 12);
+        // The fourth sim worker's CPU runs the backrun engine.
+        assert_eq!(map.slot("liq-arb-engine").unwrap().core, 12);
+        assert!(map.slot("liq-sim-worker-3").is_err());
         assert_eq!(map.slot("liq-router-cache").unwrap().core, 5);
         assert_eq!(map.slot("liq-exec-submit").unwrap().core, 13);
         assert_eq!(map.slot("liq-oracle-cex").unwrap().core, 6);

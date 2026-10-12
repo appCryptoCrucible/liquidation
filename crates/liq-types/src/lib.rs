@@ -14,8 +14,10 @@ pub mod trace;
 
 pub use band::Band;
 pub use halt::{Allow, AllowQuery, HaltReason, HaltScope, HaltSink, RiskAllow, TriggerKind};
-pub use ids::{AssetId, ChainId, FlashProvider, MarketId, PositionId, PositionKey, ProtocolId};
-pub use mempool::{PendingTx, RING_CAP};
+pub use ids::{
+    AssetId, ChainId, FlashProvider, MarketId, PositionId, PositionKey, ProtocolId, ARB_PROTOCOL,
+};
+pub use mempool::{PendingPublic, PendingTx, RING_CAP};
 pub use price::{
     Confidence, MevShareHint, Price, PriceTick, PriceVector, ScheduledParamChange, SourceKind,
 };

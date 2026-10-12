@@ -1,0 +1,40 @@
+# Backrun engine (`liq-arb`, the `arb` branch): anchored water-fill backruns
+# executed by `ArbExecutor`. Off until the contract is deployed and the
+# historical verification and speed work are signed off.
+
+enabled = false
+
+# Tokens the engine may start a backrun in: what V4 `take` / Morpho lend
+# for free, and what a V3 anchor's flash swap pays. Profit closes into WETH.
+flashable = [
+  "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", # WETH
+  "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", # USDC
+  "0xdac17f958d2ee523a2206206994597c13d831ec7", # USDT
+  "0x6b175474e89094c44da98b954eedeac495271d0f", # DAI
+  "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599", # WBTC
+  "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0", # wstETH
+  "0xdc035d45d973e3ec169d2276ddab16f1e407384f", # USDS
+  "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf", # cbBTC
+]
+
+# ArbExecutor's own gas around its swaps (call, flash, profit check). Set
+# from the fork suite's measured execute gas less its pool hops.
+base_gas = 100_000
+
+# Exit solves the size search may spend per orientation.
+max_evals = 40
+
+# Coinbase bid, basis points of realized net. Contested backruns pay
+# builders 30-100% (measured 2026-10-11); this is the starting point the
+# bid schedule refines.
+bid_bps = 5_000
+
+# Smallest net after gas worth sending, wei.
+min_net_wei = 50_000_000_000_000
+
+# Funding is flash only, never inventory: the V3 anchor's flash swap where
+# the cycle has one, a free flash loan (V4 take, Morpho) where it does not.
+flash_swap = true
+
+# Sweep WETH to the profit sink on every backrun (off: swept in batches).
+sweep = false

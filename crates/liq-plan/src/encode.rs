@@ -20,6 +20,13 @@ impl EncodedPlan {
         encode_unchecked(p)
     }
 
+    /// A backrun plan for `ArbExecutor`: same wire format, every group with
+    /// zero liquidation legs ([`validate::validate_arb`]).
+    pub fn encode_arb(p: &BatchPlan, weth: alloy_primitives::Address) -> Result<Self> {
+        validate::validate_arb(p, weth)?;
+        encode_unchecked(p)
+    }
+
     /// Mark this plan as a governance plan: set `FLAG_GOV_EXEC` and append
     /// the `uint40` payload id after the profit swaps, where
     /// `PlanDecoder.header` reads it. The Executor then tries

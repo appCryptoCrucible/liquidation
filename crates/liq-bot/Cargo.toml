@@ -36,6 +36,7 @@ liq-obs = { path = "../liq-obs" }
 liq-oracle = { path = "../liq-oracle" }
 liq-protocol = { path = "../liq-protocol" }
 liq-plan = { path = "../liq-plan" }
+liq-arb = { path = "../liq-arb" }
 liq-risk = { path = "../liq-risk" }
 liq-router = { path = "../liq-router" }
 liq-sim = { path = "../liq-sim" }

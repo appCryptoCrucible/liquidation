@@ -21,6 +21,7 @@ members = [
     "crates/liq-engine",
     "crates/liq-flash",
     "crates/liq-router",
+    "crates/liq-arb",
     "crates/liq-sim",
     "crates/liq-wire",
     "crates/liq-plan",

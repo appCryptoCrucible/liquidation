@@ -101,6 +101,40 @@ impl ProcessSecrets {
     }
 }
 
+impl ProcessSecrets {
+    /// The backrun engine's secrets: its own operator key
+    /// (`LIQ_ARB_OPERATOR_SECRET`, so its own nonce sequence) and the
+    /// liquidator's searcher identity (the relays' reputation key, which
+    /// holds no nonce). `None` (logged) when the key is missing, malformed,
+    /// or either liquidation operator's.
+    #[must_use]
+    pub fn arb_from_env(liq: &ProcessSecrets) -> Option<Self> {
+        let raw = match std::env::var("LIQ_ARB_OPERATOR_SECRET") {
+            Ok(s) if !s.trim().is_empty() => s,
+            _ => {
+                tracing::error!("LIQ_ARB_OPERATOR_SECRET missing — backrun engine off");
+                return None;
+            }
+        };
+        Self::arb(&raw, liq)
+    }
+
+    /// [`Self::arb_from_env`] on a given hex key.
+    #[must_use]
+    pub fn arb(raw: &str, liq: &ProcessSecrets) -> Option<Self> {
+        let operator = parse_secret(raw)?;
+        if operator == liq.operator || Some(operator) == liq.backrun_operator {
+            tracing::error!("arb operator is a liquidation operator key — refused");
+            return None;
+        }
+        Some(Self {
+            operator,
+            identity: liq.identity,
+            backrun_operator: None,
+        })
+    }
+}
+
 fn parse_secret(raw: &str) -> Option<B256> {
     let t = raw.trim();
     let secret = match B256::from_str(t) {
@@ -263,6 +297,32 @@ pub fn try_bind_process(
 }
 
 #[cfg(test)]
+mod arb_secret_tests {
+    use super::*;
+
+    /// The arb key is its own: either liquidation key, a malformed hex or
+    /// the zero key is refused; a distinct key keeps the shared identity.
+    #[test]
+    fn arb_key_must_be_its_own() {
+        let k = |b: u8| B256::repeat_byte(b);
+        let liq = ProcessSecrets {
+            operator: k(1),
+            identity: k(2),
+            backrun_operator: Some(k(3)),
+        };
+        assert!(ProcessSecrets::arb(&format!("{:#x}", k(1)), &liq).is_none());
+        assert!(ProcessSecrets::arb(&format!("{:#x}", k(3)), &liq).is_none());
+        assert!(ProcessSecrets::arb("0xnot-hex", &liq).is_none());
+        assert!(ProcessSecrets::arb(&format!("{:#x}", B256::ZERO), &liq).is_none());
+        let arb = ProcessSecrets::arb(&format!("{:#x}", k(4)), &liq).unwrap();
+        assert_eq!(
+            (arb.operator, arb.identity, arb.backrun_operator),
+            (k(4), k(2), None)
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use alloy_primitives::{address, b256, Address, Bytes, B256};
@@ -306,6 +366,7 @@ mod tests {
                 "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             )),
             backrun_tx: None,
+            parents: Vec::new(),
             target_block: 101,
             max_block: 103,
             fee: FeeQuote {
@@ -532,7 +593,7 @@ mod tests {
         let path = Arc::new(bind_path(flag, &lease, builders_for(&url)));
         let (inbox, rx) = liq_exec::path::ExecInbox::pair(4);
         let worker =
-            crate::exec_worker::spawn_exec_worker(rx, None, Arc::clone(&path), None).unwrap();
+            crate::exec_worker::spawn_exec_worker(rx, None, Arc::clone(&path), None, None).unwrap();
         // Both jobs queued at once; the worker drains them in order.
         assert!(inbox.try_send(job()));
         let mut second = job();

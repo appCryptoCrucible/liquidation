@@ -143,6 +143,9 @@ impl RiskGate {
             return;
         }
         self.remove(scope, reason);
+        if let Some(twin) = mevshare_twin(scope, reason) {
+            self.remove(twin, reason);
+        }
         info!(?scope, ?reason, "class A halt cleared");
     }
 
@@ -336,6 +339,9 @@ impl HaltSink for RiskGate {
             }
             HaltClass::A => {
                 apply_halt(self, scope, reason, 0);
+                if let Some(twin) = mevshare_twin(scope, reason) {
+                    apply_halt(self, twin, reason, 0);
+                }
                 warn!(?scope, ?reason, class = "A", "halt");
             }
             HaltClass::B => {
@@ -383,6 +389,15 @@ fn normalize_scope(scope: HaltScope, reason: HaltReason, class: HaltClass) -> Op
     }
 }
 
+/// The MEV-Share stream feeds two triggers: SVR backruns and arb backruns
+/// of MEV-Share hints. Its disconnect halts (and its recovery clears) both;
+/// the halt is raised and cleared on the SVR scope, this gives the other.
+fn mevshare_twin(scope: HaltScope, reason: HaltReason) -> Option<HaltScope> {
+    (reason == HaltReason::MevShareDisconnected
+        && scope == HaltScope::Trigger(TriggerKind::SvrAuction))
+    .then_some(HaltScope::Trigger(TriggerKind::ArbMevShare))
+}
+
 fn apply_halt(gate: &RiskGate, scope: HaltScope, reason: HaltReason, metric: u64) {
     let e = HaltEntry { reason, metric };
     match scope {
@@ -418,6 +433,41 @@ fn apply_halt(gate: &RiskGate, scope: HaltScope, reason: HaltReason, metric: u64
 mod tests {
     use super::*;
     use alloy_primitives::Address;
+
+    /// A MEV-Share disconnect stops arb backruns of MEV-Share hints as it
+    /// stops SVR backruns (both read that stream); a fresh heartbeat lets
+    /// both through again. Public arb backruns are not touched.
+    #[test]
+    fn mevshare_disconnect_halts_arb_mevshare_too() {
+        let g = RiskGate::new();
+        let with = |t: TriggerKind| AllowQuery {
+            trigger: t,
+            ..q(ProtocolId(1), FlashProvider::UniV4)
+        };
+        let t = TraceId::from_raw(1);
+        g.observe_mevshare(120);
+        assert!(matches!(
+            g.allow(t, &with(TriggerKind::SvrAuction)),
+            Allow::Denied { .. }
+        ));
+        assert!(matches!(
+            g.allow(t, &with(TriggerKind::ArbMevShare)),
+            Allow::Denied { .. }
+        ));
+        assert!(matches!(
+            g.allow(t, &with(TriggerKind::ArbPublic)),
+            Allow::Yes
+        ));
+        g.observe_mevshare(5);
+        assert!(matches!(
+            g.allow(t, &with(TriggerKind::SvrAuction)),
+            Allow::Yes
+        ));
+        assert!(matches!(
+            g.allow(t, &with(TriggerKind::ArbMevShare)),
+            Allow::Yes
+        ));
+    }
 
     fn q(protocol: ProtocolId, flash: FlashProvider) -> AllowQuery {
         AllowQuery {

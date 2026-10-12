@@ -15,6 +15,13 @@ pub struct ChainId(pub u64);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProtocolId(pub u16);
 
+/// The backrun engine (`liq-arb`) as a protocol for the submit path's risk
+/// gate: interning hands protocols dense ids from 0, so the top id is never
+/// one. A halt on it stops every backrun; a backrun's market is its anchor
+/// pool's id (`MarketId(pool)`), so a market halt stops backruns on one
+/// pool.
+pub const ARB_PROTOCOL: ProtocolId = ProtocolId(u16::MAX);
+
 /// Spoke / pool / market, **protocol-scoped**. Dense `u32` so it can hold
 /// Aave V4 `(Hub, Spoke)`, a Morpho Blue market id, or Aave V3's single pool.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

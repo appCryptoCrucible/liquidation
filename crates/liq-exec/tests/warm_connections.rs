@@ -168,6 +168,7 @@ fn svr_job() -> liq_exec::path::ExecJob {
             "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         )),
         backrun_tx: None,
+        parents: Vec::new(),
         target_block: 101,
         max_block: 103,
         fee: FeeQuote {

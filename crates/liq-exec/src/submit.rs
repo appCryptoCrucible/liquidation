@@ -403,7 +403,7 @@ pub fn route(
 ) -> Result<Routed> {
     let policy = bid_policy(kind, auction_bps, priority_wei, modest_priority_wei)?;
     let venue = match kind {
-        TriggerKind::SvrAuction => Venue::MevShare {
+        TriggerKind::SvrAuction | TriggerKind::ArbMevShare => Venue::MevShare {
             relay: builders.mevshare_relay,
         },
         _ => {

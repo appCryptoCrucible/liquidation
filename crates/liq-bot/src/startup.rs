@@ -133,6 +133,10 @@ pub struct Started {
     pub assemble: ProcessAssembleView,
     /// Inclusion watcher threads. `None` when the feed could not be built.
     pub inclusion: Option<crate::inclusion_feed::InclusionJoin>,
+    /// The backrun engine's pending-transaction ring, for the ExEx's pool
+    /// listener to fill. `None`: no engine runs.
+    pub arb_pending: Option<rtrb::Producer<liq_types::PendingPublic>>,
+    _arb: Option<(std::thread::JoinHandle<()>, Arc<AtomicBool>)>,
     _stall: Option<std::thread::JoinHandle<()>>,
     _svr: Option<std::thread::JoinHandle<()>>,
     _gov: Option<std::thread::JoinHandle<()>>,
@@ -514,6 +518,29 @@ pub async fn run(
         backrun_operator,
         shared.lease,
     );
+    // The backrun engine (`arb` branch): off unless `arb.toml` enables it
+    // and its contract and key are configured.
+    let arb = crate::arb::start(
+        config_dir,
+        cores_path,
+        allow_unpinned,
+        &loaded.intern,
+        weth,
+        loaded.config.venues.arb_executor,
+        &shadow,
+        shared,
+        Arc::clone(&index.book),
+    );
+    let (arb_feed, arb_exec, arb_hints, arb_pending, arb_thread) = match arb {
+        Some(a) => (
+            Some(a.feed),
+            Some(a.exec),
+            Some(a.hints),
+            Some(a.pending),
+            Some((a.thread, a.stop)),
+        ),
+        None => (None, None, None, None, None),
+    };
     let (inbox, rx) = if exec.is_some() {
         let (tx, rx) = ExecInbox::pair(1024);
         (Some(tx), Some(rx))
@@ -557,7 +584,7 @@ pub async fn run(
                 None
             }
         };
-        if let Err(e) = spawn_exec_worker(rx, chain_exec, path, exec_core) {
+        if let Err(e) = spawn_exec_worker(rx, chain_exec, path, exec_core, arb_exec) {
             tracing::error!(?e, "exec worker not started — inbox will count full");
         }
     }
@@ -617,7 +644,7 @@ pub async fn run(
             "protocol state reader not started — Fluid vaults never quote"
         );
     }
-    let svr = start_svr_reader(index, shared.risk);
+    let svr = start_svr_reader(index, shared.risk, arb_hints);
     let hook = DrainJoin::live(
         Arc::clone(&shared.flash),
         shared.routes.clone(),
@@ -685,6 +712,10 @@ pub async fn run(
         Some((rx, inbox)) => hook.with_gov(rx, inbox),
         None => hook,
     };
+    let hook = match arb_feed {
+        Some(feed) => hook.with_arb(feed),
+        None => hook,
+    };
     let _map = pin_threads(cores_path, allow_unpinned)?;
     let sink: &'static dyn liq_types::HaltSink = shared.risk;
     let (forwarder, hot, tracked) = register_exex(
@@ -705,6 +736,8 @@ pub async fn run(
         exec,
         assemble,
         inclusion,
+        arb_pending,
+        _arb: arb_thread,
         _stall: stall,
         _svr: svr_thread,
         _gov: gov_thread,
@@ -765,6 +798,7 @@ fn live_sim(
 fn start_svr_reader(
     index: &'static crate::index::BoundIndex,
     sink: &'static dyn liq_types::HaltSink,
+    arb: Option<rtrb::Producer<liq_types::MevShareHint>>,
 ) -> Option<(
     rtrb::Consumer<liq_types::MevShareHint>,
     Vec<liq_oracle::mevshare::SvrTarget>,
@@ -786,7 +820,7 @@ fn start_svr_reader(
         return None;
     }
     let (tx, rx) = rtrb::RingBuffer::<liq_types::MevShareHint>::new(1024);
-    match liq_oracle::mevshare::spawn_hint_reader(sink, tx) {
+    match liq_oracle::mevshare::spawn_hint_reader(sink, tx, arb) {
         Ok(handle) => Some((rx, targets, handle)),
         Err(e) => {
             tracing::error!(error = %e, "SVR stream thread refused");

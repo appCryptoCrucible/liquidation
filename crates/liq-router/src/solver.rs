@@ -673,6 +673,40 @@ impl Pool {
 }
 
 impl PoolState {
+    /// Make `self` equal to `src`, reusing `self`'s buffers. Between two V3
+    /// states the tick vector is copied into the capacity already there, so
+    /// saving and restoring a pool's state on a scratch slot of the same
+    /// pool allocates nothing once the slot has been sized; every other
+    /// state keeps its coins inline (`SmallVec` within [`MAX_COINS`]).
+    pub fn copy_from(&mut self, src: &PoolState) {
+        match (&mut *self, src) {
+            (PoolState::V3(d), PoolState::V3(s)) => {
+                // Exhaustive, so a new field cannot be left out of the copy.
+                let V3State {
+                    factory,
+                    sqrt_price_x96,
+                    tick,
+                    liquidity,
+                    fee_pips,
+                    tick_spacing,
+                    ticks,
+                    v4,
+                    window,
+                } = s;
+                d.factory = *factory;
+                d.sqrt_price_x96 = *sqrt_price_x96;
+                d.tick = *tick;
+                d.liquidity = *liquidity;
+                d.fee_pips = *fee_pips;
+                d.tick_spacing = *tick_spacing;
+                d.ticks.clone_from(ticks);
+                d.v4.clone_from(v4);
+                d.window = *window;
+            }
+            (d, s) => d.clone_from(s),
+        }
+    }
+
     fn quote(&self, i: u8, j: u8, amount_in: U256) -> Result<U256, RouteError> {
         if amount_in.is_zero() {
             return Ok(U256::ZERO);
@@ -1692,6 +1726,25 @@ pub struct PoolBook {
     graph: Option<std::sync::Arc<crate::graph::GraphRoutes>>,
     discovered: u64,
     generation: u64,
+    /// Per pool, when its state last changed: a stamp from [`Self::clock`],
+    /// taken on every mutation (a folded log, `get_mut`, `add`). A copy of
+    /// the book on another thread brings itself up to date by copying only
+    /// the pools whose stamp moved ([`Self::sync_from`]).
+    versions: Vec<u64>,
+    clock: u64,
+}
+
+/// Where a synced copy's own stamps start ([`PoolBook::sync_from`]).
+const LOCAL_CLOCK: u64 = 1 << 63;
+
+/// Stamp pool `k` as changed now. A free function over the two fields, so
+/// it can run while another field of the book is borrowed.
+#[inline]
+fn stamp(versions: &mut [u64], clock: &mut u64, k: usize) {
+    *clock = clock.wrapping_add(1);
+    if let Some(v) = versions.get_mut(k) {
+        *v = *clock;
+    }
 }
 
 impl PoolBook {
@@ -1719,6 +1772,8 @@ impl PoolBook {
             graph: None,
             discovered: 0,
             generation: 0,
+            versions: Vec::new(),
+            clock: 0,
         }
     }
 
@@ -1818,6 +1873,8 @@ impl PoolBook {
         }
         self.by_address.insert(pool.address, id);
         self.pools.push(pool);
+        self.clock = self.clock.wrapping_add(1);
+        self.versions.push(self.clock);
         self.generation = self.generation.wrapping_add(1);
         Ok(id)
     }
@@ -1828,9 +1885,75 @@ impl PoolBook {
         self.pools.get(usize::try_from(id.0).ok()?)
     }
 
+    /// Mutable access, stamped as a change ([`Self::version`]).
     #[inline]
     pub fn get_mut(&mut self, id: PoolId) -> Option<&mut Pool> {
-        self.pools.get_mut(usize::try_from(id.0).ok()?)
+        let k = usize::try_from(id.0).ok()?;
+        stamp(&mut self.versions, &mut self.clock, k);
+        self.pools.get_mut(k)
+    }
+
+    /// When pool `id`'s state last changed (0: never, or no such pool).
+    #[inline]
+    #[must_use]
+    pub fn version(&self, id: PoolId) -> u64 {
+        usize::try_from(id.0)
+            .ok()
+            .and_then(|k| self.versions.get(k))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Bring this copy of `src` up to date: pools `src` has added since are
+    /// appended (same ids), and every pool whose state changed in `src`
+    /// since the last sync is copied into the buffers already here
+    /// ([`PoolState::copy_from`]), so steady state allocates nothing. The
+    /// graph, hub and unwraps follow `src`. Returns the pools copied.
+    ///
+    /// For a book that started as a clone of `src` and is changed only by
+    /// its owner between syncs (scratch states restored before the next
+    /// sync).
+    pub fn sync_from(&mut self, src: &PoolBook) -> usize {
+        // This copy's own changes (scratch swaps and their restores) stamp
+        // from its own clock; lift it out of the range `src` stamps in, so a
+        // pool changed here can never carry a stamp equal to `src`'s and be
+        // skipped. Only a copy calls this; `src`'s clock is never raised.
+        if self.clock < LOCAL_CLOCK {
+            self.clock = LOCAL_CLOCK;
+        }
+        let mut copied = 0usize;
+        for k in self.pools.len()..src.pools.len() {
+            if let Some(p) = src.pools.get(k) {
+                if self.add(p.clone()).is_err() {
+                    break;
+                }
+                copied = copied.saturating_add(1);
+            }
+        }
+        for (k, (mine, theirs)) in self.pools.iter_mut().zip(&src.pools).enumerate() {
+            let (Some(v), Some(&sv)) = (self.versions.get_mut(k), src.versions.get(k)) else {
+                continue;
+            };
+            if *v != sv {
+                mine.state.copy_from(&theirs.state);
+                *v = sv;
+                copied = copied.saturating_add(1);
+            }
+        }
+        if self.generation != src.generation {
+            self.hub = src.hub;
+            if !match (&self.graph, &src.graph) {
+                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            } {
+                self.graph.clone_from(&src.graph);
+            }
+            self.unwraps.clone_from(&src.unwraps);
+            self.pending_v2.clone_from(&src.pending_v2);
+            self.generation = src.generation;
+        }
+        copied
     }
 
     #[inline]
@@ -2216,6 +2339,34 @@ impl PoolBook {
         self.discovered
     }
 
+    /// The pools [`Self::apply_log`] would change for `log`, appended to
+    /// `out` (same routing: the V4 PoolManager and Balancer Vault by pool
+    /// id, Fluid's Liquidity layer by token, any other pool by address).
+    /// For saving them before a log is folded on scratch state.
+    pub fn pools_for_log(&self, log: &DecodedLog<'_>, out: &mut SmallVec<[PoolId; 4]>) {
+        let id = if log.address == BALANCER_VAULT {
+            log.topics
+                .get(1)
+                .and_then(|pid| self.by_balancer_id.get(pid).copied())
+        } else if log.address == V4_POOL_MANAGER {
+            log.topics
+                .get(1)
+                .and_then(|pid| self.by_v4_id.get(pid).copied())
+        } else if log.address == FLUID_LIQUIDITY {
+            if let Ok(ev) =
+                IFluidLiquidity::LogOperate::decode_raw_log(log.topics.iter().copied(), log.data)
+            {
+                if let Some(ids) = self.by_fluid_token.get(&ev.token) {
+                    out.extend(ids.iter().copied());
+                }
+            }
+            None
+        } else {
+            self.by_address.get(&log.address).copied()
+        };
+        out.extend(id);
+    }
+
     /// Fold one routed log. Ingest thread. Unknown addresses / topics are
     /// no-ops; a malformed body at a known pool marks that pool stale
     /// (V3/Curve) — never a guess.
@@ -2245,6 +2396,11 @@ impl PoolBook {
             if let PoolState::Balancer(s) = &mut pool.state {
                 if fold_balancer(s, t0, log) {
                     self.generation = self.generation.wrapping_add(1);
+                    stamp(
+                        &mut self.versions,
+                        &mut self.clock,
+                        usize::try_from(id.0).unwrap_or(usize::MAX),
+                    );
                 }
             }
             return;
@@ -2271,6 +2427,11 @@ impl PoolBook {
             if let PoolState::V3(s) = &mut pool.state {
                 if fold_v4(s, t0, log) {
                     self.generation = self.generation.wrapping_add(1);
+                    stamp(
+                        &mut self.versions,
+                        &mut self.clock,
+                        usize::try_from(id.0).unwrap_or(usize::MAX),
+                    );
                 }
             }
             return;
@@ -2324,6 +2485,11 @@ impl PoolBook {
         };
         if changed {
             self.generation = self.generation.wrapping_add(1);
+            stamp(
+                &mut self.versions,
+                &mut self.clock,
+                usize::try_from(id.0).unwrap_or(usize::MAX),
+            );
         }
     }
 
@@ -2358,6 +2524,11 @@ impl PoolBook {
             let Some(k) = f.tokens.iter().position(|t| *t == ev.token) else {
                 continue;
             };
+            stamp(
+                &mut self.versions,
+                &mut self.clock,
+                usize::try_from(id.0).unwrap_or(usize::MAX),
+            );
             if ev.user == address {
                 f.stale = true;
                 f.stale_block = f.stale_block.max(log.block);
@@ -2802,6 +2973,82 @@ mod tests {
 
     fn abs_diff(a: U256, b: U256) -> U256 {
         a.abs_diff(b)
+    }
+
+    fn sync_book() -> PoolBook {
+        let mut b = PoolBook::new(HashMap::new(), None, 0);
+        b.add(v2(1, e18(1_000), e18(2_000))).unwrap();
+        b.add(v3(
+            2,
+            3_000,
+            60,
+            U256::from(1u8) << 96,
+            &[(-6_000, 6_000, 1_000_000_000_000_000_000)],
+        ))
+        .unwrap();
+        b
+    }
+
+    fn states(b: &PoolBook) -> Vec<PoolState> {
+        b.pools().iter().map(|p| p.state.clone()).collect()
+    }
+
+    /// A copy synced from the book ends equal to it: after swaps in the
+    /// book (only the changed pool is copied), after the copy's own scratch
+    /// swaps (put back), and after the book adds a pool (appended, same id).
+    /// Oracle: the book's own states.
+    #[test]
+    fn synced_copy_tracks_the_book() {
+        let mut src = sync_book();
+        let mut copy = src.clone();
+        assert_eq!(copy.sync_from(&src), 0, "a fresh clone is in sync");
+
+        src.get_mut(PoolId(1))
+            .unwrap()
+            .apply_exact_in(0, 1, U256::from(100_000_000_000_000_000u128))
+            .unwrap();
+        assert_eq!(copy.sync_from(&src), 1, "only the swapped pool is copied");
+        assert_eq!(states(&copy), states(&src));
+
+        // The copy's own swap (a scratch evaluation never restored) is
+        // undone by the next sync, though the book did not change.
+        copy.get_mut(PoolId(0))
+            .unwrap()
+            .apply_exact_in(0, 1, e18(7))
+            .unwrap();
+        assert_ne!(states(&copy), states(&src));
+        assert_eq!(copy.sync_from(&src), 1);
+        assert_eq!(states(&copy), states(&src));
+
+        let id = src.add(v2(3, e18(10), e18(10))).unwrap();
+        copy.sync_from(&src);
+        assert_eq!(copy.pools().len(), src.pools().len());
+        assert_eq!(copy.by_address(addr(3)), Some(id));
+        assert_eq!(states(&copy), states(&src));
+        assert_eq!(copy.sync_from(&src), 0, "nothing left to copy");
+    }
+
+    /// Saving a V3 state into a slot already sized for it reuses the tick
+    /// buffer: equal to the source, same capacity.
+    #[test]
+    fn copy_from_reuses_the_tick_buffer() {
+        let b = sync_book();
+        let src = b.get(PoolId(1)).unwrap().state.clone();
+        let mut slot = src.clone();
+        let cap = match &slot {
+            PoolState::V3(s) => s.ticks.capacity(),
+            _ => panic!(),
+        };
+        let mut moved = b.get(PoolId(1)).unwrap().clone();
+        moved
+            .apply_exact_in(1, 0, U256::from(100_000_000_000_000_000u128))
+            .unwrap();
+        slot.copy_from(&moved.state);
+        assert_eq!(slot, moved.state);
+        match &slot {
+            PoolState::V3(s) => assert_eq!(s.ticks.capacity(), cap),
+            _ => panic!(),
+        }
     }
 
     /// A seeded pool knows ticks only inside its window. Oracle: the same

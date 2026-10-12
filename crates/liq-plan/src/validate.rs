@@ -207,6 +207,53 @@ pub fn validate(p: &BatchPlan, ctx: &ValidateCtx) -> Result<()> {
 /// A reward-only group (`FlashProvider::None`, Executor `P_NONE`): nothing
 /// borrowed, nothing pulled, nothing to repay. Its legs' rewards close to
 /// WETH through the profit legs like any seized collateral.
+/// [`validate`] for a backrun plan (`ArbExecutor`): flash groups with no
+/// liquidation legs, each repaid by its own swap legs (the cycle), then
+/// profit legs into WETH. Every leg passes the same per-leg checks a
+/// liquidation plan's do; none may be tied to a liquidation leg, and the
+/// only providers are the arb executor's (V4 `take`, Morpho, a V3 flash
+/// swap).
+pub fn validate_arb(p: &BatchPlan, weth: Address) -> Result<()> {
+    if p.groups.is_empty() {
+        return Err(EncodeError::NoGroups);
+    }
+    nonzero(weth, "weth")?;
+    if p.min_profit_wei == 0 {
+        return Err(EncodeError::ZeroMinProfit);
+    }
+    for g in &p.groups {
+        if !matches!(
+            g.provider,
+            FlashProvider::UniV4 | FlashProvider::Morpho | FlashProvider::UniV3Swap
+        ) {
+            return Err(EncodeError::ArbProvider(g.provider));
+        }
+        nonzero(g.flash_source, "flashSource")?;
+        nonzero(g.debt_asset, "debtAsset")?;
+        if g.flash_amount == 0 {
+            return Err(EncodeError::ZeroPull { pull: 0 });
+        }
+        if !g.liqs.is_empty() {
+            return Err(EncodeError::ArbLiqLegs(g.liqs.len()));
+        }
+        if g.repay_swaps.is_empty() {
+            return Err(EncodeError::ArbNoSwaps);
+        }
+    }
+    for s in all_swaps(p) {
+        check_swap(s)?;
+        if let Some(leg) = leg_tie(s.flags) {
+            return Err(EncodeError::ArbTiedLeg(leg));
+        }
+    }
+    for s in &p.profit_swaps {
+        if s.token_out != weth {
+            return Err(EncodeError::ProfitTargetNotWeth { weth });
+        }
+    }
+    Ok(())
+}
+
 fn reward_group(g: &FlashGroup) -> Result<()> {
     if g.flash_amount != 0 || g.flash_source != Address::ZERO || g.fee_bps != 0 {
         return Err(EncodeError::RewardGroupBorrows);

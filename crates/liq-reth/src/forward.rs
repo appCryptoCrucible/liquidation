@@ -19,6 +19,66 @@ use reth_ethereum::{
     EthPrimitives,
 };
 
+/// Pending public-mempool transactions from Reth's pool to the backrun
+/// engine: each transaction that enters the pending sub-pool, as a
+/// [`liq_types::PendingPublic`] on the engine's ring. Only contract calls
+/// go: no creations, no blob and no set-code transactions. A full ring
+/// drops the transaction (counted). Runs on Reth's runtime; ends with the
+/// pool's stream.
+fn spawn_pool_listener<Node>(
+    ctx: &ExExContext<Node>,
+    mut out: rtrb::Producer<liq_types::PendingPublic>,
+) where
+    Node: FullNodeComponents<Types: NodeTypes<Primitives = EthPrimitives>>,
+{
+    use alloy_consensus::Transaction as _;
+    use futures_util::StreamExt as _;
+    use reth_ethereum::pool::{PoolTransaction as _, TransactionPool as _};
+    let mut stream = ctx.pool().new_pending_pool_transactions_listener();
+    tokio::spawn(async move {
+        let mut dropped = 0u64;
+        while let Some(ev) = stream.next().await {
+            let v = &ev.transaction;
+            let tx = &v.transaction;
+            let Some(to) = tx.to() else { continue };
+            if tx.input().is_empty()
+                || tx.blob_versioned_hashes().is_some()
+                || tx.authorization_list().is_some()
+            {
+                continue;
+            }
+            let p = liq_types::PendingPublic {
+                hash: *tx.hash(),
+                sender: tx.sender(),
+                to: Some(to),
+                value: tx.value(),
+                input: tx.input().clone(),
+                gas_limit: tx.gas_limit(),
+                nonce: tx.nonce(),
+                access_list: tx
+                    .access_list()
+                    .map(|l| {
+                        l.iter()
+                            .map(|i| (i.address, i.storage_keys.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                max_priority_fee_per_gas: tx
+                    .max_priority_fee_per_gas()
+                    .unwrap_or_else(|| tx.max_fee_per_gas()),
+                max_fee_per_gas: tx.max_fee_per_gas(),
+                raw: tx.encoded_2718_consensus(),
+                seen_at: v.timestamp,
+            };
+            if out.push(p).is_err() {
+                dropped = dropped.saturating_add(1);
+                tracing::warn!(dropped, "arb pending ring full — transaction dropped");
+            }
+        }
+        tracing::error!("pending-pool stream ended — public-mempool intake stopped");
+    });
+}
+
 /// Spacing while the configured RPC socket is still coming up.
 /// Not a timeout, and not used for any price or size.
 const RPC_BIND_POLL: Duration = Duration::from_millis(200);
@@ -45,6 +105,10 @@ where
         Some(node_state),
     )
     .await?;
+    // The backrun engine's public-mempool intake, when the engine runs.
+    if let Some(out) = started.arb_pending.take() {
+        spawn_pool_listener(&ctx, out);
+    }
     // Resume from the snapshot: Reth re-executes every block after it and
     // delivers those before live ones (`ExExNotificationsWithHead`).
     ctx.catch_up_notifications_with_head(ExExHead::new(BlockNumHash::new(

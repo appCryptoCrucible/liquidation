@@ -1,0 +1,18 @@
+[package]
+name = "liq-arb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+liq-types = { path = "../liq-types" }
+liq-protocol = { path = "../liq-protocol" }
+liq-router = { path = "../liq-router" }
+liq-plan = { path = "../liq-plan" }
+alloy-primitives = { workspace = true, features = ["std"] }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

@@ -31,4 +31,4 @@ pub use types::{
     VENUE_PENDLE_MARKET_SELL, VENUE_PENDLE_PT_REDEEM, VENUE_ROUTER, VENUE_UNIV2_POOL,
     VENUE_UNIV3_POOL, VENUE_UNIV4_POOL, VENUE_UNWRAP_4626,
 };
-pub use validate::{col_per_unit_debt_1e18, morpho_actual_pull, morpho_id, validate};
+pub use validate::{col_per_unit_debt_1e18, morpho_actual_pull, morpho_id, validate, validate_arb};

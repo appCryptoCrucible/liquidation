@@ -192,12 +192,34 @@ fn one_hint(
     })
 }
 
+/// One event's hints to `deliver`, as they are parsed. An event that does
+/// not parse is logged and skipped (one malformed event never ends the
+/// stream). Returns how many hints were delivered.
+pub fn deliver_event(data: &str, deliver: &mut dyn FnMut(MevShareHint)) -> usize {
+    match parse_event_hints(data) {
+        Ok(hints) => {
+            let n = hints.len();
+            for h in hints {
+                deliver(h);
+            }
+            n
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "MEV-Share event not parsed — skipped");
+            0
+        }
+    }
+}
+
 /// One SSE connection. Ends on drop; caller backs off and reconnects.
+/// Every event's hints go to `deliver` as the event arrives — a hint is
+/// worth something only before its block, so none waits for the
+/// connection to end.
 pub async fn drain_connection(
     client: &reqwest::Client,
     url: &str,
     sink: &dyn HaltSink,
-    out: &mut Vec<MevShareHint>,
+    deliver: &mut dyn FnMut(MevShareHint),
 ) -> Result<()> {
     let resp = client
         .get(url)
@@ -224,7 +246,7 @@ pub async fn drain_connection(
                 if ev.data.is_empty() {
                     continue;
                 }
-                out.extend(parse_event_hints(&ev.data)?);
+                deliver_event(&ev.data, deliver);
             }
             Err(e) => {
                 sink.halt(HaltScope::Global, HaltReason::MevShareDisconnected);
@@ -236,11 +258,14 @@ pub async fn drain_connection(
     Ok(())
 }
 
-/// Blocking reader. Pushes every transaction of each event. On disconnect,
-/// backs off and reconnects. A full ring drops the hint that did not fit.
+/// Blocking reader. Pushes every transaction of each event as it arrives
+/// to `out` (the SVR drain), and every hint that shares logs to `arb` (the
+/// backrun engine) when given. On disconnect, backs off and reconnects. A
+/// full ring drops the hint that did not fit.
 pub fn spawn_hint_reader(
     sink: &'static dyn HaltSink,
     mut out: rtrb::Producer<MevShareHint>,
+    mut arb: Option<rtrb::Producer<MevShareHint>>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
         .name("liq-oracle-mevshare".into())
@@ -266,16 +291,23 @@ pub fn spawn_hint_reader(
                     }
                 };
                 let mut attempt = 0u32;
-                let mut buf = Vec::new();
-                loop {
-                    buf.clear();
-                    if let Err(e) = drain_connection(&client, MEV_SHARE_SSE, sink, &mut buf).await {
-                        tracing::error!(error = %e, "SVR stream disconnected");
-                    }
-                    for hint in buf.drain(..) {
-                        if out.push(hint).is_err() {
-                            tracing::error!("SVR hint ring full — hint dropped");
+                let mut deliver = |hint: MevShareHint| {
+                    if let Some(a) = arb.as_mut() {
+                        if hint.logs.as_ref().is_some_and(|l| !l.is_empty())
+                            && a.push(hint.clone()).is_err()
+                        {
+                            tracing::warn!("arb hint ring full — hint dropped");
                         }
+                    }
+                    if out.push(hint).is_err() {
+                        tracing::error!("SVR hint ring full — hint dropped");
+                    }
+                };
+                loop {
+                    if let Err(e) =
+                        drain_connection(&client, MEV_SHARE_SSE, sink, &mut deliver).await
+                    {
+                        tracing::error!(error = %e, "SVR stream disconnected");
                     }
                     tokio::time::sleep(backoff_delay(attempt)).await;
                     attempt = attempt.saturating_add(1);
@@ -336,6 +368,26 @@ mod tests {
         assert_eq!(events[0].hash, hash);
         assert!(parse_hint_json("{}").is_err(), "oracle: Def — missing hash");
         let _ = sse_client;
+    }
+
+    /// Each event's hints are delivered when the event is handled, not
+    /// held for the connection's end; a malformed event is skipped and the
+    /// next one still delivered.
+    #[test]
+    fn events_deliver_at_once_and_bad_ones_are_skipped() {
+        let hash = b256!("0x3333333333333333333333333333333333333333333333333333333333333333");
+        let mut got = Vec::new();
+        let mut deliver = |h: liq_types::MevShareHint| got.push(h.hash);
+        assert_eq!(
+            super::deliver_event(&format!("{{\"hash\":\"{hash:#x}\"}}"), &mut deliver),
+            1
+        );
+        assert_eq!(super::deliver_event("{not json", &mut deliver), 0);
+        assert_eq!(
+            super::deliver_event(&format!("{{\"hash\":\"{hash:#x}\"}}"), &mut deliver),
+            1
+        );
+        assert_eq!(got, vec![hash, hash]);
     }
 
     /// A bundle event is one hash and one hint per transaction.

@@ -18,8 +18,8 @@ pub use matcher::{
 };
 pub use sign::{body_id_hex, flashbots_header, sign_body, verify_header, SearcherKey};
 pub use stream::{
-    backoff_delay, classify_sse_line, drain_connection, parse_event_hints, parse_hint_json,
-    spawn_hint_reader, sse_client, SseItem, MEV_SHARE_SSE, PING_IDLE,
+    backoff_delay, classify_sse_line, deliver_event, drain_connection, parse_event_hints,
+    parse_hint_json, spawn_hint_reader, sse_client, SseItem, MEV_SHARE_SSE, PING_IDLE,
 };
 
 use thiserror::Error;

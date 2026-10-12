@@ -22,9 +22,12 @@ schema = 1
 
 [[l3]]
 # The whole die. Hot path: cores 0, 1, 2 (siblings 8, 9, 10 reserved).
-# Sim workers: both threads of cores 3 and 4 (3, 4, 11, 12). Router cache
-# and submit: core 5 and its sibling 13. CEX, telemetry and drift share the
-# Reth/Lighthouse CPUs 6, 7, 14, 15.
+# Sim workers: cores 3 and 4 and core 3's sibling (3, 4, 11). Backrun
+# engine (`liq-arb-engine`, the `arb` branch): core 4's sibling, 12 — the
+# fourth sim worker's CPU, isolated, so neither system jitters the other and
+# nothing lands on the Reth/Lighthouse CPUs. Router cache and submit: core 5
+# and its sibling 13. CEX, telemetry and drift share the Reth/Lighthouse
+# CPUs 6, 7, 14, 15.
 shared_cpu_list = "0-15"
 numa = 0
 isolated = true
@@ -56,7 +59,7 @@ name = "liq-sim-worker-2"
 core = 11
 
 [[thread]]
-name = "liq-sim-worker-3"
+name = "liq-arb-engine"
 core = 12
 
 [[thread]]

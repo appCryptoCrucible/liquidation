@@ -63,6 +63,7 @@ fn job(kind: TriggerKind, hint: Option<B256>, backrun: Option<Bytes>) -> liq_exe
         },
         hint_hash: hint,
         backrun_tx: backrun,
+        parents: Vec::new(),
         target_block: target,
         max_block: max,
         fee: quote(100),

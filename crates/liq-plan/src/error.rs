@@ -15,6 +15,19 @@ pub enum EncodeError {
     NoGroups,
     #[error("group has zero liquidation legs")]
     NoLegs,
+    /// An arb plan's group carries liquidation legs (it may carry none).
+    #[error("arb group has {0} liquidation legs")]
+    ArbLiqLegs(usize),
+    /// An arb plan's group has no swap legs: nothing would repay the flash.
+    #[error("arb group has no swap legs")]
+    ArbNoSwaps,
+    /// A provider the arb executor does not take (`UniV4`, `Morpho`,
+    /// `UniV3Swap` only).
+    #[error("arb executor does not take provider {0:?}")]
+    ArbProvider(FlashProvider),
+    /// An arb swap leg tied to a liquidation leg (there are none to tie to).
+    #[error("arb swap leg is tied to liquidation leg {0}")]
+    ArbTiedLeg(usize),
     #[error("group count exceeds u8")]
     TooManyGroups,
     #[error("leg count exceeds u8")]

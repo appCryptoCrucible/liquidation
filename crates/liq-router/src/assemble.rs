@@ -495,7 +495,7 @@ fn min_profit_floor(
 /// V3 by the callback's CREATE2 check, V2 by CREATE2 against the pair's
 /// factory, Curve by the MetaRegistry handler the leg names (the pool's
 /// own, from the registry) + coin indices.
-fn venue_bytes(
+pub fn venue_bytes(
     book: &PoolBook,
     pool_id: PoolId,
     i: u8,

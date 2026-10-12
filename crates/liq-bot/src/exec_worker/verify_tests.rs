@@ -70,6 +70,7 @@ fn job() -> ExecJob {
         },
         hint_hash: None,
         backrun_tx: None,
+        parents: Vec::new(),
         target_block: 101,
         max_block: 101,
         fee: liq_exec::fee::FeeQuote {

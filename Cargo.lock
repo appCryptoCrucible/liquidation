@@ -5680,6 +5680,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "liq-arb"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "liq-plan",
+ "liq-protocol",
+ "liq-router",
+ "liq-types",
+ "smallvec",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "liq-books"
 version = "0.1.0"
 dependencies = [
@@ -5711,6 +5725,7 @@ dependencies = [
  "liq-adapters-liquity-v2",
  "liq-adapters-morpho-blue",
  "liq-adapters-silo-v2",
+ "liq-arb",
  "liq-config",
  "liq-engine",
  "liq-exec",
@@ -5982,9 +5997,11 @@ dependencies = [
  "liq-config",
  "liq-node",
  "liq-sim",
+ "liq-types",
  "reth-ethereum",
  "reth-execution-types",
  "reth-primitives-traits",
+ "rtrb",
  "tokio",
  "tracing",
 ]
@@ -6037,6 +6054,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
