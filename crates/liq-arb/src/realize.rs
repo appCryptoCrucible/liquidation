@@ -10,6 +10,41 @@ use crate::ArbError;
 use alloy_primitives::U256;
 use liq_router::{ExitQuote, PoolBook, PoolId};
 
+/// One swap of a replayed plan: the pool, the coins, what went in and what
+/// came out on the state the previous swap left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hop {
+    pub pool: PoolId,
+    pub i: u8,
+    pub j: u8,
+    pub amount_in: U256,
+    pub amount_out: U256,
+}
+
+/// Apply one swap and hand it to `rec`.
+fn swap(
+    book: &mut PoolBook,
+    pool: PoolId,
+    i: u8,
+    j: u8,
+    amount_in: U256,
+    what: &'static str,
+    rec: &mut impl FnMut(Hop),
+) -> Result<U256, ArbError> {
+    let amount_out = book
+        .get_mut(pool)
+        .ok_or(ArbError::Missing(what))?
+        .apply_exact_in(i, j, amount_in)?;
+    rec(Hop {
+        pool,
+        i,
+        j,
+        amount_in,
+        amount_out,
+    });
+    Ok(amount_out)
+}
+
 /// Call `f` with every pool `q` swaps through.
 pub fn for_each_pool(q: &ExitQuote, mut f: impl FnMut(PoolId)) {
     if let Some(h) = &q.hub {
@@ -55,26 +90,38 @@ pub fn replayable(q: &ExitQuote) -> bool {
 /// the direct pools; or a lone chain hop by hop on the whole `total` — and
 /// return what they pay. Mutates `book`: callers save first.
 pub fn apply_exit(book: &mut PoolBook, q: &ExitQuote, total: U256) -> Result<U256, ArbError> {
+    apply_exit_rec(book, q, total, &mut |_| {})
+}
+
+/// [`apply_exit`], handing every swap to `rec` in execution order.
+pub fn apply_exit_rec(
+    book: &mut PoolBook,
+    q: &ExitQuote,
+    total: U256,
+    rec: &mut impl FnMut(Hop),
+) -> Result<U256, ArbError> {
     if !replayable(q) {
         return Err(ArbError::Unreplayable);
     }
     if let Some(c) = &q.chain {
         let mut amt = total;
         for l in &c.hops {
-            amt = book
-                .get_mut(l.pool)
-                .ok_or(ArbError::Missing("chain pool"))?
-                .apply_exact_in(l.i, l.j, amt)?;
+            amt = swap(book, l.pool, l.i, l.j, amt, "chain pool", rec)?;
         }
         return Ok(amt);
     }
     if let Some(h) = &q.hub {
         let mut hub_out = U256::ZERO;
         for a in h.allocs.iter().filter(|a| !a.amount_in.is_zero()) {
-            let o = book
-                .get_mut(a.leg.pool)
-                .ok_or(ArbError::Missing("hub pool"))?
-                .apply_exact_in(a.leg.i, a.leg.j, a.amount_in)?;
+            let o = swap(
+                book,
+                a.leg.pool,
+                a.leg.i,
+                a.leg.j,
+                a.amount_in,
+                "hub pool",
+                rec,
+            )?;
             hub_out = hub_out.checked_add(o).ok_or(ArbError::Math)?;
         }
         if hub_out != h.amount_out {
@@ -86,10 +133,15 @@ pub fn apply_exit(book: &mut PoolBook, q: &ExitQuote, total: U256) -> Result<U25
     }
     let mut out = U256::ZERO;
     for a in q.allocs.iter().filter(|a| !a.amount_in.is_zero()) {
-        let o = book
-            .get_mut(a.leg.pool)
-            .ok_or(ArbError::Missing("exit pool"))?
-            .apply_exact_in(a.leg.i, a.leg.j, a.amount_in)?;
+        let o = swap(
+            book,
+            a.leg.pool,
+            a.leg.i,
+            a.leg.j,
+            a.amount_in,
+            "exit pool",
+            rec,
+        )?;
         out = out.checked_add(o).ok_or(ArbError::Math)?;
     }
     Ok(out)
@@ -119,27 +171,31 @@ pub fn realize(
 }
 
 pub(crate) fn replay(book: &mut PoolBook, plan: &Backrun) -> Result<U256, ArbError> {
+    replay_rec(book, plan, &mut |_| {})
+}
+
+/// [`replay`], handing every swap to `rec` in the order the contract runs
+/// them.
+pub(crate) fn replay_rec(
+    book: &mut PoolBook,
+    plan: &Backrun,
+    rec: &mut impl FnMut(Hop),
+) -> Result<U256, ArbError> {
     let a = plan.anchor;
-    let anchor = |book: &mut PoolBook, amt: U256| -> Result<U256, ArbError> {
-        Ok(book
-            .get_mut(a.pool)
-            .ok_or(ArbError::Missing("anchor pool"))?
-            .apply_exact_in(a.i, a.j, amt)?)
-    };
     match plan.orientation {
         Orientation::StartIn => {
-            let mid = anchor(book, plan.amount_in)?;
+            let mid = swap(book, a.pool, a.i, a.j, plan.amount_in, "anchor pool", rec)?;
             if mid != plan.exit_in {
                 return Err(ArbError::Mismatch {
                     claimed: plan.exit_in,
                     realized: mid,
                 });
             }
-            apply_exit(book, &plan.exit, mid)
+            apply_exit_rec(book, &plan.exit, mid, rec)
         }
         Orientation::StartOut => {
-            let mid = apply_exit(book, &plan.exit, plan.amount_in)?;
-            anchor(book, mid)
+            let mid = apply_exit_rec(book, &plan.exit, plan.amount_in, rec)?;
+            swap(book, a.pool, a.i, a.j, mid, "anchor pool", rec)
         }
     }
 }

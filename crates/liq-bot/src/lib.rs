@@ -14,6 +14,7 @@
 
 pub mod alloc;
 pub mod arb;
+pub mod arb_check;
 pub mod assemble_view;
 pub mod bands;
 pub mod bind;

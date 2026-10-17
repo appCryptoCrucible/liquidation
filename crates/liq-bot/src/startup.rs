@@ -512,7 +512,7 @@ pub async fn run(
             .map(|s| s.address())
     });
     let sim = live_sim(
-        node_state,
+        node_state.clone(),
         loaded.config.venues.executor,
         operator,
         backrun_operator,
@@ -530,6 +530,8 @@ pub async fn run(
         &shadow,
         shared,
         Arc::clone(&index.book),
+        node_state.clone(),
+        profit_sink_from_env(),
     );
     let (arb_feed, arb_exec, arb_hints, arb_pending, arb_thread) = match arb {
         Some(a) => (
@@ -798,7 +800,7 @@ fn live_sim(
 fn start_svr_reader(
     index: &'static crate::index::BoundIndex,
     sink: &'static dyn liq_types::HaltSink,
-    arb: Option<rtrb::Producer<liq_types::MevShareHint>>,
+    arb: Option<rtrb::Producer<liq_oracle::mevshare::ArbHint>>,
 ) -> Option<(
     rtrb::Consumer<liq_types::MevShareHint>,
     Vec<liq_oracle::mevshare::SvrTarget>,

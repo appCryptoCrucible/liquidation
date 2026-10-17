@@ -55,6 +55,8 @@ pub enum ExecError {
     EmptyBundle,
     #[error("backrun trigger is missing the parent raw tx")]
     MissingBackrunTx,
+    #[error("top-of-block backrun carries a victim; it is sent alone")]
+    UnexpectedVictim,
     #[error("signed liquidation is empty")]
     EmptySignedTx,
     #[error("template patch {0} is missing")]

@@ -258,14 +258,18 @@ pub async fn drain_connection(
     Ok(())
 }
 
+/// A hint for the backrun engine, with when the reader had it parsed (the
+/// engine's trigger-in time).
+pub type ArbHint = (std::time::Instant, MevShareHint);
+
 /// Blocking reader. Pushes every transaction of each event as it arrives
 /// to `out` (the SVR drain), and every hint that shares logs to `arb` (the
-/// backrun engine) when given. On disconnect, backs off and reconnects. A
-/// full ring drops the hint that did not fit.
+/// backrun engine) when given, stamped with its arrival. On disconnect,
+/// backs off and reconnects. A full ring drops the hint that did not fit.
 pub fn spawn_hint_reader(
     sink: &'static dyn HaltSink,
     mut out: rtrb::Producer<MevShareHint>,
-    mut arb: Option<rtrb::Producer<MevShareHint>>,
+    mut arb: Option<rtrb::Producer<ArbHint>>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
         .name("liq-oracle-mevshare".into())
@@ -294,7 +298,7 @@ pub fn spawn_hint_reader(
                 let mut deliver = |hint: MevShareHint| {
                     if let Some(a) = arb.as_mut() {
                         if hint.logs.as_ref().is_some_and(|l| !l.is_empty())
-                            && a.push(hint.clone()).is_err()
+                            && a.push((std::time::Instant::now(), hint.clone())).is_err()
                         {
                             tracing::warn!("arb hint ring full — hint dropped");
                         }

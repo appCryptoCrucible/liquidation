@@ -370,11 +370,15 @@ pub fn executor_stack(spec: &ExecutorSpec) -> Result<ExecutorCode, SimError> {
     })
 }
 
-/// `ArbExecutor`'s deploy input: `spec.operator` is its one operator key,
-/// wired to the swap module at `swap_module`.
+/// `ArbExecutor`'s deploy input: `spec.operator` is its immutable operator
+/// key, wired to the swap module at `swap_module`. Its admin (who lists more
+/// operator keys) is `spec.profit_sink` here: no simulated plan calls
+/// `setOperator`, and the constructor only needs a key that is not the
+/// operator.
 pub fn arb_executor_initcode(spec: &ExecutorSpec, swap_module: Address) -> Result<Bytes, SimError> {
     let args = (
         spec.operator,
+        spec.profit_sink,
         spec.profit_sink,
         spec.weth,
         spec.univ3_factory,

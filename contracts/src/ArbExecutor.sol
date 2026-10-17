@@ -25,6 +25,11 @@ import {
  * SECURITY MODEL — the Executor's, unchanged where it applies:
  *  - OPERATOR is a hot key with one right: call execute(). It cannot move
  *    funds to an address of its choosing or make an arbitrary call.
+ *  - More operator keys (parallel nonce lanes, so several backruns can land
+ *    in one block) are added and revoked by ADMIN, a cold key that is never
+ *    an operator. Each has OPERATOR's one right and nothing more; ADMIN's
+ *    only right is that list. OPERATOR itself is immutable and costs no
+ *    storage read; an added key costs one (2,100 gas, cold).
  *  - PROFIT_SINK is immutable (the liquidator's own sink). Profit is
  *    `gross = wethAfter - wethBefore`, which underflows if the standing
  *    balance falls, so a plan can never spend more than it earns.
@@ -33,7 +38,7 @@ import {
  *    that we are inside our own execute() (transient storage, EIP-1153).
  *  - The swap module's address is an immutable, checked at construction to
  *    answer the swap MODULE_ID and our WETH; delegatecall goes nowhere else.
- *  - Immutable, no proxy, no setter.
+ *  - No proxy. The operator list is the only setter.
  *
  * Providers: Uniswap V4 `take` (free), Morpho Blue (free), and a Uniswap V3
  * flash swap — the anchor pool itself pays the bought token first and is
@@ -46,6 +51,8 @@ contract ArbExecutor {
     using PlanDecoder for bytes;
 
     address public immutable OPERATOR;
+    /// Cold key: adds and revokes operators, nothing else.
+    address public immutable ADMIN;
     address public immutable PROFIT_SINK;
     /// Canonical WETH. Profit is denominated in ETH: every plan converges here.
     address public immutable WETH;
@@ -55,6 +62,9 @@ contract ArbExecutor {
     bytes32 public immutable UNIV3_POOL_INIT_HASH;
     /// Swap and unwrap legs (delegatecall).
     address public immutable SWAP_MODULE;
+
+    /// Operator keys beside OPERATOR, each with its one right.
+    mapping(address => bool) public isOperator;
 
     uint256 private constant NO_CALLBACK = type(uint256).max;
 
@@ -69,6 +79,9 @@ contract ArbExecutor {
     uint8 private constant F_SWEEP = 1 << 0;
 
     error NotOperator();
+    error NotAdmin();
+    /// ADMIN, the profit sink, or the immutable OPERATOR as a listed key.
+    error BadOperator(address key);
     error BadCallback();
     error Reentrant();
     error Unprofitable(uint256 gained, uint256 required);
@@ -90,16 +103,21 @@ contract ArbExecutor {
     error ExactOutUnsupported(uint8 venue);
     error NotDelegated();
 
+    event OperatorSet(address indexed key, bool allowed);
+
     constructor(
-        address operator_, address profitSink_, address weth_,
+        address operator_, address admin_, address profitSink_, address weth_,
         address univ3Factory_, bytes32 univ3InitHash_, address swapModule_
     ) {
-        if (operator_ == address(0) || profitSink_ == address(0) || weth_ == address(0)
-            || univ3Factory_ == address(0)) {
+        if (operator_ == address(0) || admin_ == address(0) || profitSink_ == address(0)
+            || weth_ == address(0) || univ3Factory_ == address(0)) {
             revert ZeroAddress();
         }
+        // The admin is cold: a hot operator key must not also hold the list.
+        if (admin_ == operator_) revert BadOperator(admin_);
         _checkModule(swapModule_, ModuleIds.SWAP, weth_);
         OPERATOR             = operator_;
+        ADMIN                = admin_;
         PROFIT_SINK          = profitSink_;
         WETH                 = weth_;
         UNIV3_FACTORY        = univ3Factory_;
@@ -120,7 +138,8 @@ contract ArbExecutor {
     // Entry point
     // ──────────────────────────────────────────────────────────────────────
     function execute(bytes calldata plan) external payable {
-        if (msg.sender != OPERATOR) revert NotOperator();
+        // OPERATOR first: the immutable compare spares it the storage read.
+        if (msg.sender != OPERATOR && !isOperator[msg.sender]) revert NotOperator();
         uint256 entered;
         assembly { entered := tload(T_ENTERED) }
         if (entered != 0) revert Reentrant();
@@ -182,6 +201,16 @@ contract ArbExecutor {
         }
 
         assembly { tstore(T_ENTERED, 0) }
+    }
+
+    /// ADMIN adds (`allowed`) or revokes an operator key. Never ADMIN itself,
+    /// the profit sink, or OPERATOR (immutable, always allowed).
+    function setOperator(address key, bool allowed) external {
+        if (msg.sender != ADMIN) revert NotAdmin();
+        if (key == address(0)) revert ZeroAddress();
+        if (key == ADMIN || key == PROFIT_SINK || key == OPERATOR) revert BadOperator(key);
+        isOperator[key] = allowed;
+        emit OperatorSet(key, allowed);
     }
 
     /// Permissionless: the destination is immutable.

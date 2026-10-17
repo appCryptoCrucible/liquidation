@@ -2393,6 +2393,7 @@ impl AfterBlock for DrainJoin {
             .as_mut()
             .and_then(|w| w.after_block(store, ctx.block, ctx.hash));
         let block = ctx.block;
+        let parent_hash = ctx.hash;
         let engine_at = std::time::Instant::now();
         self.add_timing(|t| t.setup = started.elapsed());
         self.feed_engine(ctx);
@@ -2424,7 +2425,9 @@ impl AfterBlock for DrainJoin {
         // tick, with the pools they claimed.
         if let (Some(arb), Some(fee)) = (self.arb.as_mut(), self.fee) {
             let view = &self.assemble;
-            arb.end_block(block, ts, fee, |a| liq_router::MarketView::per_eth(view, a));
+            arb.end_block(block, ts, parent_hash, fee, started, |a| {
+                liq_router::MarketView::per_eth(view, a)
+            });
         }
         let total = started.elapsed();
         self.add_timing(|t| t.total = total);
@@ -2812,6 +2815,7 @@ fn exec_job(
         chain_id,
         slot,
         rpc_verify,
+        born: None,
     })
 }
 

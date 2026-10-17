@@ -15,6 +15,12 @@ use std::collections::BTreeMap;
 pub enum NonceMode {
     Allocate,
     DryRun,
+    /// Every job for a target block takes the same nonce, the chain's (as
+    /// [`NonceAllocator::dry_run`] peeks it after the block's resync): its
+    /// bundles are alternatives, and at most one lands. For backruns, which
+    /// are independent bundles — sequential nonces would make every bundle
+    /// after the first depend on the first landing.
+    Exclusive,
 }
 
 /// In-flight nonce record.

@@ -341,6 +341,7 @@ fn ordinary(target: u64) -> liq_exec::path::ExecJob {
         chain_id: 1,
         slot: 0,
         rpc_verify: false,
+        born: None,
     }
 }
 

@@ -1904,6 +1904,21 @@ impl PoolBook {
             .unwrap_or(0)
     }
 
+    /// The pools [`Self::sync_from`] would copy from `src` that this book
+    /// already holds (their states differ in version), appended to `out`.
+    /// Read before the sync, it names what a block changed while this copy
+    /// still holds their states from before it. Allocates nothing past
+    /// `out`'s capacity.
+    pub fn changed_in(&self, src: &PoolBook, out: &mut Vec<PoolId>) {
+        for (k, (v, sv)) in self.versions.iter().zip(&src.versions).enumerate() {
+            if v != sv {
+                if let Ok(id) = u32::try_from(k) {
+                    out.push(PoolId(id));
+                }
+            }
+        }
+    }
+
     /// Bring this copy of `src` up to date: pools `src` has added since are
     /// appended (same ids), and every pool whose state changed in `src`
     /// since the last sync is copied into the buffers already here

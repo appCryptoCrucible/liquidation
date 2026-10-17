@@ -292,6 +292,19 @@ pub fn expected_weth_gross(
     r: &Backrun,
     weth_id: AssetId,
 ) -> Result<U256, ArbError> {
+    expected_weth_gross_rec(book, scratch, r, weth_id, &mut |_| {})
+}
+
+/// [`expected_weth_gross`], handing every swap (the cycle's, then the
+/// closer's) to `rec` in execution order: what each pool should report in
+/// its swap event when the plan runs on the state the model holds.
+pub fn expected_weth_gross_rec(
+    book: &mut PoolBook,
+    scratch: &mut crate::scratch::Scratch,
+    r: &Backrun,
+    weth_id: AssetId,
+    rec: &mut impl FnMut(crate::realize::Hop),
+) -> Result<U256, ArbError> {
     use crate::scratch::EVAL;
     let closer = if r.start == weth_id {
         None
@@ -304,18 +317,41 @@ pub fn expected_weth_gross(
         scratch.save(EVAL, book, l.pool);
     }
     let out = (|| {
-        let back = crate::realize::replay(book, r)?;
+        let back = crate::realize::replay_rec(book, r, rec)?;
         let profit = back.checked_sub(r.amount_in).ok_or(ArbError::Math)?;
         match closer {
             None => Ok(profit),
-            Some(l) => Ok(book
-                .get_mut(l.pool)
-                .ok_or(ArbError::Missing("closer pool"))?
-                .apply_exact_in(l.i, l.j, profit)?),
+            Some(l) => {
+                let got = book
+                    .get_mut(l.pool)
+                    .ok_or(ArbError::Missing("closer pool"))?
+                    .apply_exact_in(l.i, l.j, profit)?;
+                rec(crate::realize::Hop {
+                    pool: l.pool,
+                    i: l.i,
+                    j: l.j,
+                    amount_in: profit,
+                    amount_out: got,
+                });
+                Ok(got)
+            }
         }
     })();
     scratch.restore(EVAL, book);
     out
+}
+
+/// What the executor keeps of a WETH `gross` once the contract pays its
+/// coinbase bid: `bid = (gross - gas_cost) * bps / 10 000`, rounded down,
+/// as `ArbExecutor.execute` computes it. `None` when the gross does not
+/// cover the gas (the contract reverts).
+#[must_use]
+pub fn kept_after_bid(gross: U256, gas_cost_wei: u128, bid_bps: u16) -> Option<U256> {
+    let net = gross.checked_sub(U256::from(gas_cost_wei))?;
+    let bid = net
+        .checked_mul(U256::from(bid_bps))?
+        .checked_div(U256::from(10_000u16))?;
+    gross.checked_sub(bid)
 }
 
 #[cfg(test)]

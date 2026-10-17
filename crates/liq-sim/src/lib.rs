@@ -36,7 +36,8 @@ pub use revm::database_interface::DatabaseRef;
 pub use revm::primitives::hardfork::SpecId;
 pub use verify::{
     block_env_at, execute_calldata, executor_anchors, verify, verify_historical, verify_ordered,
-    verify_variants, victim_logs, Bundle, HealthProbe, Ordered, SimTx, Trigger, VictimRun,
+    verify_ordered_logs, verify_variants, victim_logs, views_after, Bundle, HealthProbe, Ordered,
+    SimTx, Trigger, VictimRun,
 };
 pub use warm::{
     arb_executor_initcode, arb_executor_stack, insert_arb_executor, ArbExecutorCode,

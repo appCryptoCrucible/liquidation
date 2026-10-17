@@ -46,12 +46,16 @@ pub(crate) mod testbook;
 pub mod victim;
 
 pub use anchor::{best_backrun, Anchor, ArbCtx, Backrun, Orientation};
-pub use engine::{Engine, EngineCfg, NoBackrun, Opportunity, Target};
-pub use plan::{build_plan, expected_weth_gross, FlashSource, PlanCtx};
-pub use realize::{apply_exit, realize};
+pub use engine::{
+    pool_view, Engine, EngineCfg, NoBackrun, Opportunity, PoolView, Target, PLAN_HOPS, TOP_ANCHORS,
+};
+pub use plan::{
+    build_plan, expected_weth_gross, expected_weth_gross_rec, kept_after_bid, FlashSource, PlanCtx,
+};
+pub use realize::{apply_exit, realize, Hop};
 pub use scratch::Scratch;
 pub use size::{maximise, Maximum};
-pub use victim::{apply_victim, LogRef, Skip};
+pub use victim::{apply_victim, swap_seen, LogRef, Skip, SwapSeen};
 
 use liq_router::RouteError;
 

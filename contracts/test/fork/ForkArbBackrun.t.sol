@@ -47,7 +47,9 @@ contract ForkArbBackrunTest is Test {
             MainnetVenues.SUSHI_FACTORY, MainnetVenues.SUSHI_INIT_HASH,
             MainnetVenues.CURVE_META_REGISTRY, address(new DexModule(WETH))
         );
-        ex = new ArbExecutor(address(this), makeAddr("profitSink"), WETH, UNIV3_FACTORY, UNIV3_INIT_HASH, address(mod));
+        ex = new ArbExecutor(
+            address(this), makeAddr("admin"), makeAddr("profitSink"), WETH, UNIV3_FACTORY, UNIV3_INIT_HASH, address(mod)
+        );
     }
 
     function _str(string memory json, uint256 i, string memory field) internal pure returns (string memory) {

@@ -156,8 +156,50 @@ fn curve(book: &mut PoolBook, pool: PoolId, data: &[u8]) -> Option<Anchor> {
 /// The anchor a folded swap event leaves: the reverse of the victim's
 /// direction, sized by what it bought.
 fn swap_anchor(book: &PoolBook, pool: PoolId, t0: B256, l: &LogRef<'_>) -> Option<Anchor> {
-    // (coin the victim sold, coin it bought, amount bought)
-    let (sold, bought, out) = if t0 == V2_SWAP {
+    let s = decode_swap(book, pool, t0, l)?;
+    (!s.amount_out.is_zero()).then_some(Anchor {
+        pool,
+        i: s.bought,
+        j: s.sold,
+        scale: s.amount_out,
+    })
+}
+
+/// One swap as its pool's event reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SwapSeen {
+    pub pool: PoolId,
+    /// Coin the swapper paid in.
+    pub sold: u8,
+    /// Coin it received.
+    pub bought: u8,
+    pub amount_in: U256,
+    pub amount_out: U256,
+}
+
+/// A swap event of a pool in `book`, as amounts: V2 `Swap`, V3 and
+/// PancakeSwap V3 `Swap`, V4 `Swap`, Balancer V2 `Swap`, Curve
+/// `TokenExchange` (StableSwap and crypto). `None` for any other log, a
+/// pool not in the book, or an event that is not a one-way swap.
+#[must_use]
+pub fn swap_seen(book: &PoolBook, l: &LogRef<'_>, block: u64, timestamp: u64) -> Option<SwapSeen> {
+    let &t0 = l.topics.first()?;
+    let d = DecodedLog {
+        address: l.address,
+        topics: l.topics,
+        data: l.data,
+        block,
+        timestamp,
+    };
+    let mut touched: SmallVec<[PoolId; 4]> = SmallVec::new();
+    book.pools_for_log(&d, &mut touched);
+    let &pool = touched.first()?;
+    decode_swap(book, pool, t0, l)
+}
+
+fn decode_swap(book: &PoolBook, pool: PoolId, t0: B256, l: &LogRef<'_>) -> Option<SwapSeen> {
+    // (coin sold, coin bought, amount in, amount out)
+    let (sold, bought, amount_in, amount_out) = if t0 == V2_SWAP {
         let (a0in, a1in, a0out, a1out) = (
             word(l.data, 0)?,
             word(l.data, 1)?,
@@ -165,9 +207,9 @@ fn swap_anchor(book: &PoolBook, pool: PoolId, t0: B256, l: &LogRef<'_>) -> Optio
             word(l.data, 3)?,
         );
         if !a0in.is_zero() && a1in.is_zero() {
-            (0u8, 1u8, a1out)
+            (0u8, 1u8, a0in, a1out)
         } else if !a1in.is_zero() && a0in.is_zero() {
-            (1, 0, a0out)
+            (1, 0, a1in, a0out)
         } else {
             return None;
         }
@@ -175,9 +217,9 @@ fn swap_anchor(book: &PoolBook, pool: PoolId, t0: B256, l: &LogRef<'_>) -> Optio
         // Pool deltas: positive went in.
         let (a0, a1) = (signed(l.data, 0)?, signed(l.data, 1)?);
         if a0.is_positive() && a1.is_negative() {
-            (0, 1, a1.unsigned_abs())
+            (0, 1, a0.unsigned_abs(), a1.unsigned_abs())
         } else if a1.is_positive() && a0.is_negative() {
-            (1, 0, a0.unsigned_abs())
+            (1, 0, a1.unsigned_abs(), a0.unsigned_abs())
         } else {
             return None;
         }
@@ -185,9 +227,9 @@ fn swap_anchor(book: &PoolBook, pool: PoolId, t0: B256, l: &LogRef<'_>) -> Optio
         // The swapper's deltas: negative is what it paid.
         let (a0, a1) = (signed(l.data, 0)?, signed(l.data, 1)?);
         if a0.is_negative() && a1.is_positive() {
-            (0, 1, a1.unsigned_abs())
+            (0, 1, a0.unsigned_abs(), a1.unsigned_abs())
         } else if a1.is_negative() && a0.is_positive() {
-            (1, 0, a0.unsigned_abs())
+            (1, 0, a1.unsigned_abs(), a0.unsigned_abs())
         } else {
             return None;
         }
@@ -200,16 +242,25 @@ fn swap_anchor(book: &PoolBook, pool: PoolId, t0: B256, l: &LogRef<'_>) -> Optio
         (
             u8::try_from(ci).ok()?,
             u8::try_from(co).ok()?,
+            word(l.data, 0)?,
             word(l.data, 1)?,
+        )
+    } else if t0 == CURVE_EXCHANGE || t0 == CRYPTO_EXCHANGE || t0 == CRYPTO_EXCHANGE_FEE {
+        (
+            u8::try_from(word(l.data, 0)?).ok()?,
+            u8::try_from(word(l.data, 2)?).ok()?,
+            word(l.data, 1)?,
+            word(l.data, 3)?,
         )
     } else {
         return None;
     };
-    (!out.is_zero()).then_some(Anchor {
+    Some(SwapSeen {
         pool,
-        i: bought,
-        j: sold,
-        scale: out,
+        sold,
+        bought,
+        amount_in,
+        amount_out,
     })
 }
 
@@ -313,5 +364,39 @@ mod tests {
             apply_victim(&mut b, &mut s, &logs, 1, 1).unwrap_err(),
             Skip::NoPool
         );
+    }
+
+    /// A V2 `Swap` reads back as the event states it: coin 1 paid in, coin
+    /// 0 out, the amounts its fields carry, on the pool at the log's
+    /// address. A two-sided event is not a swap; a log of no pool is none.
+    #[test]
+    fn swap_seen_reads_a_v2_swap() {
+        let b = level_book();
+        let (inn, out) = (U256::from(7_000u32), U256::from(6_900u32));
+        let t = [V2_SWAP, B256::ZERO, B256::ZERO];
+        let data = words(&[U256::ZERO, inn, out, U256::ZERO]);
+        let l = LogRef {
+            address: Address::repeat_byte(2),
+            topics: &t,
+            data: &data,
+        };
+        assert_eq!(
+            swap_seen(&b, &l, 1, 1),
+            Some(SwapSeen {
+                pool: PoolId(1),
+                sold: 1,
+                bought: 0,
+                amount_in: inn,
+                amount_out: out,
+            })
+        );
+        let both = words(&[inn, inn, U256::ZERO, out]);
+        let l2 = LogRef { data: &both, ..l };
+        assert_eq!(swap_seen(&b, &l2, 1, 1), None);
+        let l3 = LogRef {
+            address: Address::repeat_byte(9),
+            ..l
+        };
+        assert_eq!(swap_seen(&b, &l3, 1, 1), None);
     }
 }

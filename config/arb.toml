@@ -24,11 +24,6 @@ base_gas = 100_000
 # Exit solves the size search may spend per orientation.
 max_evals = 40
 
-# Coinbase bid, basis points of realized net. Contested backruns pay
-# builders 30-100% (measured 2026-10-11); this is the starting point the
-# bid schedule refines.
-bid_bps = 5_000
-
 # Smallest net after gas worth sending, wei.
 min_net_wei = 50_000_000_000_000
 
@@ -38,3 +33,34 @@ flash_swap = true
 
 # Sweep WETH to the profit sink on every backrun (off: swept in batches).
 sweep = false
+
+# Solve what each block left open, for the top of the next one (ours alone,
+# no victim). Off (2026-10-14): it runs on the engine's one thread, blocks
+# MEV-Share hints for 1-7 s a block on the dev box, and found ~$1 a block
+# in the pilot ($16 over the Phase 0 windows). Back on once it can have its
+# own core.
+top_of_block = false
+
+# Coinbase bid, basis points of realized net, per intake and by whether the
+# anchor pool is contested. Re-read while running: a saved change takes
+# effect at the engine's next block (a table that does not parse or
+# validate is logged and the one in force stays). Contested backruns pay
+# builders 30-100% (measured 2026-10-11); 5% is the plan for flow nobody
+# else takes. MEV-Share bids must be whole percents (the relay's refund).
+[bids]
+# Anchor pool contracts no other backrunner has been seen taking. A V4,
+# Balancer or Fluid pool shares its singleton's address and cannot be
+# listed. Every pool not listed bids contested.
+uncontested = []
+
+[bids.mevshare]
+contested_bps = 5_000
+uncontested_bps = 500
+
+[bids.public]
+contested_bps = 5_000
+uncontested_bps = 500
+
+[bids.top]
+contested_bps = 5_000
+uncontested_bps = 500

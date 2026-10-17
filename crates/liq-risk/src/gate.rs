@@ -436,7 +436,7 @@ mod tests {
 
     /// A MEV-Share disconnect stops arb backruns of MEV-Share hints as it
     /// stops SVR backruns (both read that stream); a fresh heartbeat lets
-    /// both through again. Public arb backruns are not touched.
+    /// both through again. Public and top-of-block arb backruns are not touched.
     #[test]
     fn mevshare_disconnect_halts_arb_mevshare_too() {
         let g = RiskGate::new();
@@ -458,6 +458,7 @@ mod tests {
             g.allow(t, &with(TriggerKind::ArbPublic)),
             Allow::Yes
         ));
+        assert!(matches!(g.allow(t, &with(TriggerKind::ArbTop)), Allow::Yes));
         g.observe_mevshare(5);
         assert!(matches!(
             g.allow(t, &with(TriggerKind::SvrAuction)),

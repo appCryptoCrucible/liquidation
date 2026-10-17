@@ -414,6 +414,29 @@ pub fn verify_ordered<P: DatabaseRef<Error = SimError>>(
     calls: &[SimTx],
     env: &SimEnv,
 ) -> Result<Ordered, SimError> {
+    ordered(sim, victims, calls, env, None)
+}
+
+/// [`verify_ordered`], with what our calls emitted appended to `logs` (in
+/// emission order): the swap events a plan is held to hop by hop. Victims'
+/// logs are not included.
+pub fn verify_ordered_logs<P: DatabaseRef<Error = SimError>>(
+    sim: &mut Simulator<P>,
+    victims: &[SimTx],
+    calls: &[SimTx],
+    env: &SimEnv,
+    logs: &mut Vec<alloy_primitives::Log>,
+) -> Result<Ordered, SimError> {
+    ordered(sim, victims, calls, env, Some(logs))
+}
+
+fn ordered<P: DatabaseRef<Error = SimError>>(
+    sim: &mut Simulator<P>,
+    victims: &[SimTx],
+    calls: &[SimTx],
+    env: &SimEnv,
+    mut logs: Option<&mut Vec<alloy_primitives::Log>>,
+) -> Result<Ordered, SimError> {
     sim.reset();
     for (k, tx) in victims.iter().enumerate() {
         if !apply_one(&mut sim.db, env, tx)?.success {
@@ -434,6 +457,9 @@ pub fn verify_ordered<P: DatabaseRef<Error = SimError>>(
         if !a.success {
             return Err(SimError::Revert { reason: a.output });
         }
+        if let Some(out) = logs.as_deref_mut() {
+            out.extend(a.logs);
+        }
     }
     let after = profit_held(sim, env)?;
     let gained = I256::try_from(after)
@@ -448,6 +474,29 @@ pub fn verify_ordered<P: DatabaseRef<Error = SimError>>(
         confidence: Confidence::CERTAIN,
         weth_after: after,
     }))
+}
+
+/// Victims in order on the simulator's state, then each read in `reads` (a
+/// static call: callee, calldata) on the state they left: what a pool held
+/// just before our calls would run. A read that reverts is `None`. `None`
+/// overall when a victim reverts.
+pub fn views_after<P: DatabaseRef<Error = SimError>>(
+    sim: &mut Simulator<P>,
+    victims: &[SimTx],
+    env: &SimEnv,
+    reads: &[(Address, Vec<u8>)],
+) -> Result<Option<Vec<Option<Bytes>>>, SimError> {
+    sim.reset();
+    for tx in victims {
+        if !apply_one(&mut sim.db, env, tx)?.success {
+            return Ok(None);
+        }
+    }
+    let mut out = Vec::with_capacity(reads.len());
+    for (to, data) in reads {
+        out.push(view(&mut sim.db, env, *to, data.clone())?);
+    }
+    Ok(Some(out))
 }
 
 /// Verify a bundle against pending state. Trigger first, then our calls.

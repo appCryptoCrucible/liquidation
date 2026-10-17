@@ -26,6 +26,9 @@ pub enum TriggerKind {
     /// A backrun of public-mempool transactions: they in the order chosen,
     /// then ours, as a builder bundle.
     ArbPublic,
+    /// A backrun of what the last block left open, with no victim: ours
+    /// alone, a builder bundle for the top of the next block.
+    ArbTop,
 }
 
 /// Granular halt target (GUIDE 14 §2). `Global` is reserved for node lag.

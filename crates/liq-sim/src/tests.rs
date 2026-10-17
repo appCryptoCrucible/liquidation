@@ -425,6 +425,11 @@ fn arb_executor_is_placed_and_wired() {
         get(ArbWiring::OPERATORCall {}.abi_encode(), &mut overlay),
         spec().operator
     );
+    // The admin `arb_executor_initcode` documents: the spec's profit sink.
+    assert_eq!(
+        get(ArbWiring::ADMINCall {}.abi_encode(), &mut overlay),
+        spec().profit_sink
+    );
     let dex = ExecutorWiring::DEX_MODULECall {}.abi_encode();
     assert_eq!(
         read_address(&mut overlay, &env, PLANNED_SWAP_MODULE, dex).unwrap(),
@@ -455,6 +460,7 @@ alloy_sol_types::sol! {
     interface ArbWiring {
         function PROFIT_SINK() external view returns (address);
         function OPERATOR() external view returns (address);
+        function ADMIN() external view returns (address);
     }
 }
 

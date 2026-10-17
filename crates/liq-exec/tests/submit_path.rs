@@ -15,7 +15,7 @@ use common::spawn_mock;
 use liq_exec::builders::{leak_str, BuilderEndpoint, BuilderSet};
 use liq_exec::fee::FeeQuote;
 use liq_exec::nonce::{NonceAllocator, NonceMode};
-use liq_exec::path::{AllowAll, CaptureRecorder, DenyAll, ExecPath};
+use liq_exec::path::{AllowAll, CaptureRecorder, DenyAll, ExecPath, Gated};
 use liq_exec::submit::{LiveSendBits, SubmitEnabled};
 use liq_exec::template::PrecomputedSigner;
 use liq_obs::ShadowRecorder;
@@ -73,6 +73,7 @@ fn job(kind: TriggerKind, hint: Option<B256>, backrun: Option<Bytes>) -> liq_exe
         chain_id: 1,
         slot: 0,
         rpc_verify: false,
+        born: None,
     }
 }
 
@@ -549,4 +550,35 @@ async fn undeployed_executor_is_recorded_not_sent() {
         .unwrap();
     assert_eq!(rec, SubmitReceipt::Recorded);
     assert_eq!(mock.hits.load(std::sync::atomic::Ordering::Relaxed), 0);
+}
+
+/// Backruns for one block are alternatives: under `NonceMode::Exclusive`
+/// every job takes the block's chain nonce and none consumes it, so a
+/// bundle never waits on another landing first. `Allocate` (the
+/// liquidation path) hands out the next nonce to each.
+#[test]
+fn exclusive_nonce_gives_every_job_the_same_nonce() {
+    let nonce_of = |mode: NonceMode| {
+        let p = path(
+            true,
+            live_bits(true, true),
+            set_from_urls("http://127.0.0.1:9/", "http://127.0.0.1:9/"),
+            AllowAll,
+        )
+        .with_nonce_mode(mode);
+        p.nonces.set_next(0, 41).unwrap();
+        let mut got = Vec::new();
+        for _ in 0..2 {
+            match p
+                .sign_and_gate(&job(TriggerKind::ArbTop, None, None))
+                .unwrap()
+            {
+                Gated::Send(ready) => got.push(ready.allocated.nonce),
+                Gated::Done(r) => panic!("not signed: {r:?}"),
+            }
+        }
+        (got, p.nonces.next_of(0).unwrap())
+    };
+    assert_eq!(nonce_of(NonceMode::Exclusive), (vec![41, 41], 41));
+    assert_eq!(nonce_of(NonceMode::Allocate), (vec![41, 42], 43));
 }

@@ -77,6 +77,10 @@ pub struct ExecJob {
     /// `gas_limit` is then the simulated gas plus a margin. Set when the
     /// drain had no in-process simulator.
     pub rpc_verify: bool,
+    /// When the input that made this job arrived (a backrun's victim, hint
+    /// or block): the venue's ack logs trigger-in to bundle-out against it.
+    /// `None` for jobs that do not measure it.
+    pub born: Option<std::time::Instant>,
 }
 
 /// What [`ExecPath::sign_and_gate`] decided. `Done`: nothing to POST
@@ -224,6 +228,14 @@ where
         self
     }
 
+    /// The same path allocating nonces by `mode` (the arb path binds
+    /// [`NonceMode::Exclusive`]).
+    #[must_use]
+    pub fn with_nonce_mode(mut self, mode: NonceMode) -> Self {
+        self.nonce_mode = mode;
+        self
+    }
+
     /// Resync every slot (one operator key each) to its confirmed nonce
     /// after `target - 1`, once per target block. Every job and bundle for
     /// `target` then allocates from it, so they never reuse a nonce, and a
@@ -310,7 +322,7 @@ where
 
         let allocated = match self.nonce_mode {
             NonceMode::Allocate => self.nonces.allocate(job.slot)?,
-            NonceMode::DryRun => self.nonces.dry_run(job.slot)?,
+            NonceMode::DryRun | NonceMode::Exclusive => self.nonces.dry_run(job.slot)?,
         };
         let signer = match self.signers.get(job.slot) {
             Some(s) => s,
@@ -319,7 +331,7 @@ where
                 return Err(ExecError::BadSlot(job.slot));
             }
         };
-        if signer.address() != allocated.address && self.nonce_mode == NonceMode::Allocate {
+        if signer.address() != allocated.address && self.nonce_mode != NonceMode::DryRun {
             tracing::error!(
                 slot = job.slot,
                 "signer address does not match nonce key; fail closed"
@@ -432,6 +444,15 @@ where
             return Err(e);
         }
         stage(job.trace, Stage::VenueAck);
+        if let Some(born) = job.born {
+            tracing::info!(
+                target: "liq::arb_latency",
+                trace = job.trace.raw(),
+                trigger = ?job.trigger,
+                acked_us = u64::try_from(born.elapsed().as_micros()).unwrap_or(u64::MAX),
+                "bundle acked"
+            );
+        }
         self.track(&allocated, &signed, &job);
         Ok(SubmitReceipt::Accepted)
     }
@@ -663,6 +684,14 @@ pub fn require_venue_inputs(job: &ExecJob, venue: &Venue) -> Result<()> {
         | TriggerKind::UserAction
         | TriggerKind::DerivedRate
         | TriggerKind::PoolStateChange => {}
+        // Ours alone: a victim's bytes here would put someone else's
+        // transaction in a bundle that was simulated without it.
+        TriggerKind::ArbTop => {
+            if job.backrun_tx.is_some() || !job.parents.is_empty() || job.hint_hash.is_some() {
+                tracing::error!(trace = job.trace.raw(), "ArbTop job carries a victim");
+                return Err(ExecError::UnexpectedVictim);
+            }
+        }
         TriggerKind::OraclePredicted => return Err(ExecError::PredictedNotSubmittable),
         TriggerKind::OraclePublic | TriggerKind::OraclePullHeld => {
             if matches!(venue, Venue::BuilderBundle { .. }) {
@@ -692,6 +721,8 @@ fn bundle_txs(job: &ExecJob, signed: &SignedTx) -> Result<Vec<Bytes>> {
         },
         TriggerKind::SvrAuction | TriggerKind::ArbMevShare => Err(ExecError::WrongVenueBuilder),
         TriggerKind::OraclePredicted => Err(ExecError::PredictedNotSubmittable),
+        // Top of the next block: ours alone.
+        TriggerKind::ArbTop => Ok(vec![signed.raw.clone()]),
         // The victims in the order the search chose, then ours.
         TriggerKind::ArbPublic => {
             let first = job.backrun_tx.clone().ok_or(ExecError::MissingBackrunTx)?;
@@ -1017,6 +1048,35 @@ mod tests {
         );
     }
 
+    /// A top-of-block backrun is a builder bundle of ours alone, and is
+    /// refused when it carries anyone else's transaction or a hint.
+    #[test]
+    fn arb_top_bundle_is_ours_alone() {
+        let mut job = dummy_job(TriggerKind::ArbTop);
+        let routed = crate::submit::route(job.trigger, &test_builders(), 500, 10, 2).unwrap();
+        assert!(matches!(routed.venue, Venue::BuilderBundle { .. }));
+        require_venue_inputs(&job, &routed.venue).unwrap();
+        let signed = SignedTx {
+            raw: Bytes::from_static(&[0xee]),
+            hash: B256::ZERO,
+        };
+        assert_eq!(
+            bundle_txs(&job, &signed).unwrap(),
+            vec![Bytes::from_static(&[0xee])]
+        );
+        job.backrun_tx = Some(Bytes::from_static(&[0x02]));
+        assert!(matches!(
+            require_venue_inputs(&job, &routed.venue).unwrap_err(),
+            ExecError::UnexpectedVictim
+        ));
+        job.backrun_tx = None;
+        job.hint_hash = Some(B256::repeat_byte(7));
+        assert!(matches!(
+            require_venue_inputs(&job, &routed.venue).unwrap_err(),
+            ExecError::UnexpectedVictim
+        ));
+    }
+
     fn dummy_job(kind: TriggerKind) -> ExecJob {
         ExecJob {
             trace: TraceId::from_raw(1),
@@ -1045,6 +1105,7 @@ mod tests {
             chain_id: 1,
             slot: 0,
             rpc_verify: false,
+            born: None,
         }
     }
 }

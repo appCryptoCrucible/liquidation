@@ -85,6 +85,7 @@ fn job() -> ExecJob {
         chain_id: 1,
         slot: 0,
         rpc_verify: true,
+        born: None,
     }
 }
 

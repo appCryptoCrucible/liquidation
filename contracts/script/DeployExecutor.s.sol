@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {Script} from "forge-std/Script.sol";
+import {Script, console2} from "forge-std/Script.sol";
 import {Executor} from "../src/Executor.sol";
+import {ArbExecutor} from "../src/ArbExecutor.sol";
 import {LiquidationModule} from "../src/LiquidationModule.sol";
 import {SwapModule} from "../src/SwapModule.sol";
 import {DexModule} from "../src/DexModule.sol";
@@ -12,17 +13,22 @@ import {MainnetVenues} from "../src/lib/MainnetVenues.sol";
 /// broadcast it. `forge script` without `--broadcast` only simulates;
 /// `--broadcast` is a separate operator step and must be signed by `OPERATOR`.
 ///
-/// Four contracts, in order: the dex module, the two modules (the swap module
-/// takes the dex module), then the Executor, whose constructor checks each
-/// module answers its MODULE_ID and our WETH. The Executor's address is the
-/// one `venues.executor` takes; the modules are read from it
-/// (`LIQUIDATION_MODULE()`, `SWAP_MODULE()`; the swap module's `DEX_MODULE()`).
+/// Five contracts, in order: the dex module, the two modules (the swap module
+/// takes the dex module), the Executor, whose constructor checks each module
+/// answers its MODULE_ID and our WETH, and the ArbExecutor (the backrun
+/// engine), which runs the same swap module. The Executor's address is the
+/// one `venues.executor` takes, the ArbExecutor's `venues.arb_executor`; the
+/// modules are read from them (`LIQUIDATION_MODULE()`, `SWAP_MODULE()`; the
+/// swap module's `DEX_MODULE()`). The script reads the wiring back after
+/// deploying and logs both addresses.
 ///
 /// Factory, init-hash and WETH are the mainnet constants in
 /// `crates/liq-sim/src/warm.rs`. `OPERATOR` and `BACKRUN_OPERATOR` are the
 /// two hot keys that call `execute()`: builder bundles and MEV-Share backruns,
-/// each on its own nonce sequence. `PROFIT_SINK` is the MetaMask address
-/// swept WETH is sent to.
+/// each on its own nonce sequence. `ARB_OPERATOR` is the backrun engine's
+/// hot key, on a third sequence. `PROFIT_SINK` is the MetaMask address
+/// swept WETH is sent to; it is also the ArbExecutor's ADMIN, the cold key
+/// that adds and revokes further arb operator keys (`setOperator`).
 /// Both router slots are SwapRouter02, the router `ForkRoutes` executed at
 /// the pin. The searcher emits no venue-1 leg, and no second router has been
 /// executed on a fork. The constructor rejects the zero address, so the
@@ -31,6 +37,9 @@ contract DeployExecutor is Script {
     address constant OPERATOR = 0x3247b0709A3f4457b3FeBB5fB1493dc2d780192F;
     /// Second operator (`LIQ_BACKRUN_OPERATOR_SECRET`, `operator.env`).
     address constant BACKRUN_OPERATOR = 0x40807B6299C89e12a1393D8387b26DcdAA51C72a;
+    /// Arb operator (`LIQ_ARB_OPERATOR_SECRET`, `operator.env`).
+    address constant ARB_OPERATOR = 0xE3A6b5A49A048a3C8DBc6dB6CFc6C23e553c151B;
+    /// MetaMask: profit sink of both executors, and the ArbExecutor's admin.
     address constant PROFIT_SINK = 0x11fa49084B4D63b156a4C8238291A562019bA49d;
     /// Uniswap SwapRouter02. ForkRoutes `test_fork_router_exact_out_repay`.
     address constant SWAP_ROUTER02 = 0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45;
@@ -41,14 +50,18 @@ contract DeployExecutor is Script {
 
     function run() external {
         if (
-            OPERATOR == address(0) || BACKRUN_OPERATOR == address(0) || PROFIT_SINK == address(0)
-                || SWAP_ROUTER02 == address(0)
+            OPERATOR == address(0) || BACKRUN_OPERATOR == address(0) || ARB_OPERATOR == address(0)
+                || PROFIT_SINK == address(0) || SWAP_ROUTER02 == address(0)
         ) {
             revert("zero constructor address");
         }
-        if (OPERATOR == PROFIT_SINK || BACKRUN_OPERATOR == PROFIT_SINK) revert("operator is the sink");
-        // One key for both would put the two venues back on one nonce sequence.
-        if (OPERATOR == BACKRUN_OPERATOR) revert("operators are the same key");
+        if (OPERATOR == PROFIT_SINK || BACKRUN_OPERATOR == PROFIT_SINK || ARB_OPERATOR == PROFIT_SINK) {
+            revert("operator is the sink");
+        }
+        // One key for two would put two venues back on one nonce sequence.
+        if (OPERATOR == BACKRUN_OPERATOR || ARB_OPERATOR == OPERATOR || ARB_OPERATOR == BACKRUN_OPERATOR) {
+            revert("operators are the same key");
+        }
         vm.startBroadcast();
         LiquidationModule liquidations = new LiquidationModule(WETH);
         DexModule dexes = new DexModule(WETH);
@@ -63,7 +76,7 @@ contract DeployExecutor is Script {
             MainnetVenues.CURVE_META_REGISTRY,
             address(dexes)
         );
-        new Executor(
+        Executor executor = new Executor(
             OPERATOR,
             BACKRUN_OPERATOR,
             PROFIT_SINK,
@@ -73,6 +86,20 @@ contract DeployExecutor is Script {
             address(liquidations),
             address(swaps)
         );
+        // The backrun engine's executor, on the same swap module.
+        ArbExecutor arb = new ArbExecutor(
+            ARB_OPERATOR, PROFIT_SINK, PROFIT_SINK, WETH, UNIV3_FACTORY, UNIV3_INIT_HASH, address(swaps)
+        );
         vm.stopBroadcast();
+
+        // Read the wiring back from the deployed code.
+        require(executor.OPERATOR() == OPERATOR && executor.BACKRUN_OPERATOR() == BACKRUN_OPERATOR, "executor keys");
+        require(executor.PROFIT_SINK() == PROFIT_SINK, "executor sink");
+        require(executor.LIQUIDATION_MODULE() == address(liquidations), "liquidation module");
+        require(executor.SWAP_MODULE() == address(swaps) && swaps.DEX_MODULE() == address(dexes), "swap modules");
+        require(arb.OPERATOR() == ARB_OPERATOR && arb.ADMIN() == PROFIT_SINK, "arb keys");
+        require(arb.PROFIT_SINK() == PROFIT_SINK && arb.SWAP_MODULE() == address(swaps), "arb wiring");
+        console2.log("venues.executor     =", address(executor));
+        console2.log("venues.arb_executor =", address(arb));
     }
 }
